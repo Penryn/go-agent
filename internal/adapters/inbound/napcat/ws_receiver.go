@@ -41,6 +41,7 @@ func (r *WSReceiver) Receive(ctx context.Context, handler func(context.Context, 
 
 		conn, _, err := r.dial(ctx)
 		if err != nil {
+			log.Printf("napcat ws: dial %s failed: %v (retry in %s)", r.url, err, backoff)
 			if waitErr := waitContext(ctx, backoff); waitErr != nil {
 				return waitErr
 			}
@@ -52,6 +53,7 @@ func (r *WSReceiver) Receive(ctx context.Context, handler func(context.Context, 
 		}
 
 		backoff = minBackoff
+		log.Printf("napcat ws: connected to %s", r.url)
 		err = r.readLoop(ctx, conn, handler)
 		_ = conn.Close()
 		if err == nil || errors.Is(err, context.Canceled) {
@@ -60,6 +62,7 @@ func (r *WSReceiver) Receive(ctx context.Context, handler func(context.Context, 
 			}
 			continue
 		}
+		log.Printf("napcat ws: connection lost: %v (reconnect in %s)", err, backoff)
 		if waitErr := waitContext(ctx, backoff); waitErr != nil {
 			return waitErr
 		}
