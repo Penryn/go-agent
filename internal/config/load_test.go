@@ -72,3 +72,18 @@ func TestValidateRequiresQQEventWSURLWhenQQEnabled(t *testing.T) {
 		t.Fatalf("unexpected validate error: %v", err)
 	}
 }
+
+func TestValidateRequiresQQSelfIDWhenQQEnabled(t *testing.T) {
+	cfg := Default()
+	cfg.Persona.ID = "test"
+	cfg.Persona.Name = "Test Bot"
+	cfg.QQ.Enabled = true
+	cfg.QQ.OutboundURL = "http://127.0.0.1:3000"
+	cfg.QQ.EventWSURL = "ws://127.0.0.1:3001/event"
+	cfg.QQ.SelfID = 0
+
+	err := Validate(cfg)
+	if err == nil || err.Error() != "qq.self_id must be a positive QQ number when qq.enabled=true" {
+		t.Fatalf("unexpected validate error: %v", err)
+	}
+}

@@ -223,6 +223,9 @@ func Validate(cfg Config) error {
 	if cfg.QQ.Enabled && strings.TrimSpace(cfg.QQ.EventWSURL) == "" {
 		return errors.New("qq.event_ws_url is required when qq.enabled=true")
 	}
+	if cfg.QQ.Enabled && cfg.QQ.SelfID <= 0 {
+		return errors.New("qq.self_id must be a positive QQ number when qq.enabled=true")
+	}
 	return nil
 }
 
