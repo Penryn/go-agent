@@ -74,11 +74,17 @@ func (f *Factory) chatModel(ctx context.Context, key string, cfg config.ModelPro
 	}
 
 	model, err := f.newChatModel(ctx, cfg)
+	if err != nil {
+		// Don't cache transient errors so the next call retries.
+		// Config errors (ErrModelUnavailable, unsupported provider) are cheap to
+		// re-evaluate, so skipping the cache for them is acceptable.
+		return nil, err
+	}
 
 	f.mu.Lock()
-	f.cached[key] = cachedChatModel{model: model, err: err}
+	f.cached[key] = cachedChatModel{model: model, err: nil}
 	f.mu.Unlock()
-	return model, err
+	return model, nil
 }
 
 func (f *Factory) newChatModel(ctx context.Context, cfg config.ModelProviderConfig) (modelcomponent.BaseChatModel, error) {

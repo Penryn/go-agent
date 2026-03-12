@@ -29,3 +29,35 @@ func TestEvaluateStructuredOutput(t *testing.T) {
 		t.Fatalf("unexpected decision: %#v", decision)
 	}
 }
+
+func TestEvaluateClampsScoreAboveOne(t *testing.T) {
+	service := New(modeladapter.StaticFactory{
+		GateModel: modeladapter.NewMockChatModel(schema.AssistantMessage(`{"cue_bot":true,"score":5.0,"reason":"overflow"}`, nil)),
+	})
+
+	decision, err := service.Evaluate(context.Background(), conversationdomain.ContextSnapshot{
+		Event: conversationdomain.ConversationEvent{Text: "hello"},
+	})
+	if err != nil {
+		t.Fatalf("evaluate gate: %v", err)
+	}
+	if decision.Score != 1.0 {
+		t.Fatalf("expected score clamped to 1.0, got %f", decision.Score)
+	}
+}
+
+func TestEvaluateClampsNegativeScore(t *testing.T) {
+	service := New(modeladapter.StaticFactory{
+		GateModel: modeladapter.NewMockChatModel(schema.AssistantMessage(`{"score":-0.5,"reason":"negative"}`, nil)),
+	})
+
+	decision, err := service.Evaluate(context.Background(), conversationdomain.ContextSnapshot{
+		Event: conversationdomain.ConversationEvent{Text: "hello"},
+	})
+	if err != nil {
+		t.Fatalf("evaluate gate: %v", err)
+	}
+	if decision.Score != 0.0 {
+		t.Fatalf("expected score clamped to 0.0, got %f", decision.Score)
+	}
+}

@@ -8,6 +8,8 @@ const (
 	MediaImage   MediaKind = "image"
 	MediaSticker MediaKind = "sticker"
 	MediaVideo   MediaKind = "video"
+	MediaAudio   MediaKind = "audio"
+	MediaFile    MediaKind = "file"
 )
 
 type MultimodalAttachment struct {

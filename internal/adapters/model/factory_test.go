@@ -78,3 +78,26 @@ func TestFactoryWarmupFailsOnUnsupportedProvider(t *testing.T) {
 		t.Fatal("expected warmup error")
 	}
 }
+
+func TestFactoryDoesNotCacheErrors(t *testing.T) {
+	factory := NewFactory(config.ModelsConfig{
+		Main: config.ModelProviderConfig{
+			Provider: "unknown",
+			Model:    "demo",
+			APIKey:   "secret",
+		},
+	})
+
+	_, err1 := factory.MainChatModel(context.Background())
+	if err1 == nil {
+		t.Fatal("expected error on first call")
+	}
+
+	// Verify error is not cached by checking internal cache map
+	factory.mu.Lock()
+	_, cached := factory.cached["main"]
+	factory.mu.Unlock()
+	if cached {
+		t.Fatal("error should not be cached")
+	}
+}

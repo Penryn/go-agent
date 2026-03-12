@@ -92,7 +92,7 @@ func (s *Service) Normalize(payload []byte) (conversationdomain.EventEnvelope, e
 			if id, ok := stringField(segment.Data["id"]); ok {
 				replyToMessageID = id
 			}
-		case "image", "mface", "video":
+		case "image", "mface", "video", "record", "file":
 			attachments = append(attachments, s.normalizeAttachment(idx, segment))
 		}
 	}
@@ -142,6 +142,10 @@ func (s *Service) normalizeAttachment(idx int, segment oneBotSegment) mediadomai
 		kind = mediadomain.MediaSticker
 	case "video":
 		kind = mediadomain.MediaVideo
+	case "record":
+		kind = mediadomain.MediaAudio
+	case "file":
+		kind = mediadomain.MediaFile
 	}
 
 	file, _ := stringField(segment.Data["file"])
@@ -199,6 +203,10 @@ func mimeForSegmentType(segmentType string) string {
 		return "video/mp4"
 	case "mface":
 		return "image/webp"
+	case "record":
+		return "audio/silk"
+	case "file":
+		return "application/octet-stream"
 	default:
 		return "image/jpeg"
 	}
