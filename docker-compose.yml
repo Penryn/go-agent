@@ -58,7 +58,7 @@ services:
       - qqbot-net
 
   qdrant:
-    image: qdrant/qdrant:v1.14.0
+    image: qdrant/qdrant:v1.17.0
     pull_policy: never
     container_name: qqbot-qdrant
     restart: unless-stopped
@@ -78,7 +78,7 @@ services:
       - qqbot-net
 
   minio:
-    image: minio/minio:RELEASE.2025-02-28T09-55-16Z
+    image: minio/minio:RELEASE.2025-09-07T16-13-09Z
     pull_policy: never
     container_name: qqbot-minio
     restart: unless-stopped
@@ -101,7 +101,7 @@ services:
       - qqbot-net
 
   napcat:
-    image: mlikiowa/napcat-docker:2.6.5
+    image: mlikiowa/napcat-docker@sha256:85825671fd536e7a46ccf5472fd7efae7053150ec1042ae4c4f1e0fb62f815fd
     pull_policy: never
     container_name: qqbot-napcat
     restart: unless-stopped
