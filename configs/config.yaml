@@ -1,0 +1,197 @@
+# 主配置文件。
+# 公开配置放这里；私密配置只放 .env。
+# 优先级：内置默认值 < 本文件 < .env / 进程环境变量。
+
+app:
+  # 应用名，仅用于日志和运行标识。
+  name: qq-group-bot
+  # 运行模式：dev / prod。
+  mode: dev
+
+server:
+  # HTTP 服务监听地址。
+  http_listen: ":8088"
+  # 入站事件接口读超时。
+  read_timeout: 5s
+  # 入站事件接口写超时。
+  write_timeout: 10s
+
+runtime:
+  # 预留的运行时 worker 数。
+  worker_count: 2
+  # 预留的事件队列长度。
+  queue_length: 128
+
+models:
+  # Main Persona Agent 使用的主模型。
+  main:
+    # 未指定 provider 时运行时默认按 ark 处理；显式配置 openai_compat 也可用。
+    provider: ark
+    # 模型名。留空时运行时会自动退回确定性 planner。
+    model: ""
+    # 可选 provider base URL。ark 和 openai_compat 都会消费这个字段。
+    base_url: ""
+    # 私密项 API Key 从 .env 的 QQBOT_MAIN_MODEL_API_KEY 读取。
+    timeout: 20s
+  # Gate Agent 使用的轻量判定模型。
+  gate:
+    provider: ark
+    model: ""
+    base_url: ""
+    # 私密项 API Key 从 .env 的 QQBOT_GATE_MODEL_API_KEY 读取。
+    timeout: 5s
+  # Vision Agent 使用的多模态模型。
+  vision:
+    provider: ark
+    model: ""
+    base_url: ""
+    # 私密项 API Key 从 .env 的 QQBOT_VISION_MODEL_API_KEY 读取。
+    timeout: 15s
+  # Embedding 预留配置，供向量记忆/检索接线使用。
+  embedding:
+    provider: ark
+    model: ""
+    base_url: ""
+    # 私密项 API Key 从 .env 的 QQBOT_EMBEDDING_MODEL_API_KEY 读取。
+    timeout: 15s
+
+persona:
+  # 人设主键。
+  id: main
+  # 机器人展示名。
+  name: 群友 Bot
+  # 别名会参与 @ / 点名 / 文本触发识别。
+  aliases: ["bot", "群友 bot", "小群友"]
+  interests: ["群聊热梗", "表情包", "日常闲聊"]
+  speech_style: 像熟人群友，短句，少解释
+  description: 长期在线、会接梗的 AI 群友
+  constraints:
+    - 不要客服腔
+    - 不要长篇解释
+  reply_max_chars: 80
+  reply_max_sentences: 2
+  allow_teasing: true
+  allow_questions: true
+  prefer_memes: true
+
+# 默认群策略。未命中 group_policies 时使用这里。
+default_policy:
+  enabled: true
+  # 可选：low_key / balanced / active，当前逻辑主要消费是否保守回复。
+  presence_level: balanced
+  # Agent 可调用工具白名单。
+  tool_allowlist: ["speak_text", "stay_silent", "query_memory", "search_meme", "mark_memory_intent"]
+  # 安静时段，格式 HH:MM-HH:MM。
+  quiet_hours: ["01:00-08:00"]
+  # 连续 bot 发言上限。
+  max_consecutive_bot: 1
+  # 对图片消息接话的基础概率。
+  reply_to_image_chance: 0.25
+  # 是否允许回 poke。
+  allow_poke_back: false
+  # 是否允许撤回最近消息。
+  allow_recall: false
+
+# 预留的群级覆写策略。按群号单独配置时放这里。
+group_policies: []
+
+autonomy:
+  # 上下文观察窗口大小。
+  observe_window_size: 20
+  # 跟进同一话题的时间窗口。
+  follow_up_window_sec: 120
+  # 最小回复间隔，避免刷屏。
+  min_reply_interval_sec: 30
+  # 主动插话的基础概率。
+  proactive_base_probability: 0.05
+  # 主动插话需要达到的评分阈值。
+  proactive_score_threshold: 0.65
+  max_replies_per_10min: 6
+  max_replies_per_hour: 24
+  # 是否启用 LLM Gate。关闭时仅用启发式判定。
+  llm_gate_enabled: false
+  llm_gate_timeout_ms: 1500
+  suppress_on_flood: true
+
+tools:
+  # 全局工具白名单，建议和 policy allowlist 保持一致。
+  allowlist: ["speak_text", "stay_silent", "query_memory", "search_meme", "mark_memory_intent"]
+  timeouts:
+    # web_search 单次超时。
+    web_search: 5s
+  budgets:
+    # web_search 每小时预算。
+    web_search_per_hour: 20
+
+memory:
+  # 检索上下文时取回的长期记忆条数。
+  top_k: 6
+  # 长期记忆默认 TTL。
+  default_ttl: 720h
+  type_enabled:
+    preference: true
+    relationship: true
+    meme_usage: true
+  # 达到该阈值后才写入长期记忆。
+  write_threshold: 0.65
+
+meme:
+  # 是否自动收藏群内表情包候选。
+  auto_collect: true
+  candidate_threshold: 0.6
+  # 哈希/相似度去重阈值。
+  dedup_threshold: 0.92
+  per_group_limit: 5000
+  search_top_k: 5
+  # 同一张表情包重复发送冷却。
+  repeat_cooldown: 10m
+  prefer_group_scoped: true
+
+multimodal:
+  # 拉取图片/视频资源的超时。
+  download_timeout: 10s
+  max_video_bytes: 52428800
+  max_video_seconds: 60
+  # 视频抽帧数。
+  keyframes: 3
+  # 单次视觉理解预算的预留参数。
+  vision_budget: 5000
+
+storage:
+  # 当前默认启动仍使用 in-memory store。
+  # 这里的配置已经用于适配器与集成测试，后续可切到主运行时。
+  mysql:
+    host: 127.0.0.1
+    port: 3306
+    database: qqbot
+    user: qqbot
+    parse_time: true
+    charset: utf8mb4
+    # 私密项 password 从 .env 的 QQBOT_STORAGE_MYSQL_PASSWORD 读取。
+  redis:
+    addr: 127.0.0.1:6379
+    db: 0
+    # 私密项 password 从 .env 的 QQBOT_STORAGE_REDIS_PASSWORD 读取。
+  qdrant:
+    url: http://127.0.0.1:6333
+    collection: qqbot_memories
+    # 私密项 api key 从 .env 的 QQBOT_STORAGE_QDRANT_API_KEY 读取。
+  minio:
+    endpoint: 127.0.0.1:9000
+    bucket: qqbot-media
+    use_ssl: false
+    # 私密项 access/secret key 从 .env 的
+    # QQBOT_STORAGE_MINIO_ACCESS_KEY / QQBOT_STORAGE_MINIO_SECRET_KEY 读取。
+
+qq:
+  # 为 false 时，不连接 NapCat，也不发真实 OneBot 动作，适合本地最小链路验证。
+  enabled: false
+  # 机器人自身 QQ 号，用于过滤自己发出的事件和别名触发判断。
+  self_id: 0
+  # 私密项 access token 从 .env 的 QQBOT_QQ_ACCESS_TOKEN 读取。
+  # 出站 HTTP API 地址，例如 http://127.0.0.1:3000 。
+  outbound_url: http://127.0.0.1:3000
+  # 默认使用正向 WebSocket /event 收事件。
+  event_ws_url: ws://127.0.0.1:3001/event
+  # 保留的 HTTP 入站调试路由，可用于手工回放和兼容性测试。
+  inbound_route: /onebot/events

@@ -1,0 +1,89 @@
+package policy
+
+import "time"
+
+type AutonomyState string
+
+const (
+	StateObserving          AutonomyState = "observing"
+	StateDirectTriggered    AutonomyState = "direct_triggered"
+	StateProactiveCandidate AutonomyState = "proactive_candidate"
+	StateCooldown           AutonomyState = "cooldown"
+	StateSuppressed         AutonomyState = "suppressed"
+)
+
+type DecisionAction string
+
+const (
+	ActionSilent   DecisionAction = "silent"
+	ActionReply    DecisionAction = "reply"
+	ActionReact    DecisionAction = "react"
+	ActionMemeOnly DecisionAction = "meme_only"
+	ActionPokeBack DecisionAction = "poke_back"
+	ActionRecall   DecisionAction = "recall"
+)
+
+type GroupPolicy struct {
+	GroupID            int64          `json:"group_id" yaml:"group_id"`
+	Enabled            bool           `json:"enabled" yaml:"enabled"`
+	PresenceLevel      string         `json:"presence_level" yaml:"presence_level"`
+	PersonaOverlay     map[string]any `json:"persona_overlay" yaml:"persona_overlay"`
+	ToolAllowlist      []string       `json:"tool_allowlist" yaml:"tool_allowlist"`
+	QuietHours         []string       `json:"quiet_hours" yaml:"quiet_hours"`
+	ActiveHours        []string       `json:"active_hours" yaml:"active_hours"`
+	MaxConsecutiveBot  int            `json:"max_consecutive_bot" yaml:"max_consecutive_bot"`
+	ReplyToImageChance float64        `json:"reply_to_image_chance" yaml:"reply_to_image_chance"`
+	AllowPokeBack      bool           `json:"allow_poke_back" yaml:"allow_poke_back"`
+	AllowRecall        bool           `json:"allow_recall" yaml:"allow_recall"`
+}
+
+type AutonomyPolicy struct {
+	ObserveWindowSize        int     `json:"observe_window_size" yaml:"observe_window_size"`
+	FollowUpWindowSec        int     `json:"follow_up_window_sec" yaml:"follow_up_window_sec"`
+	MinReplyIntervalSec      int     `json:"min_reply_interval_sec" yaml:"min_reply_interval_sec"`
+	ProactiveBaseProbability float64 `json:"proactive_base_probability" yaml:"proactive_base_probability"`
+	ProactiveScoreThreshold  float64 `json:"proactive_score_threshold" yaml:"proactive_score_threshold"`
+	MaxRepliesPer10Min       int     `json:"max_replies_per_10min" yaml:"max_replies_per_10min"`
+	MaxRepliesPerHour        int     `json:"max_replies_per_hour" yaml:"max_replies_per_hour"`
+	LLMGateEnabled           bool    `json:"llm_gate_enabled" yaml:"llm_gate_enabled"`
+	LLMGateTimeoutMs         int     `json:"llm_gate_timeout_ms" yaml:"llm_gate_timeout_ms"`
+	SuppressOnFlood          bool    `json:"suppress_on_flood" yaml:"suppress_on_flood"`
+}
+
+type RuntimeState struct {
+	GroupID             int64         `json:"group_id" yaml:"group_id"`
+	State               AutonomyState `json:"state" yaml:"state"`
+	CooldownUntil       time.Time     `json:"cooldown_until" yaml:"cooldown_until"`
+	SuppressedUntil     time.Time     `json:"suppressed_until" yaml:"suppressed_until"`
+	LastBotSpeakAt      time.Time     `json:"last_bot_speak_at" yaml:"last_bot_speak_at"`
+	LastDirectedAt      time.Time     `json:"last_directed_at" yaml:"last_directed_at"`
+	LastProactiveAt     time.Time     `json:"last_proactive_at" yaml:"last_proactive_at"`
+	ConsecutiveBotTurns int           `json:"consecutive_bot_turns" yaml:"consecutive_bot_turns"`
+	RepliesLast10Min    int           `json:"replies_last_10min" yaml:"replies_last_10min"`
+	CurrentMood         string        `json:"current_mood" yaml:"current_mood"`
+	CurrentEnergy       string        `json:"current_energy" yaml:"current_energy"`
+	CurrentTopic        string        `json:"current_topic" yaml:"current_topic"`
+}
+
+type AutonomyDecision struct {
+	DecisionID  string             `json:"decision_id" yaml:"decision_id"`
+	Action      DecisionAction     `json:"action" yaml:"action"`
+	StateBefore AutonomyState      `json:"state_before" yaml:"state_before"`
+	StateAfter  AutonomyState      `json:"state_after" yaml:"state_after"`
+	TriggerType string             `json:"trigger_type" yaml:"trigger_type"`
+	Score       float64            `json:"score" yaml:"score"`
+	Confidence  float64            `json:"confidence" yaml:"confidence"`
+	DelayMs     int                `json:"delay_ms" yaml:"delay_ms"`
+	ReasonCodes []string           `json:"reason_codes" yaml:"reason_codes"`
+	Explain     map[string]float64 `json:"explain" yaml:"explain"`
+}
+
+type DecisionAudit struct {
+	TraceID     string             `json:"trace_id" yaml:"trace_id"`
+	GroupID     int64              `json:"group_id" yaml:"group_id"`
+	State       AutonomyState      `json:"state" yaml:"state"`
+	Action      DecisionAction     `json:"action" yaml:"action"`
+	ReasonCodes []string           `json:"reason_codes" yaml:"reason_codes"`
+	Explain     map[string]float64 `json:"explain" yaml:"explain"`
+	GeneratedAt time.Time          `json:"generated_at" yaml:"generated_at"`
+}

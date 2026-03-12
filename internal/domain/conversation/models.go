@@ -1,0 +1,74 @@
+package conversation
+
+import (
+	"time"
+
+	mediadomain "github.com/phlin/go-agent/internal/domain/media"
+	memorydomain "github.com/phlin/go-agent/internal/domain/memory"
+	personadomain "github.com/phlin/go-agent/internal/domain/persona"
+	policydomain "github.com/phlin/go-agent/internal/domain/policy"
+	profiledomain "github.com/phlin/go-agent/internal/domain/profile"
+)
+
+type EventKind string
+
+const (
+	EventMessage EventKind = "message"
+	EventNotice  EventKind = "notice"
+	EventPoke    EventKind = "poke"
+	EventMeta    EventKind = "meta_event"
+)
+
+type MessageSegment struct {
+	Type string         `json:"type" yaml:"type"`
+	Data map[string]any `json:"data" yaml:"data"`
+}
+
+type ConversationEvent struct {
+	EventID          string                             `json:"event_id" yaml:"event_id"`
+	GroupID          int64                              `json:"group_id" yaml:"group_id"`
+	UserID           int64                              `json:"user_id" yaml:"user_id"`
+	MessageID        string                             `json:"message_id" yaml:"message_id"`
+	ReplyToMessageID string                             `json:"reply_to_message_id,omitempty" yaml:"reply_to_message_id,omitempty"`
+	Kind             EventKind                          `json:"kind" yaml:"kind"`
+	Text             string                             `json:"text" yaml:"text"`
+	Segments         []MessageSegment                   `json:"segments,omitempty" yaml:"segments,omitempty"`
+	MentionedBot     bool                               `json:"mentioned_bot" yaml:"mentioned_bot"`
+	NamedBot         bool                               `json:"named_bot" yaml:"named_bot"`
+	IsReplyToBot     bool                               `json:"is_reply_to_bot" yaml:"is_reply_to_bot"`
+	Attachments      []mediadomain.MultimodalAttachment `json:"attachments,omitempty" yaml:"attachments,omitempty"`
+	TimestampUnix    int64                              `json:"timestamp_unix" yaml:"timestamp_unix"`
+}
+
+type EventEnvelope struct {
+	Source        string            `json:"source" yaml:"source"`
+	SelfID        int64             `json:"self_id" yaml:"self_id"`
+	ReceivedAt    time.Time         `json:"received_at" yaml:"received_at"`
+	RawPayload    []byte            `json:"raw_payload,omitempty" yaml:"raw_payload,omitempty"`
+	Event         ConversationEvent `json:"event" yaml:"event"`
+	TraceID       string            `json:"trace_id" yaml:"trace_id"`
+	CorrelationID string            `json:"correlation_id" yaml:"correlation_id"`
+}
+
+type ConversationContext struct {
+	GroupID        int64                         `json:"group_id" yaml:"group_id"`
+	ObserveWindow  []ConversationEvent           `json:"observe_window" yaml:"observe_window"`
+	RecentMedia    []mediadomain.MediaDescriptor `json:"recent_media" yaml:"recent_media"`
+	ActiveTopics   []string                      `json:"active_topics" yaml:"active_topics"`
+	LastSnapshotID string                        `json:"last_snapshot_id" yaml:"last_snapshot_id"`
+}
+
+type ContextSnapshot struct {
+	SnapshotID        string                          `json:"snapshot_id" yaml:"snapshot_id"`
+	Event             ConversationEvent               `json:"event" yaml:"event"`
+	RecentTurns       []ConversationEvent             `json:"recent_turns" yaml:"recent_turns"`
+	RelevantMemories  []memorydomain.MemoryRecord     `json:"relevant_memories" yaml:"relevant_memories"`
+	MediaDescriptors  []mediadomain.MediaDescriptor   `json:"media_descriptors" yaml:"media_descriptors"`
+	MemberProfile     profiledomain.MemberProfile     `json:"member_profile" yaml:"member_profile"`
+	RelationshipState profiledomain.RelationshipState `json:"relationship_state" yaml:"relationship_state"`
+	PersonaProfile    personadomain.PersonaProfile    `json:"persona_profile" yaml:"persona_profile"`
+	PersonaState      personadomain.PersonaState      `json:"persona_state" yaml:"persona_state"`
+	GroupPolicy       policydomain.GroupPolicy        `json:"group_policy" yaml:"group_policy"`
+	RuntimeState      policydomain.RuntimeState       `json:"runtime_state" yaml:"runtime_state"`
+	DecisionHints     []string                        `json:"decision_hints" yaml:"decision_hints"`
+}

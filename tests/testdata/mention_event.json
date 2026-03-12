@@ -1,0 +1,24 @@
+{
+  "post_type": "message",
+  "message_type": "group",
+  "time": 1710000000,
+  "self_id": 123456,
+  "group_id": 10001,
+  "user_id": 20002,
+  "message_id": 30003,
+  "raw_message": "@123456 bot 在吗",
+  "message": [
+    {
+      "type": "at",
+      "data": {
+        "qq": "123456"
+      }
+    },
+    {
+      "type": "text",
+      "data": {
+        "text": " bot 在吗"
+      }
+    }
+  ]
+}
