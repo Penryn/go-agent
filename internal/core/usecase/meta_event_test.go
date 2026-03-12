@@ -27,6 +27,7 @@ func TestProcessorSkipsMetaEvents(t *testing.T) {
 		nil,
 		nil,
 		nil,
+		nil,
 	)
 
 	result, err := processor.ProcessRawEvent(context.Background(), []byte(`{"post_type":"meta_event","meta_event_type":"heartbeat","time":1700000000}`))

@@ -32,7 +32,7 @@ func TestToolSchemas(t *testing.T) {
 	tools := runtime.Tools(replydomain.ToolContext{
 		GroupID:      1,
 		UserID:       2,
-		AllowedTools: []string{"speak_text", "search_meme", "stay_silent", "send_meme", "quote_reply", "query_member_profile", "web_search", "recall_recent_message", "poke_member"},
+		AllowedTools: nil,
 	})
 
 	names := map[string]tool.BaseTool{}

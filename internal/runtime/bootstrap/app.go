@@ -84,6 +84,7 @@ func NewApp(ctx context.Context, cfg config.Config) (*App, error) {
 		profilesvc.New(stores.profile),
 		memeService,
 		visionService,
+		cfg.QQ.GroupWhitelist,
 	)
 
 	app := &App{

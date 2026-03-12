@@ -123,7 +123,7 @@ func sampleSnapshot() conversationdomain.ContextSnapshot {
 			GroupID:       1,
 			Enabled:       true,
 			PresenceLevel: "balanced",
-			ToolAllowlist: []string{"query_memory", "speak_text", "stay_silent"},
+			ToolAllowlist: nil,
 		},
 		PersonaState: personadomain.PersonaState{
 			PersonaID: "main",

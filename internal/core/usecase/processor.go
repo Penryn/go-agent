@@ -3,6 +3,7 @@ package usecase
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/phlin/go-agent/internal/core/ports"
 	conversationdomain "github.com/phlin/go-agent/internal/domain/conversation"
@@ -24,17 +25,18 @@ type Planner interface {
 }
 
 type Processor struct {
-	normalizer *normalizersvc.Service
-	context    *contextsvc.Service
-	autonomy   *autonomysvc.Service
-	planner    Planner
-	executor   *actionsvc.Service
-	memory     ports.MemoryStore
-	state      ports.RuntimeStateStore
-	memorySvc  *memsvc.Service
-	profileSvc *profilesvc.Service
-	memeSvc    *memesvc.Service
-	visionSvc  *multimodalsvc.Service
+	normalizer     *normalizersvc.Service
+	context        *contextsvc.Service
+	autonomy       *autonomysvc.Service
+	planner        Planner
+	executor       *actionsvc.Service
+	memory         ports.MemoryStore
+	state          ports.RuntimeStateStore
+	memorySvc      *memsvc.Service
+	profileSvc     *profilesvc.Service
+	memeSvc        *memesvc.Service
+	visionSvc      *multimodalsvc.Service
+	groupWhitelist map[int64]struct{}
 }
 
 type ProcessResult struct {
@@ -45,19 +47,24 @@ type ProcessResult struct {
 	Receipt  replydomain.ActionReceipt          `json:"receipt"`
 }
 
-func NewProcessor(normalizer *normalizersvc.Service, context *contextsvc.Service, autonomy *autonomysvc.Service, planner Planner, executor *actionsvc.Service, memory ports.MemoryStore, state ports.RuntimeStateStore, memorySvc *memsvc.Service, profileSvc *profilesvc.Service, memeSvc *memesvc.Service, visionSvc *multimodalsvc.Service) *Processor {
+func NewProcessor(normalizer *normalizersvc.Service, context *contextsvc.Service, autonomy *autonomysvc.Service, planner Planner, executor *actionsvc.Service, memory ports.MemoryStore, state ports.RuntimeStateStore, memorySvc *memsvc.Service, profileSvc *profilesvc.Service, memeSvc *memesvc.Service, visionSvc *multimodalsvc.Service, groupWhitelist []int64) *Processor {
+	wl := make(map[int64]struct{}, len(groupWhitelist))
+	for _, gid := range groupWhitelist {
+		wl[gid] = struct{}{}
+	}
 	return &Processor{
-		normalizer: normalizer,
-		context:    context,
-		autonomy:   autonomy,
-		planner:    planner,
-		executor:   executor,
-		memory:     memory,
-		state:      state,
-		memorySvc:  memorySvc,
-		profileSvc: profileSvc,
-		memeSvc:    memeSvc,
-		visionSvc:  visionSvc,
+		normalizer:     normalizer,
+		context:        context,
+		autonomy:       autonomy,
+		planner:        planner,
+		executor:       executor,
+		memory:         memory,
+		state:          state,
+		memorySvc:      memorySvc,
+		profileSvc:     profileSvc,
+		memeSvc:        memeSvc,
+		visionSvc:      visionSvc,
+		groupWhitelist: wl,
 	}
 }
 
@@ -83,6 +90,23 @@ func (p *Processor) ProcessEnvelope(ctx context.Context, envelope conversationdo
 				Confidence:  1,
 			},
 		}, nil
+	}
+
+	if len(p.groupWhitelist) > 0 {
+		if _, ok := p.groupWhitelist[envelope.Event.GroupID]; !ok {
+			return ProcessResult{
+				Envelope: envelope,
+				Decision: policydomain.AutonomyDecision{
+					DecisionID:  fmt.Sprintf("decision-%d-filtered", time.Now().UnixNano()),
+					Action:      policydomain.ActionSilent,
+					StateBefore: policydomain.StateObserving,
+					StateAfter:  policydomain.StateObserving,
+					ReasonCodes: []string{"group_not_whitelisted"},
+					Explain:     map[string]float64{"group_not_whitelisted": 1},
+					Confidence:  1,
+				},
+			}, nil
+		}
 	}
 
 	if err := p.memory.ArchiveEvent(ctx, envelope.Event); err != nil {
