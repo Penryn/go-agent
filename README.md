@@ -1,82 +1,89 @@
 # QQ 群友 AI Bot
 
-基于 `DESIGN.md` 实现的模块化单体 QQ 群友 Bot。
+一个长期在线、能观察群聊、具备稳定人格、能自主决定是否发言的 AI 群成员。
 
-当前形态：
+> **不是简单的问答 Bot。** 它能感知上下文、识别梗图、学习群文化、控制发言频率，像一个真正的群友一样参与群聊。
 
-- 确定性 Runtime Kernel：事件标准化、上下文构建、策略/自主决策、动作执行
-- 前台 Agent：`Main Persona Agent` 使用 Eino ADK，`Gate` / `Vision` 直接走 `BaseChatModel.Generate`
-- 后台流水线：`Curator` 使用 `compose.Graph`，`Learning` 使用 `compose.Workflow`
-- 存储与基础设施：MySQL、Redis、Qdrant、MinIO 适配层和本地 integration test
-- 协议边界：OneBot 11 标准优先，NapCat 专有动作只在适配器层
+## 特性
 
-## 目录
+- 🧠 **自主决策引擎** — 状态机 + LLM Gate 混合决策，自动判断是否发言、何时发言
+- 🎭 **稳定人格系统** — 可配置的说话风格、情绪、能量，影响回复内容和主动性
+- 👀 **多模态理解** — 图片描述、梗图识别、视频关键帧抽取
+- 🃏 **表情包系统** — 自动收藏群内表情包，语义检索后精准复用
+- 📝 **长期记忆** — 记住群友偏好、关系、话题，写入向量数据库
+- 🔄 **后台学习** — Curator 和 Learning Agent 异步更新画像与群文化
 
-- `cmd/qqbotd`: 启动入口
-- `configs/config.yaml`: 默认配置
-- `internal/domain`: 核心领域模型
-- `internal/core/ports`: 端口接口
-- `internal/services`: 运行时、Agent、记忆、画像、多模态、后台工作流
-- `internal/adapters`: NapCat/OneBot 适配器、存储适配器、模型适配器
-- `migrations`: MySQL 初始化脚本
+## 架构概览
+
+```
+┌──────────────────────────────────────────────────────────────┐
+│                     NapCat / OneBot 11                        │
+│               (QQ 协议层 · WebSocket + HTTP)                  │
+└────────────┬─────────────────────────────────┬───────────────┘
+             │ 事件                            ▲ 动作
+             ▼                                 │
+┌──────────────────────────────────────────────────────────────┐
+│                   确定性 Runtime Kernel                       │
+│  事件标准化 → 上下文构建 → 策略/自主决策 → 动作执行             │
+└──────┬────────┬────────┬────────┬────────┬───────────────────┘
+       │        │        │        │        │
+       ▼        ▼        ▼        ▼        ▼
+   ┌───────┐┌───────┐┌───────┐┌────────┐┌────────┐
+   │ Main  ││ Gate  ││Vision ││Curator ││Learning│
+   │Persona││ Agent ││ Agent ││ Agent  ││ Agent  │
+   │(Eino) ││(Chat) ││(Chat) ││(Graph) ││(Work-  │
+   │  ADK  ││ Model ││ Model ││       ││ flow)  │
+   └───────┘└───────┘└───────┘└────────┘└────────┘
+       │        │        │        │        │
+       ▼        ▼        ▼        ▼        ▼
+┌──────────────────────────────────────────────────────────────┐
+│               存储层：MySQL · Redis · Qdrant · MinIO          │
+└──────────────────────────────────────────────────────────────┘
+```
+
+| Agent | 职责 | 实现方式 |
+|-------|------|----------|
+| **Main Persona** | 生成回复文本 | Eino ADK |
+| **Gate** | 轻量判定是否值得回复 | `BaseChatModel.Generate` |
+| **Vision** | 图片/视频多模态理解 | `BaseChatModel.Generate` |
+| **Curator** | 后台画像更新 | `compose.Graph` |
+| **Learning** | 群文化/黑话学习 | `compose.Workflow` |
+
+## 前置要求
+
+| 依赖 | 最低版本 | 用途 |
+|------|---------|------|
+| Go | 1.21+ | 编译运行 |
+| Docker & Docker Compose | - | 基础设施 |
+| 一个 LLM API | - | 模型推理（支持 Ark、OpenAI 兼容接口） |
+| QQ 号 | - | 作为机器人身份登录 NapCat |
 
 ## 快速开始
 
-1. 启动依赖：
+### 1. 启动基础设施
 
 ```bash
 docker compose up -d
 ```
 
-这条命令会启动 MySQL、Redis、Qdrant、MinIO、NapCat。NapCat 可以长期常驻；只要 QQ 登录状态和网页端配置已经就绪，后续通常不需要反复重启。
+启动 MySQL、Redis、Qdrant、MinIO 和 NapCat。NapCat 可长期常驻，QQ 登录完成后通常无需重启。
 
-2. 准备配置：
-
-- 公开配置改 [`configs/config.yaml`](configs/config.yaml)
-- 私密配置写 [`.env.example`](.env.example) 对应的 `.env`
-- 如果要接真实 QQ，把 `qq.enabled` 改成 `true`，并填好 `qq.self_id`
+### 2. 配置
 
 ```bash
 cp .env.example .env
 ```
 
-3. 使用默认配置验证最小主链路：
+编辑 `.env`，填入 API Key 和密码：
 
-```bash
-go run ./cmd/qqbotd -config configs/config.yaml -once-event tests/testdata/mention_event.json
+```dotenv
+QQBOT_QQ_ACCESS_TOKEN=你的Token
+QQBOT_MAIN_MODEL_API_KEY=你的模型Key
+QQBOT_GATE_MODEL_API_KEY=你的模型Key
+QQBOT_VISION_MODEL_API_KEY=你的模型Key
 ```
 
-4. 启动 HTTP 服务：
-
-```bash
-go run ./cmd/qqbotd -config configs/config.yaml
-```
-
-默认健康检查：
-
-```text
-GET /healthz
-```
-
-调试 / 回放入口：
-
-```text
-POST /onebot/events
-```
-
-## 接入 QQ
-
-- 入站：默认通过 NapCat 正向 WebSocket `qq.event_ws_url` 收事件
-- 出站：默认通过 OneBot 标准动作 `send_group_msg`
-- 引用回复：通过 `reply` 消息段 + `text` 消息段组合
-- 撤回：映射 `delete_msg`
-- 可选 poke：仅在 NapCat 出站适配器中映射 `group_poke`
-
-如果配置了 `.env` 中的 `QQBOT_QQ_ACCESS_TOKEN`，WS 握手和 HTTP 出站都会带上鉴权头。
-
-### 应用侧配置
-
-`configs/config.yaml` 至少确认这些字段：
+编辑 `configs/config.yaml`，确认 QQ 相关字段：
 
 ```yaml
 qq:
@@ -86,68 +93,136 @@ qq:
   event_ws_url: ws://127.0.0.1:3001/event
 ```
 
-私密配置放 `.env`：
+### 3. 配置 NapCat
 
-```dotenv
-QQBOT_QQ_ACCESS_TOKEN=和NapCat网页里设置的一样
-```
+NapCat 启动并完成 QQ 扫码登录后，打开管理页面 `http://127.0.0.1:6099`：
 
-### NapCat 网页端配置
+1. **开启 HTTP API** — 网络配置 → 启用 HTTP 服务，监听端口 `3000`
+2. **设置 Token** — Access Token 填写与 `.env` 中 `QQBOT_QQ_ACCESS_TOKEN` 相同的值
+3. **开启正向 WebSocket** — 启用 WS 事件流，端口 `3001`
+4. **保存并应用** — 必要时重启 NapCat
 
-NapCat 启动并完成 QQ 登录后，打开 `6099` 端口对应的管理页面，按下面配置即可对接本项目。
+> 通信链路：WS 收事件（`ws://127.0.0.1:3001/event`）+ HTTP 发动作（`http://127.0.0.1:3000`）
 
-1. 在 OneBot / 网络配置里开启 HTTP API。
-2. HTTP API 监听端口填 `3000`。
-3. Access Token 填和 `.env` 里 `QQBOT_QQ_ACCESS_TOKEN` 相同的值。
-4. 开启正向 WebSocket 事件流，确保 `3001` 端口可用。
-5. 事件地址使用 `ws://127.0.0.1:3001/event`，与 `configs/config.yaml` 中的 `qq.event_ws_url` 保持一致。
-6. 保存并应用配置，必要时重启 NapCat。
+### 4. 验证最小链路
 
-补充说明：
-
-- 当前默认链路是 `WS 收事件 + HTTP 发动作`。
-- `POST /onebot/events` 仍然保留，主要用于本地回放和兼容性调试。
-- 当前出站调用的是 OneBot 11 标准动作 `send_group_msg`，不是 NapCat 私有动作。
-
-## 配置
-
-优先级：
-
-```text
-builtin default < configs/config.yaml < .env / process environment
-```
-
-约定：
-
-- 公开配置放 [`configs/config.yaml`](configs/config.yaml)
-- 私密配置只放 [`.env.example`](.env.example) 对应的 `.env`
-
-程序启动时会自动读取 `.env`。
-
-常用文件：
-
-- 公开配置示例：[`configs/config.yaml`](configs/config.yaml)
-- 私密配置示例：[`.env.example`](.env.example)
-
-## Migration
-
-MySQL 初始化脚本：
-
-- [`migrations/001_init.sql`](migrations/001_init.sql)
-
-当前包含：
-
-- 消息归档
-- 长期记忆
-- 画像与关系
-- 表情包资产与描述
-- 学习候选
-
-## 验证
+不接 QQ 时可用测试事件验证全链路：
 
 ```bash
+go run ./cmd/qqbotd -config configs/config.yaml -once-event tests/testdata/mention_event.json
+```
+
+### 5. 启动服务
+
+```bash
+go run ./cmd/qqbotd -config configs/config.yaml
+```
+
+| 端点 | 用途 |
+|------|------|
+| `GET /healthz` | 健康检查 |
+| `POST /onebot/events` | 调试 / 本地回放 |
+
+## 出站动作
+
+支持的 OneBot / NapCat 动作类型：
+
+| 动作 | OneBot 端点 | 说明 |
+|------|------------|------|
+| `reply` | `/send_group_msg` | 文本回复（含引用） |
+| `meme_only` | `/send_group_msg` | 表情包发送 |
+| `recall` | `/delete_msg` | 撤回消息 |
+| `poke_back` | `/group_poke` | 戳一戳 |
+| `react` | `/set_msg_emoji_like` | 消息表情回应（NapCat 扩展） |
+| `silent` | — | 不执行任何动作 |
+
+## 配置参考
+
+配置优先级：`内置默认值` < `configs/config.yaml` < `.env` / 环境变量
+
+| 分类 | 文件 | 说明 |
+|------|------|------|
+| 公开配置 | [`configs/config.yaml`](configs/config.yaml) | 全部非敏感配置 |
+| 私密配置 | `.env`（参考 [`.env.example`](.env.example)） | API Key、密码 |
+
+<details>
+<summary>主要配置段一览</summary>
+
+| 配置段 | 说明 |
+|--------|------|
+| `app` | 应用名、运行模式（dev/prod） |
+| `server` | HTTP 监听地址、超时 |
+| `models` | 主模型/Gate/Vision/Embedding 的 provider、model、base_url |
+| `persona` | 人设名、别名、说话风格、约束、回复上限 |
+| `default_policy` | 默认群策略（存在感、安静时段、连续发言上限等） |
+| `group_policies` | 按群号覆写策略 |
+| `autonomy` | 自主决策参数（观察窗口、主动概率、限流） |
+| `tools` | 工具白名单、超时、预算 |
+| `memory` | 长期记忆 top_k、TTL、写入阈值 |
+| `meme` | 表情包收藏、去重、冷却 |
+| `multimodal` | 图片/视频下载超时、抽帧数 |
+| `storage` | MySQL、Redis、Qdrant、MinIO 连接配置 |
+| `qq` | QQ 开关、自身 ID、出入站地址、群白名单 |
+
+</details>
+
+## 项目结构
+
+```
+cmd/qqbotd/              启动入口
+configs/config.yaml      默认配置
+internal/
+  core/ports/            端口接口（OutboundSender、MemoryStore 等）
+  domain/                核心领域模型
+    conversation/        会话事件
+    policy/              自主决策、状态机
+    reply/               回复计划、动作执行
+    persona/             人格状态
+    memory/              记忆模型
+    media/               多模态 & 表情包
+    profile/             群友画像 & 关系
+  services/              业务服务
+    action/              动作构建与执行
+    meme/                表情包检索
+    ...                  其它 Agent 服务
+  adapters/
+    outbound/napcat/     NapCat/OneBot 出站适配器
+    inmemory/            内存实现（开发/测试用）
+    ...                  MySQL、Redis、Qdrant、MinIO 适配器
+  runtime/               运行时 Kernel
+  config/                配置加载
+migrations/              MySQL DDL（消息归档、记忆、画像、表情包、学习候选）
+tests/                   测试数据
+docker-compose.yml       基础设施编排
+DESIGN.md                完整架构设计文档
+```
+
+## 开发
+
+```bash
+# 依赖整理
 go mod tidy
+
+# 编译
 go build ./...
+
+# 全量测试
 go test ./...
+
+# 验证 Docker Compose 配置
 docker compose config
 ```
+
+## 数据库迁移
+
+MySQL 初始化脚本位于 [`migrations/001_init.sql`](migrations/001_init.sql)，包含：
+
+- 消息归档表
+- 长期记忆表
+- 画像与关系表
+- 表情包资产与描述表
+- 学习候选表
+
+## License
+
+详见项目授权。
