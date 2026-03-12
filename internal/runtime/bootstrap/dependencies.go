@@ -23,6 +23,7 @@ type storeBundle struct {
 	profile ports.ProfileStore
 	state   ports.RuntimeStateStore
 	closeFn []func() error
+	probeFn []func(context.Context) error
 }
 
 func newStoreBundle(ctx context.Context, cfg config.Config) (*storeBundle, error) {
@@ -54,6 +55,12 @@ func newStoreBundle(ctx context.Context, cfg config.Config) (*storeBundle, error
 	bundle.memory = mysqlPersistentStore
 	bundle.meme = mysqlPersistentStore
 	bundle.profile = mysqlPersistentStore
+	bundle.probeFn = append(bundle.probeFn, func(ctx context.Context) error {
+		if err := db.PingContext(ctx); err != nil {
+			return fmt.Errorf("mysql: %w", err)
+		}
+		return nil
+	})
 
 	stateStore := redisstore.New(cfg.Storage.Redis.Addr, cfg.Storage.Redis.Password, cfg.Storage.Redis.DB)
 	bundle.closeFn = append(bundle.closeFn, stateStore.Close)
@@ -62,6 +69,12 @@ func newStoreBundle(ctx context.Context, cfg config.Config) (*storeBundle, error
 		return nil, fmt.Errorf("ping redis runtime store: %w", err)
 	}
 	bundle.state = stateStore
+	bundle.probeFn = append(bundle.probeFn, func(ctx context.Context) error {
+		if err := stateStore.Ping(ctx); err != nil {
+			return fmt.Errorf("redis: %w", err)
+		}
+		return nil
+	})
 
 	if err := ensureMinIO(ctx, cfg.Storage.MinIO); err != nil {
 		_ = bundle.Close()
@@ -75,6 +88,16 @@ func (b *storeBundle) Close() error {
 	var joined error
 	for i := len(b.closeFn) - 1; i >= 0; i-- {
 		if err := b.closeFn[i](); err != nil {
+			joined = errors.Join(joined, err)
+		}
+	}
+	return joined
+}
+
+func (b *storeBundle) HealthCheck(ctx context.Context) error {
+	var joined error
+	for _, probe := range b.probeFn {
+		if err := probe(ctx); err != nil {
 			joined = errors.Join(joined, err)
 		}
 	}

@@ -3,6 +3,7 @@ package bootstrap
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log"
 	"net/http"
 	"sync"
@@ -30,13 +31,14 @@ import (
 )
 
 type App struct {
-	cfg       config.Config
-	processor *usecase.Processor
-	inbound   ports.InboundSource
-	server    *http.Server
-	closeOnce sync.Once
-	closeErr  error
-	cleanup   func() error
+	cfg         config.Config
+	processor   *usecase.Processor
+	inbound     ports.InboundSource
+	server      *http.Server
+	closeOnce   sync.Once
+	closeErr    error
+	cleanup     func() error
+	healthCheck func(context.Context) error
 }
 
 func NewApp(ctx context.Context, cfg config.Config) (*App, error) {
@@ -85,9 +87,10 @@ func NewApp(ctx context.Context, cfg config.Config) (*App, error) {
 	)
 
 	app := &App{
-		cfg:       cfg,
-		processor: processor,
-		cleanup:   stores.Close,
+		cfg:         cfg,
+		processor:   processor,
+		cleanup:     stores.Close,
+		healthCheck: stores.HealthCheck,
 	}
 	if cfg.QQ.Enabled && cfg.QQ.EventWSURL != "" {
 		app.inbound = inboundnapcat.NewWSReceiver(cfg.QQ.EventWSURL, cfg.QQ.AccessToken, nil)
@@ -153,8 +156,19 @@ func (a *App) Close() error {
 	return a.closeErr
 }
 
-func (a *App) handleHealth(w http.ResponseWriter, _ *http.Request) {
+func (a *App) handleHealth(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
+
+	if a.healthCheck != nil {
+		ctx, cancel := context.WithTimeout(r.Context(), 3*time.Second)
+		defer cancel()
+		if err := a.healthCheck(ctx); err != nil {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			fmt.Fprintf(w, `{"ok":false,"error":%q}`, err.Error())
+			return
+		}
+	}
+
 	_, _ = w.Write([]byte(`{"ok":true}`))
 }
 
