@@ -69,6 +69,11 @@ services:
       - "127.0.0.1:6334:6334"
     volumes:
       - ./data/qdrant:/qdrant/storage
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:6333/healthz || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
     networks:
       - qqbot-net
 
@@ -87,6 +92,11 @@ services:
       - "127.0.0.1:9001:9001"
     volumes:
       - ./data/minio:/data
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:9000/minio/health/live || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
     networks:
       - qqbot-net
 
