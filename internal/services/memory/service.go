@@ -2,9 +2,10 @@ package memory
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/binary"
 	"fmt"
 	"log/slog"
-	"math/rand"
 	"time"
 
 	"github.com/phlin/go-agent/internal/core/ports"
@@ -60,7 +61,7 @@ func New(store ports.MemoryStore, opts ...Option) *Service {
 func (s *Service) MarkIntent(ctx context.Context, intent WriteIntent) (memorydomain.MemoryRecord, error) {
 	memoryID := intent.MemoryID
 	if memoryID == "" {
-		memoryID = fmt.Sprintf("mem-%s-%d-%04x", intent.MemoryType, time.Now().UnixNano(), rand.Intn(0xFFFF))
+		memoryID = fmt.Sprintf("mem-%s-%d-%04x", intent.MemoryType, time.Now().UnixNano(), cryptoRand16())
 	}
 	record := memorydomain.MemoryRecord{
 		MemoryID:      memoryID,
@@ -133,4 +134,12 @@ func safeGo(label string, fn func()) {
 		}()
 		fn()
 	}()
+}
+
+// cryptoRand16 returns a cryptographically random uint16 value for use in
+// generated IDs. On the very unlikely read failure it returns 0.
+func cryptoRand16() uint16 {
+	var b [2]byte
+	_, _ = rand.Read(b[:])
+	return binary.LittleEndian.Uint16(b[:])
 }

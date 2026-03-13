@@ -2,11 +2,12 @@ package tools
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
-	mathrand "math/rand"
 	"slices"
 	"strings"
 	"time"
@@ -689,7 +690,7 @@ func (t *markMemoryIntentTool) InvokableRun(_ context.Context, argumentsInJSON s
 	if err := json.Unmarshal([]byte(argumentsInJSON), &args); err != nil {
 		return "", fmt.Errorf("decode mark_memory_intent args: %w", err)
 	}
-	intentID := fmt.Sprintf("mem-intent-%d-%04x", time.Now().UnixNano(), mathrand.Intn(0xFFFF))
+	intentID := fmt.Sprintf("mem-intent-%d-%04x", time.Now().UnixNano(), toolCryptoRand16())
 	if t.memSvc != nil {
 		scope := fmt.Sprintf("group:%d", t.session.GroupID)
 		writeCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -988,4 +989,10 @@ func stripThinkBlocks(s string) string {
 		}
 	}
 	return strings.TrimSpace(s)
+}
+
+func toolCryptoRand16() uint16 {
+	var b [2]byte
+	_, _ = rand.Read(b[:])
+	return binary.LittleEndian.Uint16(b[:])
 }
