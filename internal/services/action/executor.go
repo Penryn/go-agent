@@ -78,6 +78,20 @@ func (s *Service) buildAction(ctx context.Context, event conversationdomain.Conv
 			ReasonCodes:  decision.ReasonCodes,
 			Meta:         map[string]any{"send_mode": plan.SendMode},
 		}, nil
+	case policydomain.ActionReact:
+		messageID, _ := plan.ActionParams["message_id"].(string)
+		emojiID, _ := plan.ActionParams["emoji_id"].(string)
+		if messageID == "" {
+			messageID = event.MessageID
+		}
+		return replydomain.ActionExecution{
+			ActionID:        fmt.Sprintf("%s-action", decision.DecisionID),
+			Kind:            policydomain.ActionReact,
+			GroupID:         event.GroupID,
+			TargetMessageID: messageID,
+			ReasonCodes:     decision.ReasonCodes,
+			Meta:            map[string]any{"send_mode": plan.SendMode, "emoji_id": emojiID},
+		}, nil
 	default:
 		segments := make([]conversationdomain.MessageSegment, 0, len(plan.Bubbles)+1)
 		if plan.ReplyToMessageID != "" {

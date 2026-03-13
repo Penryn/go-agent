@@ -50,7 +50,7 @@ func Default() Config {
 		DefaultPolicy: policydomain.GroupPolicy{
 			Enabled:            true,
 			PresenceLevel:      "balanced",
-			ToolAllowlist:      []string{"speak_text", "stay_silent", "query_memory", "search_meme", "mark_memory_intent"},
+			ToolAllowlist:      nil,
 			MaxConsecutiveBot:  1,
 			ReplyToImageChance: 0.25,
 		},
@@ -62,12 +62,12 @@ func Default() Config {
 			ProactiveScoreThreshold:  0.65,
 			MaxRepliesPer10Min:       6,
 			MaxRepliesPerHour:        24,
-			LLMGateEnabled:           false,
+			LLMGateEnabled:           true,
 			LLMGateTimeoutMs:         1500,
 			SuppressOnFlood:          true,
 		},
 		Tools: ToolsConfig{
-			Allowlist: []string{"speak_text", "stay_silent", "query_memory", "search_meme", "mark_memory_intent"},
+			Allowlist: nil,
 			Timeouts: map[string]string{
 				"web_search": "5s",
 			},
@@ -222,6 +222,9 @@ func Validate(cfg Config) error {
 	}
 	if cfg.QQ.Enabled && strings.TrimSpace(cfg.QQ.EventWSURL) == "" {
 		return errors.New("qq.event_ws_url is required when qq.enabled=true")
+	}
+	if cfg.QQ.Enabled && cfg.QQ.SelfID <= 0 {
+		return errors.New("qq.self_id must be a positive QQ number when qq.enabled=true")
 	}
 	return nil
 }

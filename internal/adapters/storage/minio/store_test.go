@@ -21,14 +21,14 @@ func TestStoreIntegration(t *testing.T) {
 	}
 
 	if err := store.EnsureBucket(ctx); err != nil {
-		if isMinIOCapacityError(err) {
-			t.Skipf("minio unavailable for writes: %v", err)
+		if isMinIOUnavailableError(err) {
+			t.Skipf("minio unavailable: %v", err)
 		}
 		t.Fatalf("ensure bucket: %v", err)
 	}
 
 	if _, err := store.PutObject(ctx, "tests/hello.txt", []byte("hello world"), "text/plain"); err != nil {
-		if isMinIOCapacityError(err) {
+		if isMinIOUnavailableError(err) {
 			t.Skipf("minio unavailable for writes: %v", err)
 		}
 		t.Fatalf("put object: %v", err)
@@ -43,6 +43,13 @@ func TestStoreIntegration(t *testing.T) {
 	}
 }
 
-func isMinIOCapacityError(err error) bool {
-	return err != nil && strings.Contains(err.Error(), "minimum free drive threshold")
+func isMinIOUnavailableError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := err.Error()
+	return strings.Contains(msg, "connection refused") ||
+		strings.Contains(msg, "no such host") ||
+		strings.Contains(msg, "i/o timeout") ||
+		strings.Contains(msg, "minimum free drive threshold")
 }

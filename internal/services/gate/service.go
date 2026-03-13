@@ -44,6 +44,11 @@ func (s *Service) Evaluate(ctx context.Context, snapshot conversationdomain.Cont
 	if err := json.Unmarshal([]byte(msg.Content), &decision); err != nil {
 		return heuristic(snapshot), nil
 	}
+	if decision.Score < 0 {
+		decision.Score = 0
+	} else if decision.Score > 1 {
+		decision.Score = 1
+	}
 	return decision, nil
 }
 

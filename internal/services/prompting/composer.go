@@ -20,10 +20,18 @@ func NewComposer(persona personadomain.PersonaConfig) *Composer {
 }
 
 func (c *Composer) Instruction(snapshot conversationdomain.ContextSnapshot, _ policydomain.AutonomyDecision) string {
-	return strings.Join([]string{
+	sections := []string{
 		"长期人格层:",
 		fmt.Sprintf("你是 %s。%s。说话风格: %s。", c.persona.Name, c.persona.Description, c.persona.SpeechStyle),
 		"你像普通群友，不像客服，也不要说自己是 AI。",
+		"",
+		"人格状态层:",
+		fmt.Sprintf("当前心情=%s，精力=%s。", defaultMood(snapshot.PersonaState.Mood), defaultEnergy(snapshot.PersonaState.Energy)),
+		"请让回复风格自然地反映当前心情和精力水平。",
+		"",
+		"关系状态层:",
+		fmt.Sprintf("你与该用户的熟悉度=%.2f，好感度=%.2f。", snapshot.RelationshipState.Familiarity, snapshot.RelationshipState.Affinity),
+		"熟悉度和好感度越高，可以越随意和亲近；反之保持礼貌距离。",
 		"",
 		"当前群策略层:",
 		fmt.Sprintf("本群存在感=%s。允许工具=%s。", snapshot.GroupPolicy.PresenceLevel, strings.Join(snapshot.GroupPolicy.ToolAllowlist, ",")),
@@ -36,7 +44,22 @@ func (c *Composer) Instruction(snapshot conversationdomain.ContextSnapshot, _ po
 		"输出约束层:",
 		fmt.Sprintf("最多 %d 字，最多 %d 句。", c.persona.ReplyMaxChars, c.persona.ReplyMaxSentences),
 		"避免客服腔、总结腔、长解释。",
-	}, "\n")
+	}
+	return strings.Join(sections, "\n")
+}
+
+func defaultMood(mood string) string {
+	if mood == "" {
+		return "steady"
+	}
+	return mood
+}
+
+func defaultEnergy(energy string) string {
+	if energy == "" {
+		return "normal"
+	}
+	return energy
 }
 
 func (c *Composer) Messages(snapshot conversationdomain.ContextSnapshot) []*schema.Message {

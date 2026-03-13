@@ -59,6 +59,30 @@ func TestLoadIgnoresPublicEnvOverride(t *testing.T) {
 	}
 }
 
+func TestDefaultToolAllowlistEmpty(t *testing.T) {
+	cfg := Default()
+	if cfg.DefaultPolicy.ToolAllowlist != nil {
+		t.Fatalf("expected nil tool_allowlist by default, got %v", cfg.DefaultPolicy.ToolAllowlist)
+	}
+	if cfg.Tools.Allowlist != nil {
+		t.Fatalf("expected nil global tools allowlist by default, got %v", cfg.Tools.Allowlist)
+	}
+}
+
+func TestDefaultLLMGateEnabled(t *testing.T) {
+	cfg := Default()
+	if !cfg.Autonomy.LLMGateEnabled {
+		t.Fatal("expected LLMGateEnabled=true by default")
+	}
+}
+
+func TestDefaultGroupWhitelistEmpty(t *testing.T) {
+	cfg := Default()
+	if cfg.QQ.GroupWhitelist != nil {
+		t.Fatalf("expected nil group_whitelist by default, got %v", cfg.QQ.GroupWhitelist)
+	}
+}
+
 func TestValidateRequiresQQEventWSURLWhenQQEnabled(t *testing.T) {
 	cfg := Default()
 	cfg.Persona.ID = "test"
@@ -69,6 +93,21 @@ func TestValidateRequiresQQEventWSURLWhenQQEnabled(t *testing.T) {
 
 	err := Validate(cfg)
 	if err == nil || err.Error() != "qq.event_ws_url is required when qq.enabled=true" {
+		t.Fatalf("unexpected validate error: %v", err)
+	}
+}
+
+func TestValidateRequiresQQSelfIDWhenQQEnabled(t *testing.T) {
+	cfg := Default()
+	cfg.Persona.ID = "test"
+	cfg.Persona.Name = "Test Bot"
+	cfg.QQ.Enabled = true
+	cfg.QQ.OutboundURL = "http://127.0.0.1:3000"
+	cfg.QQ.EventWSURL = "ws://127.0.0.1:3001/event"
+	cfg.QQ.SelfID = 0
+
+	err := Validate(cfg)
+	if err == nil || err.Error() != "qq.self_id must be a positive QQ number when qq.enabled=true" {
 		t.Fatalf("unexpected validate error: %v", err)
 	}
 }

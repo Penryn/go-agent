@@ -44,6 +44,11 @@ type pokeRequest struct {
 	UserID  int64 `json:"user_id"`
 }
 
+type reactRequest struct {
+	MessageID string `json:"message_id"`
+	EmojiID   string `json:"emoji_id"`
+}
+
 func NewSender(baseURL, accessToken string, client *http.Client) *Sender {
 	if client == nil {
 		client = &http.Client{Timeout: 5 * time.Second}
@@ -62,6 +67,8 @@ func (s *Sender) Send(ctx context.Context, action replydomain.ActionExecution) (
 			return s.sendRecall(ctx, action)
 		case policydomain.ActionPokeBack:
 			return s.sendPoke(ctx, action)
+		case policydomain.ActionReact:
+			return s.sendReact(ctx, action)
 		default:
 			return replydomain.ActionReceipt{ActionID: action.ActionID, Sent: false}, nil
 		}
@@ -120,6 +127,18 @@ func (s *Sender) sendRecall(ctx context.Context, action replydomain.ActionExecut
 
 func (s *Sender) sendPoke(ctx context.Context, action replydomain.ActionExecution) (replydomain.ActionReceipt, error) {
 	_, err := s.postJSON(ctx, "/group_poke", pokeRequest{GroupID: action.GroupID, UserID: action.TargetUserID})
+	if err != nil {
+		return replydomain.ActionReceipt{}, err
+	}
+	return replydomain.ActionReceipt{ActionID: action.ActionID, Sent: true}, nil
+}
+
+func (s *Sender) sendReact(ctx context.Context, action replydomain.ActionExecution) (replydomain.ActionReceipt, error) {
+	emojiID, _ := action.Meta["emoji_id"].(string)
+	if emojiID == "" {
+		emojiID = "128077" // default: thumbs up 👍 (U+1F44D)
+	}
+	_, err := s.postJSON(ctx, "/set_msg_emoji_like", reactRequest{MessageID: action.TargetMessageID, EmojiID: emojiID})
 	if err != nil {
 		return replydomain.ActionReceipt{}, err
 	}
