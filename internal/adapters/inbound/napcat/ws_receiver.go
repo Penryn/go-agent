@@ -3,7 +3,7 @@ package napcat
 import (
 	"context"
 	"errors"
-	"log"
+	"log/slog"
 	"net/http"
 	"time"
 
@@ -41,7 +41,7 @@ func (r *WSReceiver) Receive(ctx context.Context, handler func(context.Context, 
 
 		conn, _, err := r.dial(ctx)
 		if err != nil {
-			log.Printf("napcat ws: dial %s failed: %v (retry in %s)", r.url, err, backoff)
+			slog.Warn("ws: dial failed", "url", r.url, "error", err, "retry_in", backoff)
 			if waitErr := waitContext(ctx, backoff); waitErr != nil {
 				return waitErr
 			}
@@ -53,7 +53,7 @@ func (r *WSReceiver) Receive(ctx context.Context, handler func(context.Context, 
 		}
 
 		backoff = minBackoff
-		log.Printf("napcat ws: connected to %s", r.url)
+		slog.Info("ws: connected", "url", r.url)
 		err = r.readLoop(ctx, conn, handler)
 		_ = conn.Close()
 		if err == nil || errors.Is(err, context.Canceled) {
@@ -62,7 +62,7 @@ func (r *WSReceiver) Receive(ctx context.Context, handler func(context.Context, 
 			}
 			continue
 		}
-		log.Printf("napcat ws: connection lost: %v (reconnect in %s)", err, backoff)
+		slog.Warn("ws: connection lost", "error", err, "reconnect_in", backoff)
 		if waitErr := waitContext(ctx, backoff); waitErr != nil {
 			return waitErr
 		}
@@ -111,7 +111,7 @@ func (r *WSReceiver) readLoop(ctx context.Context, conn *websocket.Conn, handler
 			continue
 		}
 		if err := handler(ctx, payload); err != nil {
-			log.Printf("napcat ws handler error: %v", err)
+			slog.Error("ws: handler error", "error", err)
 		}
 	}
 }

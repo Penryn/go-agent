@@ -2,7 +2,7 @@ package scheduler
 
 import (
 	"context"
-	"log"
+	"log/slog"
 	"time"
 )
 
@@ -37,7 +37,7 @@ func (s *Scheduler) Start(ctx context.Context) {
 					return
 				case <-ticker.C:
 					if err := job.job(ctx); err != nil {
-						log.Printf("scheduler: job %q failed: %v", job.name, err)
+						slog.Error("scheduler: job failed", "job", job.name, "error", err)
 					}
 				}
 			}

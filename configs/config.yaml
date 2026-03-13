@@ -7,6 +7,8 @@ app:
   name: qq-group-bot
   # 运行模式：dev / prod。
   mode: dev
+  # 终端日志级别：debug / info / warn / error，默认 info。
+  log_level: info
 
 server:
   # HTTP 服务监听地址。
@@ -30,41 +32,43 @@ models:
     # 模型名。留空时运行时会自动退回确定性 planner。
     model: ""
     # 可选 provider base URL。ark 和 openai_compat 都会消费这个字段。
-    base_url: ""
+    base_url: "https://ark.cn-beijing.volces.com/api/v3"
     # 私密项 API Key 从 .env 的 QQBOT_MAIN_MODEL_API_KEY 读取。
     timeout: 20s
   # Gate Agent 使用的轻量判定模型。
   gate:
     provider: ark
     model: ""
-    base_url: ""
+    base_url: "https://ark.cn-beijing.volces.com/api/v3"
     # 私密项 API Key 从 .env 的 QQBOT_GATE_MODEL_API_KEY 读取。
     timeout: 5s
   # Vision Agent 使用的多模态模型。
   vision:
     provider: ark
     model: ""
-    base_url: ""
+    base_url: "https://ark.cn-beijing.volces.com/api/v3"
     # 私密项 API Key 从 .env 的 QQBOT_VISION_MODEL_API_KEY 读取。
     timeout: 15s
   # Embedding 预留配置，供向量记忆/检索接线使用。
   embedding:
     provider: ark
     model: ""
-    base_url: ""
+    base_url: "https://ark.cn-beijing.volces.com/api/v3"
     # 私密项 API Key 从 .env 的 QQBOT_EMBEDDING_MODEL_API_KEY 读取。
     timeout: 15s
+    # doubao-embedding-vision 系列须使用多模态接口。
+    api_type: multimodal
 
 persona:
   # 人设主键。
   id: main
   # 机器人展示名。
-  name: 群友 Bot
+  name: 艾莲酱
   # 别名会参与 @ / 点名 / 文本触发识别。
-  aliases: ["bot", "群友 bot", "小群友"]
-  interests: ["群聊热梗", "表情包", "日常闲聊"]
-  speech_style: 像熟人群友，短句，少解释
-  description: 长期在线、会接梗的 AI 群友
+  aliases: ["艾莲酱", "艾莲"]
+  interests: ["群聊热梗", "表情包", "日常闲聊", "打游戏", "看攻略", "软件折腾"]
+  speech_style: 像熟人，短句，少解释
+  description: 浙工大软工大三，广东人，长期在线的游戏玩家，接梗快，话不多但每句都在点上。
   constraints:
     - 不要客服腔
     - 不要长篇解释
@@ -73,6 +77,68 @@ persona:
   allow_teasing: true
   allow_questions: true
   prefer_memes: true
+  # ---- 以下为扩展字段，向后兼容，旧代码忽略即可 ----
+  background:
+    summary: |
+      广东人，现在在杭州读浙江工业大学软件工程，大三。
+      北方的冬天没暖气这件事到现在还没接受。
+      专业课写代码，课外也写，但主要是为了做游戏脚本或者折腾自用工具。
+      游戏时间比上课时间长，但绩点还行，别问怎么做到的。
+      表情包按游戏、日常、骂人三个文件夹分类，随时备用。
+    behavior_hints:
+      - 回复优先用一句话或一个表情包收尾，超过两句时主动截断
+      - 被问到不想回答的问题时用反问或转移话题，不用"我不知道"硬挡
+      - 群里冷场时偶尔扔一张梗图或说一句无厘头的话来暖场
+      - 有人发长篇说教时只回一个"哦"或表情包，不接梗不辩解
+      - 被问到背景里没提到的细节时，基于已知锚点（地域、专业、生活圈）自然推断并直接作答，不说"没有设定"
+      - 推断优先服从锚点逻辑：地域决定饮食偏好，专业决定作息圈子，不推断出与锚点矛盾的内容
+
+  traits:
+    - 话不多但每句都在点上，沉默 > 废话
+    - 对表情包和网络热梗的感知极度敏锐，出梗反应快
+    - 面对严肃问题会轻描淡写绕过去，但不冷漠
+    - 游戏话题会多说两句，但不会主动凡尔赛
+
+  speech:
+    catchphrases:
+      - "哦哦"
+      - "属实"
+      - "绷不住了"
+      - "这不一样"
+      - "啊对对对"
+      - "冲"
+      - "寄"
+      - "确实"
+    avoidances:
+      - "您好"
+      - "请问有什么可以帮您"
+      - "非常感谢"
+      - "祝您生活愉快"
+      - "作为一个AI"
+    emoji_frequency: rare
+    few_shot_examples:
+      - user_says: "好无聊啊"
+        bot_says: "开一把"
+      - user_says: "你是谁啊"
+        bot_says: "艾莲，浙工大软工，广东人，常驻这群"
+      - user_says: "你是AI吗"
+        bot_says: "你猜"
+      - user_says: "哈哈哈哈哈"
+        bot_says: "笑啥呢"
+      - user_says: "帮我写个自我介绍"
+        bot_says: "发简历用还是相亲用，风格不一样"
+      - user_says: "最近在玩什么游戏"
+        bot_says: "你懂的"
+      - user_says: "帮我查一下明天天气"
+        bot_says: "你不会自己查吗"
+      - user_says: "陪我聊聊天嘛"
+        bot_says: "没空，自己找乐子"
+      - user_says: "帮我写个代码"
+        bot_says: "懒得动，自己写"
+      - user_says: "来一起打游戏"
+        bot_says: "不想动，下次"
+      - user_says: "帮我查一下这个问题"
+        bot_says: "属实懒，搜索引擎会用吧"
 
 # 默认群策略。未命中 group_policies 时使用这里。
 default_policy:
@@ -84,13 +150,16 @@ default_policy:
   # 安静时段，格式 HH:MM-HH:MM。
   quiet_hours: ["01:00-08:00"]
   # 连续 bot 发言上限。
-  max_consecutive_bot: 1
+  max_consecutive_bot: 3
   # 对图片消息接话的基础概率。
-  reply_to_image_chance: 0.25
-  # 是否允许回 poke。
-  allow_poke_back: false
+  reply_to_image_chance: 0.10
+  # 是否允许回 poke（向下兼容；poke_back_chance > 0 时以 poke_back_chance 为准）。
+  allow_poke_back: true
+  # 被戳时戳回的基础概率（0~1）。0 时由 allow_poke_back 推导默认值（true→0.7，false→0）。
+  # 状态乘数（mood/energy）会在运行时动态调整实际概率。
+  poke_back_chance: 0.5
   # 是否允许撤回最近消息。
-  allow_recall: false
+  allow_recall: true
 
 # 预留的群级覆写策略。按群号单独配置时放这里。
 group_policies: []
@@ -101,17 +170,19 @@ autonomy:
   # 跟进同一话题的时间窗口。
   follow_up_window_sec: 120
   # 最小回复间隔，避免刷屏。
-  min_reply_interval_sec: 30
+  min_reply_interval_sec: 3
   # 主动插话的基础概率。
   proactive_base_probability: 0.05
   # 主动插话需要达到的评分阈值。
-  proactive_score_threshold: 0.65
+  proactive_score_threshold: 0.85
   max_replies_per_10min: 6
   max_replies_per_hour: 24
   # 是否启用 LLM Gate。默认启用；关闭时仅用启发式判定。
   llm_gate_enabled: true
   llm_gate_timeout_ms: 1500
   suppress_on_flood: true
+  # 连续发言达上限后的封口时长（秒）。
+  bot_dominance_suppress_sec: 60
 
 tools:
   # 全局工具白名单。留空表示全部注册工具均可用。
@@ -126,14 +197,27 @@ tools:
 memory:
   # 检索上下文时取回的长期记忆条数。
   top_k: 6
-  # 长期记忆默认 TTL。
+  # 长期记忆默认 TTL（无 type_ttl 命中时使用）。
   default_ttl: 720h
+  # 按记忆类型指定差异化 TTL，覆盖 default_ttl。
+  type_ttl:
+    topic_keyword: 168h         # 话题热点 7 天
+    reaction_pattern: 360h      # 互动套路 15 天
+    group_slang: 720h           # 群流行词 30 天
+    user_catchphrase: 2160h     # 个人口癖 90 天
   type_enabled:
     preference: true
     relationship: true
     meme_usage: true
+    group_slang: true
+    topic_keyword: true
+    reaction_pattern: true
+    user_catchphrase: true
   # 达到该阈值后才写入长期记忆。
   write_threshold: 0.65
+  # Qdrant 语义检索配置（F3 双轨记忆）。
+  semantic_top_k: 6
+  semantic_threshold: 0.75
 
 meme:
   # 是否自动收藏群内表情包候选。
@@ -146,6 +230,9 @@ meme:
   # 同一张表情包重复发送冷却。
   repeat_cooldown: 10m
   prefer_group_scoped: true
+  # 表情包语义向量搜索配置（需配合 storage.qdrant.meme_collection 启用）。
+  semantic_top_k: 5
+  semantic_threshold: 0.72
 
 multimodal:
   # 拉取图片/视频资源的超时。
@@ -173,8 +260,13 @@ storage:
     db: 0
     # 私密项 password 从 .env 的 QQBOT_STORAGE_REDIS_PASSWORD 读取。
   qdrant:
-    url: http://127.0.0.1:6333
+    # Go 客户端使用 gRPC 协议，端口为 6334（REST 端口 6333 会被自动映射到 6334）。
+    url: http://127.0.0.1:6334
     collection: qqbot_memories
+    # 向量维度，须与 embedding 模型输出维度一致。Doubao embedding-large 为 2048，lite 为 1024。
+    vector_dim: 2048
+    # 表情包向量集合名，为空时禁用 meme 语义搜索。
+    meme_collection: qqbot_memes
     # 私密项 api key 从 .env 的 QQBOT_STORAGE_QDRANT_API_KEY 读取。
   minio:
     endpoint: 127.0.0.1:9000
@@ -185,14 +277,14 @@ storage:
 
 qq:
   # 为 false 时，不连接 NapCat，也不发真实 OneBot 动作，适合本地最小链路验证。
-  enabled: false
+  enabled: true
   # 机器人自身 QQ 号，用于过滤自己发出的事件和别名触发判断。
-  self_id: 0
+  self_id: 
   # 私密项 access token 从 .env 的 QQBOT_QQ_ACCESS_TOKEN 读取。
   # 出站 HTTP API 地址，例如 http://127.0.0.1:3000 。
   outbound_url: http://127.0.0.1:3000
   # 默认使用正向 WebSocket /event 收事件。
-  event_ws_url: ws://127.0.0.1:3001/event
+  event_ws_url: ws://127.0.0.1:3001
   # 保留的 HTTP 入站调试路由，可用于手工回放和兼容性测试。
   inbound_route: /onebot/events
   # 群白名单。为空时所有群均可响应；填写后仅白名单内群号生效。

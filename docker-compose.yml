@@ -1,7 +1,6 @@
 services:
   mysql:
     image: mysql:8.0
-    pull_policy: never
     container_name: qqbot-mysql
     restart: unless-stopped
     command:
@@ -33,7 +32,6 @@ services:
 
   redis:
     image: redis:7-alpine
-    pull_policy: never
     container_name: qqbot-redis
     restart: unless-stopped
     command:
@@ -59,7 +57,6 @@ services:
 
   qdrant:
     image: qdrant/qdrant:v1.17.0
-    pull_policy: never
     container_name: qqbot-qdrant
     restart: unless-stopped
     environment:
@@ -70,7 +67,7 @@ services:
     volumes:
       - ./data/qdrant:/qdrant/storage
     healthcheck:
-      test: ["CMD-SHELL", "curl -sf http://localhost:6333/healthz || exit 1"]
+      test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/6333 && printf 'GET /healthz HTTP/1.0\\r\\nHost: 127.0.0.1\\r\\n\\r\\n' >&3 && read line <&3 && [[ \"$$line\" == *200* ]]"]
       interval: 10s
       timeout: 5s
       retries: 10
@@ -79,7 +76,6 @@ services:
 
   minio:
     image: minio/minio:RELEASE.2025-09-07T16-13-09Z
-    pull_policy: never
     container_name: qqbot-minio
     restart: unless-stopped
     command: server /data --address ":9000" --console-address ":9001"
@@ -102,7 +98,6 @@ services:
 
   napcat:
     image: mlikiowa/napcat-docker@sha256:85825671fd536e7a46ccf5472fd7efae7053150ec1042ae4c4f1e0fb62f815fd
-    pull_policy: never
     container_name: qqbot-napcat
     restart: unless-stopped
     environment:

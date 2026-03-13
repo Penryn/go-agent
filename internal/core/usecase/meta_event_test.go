@@ -8,6 +8,7 @@ import (
 	"github.com/phlin/go-agent/internal/adapters/inmemory"
 	modeladapter "github.com/phlin/go-agent/internal/adapters/model"
 	"github.com/phlin/go-agent/internal/config"
+	"github.com/phlin/go-agent/internal/core/ports"
 	"github.com/phlin/go-agent/internal/core/usecase"
 	conversationdomain "github.com/phlin/go-agent/internal/domain/conversation"
 	policydomain "github.com/phlin/go-agent/internal/domain/policy"
@@ -32,7 +33,7 @@ func TestProcessorGroupWhitelistFilters(t *testing.T) {
 	cfg.DefaultPolicy.QuietHours = nil
 	normalizer := normalizersvc.New("onebot", cfg.QQ.SelfID, cfg.Persona.Aliases)
 	policyService := policysvc.New(cfg)
-	contextService := contextsvc.New(store, store, store, policyService, cfg.Persona)
+	contextService := contextsvc.New(store, ports.NoopVectorStore{}, store, store, policyService, cfg.Persona)
 	gateService := gatesvc.New(modeladapter.StaticFactory{})
 	autonomyService := autonomysvc.New(policyService, gateService)
 
@@ -41,10 +42,10 @@ func TestProcessorGroupWhitelistFilters(t *testing.T) {
 			normalizer,
 			contextService,
 			autonomyService,
-			stubPlanner{}, actionsvc.New(inmemory.NewSender(), nil),
+			stubPlanner{}, actionsvc.New(inmemory.NewSender(), nil, nil),
 			store, store,
-			nil, nil, nil, nil,
 			[]int64{100, 200},
+			"",
 		)
 
 		result, err := processor.ProcessEnvelope(context.Background(), conversationdomain.EventEnvelope{
@@ -76,10 +77,10 @@ func TestProcessorGroupWhitelistFilters(t *testing.T) {
 			normalizer,
 			contextService,
 			autonomyService,
-			stubPlanner{}, actionsvc.New(inmemory.NewSender(), nil),
+			stubPlanner{}, actionsvc.New(inmemory.NewSender(), nil, nil),
 			store, store,
-			nil, nil, nil, nil,
 			nil,
+			"",
 		)
 
 		result, err := processor.ProcessEnvelope(context.Background(), conversationdomain.EventEnvelope{
@@ -107,10 +108,10 @@ func TestProcessorGroupWhitelistFilters(t *testing.T) {
 			normalizer,
 			contextService,
 			autonomyService,
-			stubPlanner{}, actionsvc.New(inmemory.NewSender(), nil),
+			stubPlanner{}, actionsvc.New(inmemory.NewSender(), nil, nil),
 			store, store,
-			nil, nil, nil, nil,
 			[]int64{100, 200},
+			"",
 		)
 
 		result, err := processor.ProcessEnvelope(context.Background(), conversationdomain.EventEnvelope{
@@ -146,10 +147,7 @@ func TestProcessorSkipsMetaEvents(t *testing.T) {
 		store,
 		store,
 		nil,
-		nil,
-		nil,
-		nil,
-		nil,
+		"",
 	)
 
 	result, err := processor.ProcessRawEvent(context.Background(), []byte(`{"post_type":"meta_event","meta_event_type":"heartbeat","time":1700000000}`))

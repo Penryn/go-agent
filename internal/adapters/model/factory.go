@@ -171,12 +171,17 @@ func (f *Factory) newEmbeddingModel(ctx context.Context, cfg config.ModelProvide
 	switch normalizeProvider(cfg.Provider) {
 	case "ark":
 		timeout := parseTimeout(cfg.Timeout, 15*time.Second)
-		return arkemb.NewEmbedder(ctx, &arkemb.EmbeddingConfig{
+		embCfg := &arkemb.EmbeddingConfig{
 			APIKey:  cfg.APIKey,
 			Model:   cfg.Model,
 			BaseURL: strings.TrimSpace(cfg.BaseURL),
 			Timeout: durationPtr(timeout),
-		})
+		}
+		if strings.ToLower(strings.TrimSpace(cfg.APIType)) == "multimodal" {
+			apiType := arkemb.APITypeMultiModal
+			embCfg.APIType = &apiType
+		}
+		return arkemb.NewEmbedder(ctx, embCfg)
 	case "openai":
 		timeout := parseTimeout(cfg.Timeout, 15*time.Second)
 		return openaiemb.NewEmbedder(ctx, &openaiemb.EmbeddingConfig{

@@ -27,7 +27,7 @@ func TestApplyLearningWritesMemory(t *testing.T) {
 	}
 
 	records, err := memsvc.New(store).Query(context.Background(), ports.MemoryQuery{
-		Scope: "group_learning",
+		Scope: "group:0",
 		Query: "离谱",
 		TopK:  3,
 	})

@@ -79,3 +79,44 @@ func TestNormalizeFileSegment(t *testing.T) {
 		t.Fatalf("expected application/octet-stream MIME, got %s", att.MIME)
 	}
 }
+
+func TestNormalizePokeTargetBot(t *testing.T) {
+	// target_id == selfID → EventPoke，userID 为发起戳的人
+	payload := []byte(`{
+		"post_type":"notice","notice_type":"notify","sub_type":"poke",
+		"time":1700000000,"self_id":123456,"group_id":1,
+		"user_id":2,"target_id":123456
+	}`)
+
+	svc := New("onebot", 123456, nil)
+	envelope, err := svc.Normalize(payload)
+	if err != nil {
+		t.Fatalf("normalize: %v", err)
+	}
+
+	if envelope.Event.Kind != "poke" {
+		t.Fatalf("expected poke kind, got %s", envelope.Event.Kind)
+	}
+	if envelope.Event.UserID != 2 {
+		t.Fatalf("expected user_id=2 (poker), got %d", envelope.Event.UserID)
+	}
+}
+
+func TestNormalizePokeTargetOther(t *testing.T) {
+	// target_id != selfID → EventMeta，bot 不应处理
+	payload := []byte(`{
+		"post_type":"notice","notice_type":"notify","sub_type":"poke",
+		"time":1700000000,"self_id":123456,"group_id":1,
+		"user_id":2,"target_id":999999
+	}`)
+
+	svc := New("onebot", 123456, nil)
+	envelope, err := svc.Normalize(payload)
+	if err != nil {
+		t.Fatalf("normalize: %v", err)
+	}
+
+	if envelope.Event.Kind != "meta_event" {
+		t.Fatalf("expected meta_event kind for non-target poke, got %s", envelope.Event.Kind)
+	}
+}

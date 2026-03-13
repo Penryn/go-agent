@@ -1,6 +1,6 @@
 module github.com/phlin/go-agent
 
-go 1.25.0
+go 1.25.8
 
 require (
 	github.com/cloudwego/eino v0.8.0

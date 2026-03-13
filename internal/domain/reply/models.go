@@ -36,6 +36,7 @@ type ToolContext struct {
 	UserID            int64                          `json:"user_id" yaml:"user_id"`
 	Intent            ReplyIntent                    `json:"intent" yaml:"intent"`
 	AllowedTools      []string                       `json:"allowed_tools" yaml:"allowed_tools"`
+	ObserveOnly       bool                           `json:"observe_only" yaml:"observe_only"`
 	RetrievedMemories []memorydomain.MemoryRecord    `json:"retrieved_memories" yaml:"retrieved_memories"`
 	MediaDescriptors  []mediadomain.MediaDescriptor  `json:"media_descriptors" yaml:"media_descriptors"`
 	RetrievedMemes    []mediadomain.MemeSearchResult `json:"retrieved_memes" yaml:"retrieved_memes"`
@@ -58,4 +59,7 @@ type ActionReceipt struct {
 	ActionID          string `json:"action_id" yaml:"action_id"`
 	PlatformMessageID string `json:"platform_message_id" yaml:"platform_message_id"`
 	Sent              bool   `json:"sent" yaml:"sent"`
+	// DropReason 记录未发送的原因，空字符串表示正常发送。
+	// 可选值: "action_silent"（策略决定沉默）/ "no_content"（内容为空）/ "guard_silenced"（OutputGuard 过滤）
+	DropReason string `json:"drop_reason,omitempty" yaml:"drop_reason,omitempty"`
 }

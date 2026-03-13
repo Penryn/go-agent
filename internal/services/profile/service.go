@@ -2,6 +2,7 @@ package profile
 
 import (
 	"context"
+	"log/slog"
 	"strings"
 	"time"
 
@@ -11,13 +12,15 @@ import (
 )
 
 type Service struct {
-	store ports.ProfileStore
+	store     ports.ProfileStore
+	personaID string
 }
 
-func New(store ports.ProfileStore) *Service {
-	return &Service{store: store}
+func New(store ports.ProfileStore, personaID string) *Service {
+	return &Service{store: store, personaID: personaID}
 }
 
+// ObserveEvent 更新成员统计，并被动累积熟悉度（上限 0.5）及记录 LastInteractAt。
 func (s *Service) ObserveEvent(ctx context.Context, event conversationdomain.ConversationEvent) error {
 	profile, err := s.store.GetMemberProfile(ctx, event.GroupID, event.UserID)
 	if err != nil {
@@ -31,10 +34,63 @@ func (s *Service) ObserveEvent(ctx context.Context, event conversationdomain.Con
 	if profile.Stats.LastSpokeAt.IsZero() {
 		profile.Stats.LastSpokeAt = time.Now()
 	}
-	profile.Stats.ActiveScore = min(profile.Stats.ActiveScore+0.1, 1)
+	profile.Stats.ActiveScore = minF(profile.Stats.ActiveScore+0.1, 1)
 	profile.CommonPhrases = appendIfMissing(profile.CommonPhrases, normalizePhrase(event.Text), 5)
 
-	return s.store.SaveMemberProfile(ctx, profile)
+	if err := s.store.SaveMemberProfile(ctx, profile); err != nil {
+		return err
+	}
+
+	// 被动熟悉度累积（上限 0.5）+ 更新 LastInteractAt
+	if s.personaID != "" {
+		rel, err := s.store.GetRelationship(ctx, s.personaID, event.GroupID, event.UserID)
+		if err != nil {
+			slog.Warn("profile: load relationship failed", "group_id", event.GroupID, "user_id", event.UserID, "err", err)
+			return nil
+		}
+		rel.PersonaID = s.personaID
+		rel.GroupID = event.GroupID
+		rel.UserID = event.UserID
+		rel.LastInteractAt = time.Now()
+		if rel.Familiarity < 0.5 {
+			rel.Familiarity = minF(rel.Familiarity+0.005, 0.5)
+		}
+		if err := s.store.SaveRelationship(ctx, rel); err != nil {
+			slog.Warn("profile: save relationship failed", "group_id", event.GroupID, "user_id", event.UserID, "err", err)
+		}
+	}
+
+	return nil
+}
+
+// EnsureRelationshipInit 在用户首次发言时设定初始好感度（0.25），幂等。
+func (s *Service) EnsureRelationshipInit(ctx context.Context, event conversationdomain.ConversationEvent) error {
+	if s.personaID == "" {
+		return nil
+	}
+	profile, err := s.store.GetMemberProfile(ctx, event.GroupID, event.UserID)
+	if err != nil {
+		return err
+	}
+	// 只在第一条消息时触发
+	if profile.Stats.MessageCount != 1 {
+		return nil
+	}
+	rel, err := s.store.GetRelationship(ctx, s.personaID, event.GroupID, event.UserID)
+	if err != nil {
+		return err
+	}
+	// 已有好感度则跳过（幂等保护）
+	if rel.Affinity != 0 {
+		return nil
+	}
+	rel.PersonaID = s.personaID
+	rel.GroupID = event.GroupID
+	rel.UserID = event.UserID
+	rel.Affinity = 0.25
+	rel.LastInteractAt = time.Now()
+	slog.Debug("profile: init relationship", "group_id", event.GroupID, "user_id", event.UserID, "affinity", rel.Affinity)
+	return s.store.SaveRelationship(ctx, rel)
 }
 
 func (s *Service) Query(ctx context.Context, groupID, userID int64) (profiledomain.MemberProfile, error) {
@@ -65,7 +121,7 @@ func normalizePhrase(text string) string {
 	return text
 }
 
-func min(a, b float64) float64 {
+func minF(a, b float64) float64 {
 	if a < b {
 		return a
 	}

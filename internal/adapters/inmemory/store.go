@@ -192,12 +192,51 @@ func (s *Store) MarkMemeSent(_ context.Context, memeID string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	descriptor, ok := s.memeDesc[memeID]
+	asset, ok := s.memeAssets[memeID]
 	if !ok {
 		return errors.New("meme not found")
 	}
-	descriptor.UpdatedAt = time.Now()
-	s.memeDesc[memeID] = descriptor
+	now := time.Now()
+	asset.LastSentAt = &now
+	s.memeAssets[memeID] = asset
+	return nil
+}
+
+func (s *Store) CountMemesByGroup(_ context.Context, groupID int64) (int, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	count := 0
+	for _, asset := range s.memeAssets {
+		if asset.GroupID == groupID {
+			count++
+		}
+	}
+	return count, nil
+}
+
+func (s *Store) DeleteOldestMemes(_ context.Context, groupID int64, deleteCount int) error {
+	if deleteCount <= 0 {
+		return nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	type entry struct {
+		id        string
+		createdAt time.Time
+	}
+	var candidates []entry
+	for id, asset := range s.memeAssets {
+		if asset.GroupID == groupID {
+			candidates = append(candidates, entry{id, asset.CreatedAt})
+		}
+	}
+	sort.Slice(candidates, func(i, j int) bool {
+		return candidates[i].createdAt.Before(candidates[j].createdAt)
+	})
+	for i := 0; i < deleteCount && i < len(candidates); i++ {
+		delete(s.memeAssets, candidates[i].id)
+		delete(s.memeDesc, candidates[i].id)
+	}
 	return nil
 }
 

@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/phlin/go-agent/internal/adapters/inmemory"
+	"github.com/phlin/go-agent/internal/config"
 	conversationdomain "github.com/phlin/go-agent/internal/domain/conversation"
 	mediadomain "github.com/phlin/go-agent/internal/domain/media"
 	policydomain "github.com/phlin/go-agent/internal/domain/policy"
@@ -16,7 +17,7 @@ import (
 func TestExecuteSendMemeAndRecall(t *testing.T) {
 	store := inmemory.NewStore()
 	sender := inmemory.NewSender()
-	memeService := memesvc.New(store)
+	memeService := memesvc.New(store, config.MemeConfig{})
 
 	if err := store.UpsertMeme(context.Background(), mediadomain.MemeAsset{
 		MemeID:      "meme-1",
@@ -35,7 +36,7 @@ func TestExecuteSendMemeAndRecall(t *testing.T) {
 		t.Fatalf("seed meme: %v", err)
 	}
 
-	executor := New(sender, memeService)
+	executor := New(sender, memeService, nil)
 	_, err := executor.Execute(context.Background(), conversationEvent(), policydomain.AutonomyDecision{
 		DecisionID: "d1",
 		Action:     policydomain.ActionMemeOnly,
@@ -75,7 +76,7 @@ func TestExecuteSendMemeAndRecall(t *testing.T) {
 
 func TestExecuteReact(t *testing.T) {
 	sender := inmemory.NewSender()
-	executor := New(sender, nil)
+	executor := New(sender, nil, nil)
 
 	_, err := executor.Execute(context.Background(), conversationEvent(), policydomain.AutonomyDecision{
 		DecisionID: "d-react",
@@ -108,7 +109,7 @@ func TestExecuteReact(t *testing.T) {
 
 func TestExecuteReactFallsBackToEventMessageID(t *testing.T) {
 	sender := inmemory.NewSender()
-	executor := New(sender, nil)
+	executor := New(sender, nil, nil)
 
 	_, err := executor.Execute(context.Background(), conversationEvent(), policydomain.AutonomyDecision{
 		DecisionID: "d-react-fallback",

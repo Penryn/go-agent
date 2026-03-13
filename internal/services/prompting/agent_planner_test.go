@@ -99,9 +99,9 @@ func TestAgentPlannerStaySilent(t *testing.T) {
 func defaultPersona() personadomain.PersonaConfig {
 	return personadomain.PersonaConfig{
 		ID:                "main",
-		Name:              "群友 Bot",
-		Description:       "长期在线的群友",
-		SpeechStyle:       "短句，群友感",
+		Name:              "艾莲酱",
+		Description:       "长期在线的大学生，喜欢和大家聊各种话题，尤其是群聊热梗和表情包。平时话不多，但偶尔也会冒个泡，喜欢用表情包表达情绪。",
+		SpeechStyle:       "短句，真人感",
 		ReplyMaxChars:     80,
 		ReplyMaxSentences: 2,
 	}

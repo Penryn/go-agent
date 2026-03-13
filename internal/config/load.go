@@ -36,11 +36,11 @@ func Default() Config {
 		},
 		Persona: personadomain.PersonaConfig{
 			ID:                "main",
-			Name:              "群友 Bot",
-			Aliases:           []string{"bot", "群友 bot", "小群友"},
+			Name:              "艾莲酱",
+			Aliases:           []string{"艾莲酱", "艾莲"},
 			Interests:         []string{"群聊热梗", "表情包", "日常闲聊"},
-			SpeechStyle:       "像熟人群友，短句，少解释",
-			Description:       "长期在线、会接梗的 AI 群友",
+			SpeechStyle:       "像真人，短句，少解释",
+			Description:       "长期在线、会接梗的大学生，喜欢和大家聊各种话题，尤其是群聊热梗和表情包。平时话不多，但偶尔也会冒个泡，喜欢用表情包表达情绪。",
 			ReplyMaxChars:     80,
 			ReplyMaxSentences: 2,
 			AllowTeasing:      true,
@@ -65,6 +65,7 @@ func Default() Config {
 			LLMGateEnabled:           true,
 			LLMGateTimeoutMs:         1500,
 			SuppressOnFlood:          true,
+			BotDominanceSuppressSec:  60,
 		},
 		Tools: ToolsConfig{
 			Allowlist: nil,

@@ -34,14 +34,34 @@ type oneBotEvent struct {
 	SelfID      int64           `json:"self_id"`
 	GroupID     int64           `json:"group_id"`
 	UserID      int64           `json:"user_id"`
+	TargetID    int64           `json:"target_id"` // poke 通知：被戳的目标用户 ID（OneBot 11）
 	MessageID   any             `json:"message_id"`
 	RawMessage  string          `json:"raw_message"`
-	Message     []oneBotSegment `json:"message"`
+	Message     messageSegments `json:"message"`
 }
 
 type oneBotSegment struct {
 	Type string         `json:"type"`
 	Data map[string]any `json:"data"`
+}
+
+// messageSegments 兼容 OneBot message 字段的两种格式：数组或字符串
+type messageSegments []oneBotSegment
+
+func (m *messageSegments) UnmarshalJSON(data []byte) error {
+	// 尝试解析为数组
+	var segments []oneBotSegment
+	if err := json.Unmarshal(data, &segments); err == nil {
+		*m = segments
+		return nil
+	}
+	// 兼容字符串格式，作为单个 text 段处理
+	var s string
+	if err := json.Unmarshal(data, &s); err != nil {
+		return err
+	}
+	*m = []oneBotSegment{{Type: "text", Data: map[string]any{"text": s}}}
+	return nil
 }
 
 func (s *Service) Normalize(payload []byte) (conversationdomain.EventEnvelope, error) {
@@ -50,21 +70,32 @@ func (s *Service) Normalize(payload []byte) (conversationdomain.EventEnvelope, e
 		return conversationdomain.EventEnvelope{}, fmt.Errorf("decode onebot payload: %w", err)
 	}
 
+	// selfID 必须先于 kind 确定，poke target 判断依赖它
+	selfID := s.selfID
+	if selfID == 0 {
+		selfID = raw.SelfID
+	}
+
 	kind := conversationdomain.EventMeta
 	switch raw.PostType {
 	case "message":
 		kind = conversationdomain.EventMessage
 	case "notice":
 		if raw.NoticeType == "notify" && raw.SubType == "poke" {
-			kind = conversationdomain.EventPoke
+			// 只有 bot 是被戳目标时才处理为 EventPoke。
+			// 群成员互戳（bot 不是目标）降级为 EventMeta，
+			// 利用 processor 的 meta 早退逻辑跳过整条处理链路。
+			targetID := raw.TargetID
+			if targetID == 0 {
+				targetID = selfID // 兼容未携带 target_id 的实现，默认视为目标是 bot
+			}
+			if targetID == selfID {
+				kind = conversationdomain.EventPoke
+			}
+			// else: 保持 EventMeta，非目标 poke 静默丢弃
 		} else {
 			kind = conversationdomain.EventNotice
 		}
-	}
-
-	selfID := s.selfID
-	if selfID == 0 {
-		selfID = raw.SelfID
 	}
 
 	textParts := make([]string, 0, len(raw.Message))
@@ -72,6 +103,7 @@ func (s *Service) Normalize(payload []byte) (conversationdomain.EventEnvelope, e
 	attachments := []mediadomain.MultimodalAttachment{}
 	var mentionedBot bool
 	var replyToMessageID string
+	var replyToBot bool
 
 	for idx, segment := range raw.Message {
 		segments = append(segments, conversationdomain.MessageSegment{
@@ -91,6 +123,10 @@ func (s *Service) Normalize(payload []byte) (conversationdomain.EventEnvelope, e
 		case "reply":
 			if id, ok := stringField(segment.Data["id"]); ok {
 				replyToMessageID = id
+			}
+			// reply segment 带有 qq 字段时，判断被引用消息是否来自 Bot 自身
+			if qq, ok := stringField(segment.Data["qq"]); ok && qq == strconv.FormatInt(selfID, 10) {
+				replyToBot = true
 			}
 		case "image", "mface", "video", "record", "file":
 			attachments = append(attachments, s.normalizeAttachment(idx, segment))
@@ -128,7 +164,7 @@ func (s *Service) Normalize(payload []byte) (conversationdomain.EventEnvelope, e
 			Segments:         segments,
 			MentionedBot:     mentionedBot,
 			NamedBot:         namedBot,
-			IsReplyToBot:     replyToMessageID != "",
+			IsReplyToBot:     replyToBot,
 			Attachments:      attachments,
 			TimestampUnix:    now.Unix(),
 		},
@@ -172,6 +208,9 @@ func containsAlias(text string, aliases []string) bool {
 }
 
 func normalizeID(value any) string {
+	if value == nil {
+		return ""
+	}
 	switch typed := value.(type) {
 	case string:
 		return typed
