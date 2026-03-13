@@ -16,6 +16,7 @@ import (
 	"github.com/cloudwego/eino/components/embedding"
 	modelcomponent "github.com/cloudwego/eino/components/model"
 	"github.com/cloudwego/eino/schema"
+	arkruntime "github.com/volcengine/volcengine-go-sdk/service/arkruntime/model"
 
 	"github.com/phlin/go-agent/internal/config"
 )
@@ -116,6 +117,7 @@ func (f *Factory) newChatModel(ctx context.Context, cfg config.ModelProviderConf
 			Model:   cfg.Model,
 			BaseURL: strings.TrimSpace(cfg.BaseURL),
 			Timeout: durationPtr(timeout),
+			Thinking: &arkruntime.Thinking{Type: arkruntime.ThinkingTypeDisabled}, // 禁用深度思考，避免长时间等待
 		})
 	case "openai":
 		timeout := parseTimeout(cfg.Timeout, 30*time.Second)

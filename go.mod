@@ -16,6 +16,7 @@ require (
 	github.com/minio/minio-go/v7 v7.0.99
 	github.com/qdrant/go-client v1.15.2
 	github.com/redis/go-redis/v9 v9.18.0
+	github.com/volcengine/volcengine-go-sdk v1.2.9
 	gopkg.in/yaml.v3 v3.0.1
 )
 
@@ -57,7 +58,6 @@ require (
 	github.com/tinylib/msgp v1.6.1 // indirect
 	github.com/twitchyliquid64/golang-asm v0.15.1 // indirect
 	github.com/volcengine/volc-sdk-golang v1.0.23 // indirect
-	github.com/volcengine/volcengine-go-sdk v1.2.9 // indirect
 	github.com/wk8/go-ordered-map/v2 v2.1.8 // indirect
 	github.com/yargevad/filepathx v1.0.0 // indirect
 	go.uber.org/atomic v1.11.0 // indirect
