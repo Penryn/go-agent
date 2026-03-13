@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"math/rand"
 	"time"
 
 	"github.com/phlin/go-agent/internal/core/ports"
@@ -59,7 +60,7 @@ func New(store ports.MemoryStore, opts ...Option) *Service {
 func (s *Service) MarkIntent(ctx context.Context, intent WriteIntent) (memorydomain.MemoryRecord, error) {
 	memoryID := intent.MemoryID
 	if memoryID == "" {
-		memoryID = fmt.Sprintf("memory-%d", time.Now().UnixNano())
+		memoryID = fmt.Sprintf("mem-%s-%d-%04x", intent.MemoryType, time.Now().UnixNano(), rand.Intn(0xFFFF))
 	}
 	record := memorydomain.MemoryRecord{
 		MemoryID:      memoryID,

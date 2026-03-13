@@ -43,7 +43,7 @@ func TestStoreIntegration(t *testing.T) {
 	}
 
 	record := memorydomain.MemoryRecord{
-		MemoryID:      fmt.Sprintf("memory-%d", time.Now().UnixNano()),
+		MemoryID:      fmt.Sprintf("mem-preference-%d-0001", time.Now().UnixNano()),
 		Scope:         "group:1",
 		Type:          "preference",
 		Subject:       "梗",

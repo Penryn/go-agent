@@ -2,6 +2,7 @@ package memory
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"github.com/phlin/go-agent/internal/adapters/inmemory"
@@ -34,5 +35,42 @@ func TestMarkIntentAndQuery(t *testing.T) {
 	}
 	if len(records) == 0 || records[0].MemoryID != record.MemoryID {
 		t.Fatalf("unexpected records: %#v", records)
+	}
+}
+
+func TestMarkIntentAutoIDContainsType(t *testing.T) {
+	store := inmemory.NewStore()
+	service := New(store)
+
+	record, err := service.MarkIntent(context.Background(), WriteIntent{
+		Scope:      "group:1",
+		MemoryType: "group_slang",
+		Subject:    "test",
+		Content:    "test content",
+	})
+	if err != nil {
+		t.Fatalf("mark intent: %v", err)
+	}
+	if !strings.HasPrefix(record.MemoryID, "mem-group_slang-") {
+		t.Fatalf("auto-generated ID should embed MemoryType, got %q", record.MemoryID)
+	}
+}
+
+func TestMarkIntentExplicitIDPreserved(t *testing.T) {
+	store := inmemory.NewStore()
+	service := New(store)
+
+	record, err := service.MarkIntent(context.Background(), WriteIntent{
+		MemoryID:   "custom-id-123",
+		Scope:      "group:1",
+		MemoryType: "preference",
+		Subject:    "test",
+		Content:    "test content",
+	})
+	if err != nil {
+		t.Fatalf("mark intent: %v", err)
+	}
+	if record.MemoryID != "custom-id-123" {
+		t.Fatalf("explicit MemoryID should be preserved, got %q", record.MemoryID)
 	}
 }
