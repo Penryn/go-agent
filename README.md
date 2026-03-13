@@ -54,7 +54,7 @@ Bot 会自动判断何时该说话、何时沉默，用短句和表情包自然�
 
 | 依赖 | 版本 | 用途 |
 |------|------|------|
-| Go | 1.24+ | 编译运行 |
+| Go | 1.25+ | 编译运行 |
 | Docker & Docker Compose | — | 运行基础设施和 NapCat |
 | LLM API Key | — | 支持火山方舟（Ark）或 OpenAI 兼容接口 |
 | QQ 号 | — | 作为机器人身份登录 NapCat |
@@ -225,8 +225,10 @@ go-agent/
 │   │   ├── gate/            #   Gate Agent
 │   │   ├── prompting/       #   Prompt 编排 & Agent Planner
 │   │   ├── action/          #   动作执行器
+│   │   ├── outputguard/     #   回复截断 & 安全过滤
 │   │   ├── memory/          #   记忆读写
 │   │   ├── profile/         #   画像管理
+│   │   ├── persona/         #   人格状态与情绪驱动
 │   │   ├── meme/            #   表情包采集与检索
 │   │   ├── multimodal/      #   图片 / 视频理解
 │   │   ├── curator/         #   后台记忆提炼
@@ -241,6 +243,7 @@ go-agent/
 │   │   └── storage/         #   MySQL / Redis / Qdrant / MinIO
 │   ├── runtime/
 │   │   ├── bootstrap/       #   应用初始化与依赖组装
+│   │   ├── dispatcher/      #   群级事件分发与串行化
 │   │   └── scheduler/       #   后台任务调度
 │   └── config/              # 配置加载与校验
 ├── docker-compose.yml       # 基础设施编排
