@@ -1,5 +1,0 @@
-- Language: Go.
-- Conventions observed: small main.go, orchestration under app/, package-oriented layout, configuration via config.yaml and Viper, concise exported API names.
-- Architecture notes: bot integration is separated from agent logic; optional capabilities gated by config.
-- When finishing a task: run relevant build/test commands if available. Baseline in this repo is `make build`; use `go test ./...` when tests exist or are relevant.
-- Avoid reverting unrelated user changes; prefer focused edits.

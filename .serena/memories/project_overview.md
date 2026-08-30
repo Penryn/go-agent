@@ -1,6 +1,0 @@
-- Purpose: QQ group chat bot in Go, aligned to DESIGN.md, using NapCat WS events and HTTP sending.
-- Stack: Go 1.25, cloudwego/eino v0.8.0, Ark model providers, SQLite, optional Qdrant, Gorilla WebSocket, Viper.
-- Entry point: main.go calls app.Run("config.yaml").
-- High-level flow: NapCat WS event -> bot/event.go -> app/processor.go -> agent/* -> bot/sender.go.
-- Top-level structure: app/ runtime and orchestration; agent/ agent and tools; bot/ NapCat integration; memory/ persistence and context; scheduler/ background jobs; vision/ optional image understanding; config/ configuration.
-- Platform: Darwin development environment.

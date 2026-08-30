@@ -1,8 +1,0 @@
-- Build: `make build`
-- Run: `make run`
-- Stop running binary: `make kill`
-- Clean binary: `make clean`
-- Direct run: `go run .`
-- Direct build: `go build -o bin/bot .`
-- Inspect deps: `go list ./...`
-- Common Darwin utilities: `ls`, `cd`, `rg`, `find`, `sed`, `git status`, `git diff`.
