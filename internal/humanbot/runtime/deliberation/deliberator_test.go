@@ -18,6 +18,11 @@ func TestDecisionForCandidateIntent(t *testing.T) {
 		{intent: "react", action: policydomain.ActionReact},
 		{intent: "send_meme", action: policydomain.ActionMemeOnly},
 		{intent: "follow_up", action: policydomain.ActionReply},
+		{intent: "question", action: policydomain.ActionReply},
+		{intent: "request_help", action: policydomain.ActionReply},
+		{intent: "support", action: policydomain.ActionReply},
+		{intent: "gratitude", action: policydomain.ActionReply},
+		{intent: "banter", action: policydomain.ActionReply},
 		{intent: "observe_only", action: policydomain.ActionSilent},
 	}
 	for _, tc := range cases {

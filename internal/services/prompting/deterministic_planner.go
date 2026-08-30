@@ -82,7 +82,7 @@ func (p *DeterministicPlanner) Plan(_ context.Context, snapshot conversationdoma
 
 	plan.Intent = replydomain.ReplyIntent{
 		Kind:            "chat",
-		Goal:            "自然接话",
+		Goal:            dialogueGoal(decision.TriggerType),
 		TargetUserIDs:   []int64{snapshot.Event.UserID},
 		PreferShortText: true,
 		MaxChars:        p.persona.ReplyMaxChars,

@@ -699,20 +699,10 @@ func overlaps(left, right []string) bool {
 
 func candidateFor(record humandomain.EventRecord, burst humandomain.ConversationBurst) humandomain.ThoughtCandidate {
 	direct := record.Event.MentionedBot || record.Event.NamedBot || record.Event.IsReplyToBot
-	intent := "continue_topic"
-	urgency := 0.35
+	intent, urgency, reason := classifyDialogueAct(record.Event.Text, direct, len(record.Event.Attachments) > 0)
 	delay := 2 * time.Second
 	if direct {
-		intent = "answer"
-		urgency = 1
 		delay = 700 * time.Millisecond
-	} else if strings.ContainsAny(record.Event.Text, "?？") {
-		intent = "acknowledge"
-		urgency = 0.55
-	}
-	if len(record.Event.Attachments) > 0 && !direct {
-		intent = "react"
-		urgency = 0.5
 	}
 	return humandomain.ThoughtCandidate{
 		CandidateID:    record.EventID + "-candidate",
@@ -725,23 +715,56 @@ func candidateFor(record humandomain.EventRecord, burst humandomain.Conversation
 		DueAt:          record.Timestamp.Add(delay),
 		ExpiresAt:      record.Timestamp.Add(10 * time.Second),
 		Uncertainty:    1 - urgency,
-		ReasonCode:     reasonCode(record, direct),
+		ReasonCode:     reason,
 		DeliveryTarget: "group",
 		Status:         humandomain.CandidatePending,
 	}
 }
 
-func reasonCode(record humandomain.EventRecord, direct bool) string {
+// classifyDialogueAct keeps the candidate seam cheap and deterministic while
+// preserving the user's likely conversational purpose for the planner.
+func classifyDialogueAct(text string, direct, hasAttachment bool) (string, float64, string) {
+	text = strings.TrimSpace(text)
+	if hasAttachment && !direct {
+		return "react", 0.5, "media_reaction"
+	}
 	if direct {
-		return "direct_address"
+		if containsAny(text, "难受", "好累", "崩溃", "烦死了", "想哭", "不开心") {
+			return "support", 1, "direct_distress"
+		}
+		if containsAny(text, "帮我", "能不能", "可以吗", "请你", "帮忙") {
+			return "request_help", 1, "direct_request"
+		}
+		if containsAny(text, "谢谢", "感谢", "多亏") {
+			return "gratitude", 1, "direct_gratitude"
+		}
+		return "answer", 1, "direct_address"
 	}
-	if len(record.Event.Attachments) > 0 {
-		return "media_reaction"
+	if containsAny(text, "难受", "好累", "崩溃", "烦死了", "想哭", "不开心") {
+		return "support", 0.65, "distress_observed"
 	}
-	if strings.ContainsAny(record.Event.Text, "?？") {
-		return "question_observed"
+	if containsAny(text, "好无聊", "笑死", "哈哈", "什么鬼", "离谱") {
+		return "banter", 0.5, "banter_observed"
 	}
-	return "topic_continuation"
+	if containsAny(text, "谢谢", "感谢", "多亏") {
+		return "gratitude", 0.5, "gratitude_observed"
+	}
+	if strings.ContainsAny(text, "?？") {
+		return "question", 0.6, "question_observed"
+	}
+	if text == "" {
+		return "acknowledge", 0.35, "empty_observed"
+	}
+	return "continue_topic", 0.35, "topic_continuation"
+}
+
+func containsAny(text string, terms ...string) bool {
+	for _, term := range terms {
+		if strings.Contains(text, term) {
+			return true
+		}
+	}
+	return false
 }
 
 func enqueueCandidate(memory *humandomain.GroupWorkingMemory, candidate humandomain.ThoughtCandidate) bool {

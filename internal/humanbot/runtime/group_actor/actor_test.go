@@ -61,6 +61,32 @@ func TestManagerMergesShortBurstAndKeepsOutboundEvent(t *testing.T) {
 	}
 }
 
+func TestClassifyDialogueActPreservesConversationPurpose(t *testing.T) {
+	cases := []struct {
+		name          string
+		text          string
+		direct        bool
+		hasAttachment bool
+		wantIntent    string
+		wantReason    string
+	}{
+		{name: "direct help", text: "能不能帮我看看报错", direct: true, wantIntent: "request_help", wantReason: "direct_request"},
+		{name: "direct distress beats request", text: "我好难受，能陪我一下吗", direct: true, wantIntent: "support", wantReason: "direct_distress"},
+		{name: "ambient distress", text: "今天真的好累", wantIntent: "support", wantReason: "distress_observed"},
+		{name: "question", text: "明天会下雨吗？", wantIntent: "question", wantReason: "question_observed"},
+		{name: "banter", text: "笑死，这也太离谱了", wantIntent: "banter", wantReason: "banter_observed"},
+		{name: "media", hasAttachment: true, wantIntent: "react", wantReason: "media_reaction"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			intent, _, reason := classifyDialogueAct(tc.text, tc.direct, tc.hasAttachment)
+			if intent != tc.wantIntent || reason != tc.wantReason {
+				t.Fatalf("classifyDialogueAct() = (%q, %q), want (%q, %q)", intent, reason, tc.wantIntent, tc.wantReason)
+			}
+		})
+	}
+}
+
 func TestManagerEnrichesMediaOnlyForRecentEvent(t *testing.T) {
 	manager := NewManager(ingress.NewMemoryEventLog())
 	defer manager.Close()

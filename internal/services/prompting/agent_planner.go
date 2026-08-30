@@ -100,7 +100,7 @@ func (p *AgentPlanner) Plan(ctx context.Context, snapshot conversationdomain.Con
 		Budget:            map[string]int{"update_affinity": 0, "update_member_profile": 0},
 		Intent: replydomain.ReplyIntent{
 			Kind:            "chat",
-			Goal:            "自然接话",
+			Goal:            dialogueGoal(decision.TriggerType),
 			TargetUserIDs:   []int64{snapshot.Event.UserID},
 			PreferMeme:      p.fallback.persona.PreferMemes,
 			PreferShortText: true,

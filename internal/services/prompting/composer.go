@@ -142,6 +142,7 @@ func (c *Composer) instruction(snapshot conversationdomain.ContextSnapshot, deci
 		"",
 		"当前回合任务层:",
 		"你只负责在已经决定可以说话时，选择自然的回复方式。",
+		"本轮回应目的: " + dialogueGoal(decision.TriggerType) + "。",
 		"如果需要收集信息，可以先用 query_memory 或 search_meme；最终必须用 speak_text、quote_reply 或 stay_silent 结束。",
 		"若消息上下文中提供了 msg_id 且用户明确要求引用特定消息，优先使用 quote_reply 并传入对应 msg_id。",
 		"同一用户在极短时间内连续发送的多条消息通常是一个完整意思的分条发送，必须把它们合并为一个整体语义单元理解，不得孤立解读最后一条。",

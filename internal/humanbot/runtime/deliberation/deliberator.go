@@ -93,7 +93,7 @@ func resolveAction(intent string, fallback policydomain.DecisionAction, proposed
 		return false
 	}
 	switch intent {
-	case "answer", "acknowledge", "continue_topic", "follow_up":
+	case "answer", "acknowledge", "continue_topic", "follow_up", "question", "request_help", "support", "gratitude", "banter":
 		if allowed(policydomain.ActionReply, policydomain.ActionMemeOnly, policydomain.ActionSilent) {
 			return action
 		}
@@ -120,7 +120,7 @@ func decisionFor(envelope conversationdomain.EventEnvelope, candidate humandomai
 		action = policydomain.ActionReact
 	case "send_meme":
 		action = policydomain.ActionMemeOnly
-	case "answer", "acknowledge", "continue_topic", "follow_up":
+	case "answer", "acknowledge", "continue_topic", "follow_up", "question", "request_help", "support", "gratitude", "banter":
 		action = policydomain.ActionReply
 	default:
 		action = policydomain.ActionSilent
