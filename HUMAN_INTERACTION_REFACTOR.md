@@ -82,12 +82,20 @@ EnqueueCandidate -> ClaimDue -> CanExecute -> Deliberate -> Execute -> Complete
 
 ## 5. 分阶段提交
 
-1. `ea88711 feat: add incremental context projection and bounded prompt`
-2. `13e1224 feat: enqueue proactive thoughts through group actors`
-3. `7e1b8fb test: cover hybrid memory rank fusion`
-4. 本文档提交
+本次改造按功能边界拆分，提交顺序为：
 
-已有的学习链、Actor 恢复、ThoughtRecord 和工具 guard 保持各自提交，不与本文档混合。
+1. `f6874fe` 学习游标模型，`31957b1` 接入画像/Curator 学习链
+2. `fad19ee` 持久化 Group Actor 工作记忆
+3. `ea88711` 上下文投影游标与有界提示词
+4. `13e1224` 主动候选通过 Actor 入队
+5. `7e1b8fb` 混合检索 RRF 回归测试
+6. `fd3184e` 人格配置与运行时状态分离
+7. `c516543` Agent 工具循环预算与审计
+8. `034fc07` ThoughtRecord 持久化与新消息打断队列
+9. `2ff708a` 修复节奏队列取消句柄的并发安全
+10. `8901a08` 本改造文档，`1a46bd0` 配置示例
+
+每个提交只包含对应功能或测试；旧设计文档删除保持为工作区原有状态，未混入上述功能提交。
 
 ## 6. 验收标准
 
