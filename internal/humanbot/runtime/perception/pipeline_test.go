@@ -2,6 +2,7 @@ package perception
 
 import (
 	"context"
+	"encoding/json"
 	"testing"
 	"time"
 
@@ -21,6 +22,42 @@ type inlineBackground struct{}
 func (inlineBackground) Submit(job backgroundruntime.Job) bool {
 	backgroundruntime.RunInline(context.Background(), job)
 	return true
+}
+
+type recordingOutbox struct {
+	kind string
+	key  string
+	body []byte
+}
+
+func (o *recordingOutbox) Enqueue(_ context.Context, kind, key string, body []byte) error {
+	o.kind, o.key, o.body = kind, key, append([]byte(nil), body...)
+	return nil
+}
+
+func TestPipelineEnqueuesDurablePerceptionTask(t *testing.T) {
+	working := groupactor.NewManager(ingress.NewMemoryEventLog())
+	defer working.Close()
+	outbox := &recordingOutbox{}
+	pipeline := New(nil, nil, working, inlineBackground{}, WithOutbox(outbox))
+	record := humandomain.EventRecord{
+		EventID: "durable-event", GroupID: 42, Origin: humandomain.OriginInbound,
+		Event: conversationdomain.ConversationEvent{
+			EventID: "durable-event", GroupID: 42, Kind: conversationdomain.EventMessage,
+			Attachments: []mediadomain.MultimodalAttachment{{AttachmentID: "a1", Kind: mediadomain.MediaImage}},
+		},
+	}
+	pipeline.Submit(record)
+	if outbox.kind != "perception_event" || outbox.key != record.EventID {
+		t.Fatalf("unexpected outbox envelope: kind=%q key=%q", outbox.kind, outbox.key)
+	}
+	var got humandomain.EventRecord
+	if err := json.Unmarshal(outbox.body, &got); err != nil {
+		t.Fatalf("decode payload: %v", err)
+	}
+	if got.EventID != record.EventID || len(got.Event.Attachments) != 1 {
+		t.Fatalf("unexpected payload: %+v", got)
+	}
 }
 
 func TestPipelineFallsBackToPlatformHintAndCollectsSticker(t *testing.T) {

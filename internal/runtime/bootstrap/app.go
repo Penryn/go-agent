@@ -19,6 +19,7 @@ import (
 	"github.com/phlin/go-agent/internal/core/ports"
 	conversationdomain "github.com/phlin/go-agent/internal/domain/conversation"
 	replydomain "github.com/phlin/go-agent/internal/domain/reply"
+	humandomain "github.com/phlin/go-agent/internal/humanbot/domain"
 	humanruntime "github.com/phlin/go-agent/internal/humanbot/runtime"
 	humandeliberation "github.com/phlin/go-agent/internal/humanbot/runtime/deliberation"
 	humanactor "github.com/phlin/go-agent/internal/humanbot/runtime/group_actor"
@@ -160,7 +161,25 @@ func NewApp(ctx context.Context, cfg config.Config) (*App, error) {
 		memesvc.WithBackgroundRuntime(backgroundRuntime),
 	)
 	visionService := multimodalsvc.New(modelFactory, cfg.Multimodal)
-	perceptionPipeline := humanperception.New(visionService, memeService, presenceManager, backgroundRuntime)
+	perceptionOpts := []humanperception.Option{}
+	if durableOutbox != nil {
+		perceptionOpts = append(perceptionOpts, humanperception.WithOutbox(durableOutbox))
+	}
+	perceptionPipeline := humanperception.New(visionService, memeService, presenceManager, backgroundRuntime, perceptionOpts...)
+	if durableOutbox != nil {
+		if err := durableOutbox.Register("perception_event", func(jobCtx context.Context, payload []byte) error {
+			var record humandomain.EventRecord
+			if err := json.Unmarshal(payload, &record); err != nil {
+				return fmt.Errorf("decode perception event: %w", err)
+			}
+			return perceptionPipeline.Process(jobCtx, record)
+		}); err != nil {
+			_ = durableOutbox.Close()
+			_ = backgroundRuntime.Close(context.Background())
+			_ = stores.Close()
+			return nil, fmt.Errorf("register perception outbox handler: %w", err)
+		}
+	}
 
 	toolRuntime := toolsvc.NewRuntime(stores.memory, stores.meme,
 		toolsvc.WithProfileStore(stores.profile),

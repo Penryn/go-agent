@@ -4,6 +4,7 @@ package perception
 
 import (
 	"context"
+	"encoding/json"
 	"log/slog"
 	"strings"
 	"time"
@@ -25,11 +26,26 @@ type Pipeline struct {
 	memes      *memesvc.Service
 	working    *groupactor.Manager
 	background backgroundSubmitter
-	timeout    time.Duration
+	outbox     interface {
+		Enqueue(context.Context, string, string, []byte) error
+	}
+	timeout time.Duration
 }
 
-func New(vision *multimodalsvc.Service, memes *memesvc.Service, working *groupactor.Manager, background backgroundSubmitter) *Pipeline {
-	return &Pipeline{vision: vision, memes: memes, working: working, background: background, timeout: 45 * time.Second}
+type Option func(*Pipeline)
+
+func WithOutbox(submitter interface {
+	Enqueue(context.Context, string, string, []byte) error
+}) Option {
+	return func(p *Pipeline) { p.outbox = submitter }
+}
+
+func New(vision *multimodalsvc.Service, memes *memesvc.Service, working *groupactor.Manager, background backgroundSubmitter, opts ...Option) *Pipeline {
+	p := &Pipeline{vision: vision, memes: memes, working: working, background: background, timeout: 45 * time.Second}
+	for _, opt := range opts {
+		opt(p)
+	}
+	return p
 }
 
 // Submit never blocks message ingress. Queue pressure can defer media
@@ -39,6 +55,17 @@ func (p *Pipeline) Submit(record humandomain.EventRecord) {
 		return
 	}
 	record.RawPayload = nil
+	if p.outbox != nil {
+		payload, err := json.Marshal(record)
+		if err == nil {
+			if enqueueErr := p.outbox.Enqueue(context.Background(), "perception_event", record.EventID, payload); enqueueErr == nil {
+				return
+			} else {
+				err = enqueueErr
+			}
+		}
+		slog.Warn("perception: outbox enqueue failed, using process-local queue", "event_id", record.EventID, "err", err)
+	}
 	if !p.background.Submit(backgroundruntime.Job{
 		Name:    "media_perception",
 		Timeout: p.timeout,
@@ -48,6 +75,12 @@ func (p *Pipeline) Submit(record humandomain.EventRecord) {
 	}) {
 		slog.Warn("perception: job dropped", "group_id", record.GroupID, "event_id", record.EventID)
 	}
+}
+
+// Process executes one persisted perception task. It is the handler seam used
+// by the durable outbox runtime.
+func (p *Pipeline) Process(ctx context.Context, record humandomain.EventRecord) error {
+	return p.process(ctx, record)
 }
 
 func (p *Pipeline) process(ctx context.Context, record humandomain.EventRecord) error {
