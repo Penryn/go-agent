@@ -17,19 +17,48 @@ import (
 )
 
 type AgentPlanner struct {
-	factory  ports.ChatModelFactory
-	tools    *toolsvc.Runtime
-	composer *Composer
-	fallback *DeterministicPlanner
+	factory        ports.ChatModelFactory
+	tools          *toolsvc.Runtime
+	composer       *Composer
+	fallback       *DeterministicPlanner
+	maxIterations  int
+	maxToolCalls   int
+	maxResultBytes int
+	toolAuditHook  ToolAuditHook
 }
 
 func NewAgentPlanner(factory ports.ChatModelFactory, tools *toolsvc.Runtime, composer *Composer, fallback *DeterministicPlanner) *AgentPlanner {
 	return &AgentPlanner{
-		factory:  factory,
-		tools:    tools,
-		composer: composer,
-		fallback: fallback,
+		factory:        factory,
+		tools:          tools,
+		composer:       composer,
+		fallback:       fallback,
+		maxIterations:  defaultMaxIterations,
+		maxToolCalls:   defaultMaxToolCalls,
+		maxResultBytes: defaultToolResultMaxBytes,
 	}
+}
+
+// SetToolRuntimeLimits changes the per-plan tool loop safety limits. Values
+// less than one leave the corresponding default unchanged. It is intended for
+// process configuration and should be called before serving traffic.
+func (p *AgentPlanner) SetToolRuntimeLimits(maxIterations, maxToolCalls, maxResultBytes int) {
+	if maxIterations > 0 {
+		p.maxIterations = maxIterations
+	}
+	if maxToolCalls > 0 {
+		p.maxToolCalls = maxToolCalls
+	}
+	if maxResultBytes > 0 {
+		p.maxResultBytes = maxResultBytes
+	}
+}
+
+// SetToolAuditHook installs a callback for tool execution events. The hook is
+// best-effort: panics are recovered by the guard so observability never breaks
+// a user-facing reply.
+func (p *AgentPlanner) SetToolAuditHook(hook ToolAuditHook) {
+	p.toolAuditHook = hook
 }
 
 // stripThinkBlocks 移除模型输出中的 <think>...</think> 推理块。
@@ -115,10 +144,22 @@ func (p *AgentPlanner) Plan(ctx context.Context, snapshot conversationdomain.Con
 	)
 
 	// observe-only 只需 query+mark 两步，不需要完整的 4 轮规划
-	maxIterations := 4
-	if observeOnly {
-		maxIterations = 2
+	maxIterations := p.maxIterations
+	if maxIterations <= 0 {
+		maxIterations = defaultMaxIterations
 	}
+	if observeOnly {
+		maxIterations = minInt(maxIterations, 2)
+	}
+	maxToolCalls := p.maxToolCalls
+	if maxToolCalls <= 0 {
+		maxToolCalls = defaultMaxToolCalls
+	}
+	maxResultBytes := p.maxResultBytes
+	if maxResultBytes <= 0 {
+		maxResultBytes = defaultToolResultMaxBytes
+	}
+	guard := newToolRuntimeGuard(snapshot.SnapshotID, maxToolCalls, maxResultBytes, p.toolAuditHook)
 
 	agent, err := adk.NewChatModelAgent(ctx, &adk.ChatModelAgentConfig{
 		Name:        "main_persona_agent",
@@ -128,6 +169,9 @@ func (p *AgentPlanner) Plan(ctx context.Context, snapshot conversationdomain.Con
 		ToolsConfig: adk.ToolsConfig{
 			ToolsNodeConfig: compose.ToolsNodeConfig{
 				Tools: toolList,
+				ToolCallMiddlewares: []compose.ToolMiddleware{{
+					Invokable: guard.middleware,
+				}},
 			},
 			ReturnDirectly: returnDirectly,
 		},

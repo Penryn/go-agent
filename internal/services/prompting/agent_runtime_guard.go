@@ -1,0 +1,209 @@
+package prompting
+
+import (
+	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
+	"strings"
+	"sync"
+	"time"
+	"unicode/utf8"
+
+	"github.com/cloudwego/eino/compose"
+)
+
+const (
+	defaultMaxIterations      = 4
+	defaultMaxToolCalls       = 12
+	defaultToolResultMaxBytes = 12 * 1024
+)
+
+// ToolAuditEvent records one tool boundary decision. Arguments are represented
+// by a stable hash so audit sinks do not accidentally persist user content.
+type ToolAuditEvent struct {
+	TraceID       string
+	CallID        string
+	ToolName      string
+	ArgumentsHash string
+	Attempt       int
+	Duration      time.Duration
+	ResultBytes   int
+	Truncated     bool
+	Duplicate     bool
+	EmptyRetry    bool
+	Blocked       bool
+	Error         string
+}
+
+// ToolAuditHook receives best-effort tool execution telemetry.
+type ToolAuditHook func(ToolAuditEvent)
+
+type toolRuntimeGuard struct {
+	traceID       string
+	maxToolCalls  int
+	maxResultByte int
+	audit         ToolAuditHook
+
+	mu       sync.Mutex
+	calls    int
+	attempts map[string]int
+	seen     map[string]struct{}
+}
+
+func newToolRuntimeGuard(traceID string, maxToolCalls, maxResultBytes int, audit ToolAuditHook) *toolRuntimeGuard {
+	return &toolRuntimeGuard{
+		traceID:       traceID,
+		maxToolCalls:  maxToolCalls,
+		maxResultByte: maxResultBytes,
+		audit:         audit,
+		attempts:      make(map[string]int),
+		seen:          make(map[string]struct{}),
+	}
+}
+
+// middleware is installed on Eino's ToolsNode. State is scoped to one Plan
+// invocation, so concurrent groups cannot suppress each other's calls.
+func (g *toolRuntimeGuard) middleware(next compose.InvokableToolEndpoint) compose.InvokableToolEndpoint {
+	return func(ctx context.Context, input *compose.ToolInput) (*compose.ToolOutput, error) {
+		if input == nil {
+			return next(ctx, input)
+		}
+
+		key := input.Name + ":" + hashToolArguments(input.Arguments)
+		g.mu.Lock()
+		if g.maxToolCalls > 0 && g.calls >= g.maxToolCalls {
+			g.mu.Unlock()
+			g.emit(ToolAuditEvent{
+				TraceID: g.traceID, CallID: input.CallID, ToolName: input.Name,
+				ArgumentsHash: hashToolArguments(input.Arguments), Blocked: true,
+				Error: "tool call budget exceeded",
+			})
+			return &compose.ToolOutput{Result: `{"error":"tool_call_budget_exceeded","retryable":false}`}, nil
+		}
+		g.calls++
+		g.attempts[key]++
+		attempt := g.attempts[key]
+		_, duplicate := g.seen[key]
+		g.seen[key] = struct{}{}
+		g.mu.Unlock()
+
+		base := ToolAuditEvent{
+			TraceID: g.traceID, CallID: input.CallID, ToolName: input.Name,
+			ArgumentsHash: hashToolArguments(input.Arguments), Attempt: attempt,
+			Duplicate: duplicate,
+		}
+		if duplicate {
+			base.Blocked = true
+			base.Error = "duplicate tool call"
+			g.emit(base)
+			return &compose.ToolOutput{Result: `{"error":"duplicate_tool_call","retryable":false}`}, nil
+		}
+
+		started := time.Now()
+		result, err := next(ctx, input)
+		base.Duration = time.Since(started)
+		if err != nil {
+			base.Error = err.Error()
+			g.emit(base)
+			return result, err
+		}
+
+		// A transient empty response is retried only for read-only tools. This
+		// avoids replaying side effects while fixing flaky retrieval providers.
+		if result == nil {
+			result = &compose.ToolOutput{}
+		}
+		if strings.TrimSpace(result.Result) == "" && retryEmptyTool(input.Name) {
+			base.EmptyRetry = true
+			retryStarted := time.Now()
+			retryResult, retryErr := next(ctx, input)
+			base.Duration += time.Since(retryStarted)
+			if retryErr != nil {
+				base.Error = retryErr.Error()
+				g.emit(base)
+				return retryResult, retryErr
+			}
+			result = retryResult
+		}
+
+		result.Result, base.Truncated = truncateToolResult(result.Result, g.maxResultByte)
+		base.ResultBytes = len(result.Result)
+		g.emit(base)
+		return result, nil
+	}
+}
+
+func (g *toolRuntimeGuard) emit(event ToolAuditEvent) {
+	if g.audit == nil {
+		return
+	}
+	defer func() { _ = recover() }()
+	g.audit(event)
+}
+
+func hashToolArguments(raw string) string {
+	normalized := strings.TrimSpace(raw)
+	var value any
+	if json.Unmarshal([]byte(normalized), &value) == nil {
+		if encoded, err := json.Marshal(value); err == nil {
+			normalized = string(encoded)
+		}
+	}
+	digest := sha256.Sum256([]byte(normalized))
+	return hex.EncodeToString(digest[:])
+}
+
+func retryEmptyTool(name string) bool {
+	name = strings.ToLower(strings.TrimSpace(name))
+	return strings.HasPrefix(name, "query_") ||
+		strings.HasPrefix(name, "search_") ||
+		name == "web_search" || name == "recall_recent_message"
+}
+
+// truncateToolResult keeps the model-facing result bounded while preserving a
+// valid JSON envelope when the original result was JSON.
+func truncateToolResult(result string, maxBytes int) (string, bool) {
+	if maxBytes <= 0 || len(result) <= maxBytes {
+		return result, false
+	}
+	const marker = "...[truncated]"
+	if maxBytes <= len(marker) {
+		return string([]byte(result)[:maxBytes]), true
+	}
+	previewLimit := maxBytes - len(marker)
+	preview := trimUTF8Bytes(result, previewLimit)
+	if json.Valid([]byte(result)) && maxBytes >= len(`{"truncated":true,"preview":""}`) {
+		// Keep this envelope valid so the next model turn can reason about the
+		// truncation instead of receiving malformed tool JSON.
+		for {
+			envelope, _ := json.Marshal(map[string]any{"truncated": true, "preview": preview})
+			if len(envelope) <= maxBytes {
+				return string(envelope), true
+			}
+			preview = trimUTF8Bytes(preview, len(preview)-1)
+		}
+	}
+	return trimUTF8Bytes(result, previewLimit) + marker, true
+}
+
+func trimUTF8Bytes(value string, maxBytes int) string {
+	if maxBytes <= 0 {
+		return ""
+	}
+	if len(value) <= maxBytes {
+		return value
+	}
+	trimmed := value[:maxBytes]
+	for len(trimmed) > 0 && !utf8.ValidString(trimmed) {
+		trimmed = trimmed[:len(trimmed)-1]
+	}
+	return trimmed
+}
+
+func minInt(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
+}
