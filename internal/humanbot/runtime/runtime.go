@@ -24,6 +24,7 @@ type Config struct {
 	PollInterval      time.Duration
 	MinCandidateScore float64
 	JobTimeout        time.Duration
+	WorkerCount       int
 	GroupWhitelist    []int64
 	SelfID            int64
 }
@@ -61,7 +62,7 @@ type TurnObserver interface {
 }
 
 func DefaultConfig() Config {
-	return Config{PollInterval: 100 * time.Millisecond, MinCandidateScore: 0.5, JobTimeout: 120 * time.Second}
+	return Config{PollInterval: 100 * time.Millisecond, MinCandidateScore: 0.5, JobTimeout: 120 * time.Second, WorkerCount: 4}
 }
 
 type Outcome struct {
@@ -86,11 +87,18 @@ type Runtime struct {
 	whitelist              map[int64]struct{}
 	selfID                 int64
 
-	ctx    context.Context
-	cancel context.CancelFunc
-	wg     sync.WaitGroup
-	jobsWG sync.WaitGroup
-	locks  sync.Map
+	ctx       context.Context
+	cancel    context.CancelFunc
+	wg        sync.WaitGroup
+	workersWG sync.WaitGroup
+	jobs      chan candidateJob
+	locks     sync.Map
+}
+
+type candidateJob struct {
+	groupID   int64
+	candidate humandomain.ThoughtCandidate
+	timeout   time.Duration
 }
 
 // SetThoughtStore enables durable, concise deliberation records. It is
@@ -120,6 +128,9 @@ func New(parent context.Context, normalizer *normalizersvc.Service, working *gro
 	if cfg.JobTimeout <= 0 {
 		cfg.JobTimeout = defaults.JobTimeout
 	}
+	if cfg.WorkerCount <= 0 {
+		cfg.WorkerCount = defaults.WorkerCount
+	}
 	ctx, cancel := context.WithCancel(parent)
 	r := &Runtime{
 		normalizer:  normalizer,
@@ -132,11 +143,16 @@ func New(parent context.Context, normalizer *normalizersvc.Service, working *gro
 		selfID:      cfg.SelfID,
 		ctx:         ctx,
 		cancel:      cancel,
+		jobs:        make(chan candidateJob, cfg.WorkerCount*2),
 	}
 	for _, groupID := range cfg.GroupWhitelist {
 		r.whitelist[groupID] = struct{}{}
 	}
 	r.wg.Add(1)
+	for i := 0; i < cfg.WorkerCount; i++ {
+		r.workersWG.Add(1)
+		go r.worker()
+	}
 	go r.loop(cfg.PollInterval, cfg.MinCandidateScore, cfg.JobTimeout)
 	return r
 }
@@ -211,6 +227,7 @@ func (r *Runtime) ProcessRawEvent(ctx context.Context, payload []byte) (Outcome,
 
 func (r *Runtime) loop(interval time.Duration, minScore float64, timeout time.Duration) {
 	defer r.wg.Done()
+	defer close(r.jobs)
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 	for {
@@ -232,24 +249,57 @@ func (r *Runtime) loop(interval time.Duration, minScore float64, timeout time.Du
 				if err != nil || !ok {
 					continue
 				}
-				r.jobsWG.Add(1)
-				go func(groupID int64, candidate humandomain.ThoughtCandidate) {
-					defer r.jobsWG.Done()
-					lock := r.groupLock(groupID)
-					lock.Lock()
-					defer lock.Unlock()
-					ctx, cancel := context.WithTimeout(r.ctx, timeout)
-					defer cancel()
-					if _, err := r.processCandidate(ctx, groupID, candidate); err != nil {
-						slog.Warn("human runtime: candidate failed", "group_id", groupID, "candidate_id", candidate.CandidateID, "err", err)
-					}
-				}(groupID, candidate)
+				job := candidateJob{groupID: groupID, candidate: candidate, timeout: timeout}
+				select {
+				case r.jobs <- job:
+				case <-r.ctx.Done():
+					_ = r.working.Complete(context.Background(), groupID, candidate.CandidateID)
+					return
+				default:
+					// A claimed candidate must reach a terminal state even when the
+					// bounded queue is saturated.
+					_ = r.working.Complete(context.Background(), groupID, candidate.CandidateID)
+					slog.Warn("human runtime: candidate queue full", "group_id", groupID, "candidate_id", candidate.CandidateID)
+				}
 			}
 		}
 	}
 }
 
+func (r *Runtime) worker() {
+	defer r.workersWG.Done()
+	for {
+		select {
+		case <-r.ctx.Done():
+			// The scheduler closes jobs after it stops producing. Drain any
+			// already-claimed work so shutdown cannot leave accepted candidates
+			// leased forever.
+			for job := range r.jobs {
+				_ = r.working.Complete(context.Background(), job.groupID, job.candidate.CandidateID)
+			}
+			return
+		case job, ok := <-r.jobs:
+			if !ok {
+				return
+			}
+			lock := r.groupLock(job.groupID)
+			lock.Lock()
+			ctx, cancel := context.WithTimeout(r.ctx, job.timeout)
+			if _, err := r.processCandidate(ctx, job.groupID, job.candidate); err != nil {
+				slog.Warn("human runtime: candidate failed", "group_id", job.groupID, "candidate_id", job.candidate.CandidateID, "err", err)
+			}
+			cancel()
+			lock.Unlock()
+		}
+	}
+}
+
 func (r *Runtime) processCandidate(ctx context.Context, groupID int64, candidate humandomain.ThoughtCandidate) (Outcome, error) {
+	defer func() {
+		// Completion is idempotent and must happen on stale, expired, and error
+		// paths so accepted work cannot remain leased forever.
+		_ = r.working.Complete(context.Background(), groupID, candidate.CandidateID)
+	}()
 	if ok, err := r.working.CanExecute(ctx, groupID, candidate.CandidateID, time.Now()); err != nil {
 		return Outcome{}, err
 	} else if !ok {
@@ -275,7 +325,6 @@ func (r *Runtime) processCandidate(ctx context.Context, groupID int64, candidate
 	outcome, err := r.processWithValidation(ctx, envelope, candidate, func(checkCtx context.Context) (bool, error) {
 		return r.working.CanExecute(checkCtx, groupID, candidate.CandidateID, time.Now())
 	})
-	_ = r.working.Complete(ctx, groupID, candidate.CandidateID)
 	return outcome, err
 }
 
@@ -391,6 +440,6 @@ func (r *Runtime) groupLock(groupID int64) *sync.Mutex {
 func (r *Runtime) Close() error {
 	r.cancel()
 	r.wg.Wait()
-	r.jobsWG.Wait()
+	r.workersWG.Wait()
 	return nil
 }

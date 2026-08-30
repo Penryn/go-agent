@@ -16,6 +16,14 @@
 
 `App.Close` 使用 `errors.Join` 聚合 Scheduler、Background Runtime 和业务清理错误，不再通过连续赋值覆盖先前错误。
 
+### 3. Human Presence 调度并发有界化
+
+`humanbot/runtime` 改为固定 worker pool：scheduler 只负责 claim 和投递到有界 job queue，worker 按 group lock 串行执行 deliberation/action。`runtime.worker_count` 通过 bootstrap 注入，默认值为 4（应用配置默认值仍为 2）。
+
+- 不再为每个候选创建无限 goroutine，模型延迟或群数量突增时并发保持有界。
+- 队列满载、模型失败、候选过期和关闭期间，已 claim 的候选都会调用 `Complete` 收敛到终态。
+- worker pool 仍是进程内 best-effort 队列，未解决进程崩溃时的任务恢复问题。
+
 ## 下一阶段：可靠后台任务
 
 当前进程内队列在满载时会丢弃媒体理解、向量索引和策展任务。下一阶段应引入持久化 outbox：
@@ -29,7 +37,7 @@
 
 ## 下一阶段：调度与 Actor 生命周期
 
-`humanbot/runtime` 当前按固定 tick 遍历所有群，并为候选创建 goroutine。建议改为：
+`humanbot/runtime` 已完成固定 worker pool 和 per-group serialization；下一步应将固定 tick 的全量群遍历改为可唤醒的 per-group queue，并增加 Actor idle TTL：
 
 ```text
 event -> per-group queue -> bounded global workers -> per-group serialization

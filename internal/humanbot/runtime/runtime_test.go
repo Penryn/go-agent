@@ -2,13 +2,16 @@ package runtime
 
 import (
 	"context"
+	"errors"
 	"testing"
+	"time"
 
 	"github.com/phlin/go-agent/internal/adapters/inmemory"
 	"github.com/phlin/go-agent/internal/config"
 	"github.com/phlin/go-agent/internal/core/ports"
 	conversationdomain "github.com/phlin/go-agent/internal/domain/conversation"
 	policydomain "github.com/phlin/go-agent/internal/domain/policy"
+	humandomain "github.com/phlin/go-agent/internal/humanbot/domain"
 	"github.com/phlin/go-agent/internal/humanbot/runtime/deliberation"
 	"github.com/phlin/go-agent/internal/humanbot/runtime/group_actor"
 	"github.com/phlin/go-agent/internal/humanbot/runtime/ingress"
@@ -18,6 +21,12 @@ import (
 	policysvc "github.com/phlin/go-agent/internal/services/policy"
 	promptingsvc "github.com/phlin/go-agent/internal/services/prompting"
 )
+
+type failingDeliberator struct{}
+
+func (failingDeliberator) Deliberate(context.Context, deliberation.Input) (deliberation.Result, error) {
+	return deliberation.Result{}, errors.New("deliberation failed")
+}
 
 func TestProcessRawEventUsesCandidateRuntime(t *testing.T) {
 	ctx := context.Background()
@@ -48,5 +57,45 @@ func TestProcessRawEventUsesCandidateRuntime(t *testing.T) {
 	}
 	if len(outcome.Snapshot.RecentTurns) == 0 || outcome.Snapshot.RecentTurns[len(outcome.Snapshot.RecentTurns)-1].Kind != conversationdomain.EventMessage {
 		t.Fatalf("current event missing from context: %+v", outcome.Snapshot.RecentTurns)
+	}
+}
+
+func TestProcessCandidateCompletesAfterDeliberationError(t *testing.T) {
+	ctx := context.Background()
+	working := group_actor.NewManager(ingress.NewMemoryEventLog())
+	defer working.Close()
+
+	at := time.Now()
+	record := humandomain.EventRecord{
+		EventID: "error-event", GroupID: 7, UserID: 9, Origin: humandomain.OriginInbound, Timestamp: at,
+		Event: conversationdomain.ConversationEvent{EventID: "error-event", GroupID: 7, UserID: 9, Kind: conversationdomain.EventMessage, Text: "hello", TimestampUnix: at.Unix()},
+	}
+	_, err := working.Observe(ctx, record)
+	if err != nil {
+		t.Fatalf("observe: %v", err)
+	}
+	candidateInput := humandomain.ThoughtCandidate{
+		CandidateID: "error-candidate", SourceEventIDs: []string{"error-event"}, Intent: "answer",
+		Urgency: 1, Score: 1, DueAt: at.Add(-time.Second), ExpiresAt: at.Add(time.Minute), Status: humandomain.CandidatePending,
+	}
+	if err := working.EnqueueCandidate(ctx, 7, candidateInput); err != nil {
+		t.Fatalf("enqueue: %v", err)
+	}
+	candidate, ok, err := working.ClaimDue(ctx, 7, time.Now(), 0)
+	if err != nil || !ok {
+		t.Fatalf("claim: candidate=%+v ok=%v err=%v", candidate, ok, err)
+	}
+	runtime := &Runtime{working: working, deliberator: failingDeliberator{}}
+	if _, err := runtime.processCandidate(ctx, 7, candidate); err == nil {
+		t.Fatal("expected deliberation error")
+	}
+	final, err := working.Snapshot(ctx, 7)
+	if err != nil {
+		t.Fatalf("snapshot: %v", err)
+	}
+	for _, item := range final.Candidates {
+		if item.CandidateID == candidate.CandidateID && item.Status != humandomain.CandidateCompleted {
+			t.Fatalf("candidate was not completed after error: %+v", item)
+		}
 	}
 }

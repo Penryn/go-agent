@@ -188,6 +188,7 @@ func NewApp(ctx context.Context, cfg config.Config) (*App, error) {
 		GroupWhitelist: cfg.QQ.GroupWhitelist,
 		SelfID:         cfg.QQ.SelfID,
 		JobTimeout:     120 * time.Second,
+		WorkerCount:    cfg.Runtime.WorkerCount,
 	})
 	if thoughtStore, ok := stores.memory.(ports.ThoughtStore); ok {
 		humanRuntime.SetThoughtStore(thoughtStore)
