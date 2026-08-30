@@ -92,8 +92,9 @@ EnqueueCandidate -> ClaimDue -> CanExecute -> Deliberate -> Execute -> Complete
 6. `fd3184e` 人格配置与运行时状态分离
 7. `c516543` Agent 工具循环预算与审计
 8. `034fc07` ThoughtRecord 持久化与新消息打断队列
-9. `2ff708a` 修复节奏队列取消句柄的并发安全
-10. `8901a08` 本改造文档，`1a46bd0` 配置示例
+9. `2ff708a` 修复节奏队列取消句柄的并发安全，`be0c010` 补充取消回归测试
+10. `f3cbcaa` 工具 Runtime 缺失时回退确定性 Planner
+11. `8901a08` 本改造文档，`1a46bd0` 配置示例，`41cf2bc` 更新提交映射
 
 每个提交只包含对应功能或测试；旧设计文档删除保持为工作区原有状态，未混入上述功能提交。
 
