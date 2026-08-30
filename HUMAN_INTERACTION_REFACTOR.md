@@ -4,7 +4,7 @@
 
 本项目的目标不是“更会自动回复的机器人”，而是一个具备持续存在感的群成员：能记住事实，会根据关系和即时状态调整语气，知道什么时候应该思考、什么时候保持沉默，并能通过后续学习修正自己的行为。
 
-本轮覆盖五个主题：上下文增量注入与平台消息归档、Agent 工具循环控制、人格配置与运行时状态分离、主动任务模型、混合检索。
+本轮覆盖八个主题：学习反馈链、Actor 状态持久化、结构化认知记录、带取消的输出节奏、上下文增量注入与平台消息归档、Agent 工具循环控制、人格配置与运行时状态分离、主动任务模型与混合检索。
 
 总体链路：
 
@@ -15,19 +15,19 @@
   -> Reflection/Curator/Learning
 ```
 
-## 2. AstrBot 对照与迁移原则
+## 2. Koishi 对照与迁移原则
 
 参考文件：
 
-- `astrbot/builtin_stars/astrbot/group_chat_context.py`：群上下文与消息窗口
-- `astrbot/core/platform_message_history_mgr.py`：平台消息历史归档
-- `astrbot/core/agent/runners/tool_loop_agent_runner.py`：Agent 工具循环
-- `astrbot/core/agent/context/manager.py`、`compressor.py`、`truncator.py`：上下文压缩与截断
-- `astrbot/core/persona_mgr.py`：人格配置管理
-- `astrbot/core/cron/manager.py`：定时/主动任务
-- `astrbot/core/knowledge_base/retrieval/manager.py`：知识库检索
+- `/Users/phlin/Public/code/preference/koishi/packages/core/src/session.ts`：`sendQueued()`、`cancelQueued()` 与会话级发送队列
+- `/Users/phlin/Public/code/preference/koishi/packages/core/src/context.ts`：`delay.message`、`delay.character`、`delay.cancel` 等节奏配置
+- `/Users/phlin/Public/code/preference/koishi/packages/core/src/middleware.ts`：可组合 middleware、最大深度和生命周期清理
+- `/Users/phlin/Public/code/preference/koishi/packages/loader/src/shared.ts`：插件作用域、热重载和 dispose
+- `/Users/phlin/Public/code/preference/koishi/packages/core/src/database.ts`、`session.ts`：会话中的用户/频道观察与持久化边界
 
-吸收的原则：平台事件先成为不可变事实，再生成可重建的运行时投影；上下文按窗口、游标和预算增量构建；工具循环必须有迭代、调用、结果和重复限制；静态人格与即时状态分开；主动行为先形成候选，再由调度器决定；关键词与语义检索并行并稳定融合。
+吸收的原则：会话先承载事件和上下文，再由可组合处理链决定动作；发送节奏属于会话状态，队列可以取消且不会阻塞新事件；配置集中声明节奏参数；插件和后台任务必须有明确的作用域与 dispose；用户/频道观察属于数据层，不与人格配置混淆。
+
+本项目的映射：Koishi 的 `Session` 对应 `ConversationEvent` + `Group Actor`；`sendQueued()` 对应 `Action Executor.executeRhythm()`；middleware 生命周期对应 Runtime 的 observer、background job 和 `Close()`。当前 Go 实现默认使用 350ms 的 bubble 间隔，并通过 `WithBubbleDelay` 注入；后续可进一步接入 Koishi 式“固定消息延迟与按字符长度取最大值”的 YAML 配置。
 
 明确不照搬：
 
@@ -65,6 +65,16 @@ EnqueueCandidate -> ClaimDue -> CanExecute -> Deliberate -> Execute -> Complete
 ### 3.5 混合检索
 
 `queryMemoriesDualTrack` 并行调用 MySQL 关键词检索和 Qdrant 语义检索。Qdrant 失败时降级为 MySQL。结果使用 Reciprocal Rank Fusion（`1/(k+rank)`）融合，按 `MemoryID` 去重，并优先保留 MySQL 的完整字段，最终受 top-k 限制。
+
+### 3.6 学习链与结构化认知
+
+入站事件先更新画像投影；完成一次审议和动作后，Runtime 将 Curator 放入后台队列，结果统一经过 Review 再写入长期记忆。原有按 watermark 的批处理学习继续保留，用于从较长时间窗口提炼群黑话和高频表达。
+
+每次完成的 deliberation 写入一条 `ThoughtRecord`，包含候选、解释、证据、不确定性、选择动作和实际结果。它是可检索的认知摘要，不保存模型隐藏 chain-of-thought。当前闭环为“观察 -> 候选 -> 审议 -> 动作 -> 反思/学习”；摘要 checkpoint、长期目标和基于结果的策略更新仍是后续工作。
+
+### 3.7 Koishi 风格的输出节奏
+
+Reply 计划中的多个 bubble 会被拆成多个平台动作，动作之间等待节奏延迟。每个群维护独立取消 token，新的入站事件会取消旧队列的未发送 bubble；队列结束时只清理自己的 token，避免误删新队列。单 bubble、meme、react、recall、poke 仍保持一次发送。
 
 ## 4. 数据与接口
 
@@ -108,6 +118,7 @@ EnqueueCandidate -> ClaimDue -> CanExecute -> Deliberate -> Execute -> Complete
 - 主动候选只能经 Actor 入队，并接受到期、过期、supersede 和冷却检查。
 - MySQL 与 Qdrant 可融合去重，Qdrant 不可用时仍可关键词检索。
 - 完成的 deliberation 可写入不含隐藏推理的 `ThoughtRecord`。
+- 多 bubble 回复按节奏拆分发送，新事件可以取消未发送部分；单 bubble 行为不回归。
 - `go test ./...` 与 `go test -race ./...` 通过。
 
 ## 7. 后续演进
