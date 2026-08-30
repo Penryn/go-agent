@@ -1,13 +1,16 @@
 package napcat
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
-	"strings"
+	"strconv"
 	"time"
+
+	napcatsdk "github.com/zjutjh/napcat-sdk"
+	"github.com/zjutjh/napcat-sdk/api"
+	"github.com/zjutjh/napcat-sdk/message"
 
 	conversationdomain "github.com/phlin/go-agent/internal/domain/conversation"
 	policydomain "github.com/phlin/go-agent/internal/domain/policy"
@@ -15,141 +18,101 @@ import (
 )
 
 type Sender struct {
-	baseURL     string
-	accessToken string
-	client      *http.Client
+	client *napcatsdk.Client
 }
 
-type sendGroupMsgRequest struct {
-	GroupID int64                               `json:"group_id"`
-	Message []conversationdomain.MessageSegment `json:"message"`
-}
-
-type sendGroupMsgResponse struct {
-	Status  string `json:"status"`
-	RetCode int    `json:"retcode"`
-	Data    struct {
-		MessageID any `json:"message_id"`
-	} `json:"data"`
-	Message string `json:"message"`
-	Wording string `json:"wording"`
-}
-
-type recallMessageRequest struct {
-	MessageID string `json:"message_id"`
-}
-
-type pokeRequest struct {
-	GroupID int64 `json:"group_id"`
-	UserID  int64 `json:"user_id"`
-}
-
-func NewSender(baseURL, accessToken string, client *http.Client) *Sender {
-	if client == nil {
-		client = &http.Client{Timeout: 5 * time.Second}
+func NewSender(baseURL, accessToken string, httpClient *http.Client) *Sender {
+	options := []napcatsdk.Option{napcatsdk.WithToken(accessToken)}
+	if httpClient == nil {
+		options = append(options, napcatsdk.WithHTTPTimeout(5*time.Second))
+	} else {
+		options = append(options, napcatsdk.WithHTTPClient(httpClient))
 	}
-	return &Sender{
-		baseURL:     strings.TrimRight(baseURL, "/"),
-		accessToken: accessToken,
-		client:      client,
-	}
+
+	return &Sender{client: napcatsdk.NewHTTPClient(baseURL, options...)}
 }
 
 func (s *Sender) Send(ctx context.Context, action replydomain.ActionExecution) (replydomain.ActionReceipt, error) {
-	if action.Kind != policydomain.ActionReply && action.Kind != policydomain.ActionMemeOnly {
-		switch action.Kind {
-		case policydomain.ActionRecall:
-			return s.sendRecall(ctx, action)
-		case policydomain.ActionPokeBack:
-			return s.sendPoke(ctx, action)
-		default:
-			return replydomain.ActionReceipt{ActionID: action.ActionID, Sent: false}, nil
-		}
+	switch action.Kind {
+	case policydomain.ActionReply, policydomain.ActionMemeOnly:
+		return s.sendGroupMessage(ctx, action)
+	case policydomain.ActionRecall:
+		return s.sendRecall(ctx, action)
+	case policydomain.ActionPokeBack:
+		return s.sendPoke(ctx, action)
+	default:
+		return replydomain.ActionReceipt{ActionID: action.ActionID, Sent: false}, nil
 	}
+}
 
-	reqBody := BuildSendGroupMessageRequest(action)
-	data, err := json.Marshal(reqBody)
+func (s *Sender) sendGroupMessage(ctx context.Context, action replydomain.ActionExecution) (replydomain.ActionReceipt, error) {
+	request, err := BuildSendGroupMessageRequest(action)
 	if err != nil {
-		return replydomain.ActionReceipt{}, err
+		return replydomain.ActionReceipt{}, fmt.Errorf("build send_group_msg request: %w", err)
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, s.baseURL+"/send_group_msg", bytes.NewReader(data))
+	response, err := s.client.API().SendGroupMsg(ctx, request)
 	if err != nil {
-		return replydomain.ActionReceipt{}, err
-	}
-	req.Header.Set("Content-Type", "application/json")
-	if s.accessToken != "" {
-		req.Header.Set("Authorization", "Bearer "+s.accessToken)
-	}
-
-	resp, err := s.client.Do(req)
-	if err != nil {
-		return replydomain.ActionReceipt{}, err
-	}
-	defer resp.Body.Close()
-
-	var decoded sendGroupMsgResponse
-	if err := json.NewDecoder(resp.Body).Decode(&decoded); err != nil {
-		return replydomain.ActionReceipt{}, err
-	}
-	if resp.StatusCode >= 300 || decoded.RetCode != 0 {
-		return replydomain.ActionReceipt{}, fmt.Errorf("send_group_msg failed: status=%d retcode=%d message=%s", resp.StatusCode, decoded.RetCode, decoded.Message)
+		return replydomain.ActionReceipt{}, fmt.Errorf("send_group_msg: %w", err)
 	}
 
 	return replydomain.ActionReceipt{
 		ActionID:          action.ActionID,
-		PlatformMessageID: fmt.Sprintf("%v", decoded.Data.MessageID),
+		PlatformMessageID: strconv.FormatFloat(response.MessageID, 'f', -1, 64),
 		Sent:              true,
 	}, nil
 }
 
-func BuildSendGroupMessageRequest(action replydomain.ActionExecution) sendGroupMsgRequest {
-	return sendGroupMsgRequest{
-		GroupID: action.GroupID,
-		Message: action.Segments,
+func BuildSendGroupMessageRequest(action replydomain.ActionExecution) (api.SendGroupMsgRequest, error) {
+	groupID := strconv.FormatInt(action.GroupID, 10)
+	ob11Message, err := api.NewOB11Message(toSDKMessage(action.Segments))
+	if err != nil {
+		return api.SendGroupMsgRequest{}, err
 	}
+
+	return api.SendGroupMsgRequest{
+		GroupID: &groupID,
+		Message: ob11Message,
+	}, nil
+}
+
+func toSDKMessage(segments []conversationdomain.MessageSegment) message.Chain {
+	chain := make(message.Chain, len(segments))
+	for i, segment := range segments {
+		chain[i] = message.Segment{Type: segment.Type, Data: segment.Data}
+	}
+	return chain
 }
 
 func (s *Sender) sendRecall(ctx context.Context, action replydomain.ActionExecution) (replydomain.ActionReceipt, error) {
-	resp, err := s.postJSON(ctx, "/delete_msg", recallMessageRequest{MessageID: action.TargetMessageID})
+	messageID, err := json.Marshal(action.TargetMessageID)
 	if err != nil {
-		return replydomain.ActionReceipt{}, err
+		return replydomain.ActionReceipt{}, fmt.Errorf("encode delete_msg message_id: %w", err)
 	}
-	return replydomain.ActionReceipt{ActionID: action.ActionID, PlatformMessageID: fmt.Sprintf("%v", resp.Data.MessageID), Sent: true}, nil
+
+	_, err = s.client.API().DeleteMsg(ctx, api.DeleteMsgRequest{
+		MessageID: api.DeleteMsgRequestMessageIDUnion{Raw: messageID},
+	})
+	if err != nil {
+		return replydomain.ActionReceipt{}, fmt.Errorf("delete_msg: %w", err)
+	}
+
+	return replydomain.ActionReceipt{
+		ActionID:          action.ActionID,
+		PlatformMessageID: action.TargetMessageID,
+		Sent:              true,
+	}, nil
 }
 
 func (s *Sender) sendPoke(ctx context.Context, action replydomain.ActionExecution) (replydomain.ActionReceipt, error) {
-	_, err := s.postJSON(ctx, "/group_poke", pokeRequest{GroupID: action.GroupID, UserID: action.TargetUserID})
+	groupID := strconv.FormatInt(action.GroupID, 10)
+	_, err := s.client.API().GroupPoke(ctx, api.GroupPokeRequest{
+		GroupID: &groupID,
+		UserID:  strconv.FormatInt(action.TargetUserID, 10),
+	})
 	if err != nil {
-		return replydomain.ActionReceipt{}, err
+		return replydomain.ActionReceipt{}, fmt.Errorf("group_poke: %w", err)
 	}
-	return replydomain.ActionReceipt{ActionID: action.ActionID, Sent: true}, nil
-}
 
-func (s *Sender) postJSON(ctx context.Context, path string, payload any) (sendGroupMsgResponse, error) {
-	var decoded sendGroupMsgResponse
-	data, err := json.Marshal(payload)
-	if err != nil {
-		return decoded, err
-	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, s.baseURL+path, bytes.NewReader(data))
-	if err != nil {
-		return decoded, err
-	}
-	req.Header.Set("Content-Type", "application/json")
-	if s.accessToken != "" {
-		req.Header.Set("Authorization", "Bearer "+s.accessToken)
-	}
-	resp, err := s.client.Do(req)
-	if err != nil {
-		return decoded, err
-	}
-	defer resp.Body.Close()
-	if err := json.NewDecoder(resp.Body).Decode(&decoded); err != nil {
-		return decoded, err
-	}
-	if resp.StatusCode >= 300 || decoded.RetCode != 0 {
-		return decoded, fmt.Errorf("onebot call failed: status=%d retcode=%d message=%s", resp.StatusCode, decoded.RetCode, decoded.Message)
-	}
-	return decoded, nil
+	return replydomain.ActionReceipt{ActionID: action.ActionID, Sent: true}, nil
 }

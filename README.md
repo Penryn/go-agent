@@ -8,7 +8,7 @@
 - 前台 Agent：`Main Persona Agent` 使用 Eino ADK，`Gate` / `Vision` 直接走 `BaseChatModel.Generate`
 - 后台流水线：`Curator` 使用 `compose.Graph`，`Learning` 使用 `compose.Workflow`
 - 存储与基础设施：MySQL、Redis、Qdrant、MinIO 适配层和本地 integration test
-- 协议边界：OneBot 11 标准优先，NapCat 专有动作只在适配器层
+- 协议边界：通过 [`zjutjh/napcat-sdk`](https://github.com/zjutjh/napcat-sdk) 接入 NapCat；OneBot 11 标准优先，NapCat 专有动作只在适配器层
 
 ## 目录
 
@@ -68,6 +68,7 @@ POST /onebot/events
 
 - 入站：默认通过 NapCat 正向 WebSocket `qq.event_ws_url` 收事件
 - 出站：默认通过 OneBot 标准动作 `send_group_msg`
+- SDK：正向 WebSocket、事件解析、HTTP action 调用和错误 envelope 统一由 `github.com/zjutjh/napcat-sdk` 处理
 - 引用回复：通过 `reply` 消息段 + `text` 消息段组合
 - 撤回：映射 `delete_msg`
 - 可选 poke：仅在 NapCat 出站适配器中映射 `group_poke`
@@ -106,6 +107,7 @@ NapCat 启动并完成 QQ 登录后，打开 `6099` 端口对应的管理页面�
 补充说明：
 
 - 当前默认链路是 `WS 收事件 + HTTP 发动作`。
+- WebSocket 断线后应用会自动重连；SDK 解析事件后仍以原始 JSON 进入领域归一化层。
 - `POST /onebot/events` 仍然保留，主要用于本地回放和兼容性调试。
 - 当前出站调用的是 OneBot 11 标准动作 `send_group_msg`，不是 NapCat 私有动作。
 

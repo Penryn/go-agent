@@ -9,23 +9,23 @@ import (
 	"testing"
 	"time"
 
-	"github.com/gorilla/websocket"
+	"github.com/coder/websocket"
 )
 
 func TestWSReceiverReceivesEvent(t *testing.T) {
 	payloadCh := make(chan []byte, 1)
-	upgrader := websocket.Upgrader{}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if got := r.Header.Get("Authorization"); got != "Bearer secret" {
-			t.Fatalf("unexpected authorization header: %q", got)
+			t.Errorf("unexpected authorization header: %q", got)
 		}
-		conn, err := upgrader.Upgrade(w, r, nil)
+		conn, err := websocket.Accept(w, r, nil)
 		if err != nil {
-			t.Fatalf("upgrade websocket: %v", err)
+			return
 		}
-		defer conn.Close()
-		if err := conn.WriteMessage(websocket.TextMessage, []byte(`{"post_type":"message"}`)); err != nil {
-			t.Fatalf("write event: %v", err)
+		defer conn.CloseNow()
+		if err := conn.Write(context.Background(), websocket.MessageText, []byte(`{"post_type":"message"}`)); err != nil {
+			t.Errorf("write event: %v", err)
+			return
 		}
 		<-r.Context().Done()
 	}))
@@ -34,7 +34,7 @@ func TestWSReceiverReceivesEvent(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	receiver := NewWSReceiver(wsURL(server.URL), "secret", nil)
+	receiver := NewWSReceiver(wsURL(server.URL), "secret")
 	done := make(chan error, 1)
 	go func() {
 		done <- receiver.Receive(ctx, func(_ context.Context, payload []byte) error {
@@ -64,19 +64,20 @@ func TestWSReceiverReceivesEvent(t *testing.T) {
 }
 
 func TestWSReceiverContinuesAfterHandlerError(t *testing.T) {
-	upgrader := websocket.Upgrader{}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		conn, err := upgrader.Upgrade(w, r, nil)
+		conn, err := websocket.Accept(w, r, nil)
 		if err != nil {
-			t.Fatalf("upgrade websocket: %v", err)
+			return
 		}
-		defer conn.Close()
+		defer conn.CloseNow()
 
-		if err := conn.WriteMessage(websocket.TextMessage, []byte(`{"post_type":"message","message_id":"1"}`)); err != nil {
-			t.Fatalf("write first event: %v", err)
+		if err := conn.Write(context.Background(), websocket.MessageText, []byte(`{"post_type":"message","message_id":"1"}`)); err != nil {
+			t.Errorf("write first event: %v", err)
+			return
 		}
-		if err := conn.WriteMessage(websocket.TextMessage, []byte(`{"post_type":"message","message_id":"2"}`)); err != nil {
-			t.Fatalf("write second event: %v", err)
+		if err := conn.Write(context.Background(), websocket.MessageText, []byte(`{"post_type":"message","message_id":"2"}`)); err != nil {
+			t.Errorf("write second event: %v", err)
+			return
 		}
 		<-r.Context().Done()
 	}))
@@ -86,19 +87,20 @@ func TestWSReceiverContinuesAfterHandlerError(t *testing.T) {
 	defer cancel()
 
 	var handled atomic.Int32
-	receiver := NewWSReceiver(wsURL(server.URL), "", nil)
+	unexpectedPayload := make(chan string, 2)
+	receiver := NewWSReceiver(wsURL(server.URL), "")
 	done := make(chan error, 1)
 	go func() {
 		done <- receiver.Receive(ctx, func(_ context.Context, payload []byte) error {
 			switch handled.Add(1) {
 			case 1:
 				if string(payload) != `{"post_type":"message","message_id":"1"}` {
-					t.Fatalf("unexpected first payload: %s", string(payload))
+					unexpectedPayload <- string(payload)
 				}
 				return errors.New("boom")
 			case 2:
 				if string(payload) != `{"post_type":"message","message_id":"2"}` {
-					t.Fatalf("unexpected second payload: %s", string(payload))
+					unexpectedPayload <- string(payload)
 				}
 				cancel()
 			}
@@ -117,6 +119,11 @@ func TestWSReceiverContinuesAfterHandlerError(t *testing.T) {
 
 	if got := handled.Load(); got != 2 {
 		t.Fatalf("expected receiver to keep processing after handler error, handled=%d", got)
+	}
+	select {
+	case payload := <-unexpectedPayload:
+		t.Fatalf("unexpected payload: %s", payload)
+	default:
 	}
 }
 

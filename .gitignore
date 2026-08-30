@@ -2,3 +2,4 @@ bin
 data
 .DS_Store
 .codex
+.env

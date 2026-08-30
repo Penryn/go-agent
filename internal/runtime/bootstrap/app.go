@@ -90,7 +90,7 @@ func NewApp(ctx context.Context, cfg config.Config) (*App, error) {
 		cleanup:   stores.Close,
 	}
 	if cfg.QQ.Enabled && cfg.QQ.EventWSURL != "" {
-		app.inbound = inboundnapcat.NewWSReceiver(cfg.QQ.EventWSURL, cfg.QQ.AccessToken, nil)
+		app.inbound = inboundnapcat.NewWSReceiver(cfg.QQ.EventWSURL, cfg.QQ.AccessToken)
 	}
 
 	mux := http.NewServeMux()

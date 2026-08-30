@@ -2,28 +2,23 @@ package napcat
 
 import (
 	"context"
-	"errors"
 	"log"
-	"net/http"
 	"time"
 
-	"github.com/gorilla/websocket"
+	napcatsdk "github.com/zjutjh/napcat-sdk"
 )
 
 type WSReceiver struct {
 	url         string
 	accessToken string
-	dialer      *websocket.Dialer
+	options     []napcatsdk.Option
 }
 
-func NewWSReceiver(url, accessToken string, dialer *websocket.Dialer) *WSReceiver {
-	if dialer == nil {
-		dialer = websocket.DefaultDialer
-	}
+func NewWSReceiver(url, accessToken string, options ...napcatsdk.Option) *WSReceiver {
 	return &WSReceiver{
 		url:         url,
 		accessToken: accessToken,
-		dialer:      dialer,
+		options:     append([]napcatsdk.Option(nil), options...),
 	}
 }
 
@@ -39,29 +34,18 @@ func (r *WSReceiver) Receive(ctx context.Context, handler func(context.Context, 
 			return err
 		}
 
-		conn, _, err := r.dial(ctx)
+		connected, err := r.receiveOnce(ctx, handler)
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		if connected {
+			backoff = minBackoff
+		}
 		if err != nil {
-			if waitErr := waitContext(ctx, backoff); waitErr != nil {
-				return waitErr
-			}
-			backoff *= 2
-			if backoff > maxBackoff {
-				backoff = maxBackoff
-			}
-			continue
+			log.Printf("napcat websocket disconnected: %v", err)
 		}
-
-		backoff = minBackoff
-		err = r.readLoop(ctx, conn, handler)
-		_ = conn.Close()
-		if err == nil || errors.Is(err, context.Canceled) {
-			if ctx.Err() != nil {
-				return ctx.Err()
-			}
-			continue
-		}
-		if waitErr := waitContext(ctx, backoff); waitErr != nil {
-			return waitErr
+		if err := waitContext(ctx, backoff); err != nil {
+			return err
 		}
 		backoff *= 2
 		if backoff > maxBackoff {
@@ -70,45 +54,35 @@ func (r *WSReceiver) Receive(ctx context.Context, handler func(context.Context, 
 	}
 }
 
-func (r *WSReceiver) dial(ctx context.Context) (*websocket.Conn, *http.Response, error) {
-	header := http.Header{}
-	if r.accessToken != "" {
-		header.Set("Authorization", "Bearer "+r.accessToken)
-		header.Set("X-Access-Token", r.accessToken)
+func (r *WSReceiver) receiveOnce(ctx context.Context, handler func(context.Context, []byte) error) (bool, error) {
+	options := []napcatsdk.Option{
+		napcatsdk.WithToken(r.accessToken),
+		napcatsdk.WithEventBuffer(1024),
+		napcatsdk.WithEventDeliveryTimeout(time.Second),
 	}
-	return r.dialer.DialContext(ctx, r.url, header)
-}
+	options = append(options, r.options...)
 
-func (r *WSReceiver) readLoop(ctx context.Context, conn *websocket.Conn, handler func(context.Context, []byte) error) error {
-	closeDone := make(chan struct{})
-	go func() {
-		select {
-		case <-ctx.Done():
-			_ = conn.Close()
-		case <-closeDone:
-		}
-	}()
-	defer close(closeDone)
-
-	conn.SetReadLimit(16 << 20)
-	conn.SetPongHandler(func(_ string) error {
-		return conn.SetReadDeadline(time.Now().Add(90 * time.Second))
-	})
-	_ = conn.SetReadDeadline(time.Now().Add(90 * time.Second))
+	client, err := napcatsdk.DialWebSocket(ctx, r.url, options...)
+	if err != nil {
+		return false, err
+	}
 
 	for {
-		msgType, payload, err := conn.ReadMessage()
-		if err != nil {
-			if ctx.Err() != nil {
-				return ctx.Err()
+		select {
+		case <-ctx.Done():
+			go func() { _ = client.Close() }()
+			return true, ctx.Err()
+		case event, ok := <-client.Events():
+			if !ok {
+				_ = client.Close()
+				return true, client.Err()
 			}
-			return err
-		}
-		if msgType != websocket.TextMessage && msgType != websocket.BinaryMessage {
-			continue
-		}
-		if err := handler(ctx, payload); err != nil {
-			log.Printf("napcat ws handler error: %v", err)
+			if event == nil {
+				continue
+			}
+			if err := handler(ctx, event.Raw()); err != nil {
+				log.Printf("napcat ws handler error: %v", err)
+			}
 		}
 	}
 }
