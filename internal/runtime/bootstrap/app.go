@@ -17,6 +17,7 @@ import (
 	"github.com/phlin/go-agent/internal/config"
 	"github.com/phlin/go-agent/internal/core/ports"
 	"github.com/phlin/go-agent/internal/core/usecase"
+	backgroundruntime "github.com/phlin/go-agent/internal/runtime/background"
 	"github.com/phlin/go-agent/internal/runtime/dispatcher"
 	"github.com/phlin/go-agent/internal/runtime/scheduler"
 	turnruntime "github.com/phlin/go-agent/internal/runtime/turn"
@@ -41,6 +42,7 @@ import (
 type App struct {
 	cfg         config.Config
 	turnRuntime *turnruntime.Runtime
+	background  *backgroundruntime.Runtime
 	normalizer  *normalizersvc.Service
 	dispatcher  *dispatcher.GroupDispatcher
 	inbound     ports.InboundSource
@@ -158,6 +160,10 @@ func NewApp(ctx context.Context, cfg config.Config) (*App, error) {
 	moodSvc := personasvc.New(stores.state, cfg.Persona.ID)
 
 	profileService := profilesvc.New(stores.profile, cfg.Persona.ID)
+	backgroundRuntime := backgroundruntime.New(context.WithoutCancel(ctx), backgroundruntime.Config{
+		QueueSize:   cfg.Runtime.QueueLength,
+		WorkerCount: cfg.Runtime.WorkerCount,
+	})
 
 	processor := usecase.NewProcessor(
 		normalizer,
@@ -174,6 +180,7 @@ func NewApp(ctx context.Context, cfg config.Config) (*App, error) {
 		usecase.WithMemeService(memeService),
 		usecase.WithVisionService(visionService),
 		usecase.WithPersonaService(moodSvc),
+		usecase.WithBackgroundRuntime(backgroundRuntime),
 	)
 	turnRuntime := turnruntime.New(processor)
 
@@ -185,6 +192,7 @@ func NewApp(ctx context.Context, cfg config.Config) (*App, error) {
 	reviewService := reviewsvc.New(memorySvc)
 	learningSvc, learnErr := learningsvc.New(ctx, stores.memory, reviewService)
 	if learnErr != nil {
+		_ = backgroundRuntime.Close(context.Background())
 		_ = stores.Close()
 		return nil, fmt.Errorf("learning service init: %w", learnErr)
 	}
@@ -193,6 +201,7 @@ func NewApp(ctx context.Context, cfg config.Config) (*App, error) {
 	app := &App{
 		cfg:         cfg,
 		turnRuntime: turnRuntime,
+		background:  backgroundRuntime,
 		normalizer:  normalizer,
 		sched:       sched,
 		cleanup:     stores.Close,
@@ -283,8 +292,13 @@ func (a *App) ProcessRawEvent(ctx context.Context, payload []byte) (turnruntime.
 
 func (a *App) Close() error {
 	a.closeOnce.Do(func() {
+		if a.background != nil {
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			a.closeErr = a.background.Close(ctx)
+			cancel()
+		}
 		if a.cleanup != nil {
-			a.closeErr = a.cleanup()
+			a.closeErr = errors.Join(a.closeErr, a.cleanup())
 		}
 	})
 	return a.closeErr

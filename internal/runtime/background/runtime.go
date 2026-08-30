@@ -105,6 +105,12 @@ func runJob(parent context.Context, job Job) {
 	}
 }
 
+// RunInline executes a job with the same timeout and recovery semantics. It is
+// used by compatibility callers that have not been wired to a Runtime yet.
+func RunInline(ctx context.Context, job Job) {
+	runJob(ctx, job)
+}
+
 // Close stops accepting jobs, drains queued work, and waits for workers.
 func (r *Runtime) Close(ctx context.Context) error {
 	r.mu.Lock()

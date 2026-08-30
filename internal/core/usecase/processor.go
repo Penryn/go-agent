@@ -11,15 +11,16 @@ import (
 	mediadomain "github.com/phlin/go-agent/internal/domain/media"
 	policydomain "github.com/phlin/go-agent/internal/domain/policy"
 	replydomain "github.com/phlin/go-agent/internal/domain/reply"
+	backgroundruntime "github.com/phlin/go-agent/internal/runtime/background"
 	actionsvc "github.com/phlin/go-agent/internal/services/action"
 	autonomysvc "github.com/phlin/go-agent/internal/services/autonomy"
 	contextsvc "github.com/phlin/go-agent/internal/services/context"
 	memesvc "github.com/phlin/go-agent/internal/services/meme"
 	memsvc "github.com/phlin/go-agent/internal/services/memory"
 	multimodalsvc "github.com/phlin/go-agent/internal/services/multimodal"
+	normalizersvc "github.com/phlin/go-agent/internal/services/normalizer"
 	personasvc "github.com/phlin/go-agent/internal/services/persona"
 	profilesvc "github.com/phlin/go-agent/internal/services/profile"
-	normalizersvc "github.com/phlin/go-agent/internal/services/normalizer"
 )
 
 type Planner interface {
@@ -36,6 +37,7 @@ type Processor struct {
 	state          ports.RuntimeStateStore
 	groupWhitelist map[int64]struct{}
 	personaID      string
+	background     backgroundSubmitter
 
 	// optional services (set via WithXxx options)
 	memorySvc  *memsvc.Service
@@ -47,6 +49,14 @@ type Processor struct {
 
 // ProcessorOption is a functional option for Processor.
 type ProcessorOption func(*Processor)
+
+type backgroundSubmitter interface {
+	Submit(backgroundruntime.Job) bool
+}
+
+func WithBackgroundRuntime(runtime backgroundSubmitter) ProcessorOption {
+	return func(p *Processor) { p.background = runtime }
+}
 
 func WithMemoryService(svc *memsvc.Service) ProcessorOption {
 	return func(p *Processor) { p.memorySvc = svc }
@@ -165,14 +175,16 @@ func (p *Processor) ProcessEnvelope(ctx context.Context, envelope conversationdo
 		"text", textPreview,
 	)
 
-	// bgCtx 断开请求取消信号，保留 context values，供异步写操作使用
+	// Preserve request values for the synchronous compatibility path. The
+	// Background Runtime owns cancellation for queued production jobs.
 	bgCtx := context.WithoutCancel(ctx)
 
-	// B-3: archive_event fire-and-forget，带超时
-	fireAndForget(bgCtx, "archive_event", func(ctx context.Context) error {
-		archiveCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
-		defer cancel()
-		return p.memory.ArchiveEvent(archiveCtx, envelope.Event)
+	p.submitBackground(bgCtx, backgroundruntime.Job{
+		Name:    "archive_event",
+		Timeout: 3 * time.Second,
+		Run: func(ctx context.Context) error {
+			return p.memory.ArchiveEvent(ctx, envelope.Event)
+		},
 	})
 
 	// profileSvc 保持同步：ObserveEvent 写入的 profile 数据会被后续 BuildSnapshot 立即读取
@@ -206,10 +218,12 @@ func (p *Processor) ProcessEnvelope(ctx context.Context, envelope conversationdo
 		svc := p.memeSvc
 		ev := envelope.Event
 		descs := mediaDescriptors
-		fireAndForget(bgCtx, "meme_observe_event", func(ctx context.Context) error {
-			observeCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
-			defer cancel()
-			return svc.ObserveEvent(observeCtx, ev, descs)
+		p.submitBackground(bgCtx, backgroundruntime.Job{
+			Name:    "meme_observe_event",
+			Timeout: 5 * time.Second,
+			Run: func(ctx context.Context) error {
+				return svc.ObserveEvent(ctx, ev, descs)
+			},
 		})
 	}
 
@@ -262,9 +276,12 @@ func (p *Processor) ProcessEnvelope(ctx context.Context, envelope conversationdo
 			Importance:    0.3,
 			Confidence:    0.8,
 		}
-		fireAndForget(bgCtx, "mark_reply_intent", func(ctx context.Context) error {
-			_, err := svc.MarkIntent(ctx, intent)
-			return err
+		p.submitBackground(bgCtx, backgroundruntime.Job{
+			Name: "mark_reply_intent",
+			Run: func(ctx context.Context) error {
+				_, err := svc.MarkIntent(ctx, intent)
+				return err
+			},
 		})
 	}
 
@@ -275,10 +292,12 @@ func (p *Processor) ProcessEnvelope(ctx context.Context, envelope conversationdo
 		snap := snapshot
 		dec := decision
 		replied := receipt.Sent || receipt.DropReason == "guard_silenced"
-		fireAndForget(bgCtx, "persona_mood_update", func(ctx context.Context) error {
-			updateCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
-			defer cancel()
-			return svc.UpdateAfterTurn(updateCtx, snap, dec, replied)
+		p.submitBackground(bgCtx, backgroundruntime.Job{
+			Name:    "persona_mood_update",
+			Timeout: 5 * time.Second,
+			Run: func(ctx context.Context) error {
+				return svc.UpdateAfterTurn(ctx, snap, dec, replied)
+			},
 		})
 	}
 
@@ -291,18 +310,12 @@ func (p *Processor) ProcessEnvelope(ctx context.Context, envelope conversationdo
 	}, nil
 }
 
-// fireAndForget 在独立 goroutine 中执行 fn，失败时记录 warn 日志。
-// bgCtx 应为已断开取消信号的 context（通过 context.WithoutCancel 派生），
-// 保留 trace 等 context values 但不随请求取消而中断。
-func fireAndForget(bgCtx context.Context, label string, fn func(ctx context.Context) error) {
-	go func() {
-		defer func() {
-			if r := recover(); r != nil {
-				slog.Error("async write panic", "label", label, "panic", r)
-			}
-		}()
-		if err := fn(bgCtx); err != nil {
-			slog.Warn("async write failed", "label", label, "err", err)
+func (p *Processor) submitBackground(ctx context.Context, job backgroundruntime.Job) {
+	if p.background != nil {
+		if !p.background.Submit(job) {
+			slog.Warn("background job dropped", "job", job.Name)
 		}
-	}()
+		return
+	}
+	backgroundruntime.RunInline(ctx, job)
 }
