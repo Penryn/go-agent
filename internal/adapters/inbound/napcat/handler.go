@@ -3,6 +3,7 @@ package napcat
 import (
 	"context"
 	"encoding/json"
+	"log/slog"
 	"net/http"
 	"strings"
 )
@@ -27,6 +28,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if h.accessToken != "" && !authorized(r, h.accessToken) {
+		slog.Warn("http: unauthorized request", "remote_addr", r.RemoteAddr)
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
 		return
 	}
@@ -37,6 +39,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
+	slog.Info("http: inbound event", "remote_addr", r.RemoteAddr, "len", len(payload))
 
 	result, err := h.process(r.Context(), payload)
 	if err != nil {

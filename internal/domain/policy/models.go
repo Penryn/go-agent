@@ -15,12 +15,13 @@ const (
 type DecisionAction string
 
 const (
-	ActionSilent   DecisionAction = "silent"
-	ActionReply    DecisionAction = "reply"
-	ActionReact    DecisionAction = "react"
-	ActionMemeOnly DecisionAction = "meme_only"
-	ActionPokeBack DecisionAction = "poke_back"
-	ActionRecall   DecisionAction = "recall"
+	ActionSilent    DecisionAction = "silent"
+	ActionReply     DecisionAction = "reply"
+	ActionReact     DecisionAction = "react"
+	ActionMemeOnly  DecisionAction = "meme_only"
+	ActionPokeBack  DecisionAction = "poke_back"
+	ActionPokeReply DecisionAction = "poke_reply" // 被戳后以对话方式回复
+	ActionRecall    DecisionAction = "recall"
 )
 
 type GroupPolicy struct {
@@ -34,6 +35,7 @@ type GroupPolicy struct {
 	MaxConsecutiveBot  int            `json:"max_consecutive_bot" yaml:"max_consecutive_bot"`
 	ReplyToImageChance float64        `json:"reply_to_image_chance" yaml:"reply_to_image_chance"`
 	AllowPokeBack      bool           `json:"allow_poke_back" yaml:"allow_poke_back"`
+	PokeBackChance     float64        `json:"poke_back_chance" yaml:"poke_back_chance"` // 0~1，被戳时戳回的基础概率；0 时由 AllowPokeBack 推导默认值
 	AllowRecall        bool           `json:"allow_recall" yaml:"allow_recall"`
 }
 
@@ -48,6 +50,7 @@ type AutonomyPolicy struct {
 	LLMGateEnabled           bool    `json:"llm_gate_enabled" yaml:"llm_gate_enabled"`
 	LLMGateTimeoutMs         int     `json:"llm_gate_timeout_ms" yaml:"llm_gate_timeout_ms"`
 	SuppressOnFlood          bool    `json:"suppress_on_flood" yaml:"suppress_on_flood"`
+	BotDominanceSuppressSec  int     `json:"bot_dominance_suppress_sec" yaml:"bot_dominance_suppress_sec"`
 }
 
 type RuntimeState struct {

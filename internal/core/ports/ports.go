@@ -52,6 +52,8 @@ type MemeStore interface {
 	SearchMemes(ctx context.Context, query MemeQuery) ([]mediadomain.MemeSearchResult, error)
 	GetMeme(ctx context.Context, memeID string) (mediadomain.MemeAsset, mediadomain.MemeDescriptor, error)
 	MarkMemeSent(ctx context.Context, memeID string) error
+	CountMemesByGroup(ctx context.Context, groupID int64) (int, error)
+	DeleteOldestMemes(ctx context.Context, groupID int64, deleteCount int) error
 }
 
 type ProfileStore interface {
@@ -82,4 +84,51 @@ type SearchResult struct {
 
 type WebSearcher interface {
 	Search(ctx context.Context, query string, topK int, freshness string) ([]SearchResult, error)
+}
+
+// VectorMemoryStore 是语义记忆检索的 port。
+// 实现方：qdrantstore.Store；未配置时可用 NoopVectorStore 代替。
+type VectorMemoryStore interface {
+	// StoreMemory 将一条记忆向量化后存入向量库。
+	StoreMemory(ctx context.Context, record memorydomain.MemoryRecord) error
+	// SearchMemories 执行语义检索，返回相似度 >= threshold 的记录。
+	SearchMemories(ctx context.Context, query string, topK int, threshold float64) ([]memorydomain.MemoryRecord, error)
+}
+
+// NoopVectorStore 是 VectorMemoryStore 的空实现，用于 Qdrant 未配置时。
+type NoopVectorStore struct{}
+
+func (NoopVectorStore) StoreMemory(_ context.Context, _ memorydomain.MemoryRecord) error {
+	return nil
+}
+
+func (NoopVectorStore) SearchMemories(_ context.Context, _ string, _ int, _ float64) ([]memorydomain.MemoryRecord, error) {
+	return nil, nil
+}
+
+// VectorMemeStore 是表情包语义向量检索的 port。
+// 实现方：qdrantstore.MemeVectorStore；未配置时可用 NoopVectorMemeStore 代替。
+// SearchMemes 返回的 MemeSearchResult 中 Descriptor 字段为零值，由上层 MemeService 回查 MySQL 补全。
+type VectorMemeStore interface {
+	// IndexMeme 将表情包描述文本向量化后存入向量库。
+	IndexMeme(ctx context.Context, memeID string, text string, groupID int64) error
+	// SearchMemes 执行语义检索，返回相似度 >= threshold 的记录（Descriptor 字段为零值）。
+	SearchMemes(ctx context.Context, groupID int64, queryText string, topK int, threshold float64) ([]mediadomain.MemeSearchResult, error)
+	// DeleteMeme 从向量库删除指定表情包。
+	DeleteMeme(ctx context.Context, memeID string) error
+}
+
+// NoopVectorMemeStore 是 VectorMemeStore 的空实现，用于 Qdrant 未配置时。
+type NoopVectorMemeStore struct{}
+
+func (NoopVectorMemeStore) IndexMeme(_ context.Context, _ string, _ string, _ int64) error {
+	return nil
+}
+
+func (NoopVectorMemeStore) SearchMemes(_ context.Context, _ int64, _ string, _ int, _ float64) ([]mediadomain.MemeSearchResult, error) {
+	return nil, nil
+}
+
+func (NoopVectorMemeStore) DeleteMeme(_ context.Context, _ string) error {
+	return nil
 }

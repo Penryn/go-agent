@@ -3,6 +3,7 @@ package autonomy
 import (
 	"context"
 	"fmt"
+	"math/rand"
 	"strings"
 	"time"
 
@@ -55,14 +56,22 @@ func (s *Service) Decide(ctx context.Context, snapshot conversationdomain.Contex
 		return decision, runtimeState, nil
 	}
 
+	direct := snapshot.Event.MentionedBot || snapshot.Event.NamedBot || snapshot.Event.IsReplyToBot
+	if direct {
+		decision, runtimeState = reply(decision, runtimeState, policydomain.StateCooldown, "direct_triggered", 1)
+		return decision, runtimeState, nil
+	}
+
 	if runtimeState.SuppressedUntil.After(now) {
 		decision, runtimeState = silent(decision, runtimeState, policydomain.StateSuppressed, "suppressed_active")
 		return decision, runtimeState, nil
 	}
 
-	direct := snapshot.Event.MentionedBot || snapshot.Event.NamedBot || snapshot.Event.IsReplyToBot
-	if direct {
-		decision, runtimeState = reply(decision, runtimeState, policydomain.StateCooldown, "direct_triggered", 1)
+	// EventPoke：被戳一戳。在 suppressed_active 之后处理，suppress 期间也静默。
+	// 三路决策：戳回（ActionPokeBack）/ 对话回复（ActionPokeReply）/ 静默。
+	// 不更新 LastDirectedAt / CooldownUntil，poke 是轻社交信号，不重置冷却。
+	if snapshot.Event.Kind == conversationdomain.EventPoke {
+		decision, runtimeState = decidePoke(decision, runtimeState, groupPolicy)
 		return decision, runtimeState, nil
 	}
 
@@ -77,9 +86,19 @@ func (s *Service) Decide(ctx context.Context, snapshot conversationdomain.Contex
 	}
 
 	autonomyPolicy := s.policy.AutonomyPolicy()
-	if runtimeState.ConsecutiveBotTurns >= groupPolicy.MaxConsecutiveBot {
+
+	// 人类发言即重置连续 bot 发言计数；用本轮前的旧值做上限检查。
+	// 进入 Decide 的消息均为人类消息（bot 自身消息在 normalizer 层已过滤）。
+	prevBotTurns := runtimeState.ConsecutiveBotTurns
+	runtimeState.ConsecutiveBotTurns = 0
+
+	if prevBotTurns >= groupPolicy.MaxConsecutiveBot {
+		suppressSec := autonomyPolicy.BotDominanceSuppressSec
+		if suppressSec <= 0 {
+			suppressSec = 60
+		}
 		runtimeState.State = policydomain.StateSuppressed
-		runtimeState.SuppressedUntil = now.Add(5 * time.Minute)
+		runtimeState.SuppressedUntil = now.Add(time.Duration(suppressSec) * time.Second)
 		decision, runtimeState = silent(decision, runtimeState, policydomain.StateSuppressed, "recent_bot_dominance")
 		return decision, runtimeState, nil
 	}
@@ -144,4 +163,109 @@ func reply(decision policydomain.AutonomyDecision, state policydomain.RuntimeSta
 	state.CooldownUntil = now.Add(30 * time.Second)
 	state.ConsecutiveBotTurns++
 	return decision, state
+}
+
+// decidePoke 对 EventPoke 事件做三路决策：ActionPokeBack / ActionPokeReply / ActionSilent。
+// 基础概率由 GroupPolicy.PokeBackChance 或 AllowPokeBack 推导，运行时 mood/energy 乘以修正系数。
+// 不修改 CooldownUntil / LastDirectedAt，维持 poke 的轻社交信号语义。
+func decidePoke(
+	decision policydomain.AutonomyDecision,
+	state policydomain.RuntimeState,
+	groupPolicy policydomain.GroupPolicy,
+) (policydomain.AutonomyDecision, policydomain.RuntimeState) {
+	// 推导基础戳回概率
+	pokeBackBase := groupPolicy.PokeBackChance
+	if pokeBackBase <= 0 {
+		if groupPolicy.AllowPokeBack {
+			pokeBackBase = 0.7 // 历史默认：AllowPokeBack=true 等价于 70% 概率戳回
+		} else {
+			pokeBackBase = 0.0
+		}
+	}
+
+	// 状态乘数：mood/energy 影响实际概率
+	pokeBackW := pokeBackBase * moodPokeBackMultiplier(state.CurrentMood, state.CurrentEnergy)
+	replyW := 0.4 * moodReplyMultiplier(state.CurrentMood, state.CurrentEnergy) // 对话回复基础概率 40%
+	if pokeBackW < 0 {
+		pokeBackW = 0
+	}
+	if replyW < 0 {
+		replyW = 0
+	}
+	// 归一化：两者之和超过 1 时等比压缩
+	if total := pokeBackW + replyW; total > 1.0 {
+		pokeBackW = pokeBackW / total
+		replyW = replyW / total
+	}
+
+	r := rand.Float64()
+	switch {
+	case r < pokeBackW:
+		decision.Action = policydomain.ActionPokeBack
+		decision.TriggerType = "poke_back"
+		decision.Score = pokeBackW
+		decision.ReasonCodes = []string{"poke_back"}
+		decision.Explain["poke_back"] = pokeBackW
+	case r < pokeBackW+replyW:
+		decision, state = pokeReply(decision, state, replyW)
+	default:
+		decision, state = silent(decision, state, state.State, "poke_silent")
+	}
+	return decision, state
+}
+
+// pokeReply 设置 ActionPokeReply 决策。
+// 与 reply() 不同，不设置 CooldownUntil / LastDirectedAt，维持轻社交信号语义。
+func pokeReply(
+	decision policydomain.AutonomyDecision,
+	state policydomain.RuntimeState,
+	score float64,
+) (policydomain.AutonomyDecision, policydomain.RuntimeState) {
+	decision.Action = policydomain.ActionPokeReply
+	decision.StateAfter = state.State // 不跳 StateCooldown
+	decision.TriggerType = "poke_reply"
+	decision.Score = score
+	decision.ReasonCodes = []string{"poke_reply"}
+	decision.Explain["poke_reply"] = score
+	state.LastBotSpeakAt = time.Now()
+	state.ConsecutiveBotTurns++
+	return decision, state
+}
+
+// moodReplyMultiplier 根据心情/能量返回对话回复概率的乘数。
+func moodReplyMultiplier(mood, energy string) float64 {
+	switch mood {
+	case "happy", "excited", "playful":
+		return 1.5
+	case "irritated", "angry":
+		return 0.2
+	case "withdrawn", "tired", "sad":
+		return 0.3
+	}
+	switch energy {
+	case "low":
+		return 0.4
+	case "high":
+		return 1.2
+	}
+	return 1.0
+}
+
+// moodPokeBackMultiplier 根据心情/能量返回戳回概率的乘数。
+func moodPokeBackMultiplier(mood, energy string) float64 {
+	switch mood {
+	case "happy", "excited", "playful":
+		return 1.2
+	case "irritated", "angry":
+		return 0.3 // 烦躁时懒得理
+	case "withdrawn", "tired":
+		return 0.3
+	}
+	switch energy {
+	case "low":
+		return 0.3
+	case "high":
+		return 1.1
+	}
+	return 1.0
 }

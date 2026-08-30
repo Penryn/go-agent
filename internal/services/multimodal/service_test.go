@@ -7,12 +7,13 @@ import (
 	"github.com/cloudwego/eino/schema"
 
 	modeladapter "github.com/phlin/go-agent/internal/adapters/model"
+	"github.com/phlin/go-agent/internal/config"
 	mediadomain "github.com/phlin/go-agent/internal/domain/media"
 )
 
 func TestUnderstandUsesUserInputMultiContent(t *testing.T) {
 	mock := modeladapter.NewMockChatModel(schema.AssistantMessage(`{"summary":"熊猫头表情包","scene_tags":["meme"],"confidence":0.8}`, nil))
-	service := New(modeladapter.StaticFactory{VisionModel: mock})
+	service := New(modeladapter.StaticFactory{VisionModel: mock}, config.MultimodalConfig{})
 
 	descriptors, err := service.Understand(context.Background(), []mediadomain.MultimodalAttachment{{
 		AttachmentID: "a1",

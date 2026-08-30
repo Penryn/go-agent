@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/phlin/go-agent/internal/adapters/inmemory"
+	"github.com/phlin/go-agent/internal/config"
 	conversationdomain "github.com/phlin/go-agent/internal/domain/conversation"
 	mediadomain "github.com/phlin/go-agent/internal/domain/media"
 	policydomain "github.com/phlin/go-agent/internal/domain/policy"
@@ -16,7 +17,7 @@ import (
 func TestExecuteSendMemeAndRecall(t *testing.T) {
 	store := inmemory.NewStore()
 	sender := inmemory.NewSender()
-	memeService := memesvc.New(store)
+	memeService := memesvc.New(store, config.MemeConfig{})
 
 	if err := store.UpsertMeme(context.Background(), mediadomain.MemeAsset{
 		MemeID:      "meme-1",
@@ -35,7 +36,7 @@ func TestExecuteSendMemeAndRecall(t *testing.T) {
 		t.Fatalf("seed meme: %v", err)
 	}
 
-	executor := New(sender, memeService)
+	executor := New(sender, memeService, nil)
 	_, err := executor.Execute(context.Background(), conversationEvent(), policydomain.AutonomyDecision{
 		DecisionID: "d1",
 		Action:     policydomain.ActionMemeOnly,
@@ -70,6 +71,60 @@ func TestExecuteSendMemeAndRecall(t *testing.T) {
 	}
 	if len(sender.Actions()) < 2 || sender.Actions()[1].TargetMessageID != "12345" {
 		t.Fatalf("unexpected recall action: %#v", sender.Actions())
+	}
+}
+
+func TestExecuteReact(t *testing.T) {
+	sender := inmemory.NewSender()
+	executor := New(sender, nil, nil)
+
+	_, err := executor.Execute(context.Background(), conversationEvent(), policydomain.AutonomyDecision{
+		DecisionID: "d-react",
+		Action:     policydomain.ActionReact,
+	}, replydomain.ReplyPlan{
+		SendMode: "group",
+		ActionParams: map[string]any{
+			"message_id": "msg-999",
+			"emoji_id":   "128077",
+		},
+	})
+	if err != nil {
+		t.Fatalf("execute react: %v", err)
+	}
+
+	actions := sender.Actions()
+	if len(actions) != 1 {
+		t.Fatalf("expected 1 action, got %d", len(actions))
+	}
+	if actions[0].Kind != policydomain.ActionReact {
+		t.Fatalf("expected ActionReact, got %s", actions[0].Kind)
+	}
+	if actions[0].TargetMessageID != "msg-999" {
+		t.Fatalf("expected target message msg-999, got %s", actions[0].TargetMessageID)
+	}
+	if actions[0].Meta["emoji_id"] != "128077" {
+		t.Fatalf("expected emoji_id 128077, got %v", actions[0].Meta["emoji_id"])
+	}
+}
+
+func TestExecuteReactFallsBackToEventMessageID(t *testing.T) {
+	sender := inmemory.NewSender()
+	executor := New(sender, nil, nil)
+
+	_, err := executor.Execute(context.Background(), conversationEvent(), policydomain.AutonomyDecision{
+		DecisionID: "d-react-fallback",
+		Action:     policydomain.ActionReact,
+	}, replydomain.ReplyPlan{
+		SendMode:     "group",
+		ActionParams: map[string]any{"emoji_id": "128516"},
+	})
+	if err != nil {
+		t.Fatalf("execute react fallback: %v", err)
+	}
+
+	actions := sender.Actions()
+	if len(actions) != 1 || actions[0].TargetMessageID != "m1" {
+		t.Fatalf("expected fallback to event message id m1, got %s", actions[0].TargetMessageID)
 	}
 }
 

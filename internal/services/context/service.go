@@ -3,31 +3,58 @@ package context
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"time"
+
+	"golang.org/x/sync/errgroup"
 
 	"github.com/phlin/go-agent/internal/core/ports"
 	conversationdomain "github.com/phlin/go-agent/internal/domain/conversation"
 	mediadomain "github.com/phlin/go-agent/internal/domain/media"
+	memorydomain "github.com/phlin/go-agent/internal/domain/memory"
 	personadomain "github.com/phlin/go-agent/internal/domain/persona"
 	profiledomain "github.com/phlin/go-agent/internal/domain/profile"
 	policysvc "github.com/phlin/go-agent/internal/services/policy"
 )
 
 type Service struct {
-	memoryStore  ports.MemoryStore
-	profileStore ports.ProfileStore
-	stateStore   ports.RuntimeStateStore
-	policy       *policysvc.Service
-	persona      personadomain.PersonaConfig
+	memoryStore       ports.MemoryStore
+	vectorStore       ports.VectorMemoryStore // 可为 NoopVectorStore，不影响主流程
+	profileStore      ports.ProfileStore
+	stateStore        ports.RuntimeStateStore
+	policy            *policysvc.Service
+	persona           personadomain.PersonaConfig
+	semanticTopK      int
+	semanticThreshold float64
 }
 
-func New(memoryStore ports.MemoryStore, profileStore ports.ProfileStore, stateStore ports.RuntimeStateStore, policy *policysvc.Service, persona personadomain.PersonaConfig) *Service {
+func New(
+	memoryStore ports.MemoryStore,
+	vectorStore ports.VectorMemoryStore,
+	profileStore ports.ProfileStore,
+	stateStore ports.RuntimeStateStore,
+	policy *policysvc.Service,
+	persona personadomain.PersonaConfig,
+) *Service {
 	return &Service{
-		memoryStore:  memoryStore,
-		profileStore: profileStore,
-		stateStore:   stateStore,
-		policy:       policy,
-		persona:      persona,
+		memoryStore:       memoryStore,
+		vectorStore:       vectorStore,
+		profileStore:      profileStore,
+		stateStore:        stateStore,
+		policy:            policy,
+		persona:           persona,
+		semanticTopK:      6,
+		semanticThreshold: 0.75,
+	}
+}
+
+// WithSemanticConfig 允许覆盖语义检索参数（供 app.go 注入 config 值）。
+func (s *Service) WithSemanticConfig(topK int, threshold float64) {
+	if topK > 0 {
+		s.semanticTopK = topK
+	}
+	if threshold > 0 {
+		s.semanticThreshold = threshold
 	}
 }
 
@@ -37,12 +64,7 @@ func (s *Service) BuildSnapshot(ctx context.Context, envelope conversationdomain
 		return conversationdomain.ContextSnapshot{}, fmt.Errorf("load recent events: %w", err)
 	}
 
-	relevantMemories, err := s.memoryStore.QueryMemories(ctx, ports.MemoryQuery{
-		GroupID: envelope.Event.GroupID,
-		UserID:  envelope.Event.UserID,
-		Query:   envelope.Event.Text,
-		TopK:    4,
-	})
+	relevantMemories, err := s.queryMemoriesDualTrack(ctx, envelope.Event.GroupID, envelope.Event.UserID, envelope.Event.Text)
 	if err != nil {
 		return conversationdomain.ContextSnapshot{}, fmt.Errorf("query memories: %w", err)
 	}
@@ -84,7 +106,7 @@ func (s *Service) BuildSnapshot(ctx context.Context, envelope conversationdomain
 			DisplayName:  s.persona.Name,
 			StableTraits: []string{s.persona.SpeechStyle, s.persona.Description},
 			StyleRules: []string{
-				"像群友，不像客服",
+				"像真人，不像客服",
 				"优先短句",
 			},
 			AutonomyBias: map[string]float64{
@@ -101,6 +123,82 @@ func (s *Service) BuildSnapshot(ctx context.Context, envelope conversationdomain
 		RuntimeState:  runtimeState,
 		DecisionHints: buildDecisionHints(envelope.Event),
 	}, nil
+}
+
+// queryMemoriesDualTrack 并发执行 MySQL 关键词检索 + Qdrant 语义检索，
+// 对结果去重合并后返回。Qdrant 失败时降级为纯 MySQL 结果（fail-open）。
+func (s *Service) queryMemoriesDualTrack(ctx context.Context, groupID, userID int64, queryText string) ([]memorydomain.MemoryRecord, error) {
+	const mysqlTopK = 4
+
+	var (
+		mysqlRecords  []memorydomain.MemoryRecord
+		qdrantRecords []memorydomain.MemoryRecord
+	)
+
+	g, gCtx := errgroup.WithContext(ctx)
+
+	// Track 1: MySQL 关键词检索（主轨，失败则整体失败）
+	g.Go(func() error {
+		var err error
+		mysqlRecords, err = s.memoryStore.QueryMemories(gCtx, ports.MemoryQuery{
+			GroupID: groupID,
+			UserID:  userID,
+			Query:   queryText,
+			TopK:    mysqlTopK,
+		})
+		return err
+	})
+
+	// Track 2: Qdrant 语义检索（副轨，失败时降级，不影响主流程）
+	g.Go(func() error {
+		if queryText == "" {
+			return nil
+		}
+		var err error
+		qdrantRecords, err = s.vectorStore.SearchMemories(gCtx, queryText, s.semanticTopK, s.semanticThreshold)
+		if err != nil {
+			slog.WarnContext(gCtx, "dual-track memory: qdrant semantic search failed, degraded to mysql only",
+				"err", err,
+				"group_id", groupID,
+			)
+		}
+		return nil // 始终返回 nil，不让 errgroup 取消 MySQL 轨道
+	})
+
+	if err := g.Wait(); err != nil {
+		return nil, err
+	}
+
+	return mergeMemoryResults(mysqlRecords, qdrantRecords, mysqlTopK), nil
+}
+
+// mergeMemoryResults 将 MySQL 和 Qdrant 的结果去重合并。
+// MySQL 结果作为主数据源（字段完整），Qdrant 补充语义相关但关键词未命中的记录。
+func mergeMemoryResults(mysqlRecords, qdrantRecords []memorydomain.MemoryRecord, limit int) []memorydomain.MemoryRecord {
+	if len(qdrantRecords) == 0 {
+		return mysqlRecords
+	}
+
+	seen := make(map[string]struct{}, len(mysqlRecords))
+	for _, r := range mysqlRecords {
+		seen[r.MemoryID] = struct{}{}
+	}
+
+	merged := make([]memorydomain.MemoryRecord, 0, len(mysqlRecords)+len(qdrantRecords))
+	merged = append(merged, mysqlRecords...)
+
+	for _, r := range qdrantRecords {
+		if _, exists := seen[r.MemoryID]; exists {
+			continue
+		}
+		seen[r.MemoryID] = struct{}{}
+		merged = append(merged, r)
+	}
+
+	if limit > 0 && len(merged) > limit {
+		return merged[:limit]
+	}
+	return merged
 }
 
 func attachmentsAsDescriptors(attachments []mediadomain.MultimodalAttachment) []mediadomain.MediaDescriptor {

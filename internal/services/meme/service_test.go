@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/phlin/go-agent/internal/adapters/inmemory"
+	"github.com/phlin/go-agent/internal/config"
 	"github.com/phlin/go-agent/internal/core/ports"
 	conversationdomain "github.com/phlin/go-agent/internal/domain/conversation"
 	mediadomain "github.com/phlin/go-agent/internal/domain/media"
@@ -12,7 +13,7 @@ import (
 
 func TestObserveEventAndBuildSendSegments(t *testing.T) {
 	store := inmemory.NewStore()
-	service := New(store)
+	service := New(store, config.MemeConfig{AutoCollect: true})
 
 	err := service.ObserveEvent(context.Background(), conversationdomain.ConversationEvent{
 		EventID: "e1",
@@ -25,7 +26,7 @@ func TestObserveEventAndBuildSendSegments(t *testing.T) {
 				ContentHash:  "hash-a1",
 			},
 		},
-	})
+	}, nil)
 	if err != nil {
 		t.Fatalf("observe event: %v", err)
 	}

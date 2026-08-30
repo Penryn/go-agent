@@ -398,7 +398,71 @@ func (s *Store) GetMeme(ctx context.Context, memeID string) (mediadomain.MemeAss
 	_ = json.Unmarshal(emotionJSON, &descriptor.EmotionTags)
 	_ = json.Unmarshal(sceneJSON, &descriptor.SceneTags)
 	_ = json.Unmarshal(usageJSON, &descriptor.UsageHints)
+	if lastSentAt.Valid {
+		asset.LastSentAt = &lastSentAt.Time
+	}
 	return asset, descriptor, nil
+}
+
+func (s *Store) CountMemesByGroup(ctx context.Context, groupID int64) (int, error) {
+	var count int
+	err := s.db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM meme_assets WHERE group_id = ?`,
+		groupID,
+	).Scan(&count)
+	return count, err
+}
+
+func (s *Store) DeleteOldestMemes(ctx context.Context, groupID int64, deleteCount int) error {
+	if deleteCount <= 0 {
+		return nil
+	}
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT meme_id FROM meme_assets WHERE group_id = ? ORDER BY created_at ASC LIMIT ?`,
+		groupID, deleteCount,
+	)
+	if err != nil {
+		return err
+	}
+	var ids []string
+	for rows.Next() {
+		var id string
+		if scanErr := rows.Scan(&id); scanErr != nil {
+			_ = rows.Close()
+			return scanErr
+		}
+		ids = append(ids, id)
+	}
+	_ = rows.Close()
+	if err = rows.Err(); err != nil {
+		return err
+	}
+	if len(ids) == 0 {
+		return nil
+	}
+	ph := placeholders(len(ids))
+	args := make([]any, len(ids))
+	for i, id := range ids {
+		args[i] = id
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		if err != nil {
+			_ = tx.Rollback()
+		}
+	}()
+	if _, err = tx.ExecContext(ctx,
+		`DELETE FROM meme_descriptors WHERE meme_id IN (`+ph+`)`, args...); err != nil {
+		return err
+	}
+	if _, err = tx.ExecContext(ctx,
+		`DELETE FROM meme_assets WHERE meme_id IN (`+ph+`)`, args...); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 func (s *Store) MarkMemeSent(ctx context.Context, memeID string) error {

@@ -11,7 +11,7 @@ import (
 
 func TestObserveEventUpdatesProfile(t *testing.T) {
 	store := inmemory.NewStore()
-	service := New(store)
+	service := New(store, "")
 
 	err := service.ObserveEvent(context.Background(), conversationdomain.ConversationEvent{
 		GroupID:       1,

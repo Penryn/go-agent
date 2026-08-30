@@ -27,4 +27,7 @@ type LearningCandidate struct {
 	Confidence      float64   `json:"confidence" yaml:"confidence"`
 	Status          string    `json:"status" yaml:"status"`
 	CreatedAt       time.Time `json:"created_at" yaml:"created_at"`
+	// TargetUserID 非零时表示该候选属于特定用户（如 user_catchphrase），Scope 写 group:{GroupID}:user:{TargetUserID}。
+	// 零值表示群级别候选。
+	TargetUserID int64 `json:"target_user_id,omitempty" yaml:"target_user_id,omitempty"`
 }

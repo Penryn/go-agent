@@ -2,7 +2,7 @@ package napcat
 
 import (
 	"context"
-	"log"
+	"log/slog"
 	"time"
 
 	napcatsdk "github.com/zjutjh/napcat-sdk"
@@ -40,9 +40,9 @@ func (r *WSReceiver) Receive(ctx context.Context, handler func(context.Context, 
 		}
 		if connected {
 			backoff = minBackoff
-		}
-		if err != nil {
-			log.Printf("napcat websocket disconnected: %v", err)
+			slog.Warn("ws: connection lost", "url", r.url, "error", err, "reconnect_in", backoff)
+		} else {
+			slog.Warn("ws: dial failed", "url", r.url, "error", err, "retry_in", backoff)
 		}
 		if err := waitContext(ctx, backoff); err != nil {
 			return err
@@ -66,6 +66,7 @@ func (r *WSReceiver) receiveOnce(ctx context.Context, handler func(context.Conte
 	if err != nil {
 		return false, err
 	}
+	slog.Info("ws: connected", "url", r.url)
 
 	for {
 		select {
@@ -81,7 +82,7 @@ func (r *WSReceiver) receiveOnce(ctx context.Context, handler func(context.Conte
 				continue
 			}
 			if err := handler(ctx, event.Raw()); err != nil {
-				log.Printf("napcat ws handler error: %v", err)
+				slog.Error("ws: handler error", "error", err)
 			}
 		}
 	}

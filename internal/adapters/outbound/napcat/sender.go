@@ -40,6 +40,8 @@ func (s *Sender) Send(ctx context.Context, action replydomain.ActionExecution) (
 		return s.sendRecall(ctx, action)
 	case policydomain.ActionPokeBack:
 		return s.sendPoke(ctx, action)
+	case policydomain.ActionReact:
+		return s.sendReact(ctx, action)
 	default:
 		return replydomain.ActionReceipt{ActionID: action.ActionID, Sent: false}, nil
 	}
@@ -112,6 +114,32 @@ func (s *Sender) sendPoke(ctx context.Context, action replydomain.ActionExecutio
 	})
 	if err != nil {
 		return replydomain.ActionReceipt{}, fmt.Errorf("group_poke: %w", err)
+	}
+
+	return replydomain.ActionReceipt{ActionID: action.ActionID, Sent: true}, nil
+}
+
+func (s *Sender) sendReact(ctx context.Context, action replydomain.ActionExecution) (replydomain.ActionReceipt, error) {
+	emojiID, _ := action.Meta["emoji_id"].(string)
+	if emojiID == "" {
+		emojiID = "128077"
+	}
+
+	messageIDJSON, err := json.Marshal(action.TargetMessageID)
+	if err != nil {
+		return replydomain.ActionReceipt{}, fmt.Errorf("encode set_msg_emoji_like message_id: %w", err)
+	}
+	emojiIDJSON, err := json.Marshal(emojiID)
+	if err != nil {
+		return replydomain.ActionReceipt{}, fmt.Errorf("encode set_msg_emoji_like emoji_id: %w", err)
+	}
+
+	_, err = s.client.API().SetMsgEmojiLike(ctx, api.SetMsgEmojiLikeRequest{
+		MessageID: api.SetMsgEmojiLikeRequestMessageIDUnion{Raw: messageIDJSON},
+		EmojiID:   api.SetMsgEmojiLikeRequestEmojiIDUnion{Raw: emojiIDJSON},
+	})
+	if err != nil {
+		return replydomain.ActionReceipt{}, fmt.Errorf("set_msg_emoji_like: %w", err)
 	}
 
 	return replydomain.ActionReceipt{ActionID: action.ActionID, Sent: true}, nil

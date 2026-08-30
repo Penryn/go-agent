@@ -8,6 +8,8 @@ const (
 	MediaImage   MediaKind = "image"
 	MediaSticker MediaKind = "sticker"
 	MediaVideo   MediaKind = "video"
+	MediaAudio   MediaKind = "audio"
+	MediaFile    MediaKind = "file"
 )
 
 type MultimodalAttachment struct {
@@ -50,8 +52,9 @@ type MemeAsset struct {
 	Width          int       `json:"width" yaml:"width"`
 	Height         int       `json:"height" yaml:"height"`
 	Animated       bool      `json:"animated" yaml:"animated"`
-	Status         string    `json:"status" yaml:"status"`
-	CreatedAt      time.Time `json:"created_at" yaml:"created_at"`
+	Status         string     `json:"status" yaml:"status"`
+	CreatedAt      time.Time  `json:"created_at" yaml:"created_at"`
+	LastSentAt     *time.Time `json:"last_sent_at,omitempty" yaml:"last_sent_at,omitempty"`
 }
 
 type MemeDescriptor struct {

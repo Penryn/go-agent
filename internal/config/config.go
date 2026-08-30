@@ -27,8 +27,9 @@ type Config struct {
 }
 
 type AppConfig struct {
-	Name string `yaml:"name"`
-	Mode string `yaml:"mode"`
+	Name     string `yaml:"name"`
+	Mode     string `yaml:"mode"`
+	LogLevel string `yaml:"log_level"` // debug / info / warn / error，默认 info
 }
 
 type ServerConfig struct {
@@ -48,6 +49,9 @@ type ModelProviderConfig struct {
 	BaseURL  string `yaml:"base_url"`
 	APIKey   string `yaml:"-"`
 	Timeout  string `yaml:"timeout"`
+	// APIType 仅对 embedding 模型生效：text（默认）或 multimodal。
+	// doubao-embedding-vision 系列多模态模型须设为 multimodal。
+	APIType  string `yaml:"api_type"`
 }
 
 type ModelsConfig struct {
@@ -64,10 +68,15 @@ type ToolsConfig struct {
 }
 
 type MemoryConfig struct {
-	TopK           int             `yaml:"top_k"`
-	DefaultTTL     string          `yaml:"default_ttl"`
-	TypeEnabled    map[string]bool `yaml:"type_enabled"`
-	WriteThreshold float64         `yaml:"write_threshold"`
+	TopK               int             `yaml:"top_k"`
+	DefaultTTL         string          `yaml:"default_ttl"`
+	// TypeTTL 按记忆类型指定差异化 TTL，覆盖 DefaultTTL。
+	// 例：topic_keyword: 168h, reaction_pattern: 360h, group_slang: 720h, user_catchphrase: 2160h
+	TypeTTL            map[string]string `yaml:"type_ttl"`
+	TypeEnabled        map[string]bool `yaml:"type_enabled"`
+	WriteThreshold     float64         `yaml:"write_threshold"`
+	SemanticTopK       int             `yaml:"semantic_top_k"`       // 语义检索返回数量，0 时使用 TopK 值
+	SemanticThreshold  float64         `yaml:"semantic_threshold"`   // 向量相似度过滤阈值，低于此值的结果被丢弃
 }
 
 type MemeConfig struct {
@@ -78,6 +87,8 @@ type MemeConfig struct {
 	SearchTopK         int     `yaml:"search_top_k"`
 	RepeatCooldown     string  `yaml:"repeat_cooldown"`
 	PreferGroupScoped  bool    `yaml:"prefer_group_scoped"`
+	SemanticTopK       int     `yaml:"semantic_top_k"`       // 向量搜索返回数量，0 时禁用向量搜索
+	SemanticThreshold  float64 `yaml:"semantic_threshold"`   // 向量相似度过滤阈值，低于此值的结果被丢弃
 }
 
 type MultimodalConfig struct {
@@ -126,9 +137,11 @@ type RedisConfig struct {
 }
 
 type QdrantConfig struct {
-	URL        string `yaml:"url"`
-	APIKey     string `yaml:"-"`
-	Collection string `yaml:"collection"`
+	URL            string `yaml:"url"`
+	APIKey         string `yaml:"-"`
+	Collection     string `yaml:"collection"`
+	VectorDim      int    `yaml:"vector_dim"`      // 嵌入向量维度，需与 embedding 模型匹配，默认 1536
+	MemeCollection string `yaml:"meme_collection"` // 表情包向量集合名，为空时禁用 meme 向量搜索
 }
 
 type MinIOConfig struct {
@@ -145,5 +158,6 @@ type QQConfig struct {
 	AccessToken  string `yaml:"-"`
 	OutboundURL  string `yaml:"outbound_url"`
 	EventWSURL   string `yaml:"event_ws_url"`
-	InboundRoute string `yaml:"inbound_route"`
+	InboundRoute   string  `yaml:"inbound_route"`
+	GroupWhitelist []int64 `yaml:"group_whitelist"`
 }

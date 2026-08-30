@@ -9,10 +9,14 @@ import (
 	"sync"
 	"time"
 
+	arkemb "github.com/cloudwego/eino-ext/components/embedding/ark"
+	openaiemb "github.com/cloudwego/eino-ext/components/embedding/openai"
 	arkmodel "github.com/cloudwego/eino-ext/components/model/ark"
 	openaimodel "github.com/cloudwego/eino-ext/components/model/openai"
+	"github.com/cloudwego/eino/components/embedding"
 	modelcomponent "github.com/cloudwego/eino/components/model"
 	"github.com/cloudwego/eino/schema"
+	arkruntime "github.com/volcengine/volcengine-go-sdk/service/arkruntime/model"
 
 	"github.com/phlin/go-agent/internal/config"
 )
@@ -20,15 +24,17 @@ import (
 var ErrModelUnavailable = errors.New("chat model unavailable")
 
 type Factory struct {
-	cfg    config.ModelsConfig
-	mu     sync.Mutex
-	cached map[string]cachedChatModel
+	cfg             config.ModelsConfig
+	mu              sync.Mutex
+	cached          map[string]cachedChatModel
+	cachedEmbedders map[string]cachedEmbedder
 }
 
 func NewFactory(cfg config.ModelsConfig) *Factory {
 	return &Factory{
-		cfg:    cfg,
-		cached: make(map[string]cachedChatModel, 3),
+		cfg:             cfg,
+		cached:          make(map[string]cachedChatModel, 3),
+		cachedEmbedders: make(map[string]cachedEmbedder, 1),
 	}
 }
 
@@ -42,6 +48,10 @@ func (f *Factory) GateChatModel(ctx context.Context) (modelcomponent.BaseChatMod
 
 func (f *Factory) VisionChatModel(ctx context.Context) (modelcomponent.BaseChatModel, error) {
 	return f.chatModel(ctx, "vision", f.cfg.Vision)
+}
+
+func (f *Factory) EmbeddingModel(ctx context.Context) (embedding.Embedder, error) {
+	return f.embeddingModel(ctx, "embedding", f.cfg.Embedding)
 }
 
 func (f *Factory) Warmup(ctx context.Context) error {
@@ -62,6 +72,13 @@ func (f *Factory) Warmup(ctx context.Context) error {
 			return fmt.Errorf("initialize %s chat model: %w", item.name, err)
 		}
 	}
+
+	if modelConfigured(f.cfg.Embedding) {
+		if _, err := f.embeddingModel(ctx, "embedding", f.cfg.Embedding); err != nil {
+			return fmt.Errorf("initialize embedding model: %w", err)
+		}
+	}
+
 	return nil
 }
 
@@ -74,11 +91,17 @@ func (f *Factory) chatModel(ctx context.Context, key string, cfg config.ModelPro
 	}
 
 	model, err := f.newChatModel(ctx, cfg)
+	if err != nil {
+		// Don't cache transient errors so the next call retries.
+		// Config errors (ErrModelUnavailable, unsupported provider) are cheap to
+		// re-evaluate, so skipping the cache for them is acceptable.
+		return nil, err
+	}
 
 	f.mu.Lock()
-	f.cached[key] = cachedChatModel{model: model, err: err}
+	f.cached[key] = cachedChatModel{model: model, err: nil}
 	f.mu.Unlock()
-	return model, err
+	return model, nil
 }
 
 func (f *Factory) newChatModel(ctx context.Context, cfg config.ModelProviderConfig) (modelcomponent.BaseChatModel, error) {
@@ -94,6 +117,7 @@ func (f *Factory) newChatModel(ctx context.Context, cfg config.ModelProviderConf
 			Model:   cfg.Model,
 			BaseURL: strings.TrimSpace(cfg.BaseURL),
 			Timeout: durationPtr(timeout),
+			Thinking: &arkruntime.Thinking{Type: arkruntime.ThinkingTypeDisabled}, // 禁用深度思考，避免长时间等待
 		})
 	case "openai":
 		timeout := parseTimeout(cfg.Timeout, 30*time.Second)
@@ -113,6 +137,64 @@ func (f *Factory) newChatModel(ctx context.Context, cfg config.ModelProviderConf
 type cachedChatModel struct {
 	model modelcomponent.BaseChatModel
 	err   error
+}
+
+type cachedEmbedder struct {
+	model embedding.Embedder
+	err   error
+}
+
+func (f *Factory) embeddingModel(ctx context.Context, key string, cfg config.ModelProviderConfig) (embedding.Embedder, error) {
+	f.mu.Lock()
+	cached, ok := f.cachedEmbedders[key]
+	f.mu.Unlock()
+	if ok {
+		return cached.model, cached.err
+	}
+
+	model, err := f.newEmbeddingModel(ctx, cfg)
+	if err != nil {
+		return nil, err
+	}
+
+	f.mu.Lock()
+	f.cachedEmbedders[key] = cachedEmbedder{model: model, err: nil}
+	f.mu.Unlock()
+	return model, nil
+}
+
+func (f *Factory) newEmbeddingModel(ctx context.Context, cfg config.ModelProviderConfig) (embedding.Embedder, error) {
+	if strings.TrimSpace(cfg.APIKey) == "" || strings.TrimSpace(cfg.Model) == "" {
+		return nil, ErrModelUnavailable
+	}
+
+	switch normalizeProvider(cfg.Provider) {
+	case "ark":
+		timeout := parseTimeout(cfg.Timeout, 15*time.Second)
+		embCfg := &arkemb.EmbeddingConfig{
+			APIKey:  cfg.APIKey,
+			Model:   cfg.Model,
+			BaseURL: strings.TrimSpace(cfg.BaseURL),
+			Timeout: durationPtr(timeout),
+		}
+		if strings.ToLower(strings.TrimSpace(cfg.APIType)) == "multimodal" {
+			apiType := arkemb.APITypeMultiModal
+			embCfg.APIType = &apiType
+		}
+		return arkemb.NewEmbedder(ctx, embCfg)
+	case "openai":
+		timeout := parseTimeout(cfg.Timeout, 15*time.Second)
+		return openaiemb.NewEmbedder(ctx, &openaiemb.EmbeddingConfig{
+			APIKey:  cfg.APIKey,
+			Model:   cfg.Model,
+			BaseURL: strings.TrimSpace(cfg.BaseURL),
+			HTTPClient: &http.Client{
+				Timeout: timeout,
+			},
+		})
+	default:
+		return nil, fmt.Errorf("unsupported embedding model provider %q", cfg.Provider)
+	}
 }
 
 func modelConfigured(cfg config.ModelProviderConfig) bool {

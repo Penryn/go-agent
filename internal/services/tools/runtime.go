@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"slices"
 	"strings"
 	"time"
@@ -13,8 +14,12 @@ import (
 	"github.com/cloudwego/eino/schema"
 
 	"github.com/phlin/go-agent/internal/core/ports"
+	mediadomain "github.com/phlin/go-agent/internal/domain/media"
 	policydomain "github.com/phlin/go-agent/internal/domain/policy"
+	profiledomain "github.com/phlin/go-agent/internal/domain/profile"
 	replydomain "github.com/phlin/go-agent/internal/domain/reply"
+	memesvc "github.com/phlin/go-agent/internal/services/meme"
+	memsvc "github.com/phlin/go-agent/internal/services/memory"
 )
 
 type Runtime struct {
@@ -22,6 +27,9 @@ type Runtime struct {
 	memeStore    ports.MemeStore
 	profileStore ports.ProfileStore
 	searcher     ports.WebSearcher
+	personaID    string
+	memSvc       *memsvc.Service
+	memeSvc      *memesvc.Service
 }
 
 type Option func(*Runtime)
@@ -45,23 +53,49 @@ func WithWebSearcher(searcher ports.WebSearcher) Option {
 	return func(rt *Runtime) { rt.searcher = searcher }
 }
 
+func WithPersonaID(id string) Option {
+	return func(rt *Runtime) { rt.personaID = id }
+}
+
+func WithMemoryService(svc *memsvc.Service) Option {
+	return func(rt *Runtime) { rt.memSvc = svc }
+}
+
+func WithMemeService(svc *memesvc.Service) Option {
+	return func(rt *Runtime) { rt.memeSvc = svc }
+}
+
+// speakingTools 是在 observe-only 模式下需要排除的发言/行动工具。
+var speakingTools = map[string]bool{
+	"speak_text":            true,
+	"quote_reply":           true,
+	"send_meme":             true,
+	"recall_recent_message": true,
+	"poke_member":           true,
+}
+
 func (r *Runtime) Tools(session replydomain.ToolContext) []tool.BaseTool {
 	all := []namedTool{
 		newSpeakTextTool(),
 		newStaySilentTool(),
 		newQueryMemoryTool(r.memoryStore, session),
-		newSearchMemeTool(r.memeStore, session),
-		newSendMemeTool(),
+		newSearchMemeTool(r.memeStore, r.memeSvc, session),
+		newSendMemeTool(r.memeStore),
 		newQuoteReplyTool(),
 		newQueryMemberProfileTool(r.profileStore, session),
 		newWebSearchTool(r.searcher),
 		newRecallRecentMessageTool(),
 		newPokeMemberTool(),
-		newMarkMemoryIntentTool(),
+		newMarkMemoryIntentTool(r.memSvc, session),
+		newUpdateAffinityTool(r.profileStore, session, r.personaID),
+		newUpdateMemberProfileTool(r.profileStore, session, r.personaID),
 	}
 
 	allowed := make([]tool.BaseTool, 0, len(all))
 	for _, candidate := range all {
+		if session.ObserveOnly && speakingTools[candidate.Name()] {
+			continue
+		}
 		if len(session.AllowedTools) == 0 || slices.Contains(session.AllowedTools, candidate.Name()) {
 			allowed = append(allowed, candidate)
 		}
@@ -76,9 +110,14 @@ func ParseTerminalPlan(decisionID string, toolName string, raw string, session r
 		if err := json.Unmarshal([]byte(raw), &result); err != nil {
 			return replydomain.ReplyPlan{}, false, fmt.Errorf("decode speak_text result: %w", err)
 		}
-		bubbles := result.Bubbles
-		if len(bubbles) == 0 && strings.TrimSpace(result.Text) != "" {
-			bubbles = []string{result.Text}
+		cleanedText := stripThinkBlocks(result.Text)
+		cleanedBubbles := make([]string, 0, len(result.Bubbles))
+		for _, b := range result.Bubbles {
+			cleanedBubbles = append(cleanedBubbles, stripThinkBlocks(b))
+		}
+		bubbles := cleanedBubbles
+		if len(bubbles) == 0 && strings.TrimSpace(cleanedText) != "" {
+			bubbles = []string{cleanedText}
 		}
 		return replydomain.ReplyPlan{
 			PlanID:           decisionID + "-plan",
@@ -87,7 +126,7 @@ func ParseTerminalPlan(decisionID string, toolName string, raw string, session r
 			Bubbles:          bubbles,
 			PlannedActions:   []policydomain.DecisionAction{policydomain.ActionReply},
 			SendMode:         "group",
-			FallbackText:     result.Text,
+			FallbackText:     cleanedText,
 		}, true, nil
 	case "stay_silent":
 		return replydomain.ReplyPlan{
@@ -101,15 +140,35 @@ func ParseTerminalPlan(decisionID string, toolName string, raw string, session r
 		if err := json.Unmarshal([]byte(raw), &result); err != nil {
 			return replydomain.ReplyPlan{}, false, fmt.Errorf("decode quote_reply result: %w", err)
 		}
+		cleanedText := stripThinkBlocks(result.Text)
+		rawBubbles := compactStrings(result.Bubbles, 2)
+		cleanedBubbles := make([]string, 0, len(rawBubbles))
+		for _, b := range rawBubbles {
+			cleanedBubbles = append(cleanedBubbles, stripThinkBlocks(b))
+		}
+		if result.ReplyToMessageID == "" {
+			// LLM 未提供引用 ID，降级为普通发言，不设置 ActionParams["tool"]
+			slog.Warn("ParseTerminalPlan: quote_reply missing reply_to_message_id, degrading to plain speak",
+				"decision_id", decisionID,
+			)
+			return replydomain.ReplyPlan{
+				PlanID:         decisionID + "-plan",
+				Intent:         session.Intent,
+				Bubbles:        cleanedBubbles,
+				PlannedActions: []policydomain.DecisionAction{policydomain.ActionReply},
+				SendMode:       "group",
+				FallbackText:   cleanedText,
+			}, true, nil
+		}
 		return replydomain.ReplyPlan{
 			PlanID:           decisionID + "-plan",
 			Intent:           session.Intent,
 			ReplyToMessageID: result.ReplyToMessageID,
-			Bubbles:          compactStrings(result.Bubbles, 2),
+			Bubbles:          cleanedBubbles,
 			PlannedActions:   []policydomain.DecisionAction{policydomain.ActionReply},
 			ActionParams:     map[string]any{"tool": "quote_reply"},
 			SendMode:         "group",
-			FallbackText:     result.Text,
+			FallbackText:     cleanedText,
 		}, true, nil
 	case "send_meme":
 		var result sendMemeResult
@@ -206,6 +265,11 @@ func (t *speakTextTool) InvokableRun(_ context.Context, argumentsInJSON string, 
 	if strings.TrimSpace(args.Text) == "" && len(args.Bubbles) == 0 {
 		return "", errors.New("text or bubbles is required")
 	}
+	preview := args.Text
+	if len(preview) > 80 {
+		preview = preview[:80] + "..."
+	}
+	slog.Debug("tool: speak_text", "bubbles", len(args.Bubbles), "reply_to", args.ReplyToMessageID, "text", preview)
 	result := speakTextResult{
 		Tool:             "speak_text",
 		Text:             strings.TrimSpace(args.Text),
@@ -229,7 +293,7 @@ func (t *staySilentTool) Name() string { return "stay_silent" }
 func (t *staySilentTool) Info(_ context.Context) (*schema.ToolInfo, error) {
 	return &schema.ToolInfo{
 		Name: t.Name(),
-		Desc: "Choose silence as the final action when replying would be unnatural or risky.",
+		Desc: "Choose silence as the final action when replying would be socially unnatural or risky. Do NOT use this merely because the topic is unfamiliar — search first with web_search, then decide.",
 		ParamsOneOf: schema.NewParamsOneOfByParams(map[string]*schema.ParameterInfo{
 			"reason_code": {Type: schema.String, Required: true, Desc: "Short reason code for staying silent."},
 			"ttl_ms":      {Type: schema.Integer, Desc: "Optional suppression ttl in milliseconds."},
@@ -242,6 +306,7 @@ func (t *staySilentTool) InvokableRun(_ context.Context, argumentsInJSON string,
 	if err := json.Unmarshal([]byte(argumentsInJSON), &args); err != nil {
 		return "", fmt.Errorf("decode stay_silent args: %w", err)
 	}
+	slog.Debug("tool: stay_silent", "reason", args.ReasonCode, "ttl_ms", args.TTLMS)
 	return marshal(map[string]any{
 		"tool":        "stay_silent",
 		"reason_code": strings.TrimSpace(args.ReasonCode),
@@ -285,6 +350,7 @@ func (t *queryMemoryTool) InvokableRun(ctx context.Context, argumentsInJSON stri
 	if err := json.Unmarshal([]byte(argumentsInJSON), &args); err != nil {
 		return "", fmt.Errorf("decode query_memory args: %w", err)
 	}
+	slog.Debug("tool: query_memory", "query", args.Query, "scope", args.Scope, "top_k", args.TopK)
 	records, err := t.store.QueryMemories(ctx, ports.MemoryQuery{
 		GroupID: t.session.GroupID,
 		UserID:  t.session.UserID,
@@ -296,11 +362,13 @@ func (t *queryMemoryTool) InvokableRun(ctx context.Context, argumentsInJSON stri
 	if err != nil {
 		return "", err
 	}
+	slog.Debug("tool: query_memory result", "count", len(records))
 	return marshal(map[string]any{"records": records})
 }
 
 type searchMemeTool struct {
 	store   ports.MemeStore
+	memeSvc *memesvc.Service
 	session replydomain.ToolContext
 }
 
@@ -312,8 +380,8 @@ type searchMemeArgs struct {
 	ExcludeRecent bool   `json:"exclude_recent"`
 }
 
-func newSearchMemeTool(store ports.MemeStore, session replydomain.ToolContext) *searchMemeTool {
-	return &searchMemeTool{store: store, session: session}
+func newSearchMemeTool(store ports.MemeStore, svc *memesvc.Service, session replydomain.ToolContext) *searchMemeTool {
+	return &searchMemeTool{store: store, memeSvc: svc, session: session}
 }
 
 func (t *searchMemeTool) Name() string { return "search_meme" }
@@ -337,21 +405,33 @@ func (t *searchMemeTool) InvokableRun(ctx context.Context, argumentsInJSON strin
 	if err := json.Unmarshal([]byte(argumentsInJSON), &args); err != nil {
 		return "", fmt.Errorf("decode search_meme args: %w", err)
 	}
-	results, err := t.store.SearchMemes(ctx, ports.MemeQuery{
+	slog.Debug("tool: search_meme", "query", args.Query, "emotion", args.Emotion, "scene", args.Scene)
+	query := ports.MemeQuery{
 		GroupID:       t.session.GroupID,
 		Query:         args.Query,
 		Emotion:       args.Emotion,
 		Scene:         args.Scene,
 		TopK:          clamp(args.TopK, 1, 5),
 		ExcludeRecent: args.ExcludeRecent,
-	})
+	}
+	var (
+		results []mediadomain.MemeSearchResult
+		err     error
+	)
+	if t.memeSvc != nil {
+		results, err = t.memeSvc.Search(ctx, query)
+	} else {
+		results, err = t.store.SearchMemes(ctx, query)
+	}
 	if err != nil {
 		return "", err
 	}
 	return marshal(map[string]any{"results": results})
 }
 
-type sendMemeTool struct{}
+type sendMemeTool struct {
+	store ports.MemeStore
+}
 
 type sendMemeArgs struct {
 	MemeID           string `json:"meme_id"`
@@ -366,8 +446,8 @@ type sendMemeResult struct {
 	Caption          string `json:"caption"`
 }
 
-func newSendMemeTool() *sendMemeTool { return &sendMemeTool{} }
-func (t *sendMemeTool) Name() string { return "send_meme" }
+func newSendMemeTool(store ports.MemeStore) *sendMemeTool { return &sendMemeTool{store: store} }
+func (t *sendMemeTool) Name() string                      { return "send_meme" }
 func (t *sendMemeTool) Info(_ context.Context) (*schema.ToolInfo, error) {
 	return &schema.ToolInfo{
 		Name: t.Name(),
@@ -379,10 +459,18 @@ func (t *sendMemeTool) Info(_ context.Context) (*schema.ToolInfo, error) {
 		}),
 	}, nil
 }
-func (t *sendMemeTool) InvokableRun(_ context.Context, argumentsInJSON string, _ ...tool.Option) (string, error) {
+func (t *sendMemeTool) InvokableRun(ctx context.Context, argumentsInJSON string, _ ...tool.Option) (string, error) {
 	var args sendMemeArgs
 	if err := json.Unmarshal([]byte(argumentsInJSON), &args); err != nil {
 		return "", err
+	}
+	if t.store != nil {
+		if _, _, err := t.store.GetMeme(ctx, args.MemeID); err != nil {
+			return marshal(map[string]any{
+				"error": "meme_not_found",
+				"hint":  "use search_meme to find a valid meme_id first",
+			})
+		}
 	}
 	return marshal(sendMemeResult{Tool: t.Name(), MemeID: args.MemeID, ReplyToMessageID: args.ReplyToMessageID, Caption: args.Caption})
 }
@@ -407,7 +495,7 @@ func (t *quoteReplyTool) Info(_ context.Context) (*schema.ToolInfo, error) {
 		Name: t.Name(),
 		Desc: "Send a text reply while quoting a specific message.",
 		ParamsOneOf: schema.NewParamsOneOfByParams(map[string]*schema.ParameterInfo{
-			"reply_to_message_id": {Type: schema.String, Required: true, Desc: "Message ID to quote."},
+			"reply_to_message_id": {Type: schema.String, Desc: "Message ID to quote; if omitted the reply is sent without quoting."},
 			"text":                {Type: schema.String, Required: true, Desc: "Reply text."},
 			"bubbles":             {Type: schema.Array, Desc: "Optional split bubbles."},
 		}),
@@ -477,7 +565,7 @@ func (t *webSearchTool) Name() string { return "web_search" }
 func (t *webSearchTool) Info(_ context.Context) (*schema.ToolInfo, error) {
 	return &schema.ToolInfo{
 		Name: t.Name(),
-		Desc: "Search the web and return concise citations.",
+		Desc: "当遇到不确定的专有名词、群内黑话、近期事件或需要核实的事实时，必须优先调用此工具查询，禁止直接猜测后回复。返回精简摘要。",
 		ParamsOneOf: schema.NewParamsOneOfByParams(map[string]*schema.ParameterInfo{
 			"query":     {Type: schema.String, Required: true, Desc: "Search query."},
 			"top_k":     {Type: schema.Integer, Desc: "Max number of results."},
@@ -490,6 +578,7 @@ func (t *webSearchTool) InvokableRun(ctx context.Context, argumentsInJSON string
 	if err := json.Unmarshal([]byte(argumentsInJSON), &args); err != nil {
 		return "", err
 	}
+	slog.Debug("tool: web_search", "query", args.Query, "freshness", args.Freshness)
 	if t.searcher == nil {
 		return marshal(map[string]any{"results": []ports.SearchResult{}})
 	}
@@ -497,6 +586,7 @@ func (t *webSearchTool) InvokableRun(ctx context.Context, argumentsInJSON string
 	if err != nil {
 		return "", err
 	}
+	slog.Debug("tool: web_search result", "count", len(results))
 	return marshal(map[string]any{"results": results})
 }
 
@@ -560,7 +650,10 @@ func (t *pokeMemberTool) InvokableRun(_ context.Context, argumentsInJSON string,
 	return marshal(pokeMemberResult{Tool: t.Name(), UserID: args.UserID})
 }
 
-type markMemoryIntentTool struct{}
+type markMemoryIntentTool struct {
+	memSvc  *memsvc.Service
+	session replydomain.ToolContext
+}
 
 type markMemoryIntentArgs struct {
 	MemoryType      string  `json:"memory_type"`
@@ -570,7 +663,9 @@ type markMemoryIntentArgs struct {
 	EvidenceEventID string  `json:"evidence_event_id"`
 }
 
-func newMarkMemoryIntentTool() *markMemoryIntentTool { return &markMemoryIntentTool{} }
+func newMarkMemoryIntentTool(memSvc *memsvc.Service, session replydomain.ToolContext) *markMemoryIntentTool {
+	return &markMemoryIntentTool{memSvc: memSvc, session: session}
+}
 
 func (t *markMemoryIntentTool) Name() string { return "mark_memory_intent" }
 
@@ -594,6 +689,25 @@ func (t *markMemoryIntentTool) InvokableRun(_ context.Context, argumentsInJSON s
 		return "", fmt.Errorf("decode mark_memory_intent args: %w", err)
 	}
 	intentID := fmt.Sprintf("memory-intent-%d", time.Now().UnixNano())
+	if t.memSvc != nil {
+		scope := fmt.Sprintf("group:%d", t.session.GroupID)
+		writeCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		record, err := t.memSvc.MarkIntent(writeCtx, memsvc.WriteIntent{
+			Scope:         scope,
+			MemoryType:    args.MemoryType,
+			Subject:       args.Subject,
+			Content:       args.Content,
+			SourceEventID: args.EvidenceEventID,
+			Importance:    args.Importance,
+			Confidence:    0.7,
+		})
+		if err != nil {
+			slog.Warn("mark_memory_intent: write failed", "scope", scope, "memory_type", args.MemoryType, "err", err)
+		} else {
+			intentID = record.MemoryID
+		}
+	}
 	return marshal(map[string]any{
 		"accepted":         true,
 		"memory_intent_id": intentID,
@@ -632,4 +746,245 @@ func clamp(value, minValue, maxValue int) int {
 		return maxValue
 	}
 	return value
+}
+
+func appendUnique(items []string, value string, max int) []string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return items
+	}
+	for _, item := range items {
+		if item == value {
+			return items
+		}
+	}
+	items = append(items, value)
+	if max > 0 && len(items) > max {
+		items = items[len(items)-max:]
+	}
+	return items
+}
+
+func clampF(v, lo, hi float64) float64 {
+	if v < lo {
+		return lo
+	}
+	if v > hi {
+		return hi
+	}
+	return v
+}
+
+// update_affinity tool
+
+type updateAffinityTool struct {
+	store     ports.ProfileStore
+	session   replydomain.ToolContext
+	personaID string
+}
+
+type updateAffinityArgs struct {
+	UserID int64   `json:"user_id"`
+	Delta  float64 `json:"delta"`
+	Reason string  `json:"reason"`
+}
+
+func newUpdateAffinityTool(store ports.ProfileStore, session replydomain.ToolContext, personaID string) *updateAffinityTool {
+	return &updateAffinityTool{store: store, session: session, personaID: personaID}
+}
+
+func (t *updateAffinityTool) Name() string { return "update_affinity" }
+
+func (t *updateAffinityTool) Info(_ context.Context) (*schema.ToolInfo, error) {
+	return &schema.ToolInfo{
+		Name: t.Name(),
+		Desc: "Adjust your affinity toward a group member by a signed delta. Use positive for warmth, negative for discomfort. Call at most once per reply.",
+		ParamsOneOf: schema.NewParamsOneOfByParams(map[string]*schema.ParameterInfo{
+			"user_id": {Type: schema.Integer, Required: true, Desc: "Target member user ID."},
+			"delta":   {Type: schema.Number, Required: true, Desc: "Affinity delta in [-0.3, 0.3]. Positive = warmer, negative = cooler."},
+			"reason":  {Type: schema.String, Desc: "Short reason code for the change."},
+		}),
+	}, nil
+}
+
+func (t *updateAffinityTool) InvokableRun(ctx context.Context, argumentsInJSON string, _ ...tool.Option) (string, error) {
+	if t.store == nil {
+		return marshal(map[string]any{"accepted": false, "reason": "no_store"})
+	}
+	// Budget check: at most 1 call per plan
+	if t.session.Budget != nil {
+		if t.session.Budget["update_affinity"] >= 1 {
+			return marshal(map[string]any{"accepted": false, "reason": "budget_exceeded"})
+		}
+		t.session.Budget["update_affinity"]++
+	}
+	var args updateAffinityArgs
+	if err := json.Unmarshal([]byte(argumentsInJSON), &args); err != nil {
+		return "", fmt.Errorf("decode update_affinity args: %w", err)
+	}
+	delta := clampF(args.Delta, -0.3, 0.3)
+	rel, err := t.store.GetRelationship(ctx, t.personaID, t.session.GroupID, args.UserID)
+	if err != nil {
+		return "", err
+	}
+	rel.PersonaID = t.personaID
+	rel.GroupID = t.session.GroupID
+	rel.UserID = args.UserID
+	rel.Affinity = clampF(rel.Affinity+delta, 0, 1)
+	rel.LastInteractAt = time.Now()
+	if err := t.store.SaveRelationship(ctx, rel); err != nil {
+		return "", err
+	}
+	slog.Debug("tool: update_affinity", "user_id", args.UserID, "delta", delta, "new_affinity", rel.Affinity)
+	return marshal(map[string]any{
+		"accepted":     true,
+		"new_affinity": rel.Affinity,
+	})
+}
+
+// update_member_profile tool
+
+type updateMemberProfileTool struct {
+	store     ports.ProfileStore
+	session   replydomain.ToolContext
+	personaID string
+}
+
+type traitPatch struct {
+	TraitType  string  `json:"trait_type"`
+	Value      string  `json:"value"`
+	Confidence float64 `json:"confidence"`
+}
+
+type updateMemberProfileArgs struct {
+	UserID           int64        `json:"user_id"`
+	AddTraits        []traitPatch `json:"add_traits"`
+	AddTags          []string     `json:"add_tags"`
+	AddInterests     []string     `json:"add_interests"`
+	FamiliarityDelta float64      `json:"familiarity_delta"`
+	EvidenceEventID  string       `json:"evidence_event_id"`
+}
+
+func newUpdateMemberProfileTool(store ports.ProfileStore, session replydomain.ToolContext, personaID string) *updateMemberProfileTool {
+	return &updateMemberProfileTool{store: store, session: session, personaID: personaID}
+}
+
+func (t *updateMemberProfileTool) Name() string { return "update_member_profile" }
+
+func (t *updateMemberProfileTool) Info(_ context.Context) (*schema.ToolInfo, error) {
+	return &schema.ToolInfo{
+		Name: t.Name(),
+		Desc: "Update a member's traits, tags, or interests when you learn new information about them. Also optionally adjust familiarity. Call at most once per reply.",
+		ParamsOneOf: schema.NewParamsOneOfByParams(map[string]*schema.ParameterInfo{
+			"user_id":           {Type: schema.Integer, Required: true, Desc: "Target member user ID."},
+			"add_traits":        {Type: schema.Array, Desc: "List of {trait_type, value, confidence} to add or update."},
+			"add_tags":          {Type: schema.Array, Desc: "Tags to add (e.g. 'funny', 'gamer')."},
+			"add_interests":     {Type: schema.Array, Desc: "Interests to add (e.g. 'anime', 'coding')."},
+			"familiarity_delta": {Type: schema.Number, Desc: "Optional familiarity delta in [-0.2, 0.2]. Suggest <=0.1 per call."},
+			"evidence_event_id": {Type: schema.String, Desc: "Event ID that supports this update."},
+		}),
+	}, nil
+}
+
+func (t *updateMemberProfileTool) InvokableRun(ctx context.Context, argumentsInJSON string, _ ...tool.Option) (string, error) {
+	if t.store == nil {
+		return marshal(map[string]any{"accepted": false, "reason": "no_store"})
+	}
+	// Budget check: at most 1 call per plan
+	if t.session.Budget != nil {
+		if t.session.Budget["update_member_profile"] >= 1 {
+			return marshal(map[string]any{"accepted": false, "reason": "budget_exceeded"})
+		}
+		t.session.Budget["update_member_profile"]++
+	}
+	var args updateMemberProfileArgs
+	if err := json.Unmarshal([]byte(argumentsInJSON), &args); err != nil {
+		return "", fmt.Errorf("decode update_member_profile args: %w", err)
+	}
+
+	profile, err := t.store.GetMemberProfile(ctx, t.session.GroupID, args.UserID)
+	if err != nil {
+		return "", err
+	}
+
+	now := time.Now()
+	// Merge traits: deduplicate by (TraitType+Value), update confidence if exists
+	for _, p := range args.AddTraits {
+		merged := false
+		for i, existing := range profile.Traits {
+			if existing.TraitType == p.TraitType && existing.Value == p.Value {
+				profile.Traits[i].Confidence = clampF(p.Confidence, 0, 1)
+				profile.Traits[i].UpdatedAt = now
+				profile.Traits[i].EvidenceEventID = args.EvidenceEventID
+				merged = true
+				break
+			}
+		}
+		if !merged {
+			profile.Traits = append(profile.Traits, profiledomain.MemberTrait{
+				GroupID:         t.session.GroupID,
+				UserID:          args.UserID,
+				TraitType:       p.TraitType,
+				Value:           p.Value,
+				Confidence:      clampF(p.Confidence, 0, 1),
+				EvidenceEventID: args.EvidenceEventID,
+				UpdatedAt:       now,
+			})
+		}
+	}
+	// Cap at 30 traits (sliding window)
+	if len(profile.Traits) > 30 {
+		profile.Traits = profile.Traits[len(profile.Traits)-30:]
+	}
+	for _, tag := range args.AddTags {
+		profile.Tags = appendUnique(profile.Tags, tag, 20)
+	}
+	for _, interest := range args.AddInterests {
+		profile.Interests = appendUnique(profile.Interests, interest, 20)
+	}
+
+	if err := t.store.SaveMemberProfile(ctx, profile); err != nil {
+		return "", err
+	}
+
+	// Update familiarity if delta provided (ignored in observe-only mode)
+	if args.FamiliarityDelta != 0 && !t.session.ObserveOnly {
+		rel, err := t.store.GetRelationship(ctx, t.personaID, t.session.GroupID, args.UserID)
+		if err != nil {
+			return "", err
+		}
+		rel.PersonaID = t.personaID
+		rel.GroupID = t.session.GroupID
+		rel.UserID = args.UserID
+		rel.Familiarity = clampF(rel.Familiarity+clampF(args.FamiliarityDelta, -0.2, 0.2), 0, 0.8)
+		rel.LastInteractAt = now
+		if err := t.store.SaveRelationship(ctx, rel); err != nil {
+			return "", err
+		}
+	}
+
+	slog.Debug("tool: update_member_profile", "user_id", args.UserID,
+		"traits_added", len(args.AddTraits), "tags_added", len(args.AddTags))
+	return marshal(map[string]any{"accepted": true})
+}
+
+// stripThinkBlocks 移除模型输出中的 <think>...</think> 推理块。
+// 同时处理完整标签对和孤立的 </think> 闭合标签（框架剥离开头标签后的残留）。
+// 与 internal/services/prompting/agent_planner.go 中的同名函数逻辑完全一致；
+// 如需修改，请同步更新两处，或将其提取至共享 textutil 包。
+func stripThinkBlocks(s string) string {
+	for {
+		end := strings.Index(s, "</think>")
+		if end < 0 {
+			break
+		}
+		start := strings.Index(s, "<think>")
+		if start >= 0 && start < end {
+			s = s[:start] + s[end+len("</think>"):]
+		} else {
+			// 孤立的 </think>：其前面的内容均为推理过程，一并丢弃
+			s = s[end+len("</think>"):]
+		}
+	}
+	return strings.TrimSpace(s)
 }

@@ -111,3 +111,66 @@ func TestDecideWithLLMGate(t *testing.T) {
 		t.Fatalf("expected gate to trigger reply, got %s", decision.Action)
 	}
 }
+
+func TestDecidePokeBack(t *testing.T) {
+	// EventPoke + AllowPokeBack=true + 无 suppress → ActionPokeBack
+	cfg := config.Default()
+	cfg.DefaultPolicy.QuietHours = nil
+	cfg.DefaultPolicy.AllowPokeBack = true
+	policySvc := policysvc.New(cfg)
+	svc := New(policySvc, nil)
+
+	snapshot := conversationdomain.ContextSnapshot{
+		Event: conversationdomain.ConversationEvent{
+			Kind:          conversationdomain.EventPoke,
+			GroupID:       1,
+			UserID:        2,
+			TimestampUnix: time.Now().Unix(),
+		},
+		GroupPolicy: cfg.DefaultPolicy,
+		RuntimeState: policydomain.RuntimeState{
+			GroupID: 1,
+			State:   policydomain.StateObserving,
+		},
+	}
+
+	decision, _, err := svc.Decide(context.Background(), snapshot)
+	if err != nil {
+		t.Fatalf("decide: %v", err)
+	}
+	if decision.Action != policydomain.ActionPokeBack {
+		t.Fatalf("expected poke_back action, got %s", decision.Action)
+	}
+}
+
+func TestDecidePokeSuppressed(t *testing.T) {
+	// EventPoke + AllowPokeBack=true + SuppressedUntil 在未来 → ActionSilent
+	cfg := config.Default()
+	cfg.DefaultPolicy.QuietHours = nil
+	cfg.DefaultPolicy.AllowPokeBack = true
+	policySvc := policysvc.New(cfg)
+	svc := New(policySvc, nil)
+
+	snapshot := conversationdomain.ContextSnapshot{
+		Event: conversationdomain.ConversationEvent{
+			Kind:          conversationdomain.EventPoke,
+			GroupID:       1,
+			UserID:        2,
+			TimestampUnix: time.Now().Unix(),
+		},
+		GroupPolicy: cfg.DefaultPolicy,
+		RuntimeState: policydomain.RuntimeState{
+			GroupID:         1,
+			State:           policydomain.StateSuppressed,
+			SuppressedUntil: time.Now().Add(10 * time.Minute),
+		},
+	}
+
+	decision, _, err := svc.Decide(context.Background(), snapshot)
+	if err != nil {
+		t.Fatalf("decide: %v", err)
+	}
+	if decision.Action != policydomain.ActionSilent {
+		t.Fatalf("expected silent during suppress, got %s", decision.Action)
+	}
+}
