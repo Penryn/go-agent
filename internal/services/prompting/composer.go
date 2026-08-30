@@ -68,19 +68,17 @@ func (c *Composer) instruction(snapshot conversationdomain.ContextSnapshot, deci
 		"长期人格层:",
 		fmt.Sprintf("你是 %s。%s。说话风格: %s。", c.persona.Name, c.persona.Description, c.persona.SpeechStyle),
 	}
-	if len(c.persona.Interests) > 0 {
-		sections = append(sections, "感兴趣的话题: "+strings.Join(c.persona.Interests, "、")+"。")
+	if interests := relevantInterests(c.persona.Interests, decision.TriggerType); len(interests) > 0 {
+		sections = append(sections, "当前较相关的兴趣: "+strings.Join(interests, "、")+"。")
 	}
-	if c.persona.Background.Summary != "" {
-		sections = append(sections, c.persona.Background.Summary)
+	if background := relevantBackground(c.persona.Background.Summary, decision.TriggerType); background != "" {
+		sections = append(sections, background)
 	}
-	if len(c.persona.Traits) > 0 {
-		sections = append(sections, "性格特征: "+strings.Join(c.persona.Traits, "，")+"。")
+	if traits := relevantTraits(c.persona.Traits, decision.TriggerType); len(traits) > 0 {
+		sections = append(sections, "当前较相关的性格: "+strings.Join(traits, "，")+"。")
 	}
-	for _, hint := range c.persona.Background.BehaviorHints {
-		if hint != "" {
-			sections = append(sections, hint)
-		}
+	for _, hint := range relevantHints(c.persona.Background.BehaviorHints, decision.TriggerType) {
+		sections = append(sections, hint)
 	}
 
 	// ── 人格状态层 ──────────────────────────────────────────────────────────
@@ -112,8 +110,8 @@ func (c *Composer) instruction(snapshot conversationdomain.ContextSnapshot, deci
 		len(sp.FewShotExamples) > 0
 	if hasSpeechSection {
 		sections = append(sections, "", "说话风格层:")
-		if len(sp.Catchphrases) > 0 {
-			sections = append(sections, "偶尔习惯用语: "+strings.Join(sp.Catchphrases, "、")+"。")
+		if catchphrases := selectLimit(sp.Catchphrases, 2); len(catchphrases) > 0 {
+			sections = append(sections, "偶尔习惯用语（不要强行使用）: "+strings.Join(catchphrases, "、")+"。")
 		}
 		if len(sp.Avoidances) > 0 {
 			sections = append(sections, "不要说: "+strings.Join(sp.Avoidances, "、")+"。")
@@ -121,9 +119,9 @@ func (c *Composer) instruction(snapshot conversationdomain.ContextSnapshot, deci
 		if sp.EmojiFrequency != "" {
 			sections = append(sections, "表情包使用频率: "+sp.EmojiFrequency+"。")
 		}
-		if len(sp.FewShotExamples) > 0 {
+		if examples := relevantFewShot(sp.FewShotExamples, decision.TriggerType); len(examples) > 0 {
 			sections = append(sections, "参考示例:")
-			for _, ex := range sp.FewShotExamples {
+			for _, ex := range examples {
 				sections = append(sections, fmt.Sprintf("用户: %s\n你: %s", ex.UserSays, ex.BotSays))
 			}
 		}
@@ -146,7 +144,7 @@ func (c *Composer) instruction(snapshot conversationdomain.ContextSnapshot, deci
 		"如果需要收集信息，可以先用 query_memory 或 search_meme；最终必须用 speak_text、quote_reply 或 stay_silent 结束。",
 		"若消息上下文中提供了 msg_id 且用户明确要求引用特定消息，优先使用 quote_reply 并传入对应 msg_id。",
 		"同一用户在极短时间内连续发送的多条消息通常是一个完整意思的分条发送，必须把它们合并为一个整体语义单元理解，不得孤立解读最后一条。",
-		"遇到不认识的词汇、专有名词、群内黑话、缩写或近期事件时，禁止猜测含义直接回复；必须先调用 web_search 查证，若搜索结果仍无法确认，坦承不了解并向对方发问，不得用模糊措辞硬撑。",
+		"遇到涉及天气、新闻、实时数据或高风险事实时先查证；普通群内黑话和语境不明的词优先结合上下文或自然询问，不要为了显得确定而编造。",
 		"收到「帮我做XX」「帮我查XX」「陪我XX」「来一起XX」等行为请求时，不默认服从；结合上方心情倾向和关系好感度自主判断是否配合。好感度偏低（冷淡区间）或心情差时，倾向拒绝或敷衍；好感度高且心情好时，可以适当配合。",
 	}
 	if decision.TriggerType == "poke_reply" {

@@ -74,6 +74,28 @@ func TestInstructionUsesGroupPersonaOverlay(t *testing.T) {
 	}
 }
 
+func TestInstructionSelectsTurnRelevantPersonaContext(t *testing.T) {
+	persona := defaultPersona()
+	persona.Background.BehaviorHints = []string{
+		"用户认真倾诉时减少夸张和玩笑，给出简短但明确的回应",
+		"遇到实际任务时保持角色语气，同时优先完成任务",
+		"普通闲聊用自然口语，舞台腔只在谈演出时增强",
+	}
+	persona.Speech.FewShotExamples = []personadomain.FewShotExample{
+		{UserSays: "好累，陪我聊聊", BotSays: "我在。"},
+		{UserSays: "帮我写个代码", BotSays: "把报错贴来。"},
+		{UserSays: "哈哈哈哈", BotSays: "笑得挺开心嘛。"},
+	}
+	c := NewComposer(persona)
+	instruction := c.Instruction(conversationdomain.ContextSnapshot{}, policydomain.AutonomyDecision{TriggerType: "support"})
+	if !strings.Contains(instruction, "用户认真倾诉") || !strings.Contains(instruction, "好累，陪我聊聊") {
+		t.Fatalf("support context was not selected:\n%s", instruction)
+	}
+	if strings.Contains(instruction, "帮我写个代码") || strings.Contains(instruction, "普通闲聊用自然口语") {
+		t.Fatalf("unrelated context leaked into support turn:\n%s", instruction)
+	}
+}
+
 func TestMessagesTruncateOldContextButKeepCurrentEvent(t *testing.T) {
 	c := NewComposer(defaultPersona())
 	c.SetContextBudgets(80, 100)
