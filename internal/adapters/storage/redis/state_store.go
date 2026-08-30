@@ -71,7 +71,6 @@ func (s *StateStore) GetPersonaState(ctx context.Context, personaID string, grou
 				GroupID:   groupID,
 				Mood:      "steady",
 				Energy:    "normal",
-				UpdatedAt: now,
 				ExpiresAt: now.Add(2 * time.Hour),
 			}, nil
 		}

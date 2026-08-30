@@ -87,9 +87,12 @@ func (c *Composer) instruction(snapshot conversationdomain.ContextSnapshot, deci
 	sections = append(sections,
 		"",
 		"人格状态层:",
-		fmt.Sprintf("当前心情=%s，精力=%s。", mood, energy),
+		fmt.Sprintf("当前心情=%s，精力=%s，参与倾向=%.2f。", mood, energy, snapshot.PersonaState.TalkBias),
 		"请让回复风格自然地反映当前心情和精力水平。心情和精力同样影响你是否愿意配合对方的行为请求。",
 	)
+	if hint := talkBiasHint(snapshot.PersonaState.TalkBias); hint != "" {
+		sections = append(sections, hint)
+	}
 	if hint := requestDispositionHint(mood, energy); hint != "" {
 		sections = append(sections, hint)
 	}
@@ -207,6 +210,17 @@ func requestDispositionHint(mood, energy string) string {
 		return ""
 	default:
 		// steady / normal / 其他未知值：不额外注入，由好感度描述自然覆盖
+		return ""
+	}
+}
+
+func talkBiasHint(bias float64) string {
+	switch {
+	case bias <= -0.2:
+		return "当前参与倾向偏低：回复更克制，不主动扩展新话题。"
+	case bias >= 0.2:
+		return "当前参与倾向偏高：可以自然多接一句，但不要抢话。"
+	default:
 		return ""
 	}
 }

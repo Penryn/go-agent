@@ -544,7 +544,9 @@ func (s *Store) GetPersonaState(_ context.Context, personaID string, groupID int
 
 	key := personaStateKey(personaID, groupID)
 	if state, ok := s.personaStates[key]; ok {
-		return state, nil
+		if state.ExpiresAt.IsZero() || time.Now().Before(state.ExpiresAt) {
+			return state, nil
+		}
 	}
 
 	now := time.Now()
@@ -553,7 +555,6 @@ func (s *Store) GetPersonaState(_ context.Context, personaID string, groupID int
 		GroupID:   groupID,
 		Mood:      "steady",
 		Energy:    "normal",
-		UpdatedAt: now,
 		ExpiresAt: now.Add(2 * time.Hour),
 	}, nil
 }

@@ -51,75 +51,18 @@ func (s *Service) UpdateAfterTurn(
 	}
 
 	// 防抖：30s 内已更新过则跳过
-	if time.Since(current.UpdatedAt) < debounceWindow {
+	if !current.UpdatedAt.IsZero() && time.Since(current.UpdatedAt) < debounceWindow {
 		return nil
 	}
 
-	mood := personadomain.Mood(current.Mood)
-	energy := personadomain.Energy(current.Energy)
-
-	// ---- Mood 更新规则 ----
-	switch {
-	case isDirectCue(snapshot) && replied:
-		// 被直接 cue 且成功回复 → 互动感 → happy
-		mood = personadomain.MoodHappy
-
-	case isHighAffinityUser(snapshot) && replied:
-		// 高好感用户触发的回复 → happy（不从 aggro 直接跳 happy）
-		if mood != personadomain.MoodAggro {
-			mood = personadomain.MoodHappy
-		}
-
-	case isFloodCue(snapshot, decision):
-		// 短时间内被高频 cue 且都是 direct_triggered → 烦躁
-		mood = personadomain.MoodAggro
-
-	case decision.Action == policydomain.ActionSilent &&
-		decision.TriggerType == "" &&
-		mood == personadomain.MoodHappy:
-		// 安静观察轮次，happy 自然衰减到 steady
-		mood = personadomain.MoodSteady
-
-	case isLowEngagement(snapshot):
-		// 群里长时间无互动 → withdrawn
-		if mood == personadomain.MoodSteady {
-			mood = personadomain.MoodWithdrawn
-		}
-	}
-
-	// ---- Energy 更新规则 ----
-	switch {
-	case replied && energy == personadomain.EnergyHigh:
-		// 在 high 状态下发言 → 消耗资源 → normal
-		energy = personadomain.EnergyNormal
-
-	case replied && energy == personadomain.EnergyNormal:
-		// 连续回复消耗精力，ConsecutiveBotTurns >= 3 时降为 low
-		if snapshot.RuntimeState.ConsecutiveBotTurns >= 3 {
-			energy = personadomain.EnergyLow
-		}
-
-	case replied && energy == personadomain.EnergyLow:
-		// 在精力低时仍在继续回复 → tired
-		energy = personadomain.EnergyTired
-
-	case !replied && energy == personadomain.EnergyTired:
-		// 沉默轮让 tired 恢复到 low（沉默 = 在休息）
-		energy = personadomain.EnergyLow
-
-	case isOffPeakQuiet(snapshot):
-		// 群静止时段，精力慢慢恢复到 normal
-		if energy == personadomain.EnergyLow {
-			energy = personadomain.EnergyNormal
-		}
-	}
+	mood, energy, talkBias := transitionState(current, snapshot, decision, replied)
 
 	next := personadomain.PersonaState{
 		PersonaID: s.personaID,
 		GroupID:   groupID,
 		Mood:      string(mood),
 		Energy:    string(energy),
-		TalkBias:  current.TalkBias,
+		TalkBias:  talkBias,
 		UpdatedAt: time.Now(),
 		ExpiresAt: time.Now().Add(moodStateTTL),
 	}
@@ -134,6 +77,64 @@ func (s *Service) UpdateAfterTurn(
 		"trigger", decision.TriggerType,
 	)
 	return nil
+}
+
+func transitionState(current personadomain.PersonaState, snapshot conversationdomain.ContextSnapshot, decision policydomain.AutonomyDecision, replied bool) (personadomain.Mood, personadomain.Energy, float64) {
+	mood := personadomain.Mood(current.Mood)
+	if mood == "" {
+		mood = personadomain.MoodSteady
+	}
+	energy := personadomain.Energy(current.Energy)
+	if energy == "" {
+		energy = personadomain.EnergyNormal
+	}
+	talkBias := current.TalkBias
+
+	switch {
+	case isFloodCue(snapshot, decision):
+		mood = personadomain.MoodAggro
+		talkBias -= 0.2
+	case replied && (decision.TriggerType == "gratitude" || decision.TriggerType == "banter"):
+		mood = personadomain.MoodHappy
+		talkBias += 0.08
+	case isHighAffinityUser(snapshot) && replied && mood != personadomain.MoodAggro:
+		mood = personadomain.MoodHappy
+		talkBias += 0.05
+	case isDirectCue(snapshot) && replied && mood == personadomain.MoodWithdrawn:
+		mood = personadomain.MoodSteady
+		talkBias += 0.03
+	case decision.Action == policydomain.ActionSilent && decision.TriggerType == "" && mood == personadomain.MoodHappy:
+		mood = personadomain.MoodSteady
+		talkBias -= 0.03
+	case isLowEngagement(snapshot) && mood == personadomain.MoodSteady:
+		mood = personadomain.MoodWithdrawn
+		talkBias -= 0.05
+	}
+
+	switch {
+	case replied && energy == personadomain.EnergyHigh:
+		energy = personadomain.EnergyNormal
+	case replied && energy == personadomain.EnergyNormal && snapshot.RuntimeState.ConsecutiveBotTurns >= 3:
+		energy = personadomain.EnergyLow
+	case replied && energy == personadomain.EnergyLow:
+		energy = personadomain.EnergyTired
+	case !replied && energy == personadomain.EnergyTired:
+		energy = personadomain.EnergyLow
+	case isOffPeakQuiet(snapshot) && energy == personadomain.EnergyLow:
+		energy = personadomain.EnergyNormal
+	}
+
+	return mood, energy, clamp(talkBias, -0.5, 0.5)
+}
+
+func clamp(value, minValue, maxValue float64) float64 {
+	if value < minValue {
+		return minValue
+	}
+	if value > maxValue {
+		return maxValue
+	}
+	return value
 }
 
 // decayAllGroups 返回一个 Scheduler JobFunc，对所有已知群执行情绪衰减。
@@ -200,7 +201,7 @@ func isHighAffinityUser(snapshot conversationdomain.ContextSnapshot) bool {
 }
 
 func isFloodCue(snapshot conversationdomain.ContextSnapshot, decision policydomain.AutonomyDecision) bool {
-	return decision.TriggerType == "direct_triggered" &&
+	return isDirectCue(snapshot) && decision.Action != policydomain.ActionSilent &&
 		snapshot.RuntimeState.RepliesLast10Min >= 5
 }
 
