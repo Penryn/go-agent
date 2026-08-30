@@ -2,6 +2,7 @@ package group_actor
 
 import (
 	"context"
+	"fmt"
 	"testing"
 	"time"
 
@@ -147,6 +148,26 @@ func TestManagerRestoresWorkingMemoryAfterRestart(t *testing.T) {
 	}
 	if memory.Candidates[0].Status != humandomain.CandidatePending {
 		t.Fatalf("candidate status changed during restore: %+v", memory.Candidates[0])
+	}
+}
+
+func TestManagerBoundsCandidateState(t *testing.T) {
+	manager := NewManager(ingress.NewMemoryEventLog())
+	defer manager.Close()
+
+	base := time.Unix(1000, 0)
+	for i := 0; i < defaultMaxCandidates+40; i++ {
+		record := eventRecord(fmt.Sprintf("bounded-%d", i), 11, int64(i+1), "独立消息", base.Add(time.Duration(i)*time.Minute))
+		if _, err := manager.Observe(context.Background(), record); err != nil {
+			t.Fatalf("observe %d: %v", i, err)
+		}
+	}
+	memory, err := manager.Snapshot(context.Background(), 11)
+	if err != nil {
+		t.Fatalf("snapshot: %v", err)
+	}
+	if len(memory.Candidates) > defaultMaxCandidates {
+		t.Fatalf("candidate state exceeded bound: %d", len(memory.Candidates))
 	}
 }
 

@@ -308,12 +308,12 @@ func (a *App) Close() error {
 	a.closeOnce.Do(func() {
 		if a.sched != nil {
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-			a.closeErr = a.sched.Close(ctx)
+			a.closeErr = errors.Join(a.closeErr, a.sched.Close(ctx))
 			cancel()
 		}
 		if a.background != nil {
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-			a.closeErr = a.background.Close(ctx)
+			a.closeErr = errors.Join(a.closeErr, a.background.Close(ctx))
 			cancel()
 		}
 		if a.cleanup != nil {

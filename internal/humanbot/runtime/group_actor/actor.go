@@ -15,13 +15,17 @@ import (
 )
 
 const defaultTailSize = 32
+const defaultMaxCandidates = 256
+const defaultMaxSeen = 2048
 const burstWindow = 2 * time.Second
 
 type Manager struct {
-	log      ingress.EventLog
-	archive  ports.MemoryStore
-	state    WorkingMemoryStore
-	tailSize int
+	log           ingress.EventLog
+	archive       ports.MemoryStore
+	state         WorkingMemoryStore
+	tailSize      int
+	maxCandidates int
+	maxSeen       int
 
 	mu     sync.Mutex
 	closed bool
@@ -56,7 +60,7 @@ func WithStateStore(store WorkingMemoryStore) Option {
 }
 
 func NewManager(log ingress.EventLog, opts ...Option) *Manager {
-	m := &Manager{log: log, tailSize: defaultTailSize, groups: make(map[int64]*actor)}
+	m := &Manager{log: log, tailSize: defaultTailSize, maxCandidates: defaultMaxCandidates, maxSeen: defaultMaxSeen, groups: make(map[int64]*actor)}
 	for _, opt := range opts {
 		opt(m)
 	}
@@ -134,7 +138,7 @@ func (m *Manager) actor(ctx context.Context, groupID int64) (*actor, error) {
 			initial = loaded
 		}
 	}
-	a := newActor(groupID, m.tailSize, initial)
+	a := newActor(groupID, m.tailSize, m.maxCandidates, m.maxSeen, initial)
 	m.groups[groupID] = a
 	return a, nil
 }
@@ -333,22 +337,26 @@ type result struct {
 }
 
 type actor struct {
-	groupID  int64
-	tailSize int
-	mailbox  chan request
-	stop     chan struct{}
-	done     chan struct{}
-	seen     map[string]struct{}
+	groupID       int64
+	tailSize      int
+	maxCandidates int
+	maxSeen       int
+	mailbox       chan request
+	stop          chan struct{}
+	done          chan struct{}
+	seen          map[string]struct{}
 }
 
-func newActor(groupID int64, tailSize int, initial humandomain.GroupWorkingMemory) *actor {
+func newActor(groupID int64, tailSize, maxCandidates, maxSeen int, initial humandomain.GroupWorkingMemory) *actor {
 	a := &actor{
-		groupID:  groupID,
-		tailSize: tailSize,
-		mailbox:  make(chan request, 128),
-		stop:     make(chan struct{}),
-		done:     make(chan struct{}),
-		seen:     make(map[string]struct{}),
+		groupID:       groupID,
+		tailSize:      tailSize,
+		maxCandidates: maxCandidates,
+		maxSeen:       maxSeen,
+		mailbox:       make(chan request, 128),
+		stop:          make(chan struct{}),
+		done:          make(chan struct{}),
+		seen:          make(map[string]struct{}),
 	}
 	for _, record := range initial.RecentTail {
 		if record.EventID != "" {
@@ -375,9 +383,12 @@ func (a *actor) run(initial humandomain.GroupWorkingMemory) {
 				if _, duplicate := a.seen[req.record.EventID]; !duplicate {
 					a.seen[req.record.EventID] = struct{}{}
 					memory = reduce(memory, req.record, a.tailSize)
+					pruneCandidates(&memory, a.maxCandidates)
+					a.pruneSeen(memory.RecentTail)
 				}
 			case "claim":
 				candidate := claimCandidate(&memory, req.now, req.minScore)
+				pruneCandidates(&memory, a.maxCandidates)
 				req.result <- result{memory: cloneMemory(memory), candidate: candidate}
 				continue
 			case "enqueue":
@@ -389,10 +400,12 @@ func (a *actor) run(initial humandomain.GroupWorkingMemory) {
 					req.result <- result{memory: cloneMemory(memory), err: errors.New("group actor: candidate already exists")}
 					continue
 				}
+				pruneCandidates(&memory, a.maxCandidates)
 				req.result <- result{memory: cloneMemory(memory)}
 				continue
 			case "complete":
 				completeCandidate(&memory, req.candidateID)
+				pruneCandidates(&memory, a.maxCandidates)
 				req.result <- result{memory: cloneMemory(memory)}
 				continue
 			case "can_execute":
@@ -488,6 +501,19 @@ func (a *actor) snapshot(ctx context.Context) (humandomain.GroupWorkingMemory, e
 func (a *actor) close() {
 	close(a.stop)
 	<-a.done
+}
+
+func (a *actor) pruneSeen(tail []humandomain.EventRecord) {
+	if a.maxSeen <= 0 || len(a.seen) <= a.maxSeen {
+		return
+	}
+	seen := make(map[string]struct{}, len(tail))
+	for _, record := range tail {
+		if record.EventID != "" {
+			seen[record.EventID] = struct{}{}
+		}
+	}
+	a.seen = seen
 }
 
 func reduce(memory humandomain.GroupWorkingMemory, record humandomain.EventRecord, tailSize int) humandomain.GroupWorkingMemory {
@@ -691,6 +717,51 @@ func claimCandidate(memory *humandomain.GroupWorkingMemory, now time.Time, minSc
 	copy := *selected
 	copy.SourceEventIDs = append([]string(nil), selected.SourceEventIDs...)
 	return &copy
+}
+
+// pruneCandidates bounds long-lived group state. Terminal records are removed
+// first; if live work itself exceeds the limit, the newest candidates win so a
+// burst does not leave only stale work at the head of the queue.
+func pruneCandidates(memory *humandomain.GroupWorkingMemory, max int) {
+	if max <= 0 || len(memory.Candidates) <= max {
+		return
+	}
+	isLive := func(status humandomain.CandidateStatus) bool {
+		return status == humandomain.CandidatePending || status == humandomain.CandidateDeferred || status == humandomain.CandidateAccepted
+	}
+	liveCount := 0
+	for _, candidate := range memory.Candidates {
+		if isLive(candidate.Status) {
+			liveCount++
+		}
+	}
+	keepIndex := make(map[int]struct{}, max)
+	startLive := 0
+	if liveCount > max {
+		startLive = liveCount - max
+	}
+	seenLive := 0
+	for i, candidate := range memory.Candidates {
+		if !isLive(candidate.Status) {
+			continue
+		}
+		if seenLive >= startLive {
+			keepIndex[i] = struct{}{}
+		}
+		seenLive++
+	}
+	for i := len(memory.Candidates) - 1; i >= 0 && len(keepIndex) < max; i-- {
+		if !isLive(memory.Candidates[i].Status) {
+			keepIndex[i] = struct{}{}
+		}
+	}
+	keep := make([]humandomain.ThoughtCandidate, 0, len(keepIndex))
+	for i, candidate := range memory.Candidates {
+		if _, ok := keepIndex[i]; ok {
+			keep = append(keep, candidate)
+		}
+	}
+	memory.Candidates = keep
 }
 
 func completeCandidate(memory *humandomain.GroupWorkingMemory, candidateID string) {
