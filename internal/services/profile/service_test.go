@@ -9,6 +9,17 @@ import (
 	conversationdomain "github.com/phlin/go-agent/internal/domain/conversation"
 )
 
+func TestFamiliarityEvidenceReflectsInteractionQuality(t *testing.T) {
+	if got := familiarityEvidence(conversationdomain.ConversationEvent{}); got != 0 {
+		t.Fatalf("empty event evidence = %v, want 0", got)
+	}
+	plain := familiarityEvidence(conversationdomain.ConversationEvent{Text: "嗯"})
+	direct := familiarityEvidence(conversationdomain.ConversationEvent{Text: "能帮我看看吗", MentionedBot: true})
+	if direct <= plain {
+		t.Fatalf("direct evidence = %v, plain = %v", direct, plain)
+	}
+}
+
 func TestObserveEventUpdatesProfile(t *testing.T) {
 	store := inmemory.NewStore()
 	service := New(store, "")

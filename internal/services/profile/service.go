@@ -41,7 +41,7 @@ func (s *Service) ObserveEvent(ctx context.Context, event conversationdomain.Con
 		return err
 	}
 
-	// 被动熟悉度累积（上限 0.5）+ 更新 LastInteractAt
+	// 熟悉度记录互动证据，而不是简单把每条消息当成同等质量的关系增长。
 	if s.personaID != "" {
 		rel, err := s.store.GetRelationship(ctx, s.personaID, event.GroupID, event.UserID)
 		if err != nil {
@@ -52,8 +52,8 @@ func (s *Service) ObserveEvent(ctx context.Context, event conversationdomain.Con
 		rel.GroupID = event.GroupID
 		rel.UserID = event.UserID
 		rel.LastInteractAt = time.Now()
-		if rel.Familiarity < 0.5 {
-			rel.Familiarity = minF(rel.Familiarity+0.005, 0.5)
+		if increment := familiarityEvidence(event); increment > 0 && rel.Familiarity < 0.5 {
+			rel.Familiarity = minF(rel.Familiarity+increment, 0.5)
 		}
 		if err := s.store.SaveRelationship(ctx, rel); err != nil {
 			slog.Warn("profile: save relationship failed", "group_id", event.GroupID, "user_id", event.UserID, "err", err)
@@ -61,6 +61,24 @@ func (s *Service) ObserveEvent(ctx context.Context, event conversationdomain.Con
 	}
 
 	return nil
+}
+
+func familiarityEvidence(event conversationdomain.ConversationEvent) float64 {
+	text := strings.TrimSpace(event.Text)
+	if text == "" && len(event.Attachments) == 0 {
+		return 0
+	}
+	increment := 0.004
+	if len([]rune(text)) >= 4 {
+		increment += 0.004
+	}
+	if event.MentionedBot || event.NamedBot || event.IsReplyToBot {
+		increment += 0.006
+	}
+	if len(event.Attachments) > 0 {
+		increment += 0.002
+	}
+	return increment
 }
 
 // EnsureRelationshipInit 在用户首次发言时设定初始好感度（0.25），幂等。
