@@ -16,8 +16,6 @@ import (
 	mediadomain "github.com/phlin/go-agent/internal/domain/media"
 	memorydomain "github.com/phlin/go-agent/internal/domain/memory"
 	profiledomain "github.com/phlin/go-agent/internal/domain/profile"
-	replydomain "github.com/phlin/go-agent/internal/domain/reply"
-	humandomain "github.com/phlin/go-agent/internal/humanbot/domain"
 )
 
 var (
@@ -183,56 +181,6 @@ func nullableError(err error) any {
 	return err.Error()
 }
 
-func (s *Store) LoadWorkingMemory(ctx context.Context, groupID int64) (humandomain.GroupWorkingMemory, error) {
-	var raw []byte
-	err := s.db.QueryRowContext(ctx, `SELECT state_json FROM group_working_memory WHERE group_id = ?`, groupID).Scan(&raw)
-	if errors.Is(err, sql.ErrNoRows) {
-		return humandomain.GroupWorkingMemory{GroupID: groupID}, nil
-	}
-	if err != nil {
-		return humandomain.GroupWorkingMemory{}, err
-	}
-	var memory humandomain.GroupWorkingMemory
-	if err := json.Unmarshal(raw, &memory); err != nil {
-		return humandomain.GroupWorkingMemory{}, err
-	}
-	return memory, nil
-}
-
-func (s *Store) SaveWorkingMemory(ctx context.Context, memory humandomain.GroupWorkingMemory) error {
-	raw, err := json.Marshal(memory)
-	if err != nil {
-		return err
-	}
-	_, err = s.db.ExecContext(ctx, `
-		INSERT INTO group_working_memory (group_id, state_json, updated_at)
-		VALUES (?, ?, ?)
-		ON DUPLICATE KEY UPDATE state_json = VALUES(state_json), updated_at = VALUES(updated_at)
-	`, memory.GroupID, raw, time.Now())
-	return err
-}
-
-func (s *Store) SaveThought(ctx context.Context, thought replydomain.ThoughtRecord) error {
-	evidence, err := json.Marshal(thought.Evidence)
-	if err != nil {
-		return err
-	}
-	if thought.CreatedAt.IsZero() {
-		thought.CreatedAt = time.Now()
-	}
-	_, err = s.db.ExecContext(ctx, `
-		INSERT INTO thought_records (
-			thought_id, candidate_id, group_id, event_id, interpretation, evidence_json,
-			uncertainty, chosen_action, outcome, created_at
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-		ON DUPLICATE KEY UPDATE
-			interpretation = VALUES(interpretation), evidence_json = VALUES(evidence_json),
-			uncertainty = VALUES(uncertainty), chosen_action = VALUES(chosen_action), outcome = VALUES(outcome)
-	`, thought.ThoughtID, thought.CandidateID, thought.GroupID, thought.EventID, thought.Interpretation,
-		evidence, thought.Uncertainty, thought.ChosenAction, thought.Outcome, thought.CreatedAt)
-	return err
-}
-
 func (s *Store) ArchiveEvent(ctx context.Context, event conversationdomain.ConversationEvent) error {
 	segmentsJSON, err := json.Marshal(event.Segments)
 	if err != nil {
@@ -376,31 +324,6 @@ func (s *Store) EventsAfter(ctx context.Context, groupID int64, after time.Time,
 		events = append(events, event)
 	}
 	return events, rows.Err()
-}
-
-func (s *Store) GetLearningWatermark(ctx context.Context, groupID int64, kind string) (memorydomain.LearningWatermark, error) {
-	watermark := memorydomain.LearningWatermark{GroupID: groupID, Kind: kind}
-	err := s.db.QueryRowContext(ctx, `
-		SELECT occurred_at, event_id, updated_at
-		FROM learning_watermarks
-		WHERE group_id = ? AND kind = ?
-	`, groupID, kind).Scan(&watermark.OccurredAt, &watermark.EventID, &watermark.UpdatedAt)
-	if errors.Is(err, sql.ErrNoRows) {
-		return watermark, nil
-	}
-	return watermark, err
-}
-
-func (s *Store) SaveLearningWatermark(ctx context.Context, watermark memorydomain.LearningWatermark) error {
-	if watermark.UpdatedAt.IsZero() {
-		watermark.UpdatedAt = time.Now()
-	}
-	_, err := s.db.ExecContext(ctx, `
-		INSERT INTO learning_watermarks (group_id, kind, occurred_at, event_id, updated_at)
-		VALUES (?, ?, ?, ?, ?)
-		ON DUPLICATE KEY UPDATE occurred_at = VALUES(occurred_at), event_id = VALUES(event_id), updated_at = VALUES(updated_at)
-	`, watermark.GroupID, watermark.Kind, watermark.OccurredAt, watermark.EventID, watermark.UpdatedAt)
-	return err
 }
 
 func (s *Store) UpsertMemory(ctx context.Context, record memorydomain.MemoryRecord) error {

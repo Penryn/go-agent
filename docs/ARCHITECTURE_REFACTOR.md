@@ -50,6 +50,10 @@ Qdrant 与 meme vector 的可选初始化已提取到 `bootstrap/graphs.go`。`N
 
 `services/tools.Runtime` 保留统一的权限过滤 seam，但将工具目录构建拆为 reply、knowledge、profile 三个 catalog 函数。新增工具时可在对应职责组内注册，observe-only 与 allowlist 过滤仍集中处理。
 
+### 10. MySQL Runtime repository 拆分
+
+WorkingMemory、Thought 和 LearningWatermark 持久化方法已迁移到 `mysql/runtime_repository.go`，主 Store 文件聚焦事件、memory、meme 与 profile 数据访问；对外仍由同一个 adapter 实现各 port，后续可按领域继续拆分。
+
 ## 已完成：可靠后台任务
 
 持久化 outbox 已建立并接入主要异步副作用链路：
