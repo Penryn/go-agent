@@ -88,6 +88,8 @@ go vet ./...
 
 ## 架构约束
 
+关键生命周期与异步可靠性决策记录在 [ADR-0001](adr/0001-runtime-lifecycle-and-outbox.md)。
+
 - `domain` 不依赖 `adapters`。
 - 业务服务只依赖 `core/ports`，不直接构造外部 SDK。
 - 所有异步任务必须有幂等键、超时、失败状态和指标。
