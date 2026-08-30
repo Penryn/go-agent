@@ -48,6 +48,7 @@ import (
 	"time"
 
 	conversationdomain "github.com/phlin/go-agent/internal/domain/conversation"
+	turnruntime "github.com/phlin/go-agent/internal/runtime/turn"
 	normalizersvc "github.com/phlin/go-agent/internal/services/normalizer"
 )
 
@@ -80,24 +81,17 @@ func DefaultConfig() Config {
 // EnvelopeProcessor 接口
 // ─────────────────────────────────────────────────────────────────────────────
 
-// EnvelopeProcessor 是 GroupDispatcher 对业务处理器的最小依赖。
-// 仅声明返回 error，调用方（dispatcher）不需要处理业务返回值。
-//
-// 适配 *usecase.Processor 时，在 app.go 用以下闭包封装：
-//
-//	dispatcher.ProcessorFunc(func(ctx context.Context, env conversationdomain.EventEnvelope) error {
-//	    _, err := processor.ProcessEnvelope(ctx, env)
-//	    return err
-//	})
+// EnvelopeProcessor 是 GroupDispatcher 对 Turn Runtime 的最小依赖。
+// 调度器只负责执行并记录错误，不解释 Turn Outcome。
 type EnvelopeProcessor interface {
-	ProcessEnvelope(ctx context.Context, envelope conversationdomain.EventEnvelope) error
+	ProcessEnvelope(ctx context.Context, envelope conversationdomain.EventEnvelope) (turnruntime.Outcome, error)
 }
 
 // ProcessorFunc 是函数类型的 EnvelopeProcessor 适配器，方便匿名实现接口。
-type ProcessorFunc func(ctx context.Context, envelope conversationdomain.EventEnvelope) error
+type ProcessorFunc func(ctx context.Context, envelope conversationdomain.EventEnvelope) (turnruntime.Outcome, error)
 
 // ProcessEnvelope 实现 EnvelopeProcessor 接口。
-func (f ProcessorFunc) ProcessEnvelope(ctx context.Context, envelope conversationdomain.EventEnvelope) error {
+func (f ProcessorFunc) ProcessEnvelope(ctx context.Context, envelope conversationdomain.EventEnvelope) (turnruntime.Outcome, error) {
 	return f(ctx, envelope)
 }
 
@@ -120,11 +114,11 @@ type groupWorker struct {
 	// drainLoop 负责将 priorityBuf 中的消息逐个喂入，
 	// 对 Dispatch 侧永不阻塞。
 	priorityCh    chan job
-	priorityBuf   []job          // 无界软缓冲，保存待喂入的 priority job
-	priorityMu    sync.Mutex     // 保护 priorityBuf
-	priorityNotif chan struct{}   // 有新 priority job 时通知 drainLoop
+	priorityBuf   []job         // 无界软缓冲，保存待喂入的 priority job
+	priorityMu    sync.Mutex    // 保护 priorityBuf
+	priorityNotif chan struct{} // 有新 priority job 时通知 drainLoop
 
-	stopDrain chan struct{}    // 关闭 drainLoop goroutine 的信号
+	stopDrain chan struct{}      // 关闭 drainLoop goroutine 的信号
 	cancel    context.CancelFunc // 终止 worker（含 drainLoop）的 context cancel
 }
 
@@ -193,7 +187,7 @@ func (d *GroupDispatcher) Dispatch(ctx context.Context, payload []byte) {
 		go func() {
 			jobCtx, cancel := context.WithTimeout(d.appCtx, d.cfg.JobTimeout)
 			defer cancel()
-			if err := d.processor.ProcessEnvelope(jobCtx, envelope); err != nil {
+			if _, err := d.processor.ProcessEnvelope(jobCtx, envelope); err != nil {
 				slog.Error("dispatcher: process non-group event failed",
 					"trace_id", traceID,
 					"error", err,
@@ -336,7 +330,7 @@ func (d *GroupDispatcher) processJob(ctx context.Context, j job) {
 	jobCtx, cancel := context.WithTimeout(ctx, d.cfg.JobTimeout)
 	defer cancel()
 
-	if err := d.processor.ProcessEnvelope(jobCtx, j.envelope); err != nil {
+	if _, err := d.processor.ProcessEnvelope(jobCtx, j.envelope); err != nil {
 		slog.Error("dispatcher: process envelope failed",
 			"group_id", j.envelope.Event.GroupID,
 			"trace_id", j.traceID,

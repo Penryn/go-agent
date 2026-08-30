@@ -17,13 +17,14 @@ import (
 	"github.com/phlin/go-agent/internal/config"
 	"github.com/phlin/go-agent/internal/core/ports"
 	"github.com/phlin/go-agent/internal/core/usecase"
-	conversationdomain "github.com/phlin/go-agent/internal/domain/conversation"
 	"github.com/phlin/go-agent/internal/runtime/dispatcher"
 	"github.com/phlin/go-agent/internal/runtime/scheduler"
+	turnruntime "github.com/phlin/go-agent/internal/runtime/turn"
 	actionsvc "github.com/phlin/go-agent/internal/services/action"
 	autonomysvc "github.com/phlin/go-agent/internal/services/autonomy"
 	contextsvc "github.com/phlin/go-agent/internal/services/context"
 	gatesvc "github.com/phlin/go-agent/internal/services/gate"
+	learningsvc "github.com/phlin/go-agent/internal/services/learning"
 	memesvc "github.com/phlin/go-agent/internal/services/meme"
 	memsvc "github.com/phlin/go-agent/internal/services/memory"
 	multimodalsvc "github.com/phlin/go-agent/internal/services/multimodal"
@@ -31,7 +32,6 @@ import (
 	outputguardsvc "github.com/phlin/go-agent/internal/services/outputguard"
 	personasvc "github.com/phlin/go-agent/internal/services/persona"
 	policysvc "github.com/phlin/go-agent/internal/services/policy"
-	learningsvc "github.com/phlin/go-agent/internal/services/learning"
 	profilesvc "github.com/phlin/go-agent/internal/services/profile"
 	promptingsvc "github.com/phlin/go-agent/internal/services/prompting"
 	reviewsvc "github.com/phlin/go-agent/internal/services/review"
@@ -40,7 +40,7 @@ import (
 
 type App struct {
 	cfg         config.Config
-	processor   *usecase.Processor
+	turnRuntime *turnruntime.Runtime
 	normalizer  *normalizersvc.Service
 	dispatcher  *dispatcher.GroupDispatcher
 	inbound     ports.InboundSource
@@ -175,6 +175,7 @@ func NewApp(ctx context.Context, cfg config.Config) (*App, error) {
 		usecase.WithVisionService(visionService),
 		usecase.WithPersonaService(moodSvc),
 	)
+	turnRuntime := turnruntime.New(processor)
 
 	// Scheduler：注册所有定时任务
 	sched := scheduler.New()
@@ -191,7 +192,7 @@ func NewApp(ctx context.Context, cfg config.Config) (*App, error) {
 
 	app := &App{
 		cfg:         cfg,
-		processor:   processor,
+		turnRuntime: turnRuntime,
 		normalizer:  normalizer,
 		sched:       sched,
 		cleanup:     stores.Close,
@@ -225,15 +226,10 @@ func (a *App) Run(ctx context.Context) error {
 	a.sched.Start(ctx)
 
 	// 用运行期 ctx 初始化 dispatcher，使 worker goroutine 的生命周期绑定到 ctx。
-	// ProcessorFunc 适配 *usecase.Processor（其 ProcessEnvelope 返回具体类型），
-	// 仅向 dispatcher 暴露 error，丢弃业务返回值（dispatcher 不需要）。
 	a.dispatcher = dispatcher.New(
 		ctx,
 		a.normalizer,
-		dispatcher.ProcessorFunc(func(innerCtx context.Context, envelope conversationdomain.EventEnvelope) error {
-			_, err := a.processor.ProcessEnvelope(innerCtx, envelope)
-			return err
-		}),
+		a.turnRuntime,
 		dispatcher.DefaultConfig(),
 	)
 
@@ -276,13 +272,13 @@ func (a *App) dispatch(ctx context.Context, payload []byte) {
 		return
 	}
 	// 降级路径：dispatcher 尚未初始化时直接调用（理论上不会发生）
-	if _, err := a.processor.ProcessRawEvent(ctx, payload); err != nil {
+	if _, err := a.turnRuntime.ProcessRawEvent(ctx, payload); err != nil {
 		slog.Error("dispatch fallback: process raw event failed", "error", err)
 	}
 }
 
-func (a *App) ProcessRawEvent(ctx context.Context, payload []byte) (usecase.ProcessResult, error) {
-	return a.processor.ProcessRawEvent(ctx, payload)
+func (a *App) ProcessRawEvent(ctx context.Context, payload []byte) (turnruntime.Outcome, error) {
+	return a.turnRuntime.ProcessRawEvent(ctx, payload)
 }
 
 func (a *App) Close() error {
