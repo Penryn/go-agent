@@ -81,6 +81,11 @@ func truncateChars(s string, max int) (string, bool) {
 		return s, false
 	}
 	runes := []rune(s)
+	for i := max - 1; i >= 0; i-- {
+		if strings.ContainsRune("。！？!?…", runes[i]) {
+			return string(runes[:i+1]), true
+		}
+	}
 	return string(runes[:max]) + "…", true
 }
 

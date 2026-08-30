@@ -64,6 +64,7 @@ func (p *AgentPlanner) SetToolAuditHook(hook ToolAuditHook) {
 
 func (p *AgentPlanner) Plan(ctx context.Context, snapshot conversationdomain.ContextSnapshot, decision policydomain.AutonomyDecision) (replydomain.ReplyPlan, error) {
 	observeOnly := decision.Action == policydomain.ActionSilent
+	maxChars, _ := replyBudget(p.fallback.persona, snapshot, decision.TriggerType)
 
 	if observeOnly {
 		// 没有实质内容时跳过 LLM，无观测价值
@@ -104,7 +105,7 @@ func (p *AgentPlanner) Plan(ctx context.Context, snapshot conversationdomain.Con
 			TargetUserIDs:   []int64{snapshot.Event.UserID},
 			PreferMeme:      p.fallback.persona.PreferMemes,
 			PreferShortText: true,
-			MaxChars:        p.fallback.persona.ReplyMaxChars,
+			MaxChars:        maxChars,
 		},
 	}
 

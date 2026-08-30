@@ -196,8 +196,8 @@ func NewApp(ctx context.Context, cfg config.Config) (*App, error) {
 
 	// F1 OutputGuard：从 persona 配置读取截断阈值
 	guard := outputguardsvc.New(
-		outputguardsvc.WithMaxChars(cfg.Persona.ReplyMaxChars),
-		outputguardsvc.WithMaxSentences(cfg.Persona.ReplyMaxSentences),
+		outputguardsvc.WithMaxChars(cfg.Persona.ReplyMaxChars*2),
+		outputguardsvc.WithMaxSentences(cfg.Persona.ReplyMaxSentences+1),
 	)
 	actionOpts := []actionsvc.Option{
 		actionsvc.WithBackgroundRuntime(backgroundRuntime),

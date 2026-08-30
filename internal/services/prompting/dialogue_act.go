@@ -1,5 +1,12 @@
 package prompting
 
+import (
+	"strings"
+
+	conversationdomain "github.com/phlin/go-agent/internal/domain/conversation"
+	personadomain "github.com/phlin/go-agent/internal/domain/persona"
+)
+
 func dialogueGoal(trigger string) string {
 	switch trigger {
 	case "request_help":
@@ -21,4 +28,61 @@ func dialogueGoal(trigger string) string {
 	default:
 		return "结合上下文自然接话"
 	}
+}
+
+func replyBudget(persona personadomain.PersonaConfig, snapshot conversationdomain.ContextSnapshot, trigger string) (int, int) {
+	chars := persona.ReplyMaxChars
+	sentences := persona.ReplyMaxSentences
+	if chars <= 0 {
+		chars = 110
+	}
+	if sentences <= 0 {
+		sentences = 2
+	}
+	switch trigger {
+	case "request_help", "question":
+		chars = chars * 3 / 2
+		sentences++
+	case "banter", "gratitude":
+		chars = chars * 3 / 4
+	}
+	if snapshot.PersonaState.Energy == "tired" || snapshot.PersonaState.TalkBias <= -0.2 {
+		chars = chars * 3 / 4
+		sentences = minInt(sentences, 2)
+	}
+	return maxInt(chars, 40), maxInt(sentences, 1)
+}
+
+func fallbackExpression(persona personadomain.PersonaConfig, trigger string) string {
+	if configured := persona.Speech.Fallbacks[trigger]; len(configured) > 0 {
+		for _, response := range configured {
+			if response = strings.TrimSpace(response); response != "" {
+				return response
+			}
+		}
+	}
+	switch trigger {
+	case "request_help":
+		return "把具体需求发来，我先看看。"
+	case "support":
+		return "我在。愿意的话就慢慢说。"
+	case "gratitude":
+		return "不用这么客气。"
+	case "banter":
+		return "看来确实挺有意思。"
+	case "question":
+		return "把具体情况说清楚些，我来看看。"
+	default:
+		if persona.Name != "" {
+			return persona.Name + "在。你继续说。"
+		}
+		return "我在。你继续说。"
+	}
+}
+
+func maxInt(left, right int) int {
+	if left > right {
+		return left
+	}
+	return right
 }

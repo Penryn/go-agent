@@ -2,9 +2,7 @@ package prompting
 
 import (
 	"context"
-	"fmt"
 	"math/rand"
-	"strings"
 
 	conversationdomain "github.com/phlin/go-agent/internal/domain/conversation"
 	personadomain "github.com/phlin/go-agent/internal/domain/persona"
@@ -30,10 +28,12 @@ func NewDeterministicPlanner(persona personadomain.PersonaConfig) *Deterministic
 }
 
 func (p *DeterministicPlanner) Plan(_ context.Context, snapshot conversationdomain.ContextSnapshot, decision policydomain.AutonomyDecision) (replydomain.ReplyPlan, error) {
+	maxChars, _ := replyBudget(p.persona, snapshot, decision.TriggerType)
+	fallbackText := fallbackExpression(p.persona, decision.TriggerType)
 	plan := replydomain.ReplyPlan{
 		PlanID:       decision.DecisionID + "-plan",
 		SendMode:     "group",
-		FallbackText: "收到",
+		FallbackText: fallbackText,
 	}
 
 	if decision.Action == policydomain.ActionSilent {
@@ -75,7 +75,7 @@ func (p *DeterministicPlanner) Plan(_ context.Context, snapshot conversationdoma
 			Goal:            "自然回应被戳",
 			TargetUserIDs:   []int64{snapshot.Event.UserID},
 			PreferShortText: true,
-			MaxChars:        p.persona.ReplyMaxChars,
+			MaxChars:        maxChars,
 		}
 		return plan, nil
 	}
@@ -85,22 +85,11 @@ func (p *DeterministicPlanner) Plan(_ context.Context, snapshot conversationdoma
 		Goal:            dialogueGoal(decision.TriggerType),
 		TargetUserIDs:   []int64{snapshot.Event.UserID},
 		PreferShortText: true,
-		MaxChars:        p.persona.ReplyMaxChars,
+		MaxChars:        maxChars,
 	}
 	plan.PlannedActions = []policydomain.DecisionAction{policydomain.ActionReply}
 
-	switch {
-	case snapshot.Event.MentionedBot || snapshot.Event.NamedBot:
-		plan.Bubbles = []string{fmt.Sprintf("%s 在，啥事", p.persona.Name)}
-	case snapshot.Event.IsReplyToBot:
-		plan.Bubbles = []string{"我看到了，继续说"}
-	case len(snapshot.Event.Attachments) > 0:
-		plan.Bubbles = []string{"这图有点东西"}
-	case strings.TrimSpace(snapshot.Event.Text) != "":
-		plan.Bubbles = []string{"收到，我在看"}
-	default:
-		plan.Bubbles = []string{plan.FallbackText}
-	}
+	plan.Bubbles = []string{fallbackText}
 
 	return plan, nil
 }

@@ -84,6 +84,7 @@ func (c *Composer) instruction(snapshot conversationdomain.ContextSnapshot, deci
 	// ── 人格状态层 ──────────────────────────────────────────────────────────
 	mood := defaultMood(snapshot.PersonaState.Mood)
 	energy := defaultEnergy(snapshot.PersonaState.Energy)
+	maxChars, maxSentences := replyBudget(c.persona, snapshot, decision.TriggerType)
 	sections = append(sections,
 		"",
 		"人格状态层:",
@@ -161,7 +162,7 @@ func (c *Composer) instruction(snapshot conversationdomain.ContextSnapshot, deci
 	sections = append(sections,
 		"",
 		"输出约束层:",
-		fmt.Sprintf("最多 %d 字，最多 %d 句。", c.persona.ReplyMaxChars, c.persona.ReplyMaxSentences),
+		fmt.Sprintf("本轮以 %d 字、%d 句为软上限；优先保证意思完整。", maxChars, maxSentences),
 		"避免客服腔、总结腔、长解释。",
 		"拒绝行为请求时禁止说「很抱歉」「抱歉无法帮您」「我无法完成」等客服式措辞；用符合当前人格的自然语气说明原因，简短直接即可。",
 	)
