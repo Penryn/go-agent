@@ -1,77 +1,110 @@
-# 真人交互改造方案
+# 真人交互改造文档
 
-## 目标
+## 1. 目标
 
-本轮改造聚焦四件事：
+本项目的目标不是“更会自动回复的机器人”，而是一个具备持续存在感的群成员：能记住事实，会根据关系和即时状态调整语气，知道什么时候应该思考、什么时候保持沉默，并能通过后续学习修正自己的行为。
 
-1. 接通事件后的画像与记忆学习链。
-2. 让群 Actor 的工作状态在进程重启后可恢复。
-3. 将“思考”从一次性回复规划升级为可审计的结构化认知记录。
-4. 借鉴 Koishi 的 `sendQueued()`，让多气泡回复具有可取消、可调节的发送节奏。
+本轮覆盖五个主题：上下文增量注入与平台消息归档、Agent 工具循环控制、人格配置与运行时状态分离、主动任务模型、混合检索。
 
-暂不实现 follow-up 唤醒；`OpenLoops` 继续作为上下文信息保留。
-
-## 目标链路
+总体链路：
 
 ```text
-Inbound
-  -> Normalize
-  -> Archive + Group Actor
-  -> Profile Projection
-  -> Thought Candidate
-  -> Presence Claim
-  -> Deliberation
-       -> ThoughtRecord
-       -> ReplyPlan
-  -> Rhythm Action Queue
-  -> Outbound
-  -> Reflection
-       -> Curator
-       -> Review
-       -> Memory / Profile
+平台事件 -> Normalize -> ArchiveEvent -> Group Actor
+  -> ContextSnapshot -> ThoughtCandidate -> Presence Scheduler
+  -> Deliberator/Agent Planner -> Action Executor -> Self Event
+  -> Reflection/Curator/Learning
 ```
 
-## 改造内容
+## 2. AstrBot 对照与迁移原则
 
-### 1. 学习链
+参考文件：
 
-- 每条有效入站事件调用 `profile.Service.ObserveEvent`。
-- 每次完成审议和出站动作后异步运行 `curator.Service`。
-- Curator 结果统一经过 `review.Service.ApplyCurator`，再写入 MemoryService。
-- 既有定时 Learning 保留，用于群黑话和高频表达的批处理提炼。
+- `astrbot/builtin_stars/astrbot/group_chat_context.py`：群上下文与消息窗口
+- `astrbot/core/platform_message_history_mgr.py`：平台消息历史归档
+- `astrbot/core/agent/runners/tool_loop_agent_runner.py`：Agent 工具循环
+- `astrbot/core/agent/context/manager.py`、`compressor.py`、`truncator.py`：上下文压缩与截断
+- `astrbot/core/persona_mgr.py`：人格配置管理
+- `astrbot/core/cron/manager.py`：定时/主动任务
+- `astrbot/core/knowledge_base/retrieval/manager.py`：知识库检索
 
-### 2. Actor 状态恢复
+吸收的原则：平台事件先成为不可变事实，再生成可重建的运行时投影；上下文按窗口、游标和预算增量构建；工具循环必须有迭代、调用、结果和重复限制；静态人格与即时状态分开；主动行为先形成候选，再由调度器决定；关键词与语义检索并行并稳定融合。
 
-- 新增 `WorkingMemoryStore` 投影接口。
-- Actor 创建时加载最近的 `GroupWorkingMemory`。
-- observe、claim、complete、media enrichment 后保存状态。
-- MySQL 使用 `group_working_memory` 表；in-memory store 用于测试。
-- Event Log 仍是事实来源，工作状态是可重建的运行时投影。
+明确不照搬：
 
-### 3. 结构化认知
+- 不采用随机概率直接发言；本项目使用 Group Actor、候选到期、冷却和认知负载控制存在感。
+- 不保存或展示隐藏 chain-of-thought，只保存 `ThoughtRecord` 的解释、证据、动作和结果。
+- 不让插件或 cron 绕过 Scheduler 直接发送消息；主动任务必须进入 Actor mailbox。
+- 不把人格、心情、精力混成一个可变配置对象。
 
-- 新增 `ThoughtRecord`，记录候选、解释、证据、置信度、动作和结果。
-- 不保存模型的原始 chain-of-thought，不把隐藏推理暴露给用户。
-- ThoughtRecord 单独存储，便于调试、评估和后续学习。
+## 3. 已落地改造
 
-### 4. 输出节奏
+### 3.1 上下文增量注入与平台消息归档
 
-- Reply 计划包含多个 bubble 时，按队列逐条发送。
-- 每条之间使用可配置延迟，新的同群发送会取消上一条尚未发送的队列。
-- quote 只附在第一条 bubble 上；最终 receipt 代表最后一条实际发送结果。
-- meme、react、recall、poke 保持单动作发送。
+`MemoryStore.ArchiveEvent` 保存平台消息事实。`group_actor.Manager.Observe` 先归档，再更新事件日志和 Group Actor；同一 `EventID` 可安全重试。Group Actor 持有 `GroupWorkingMemory`，包括 recent tail、消息 burst、话题、未解决问题、候选和媒体描述，并通过 `WorkingMemoryStore` 持久化到内存或 MySQL。
 
-## 不在本轮范围
+`ContextSnapshot.Projection` 提供投影 `Version`、最后事件 `Cursor`、`Complete` 和 `RecentTruncated` 元数据。Composer 使用确定性字符预算，从最新消息向前保留，始终保留当前事件，超限时注入“较早上下文已裁剪”标记。未来可在此 seam 增加摘要或 checkpoint。
 
-- follow-up 定时唤醒和承诺管理。
-- 跨平台用户 binding。
-- 插件热加载和控制台。
-- 将所有模块改造成 Agent；Runtime Kernel 仍由确定性代码负责。
+### 3.2 Agent 工具循环控制
 
-## 验收标准
+每次 Plan 创建独立 `toolRuntimeGuard`，默认最多 4 次迭代、12 次工具调用、单次结果 12 KiB。Guard 提供参数 hash 去重、只读工具空结果重试、UTF-8 安全截断、合法 JSON envelope、调用审计和超预算错误。终止工具仅允许 `speak_text`、`quote_reply`、`stay_silent`；观察模式最多两轮并强制沉默。
 
-- 新消息能更新 member profile，完成回合能产生 curator memory。
-- 重启后同群 Actor 能恢复 recent tail、candidate 和 media enrichment。
-- 每个完成的 deliberation 都有可检索的 ThoughtRecord。
-- 两条以上文本 bubble 会按间隔分开发送，新消息可取消未发送 bubble。
-- `go test ./...` 全部通过，单条回复行为不发生回归。
+### 3.3 人格配置与运行时状态分离
+
+`PersonaConfig` 是静态定义，可带 `Version`、按群 `GroupOverrides`、少样本示例和工具白名单。`persona.Resolve` 按基础配置、typed group override、`PersonaOverlay` 合并并生成稳定 hash。`PersonaState` 只保存 mood、energy、talk bias 及时间字段，由 `RuntimeStateStore` 独立持久化。Composer 每回合合并 `PersonaProfile` 与 `PersonaState`，不会把状态写回配置。
+
+### 3.4 主动任务模型
+
+`ThoughtCandidate` 统一表示回答、观察、follow-up 和提醒，包含来源、意图、评分、到期/过期、不确定性、`ReasonCode` 与 `DeliveryTarget`。外部任务使用 `Runtime.ScheduleCandidate` 入队，实际链路仍为：
+
+```text
+EnqueueCandidate -> ClaimDue -> CanExecute -> Deliberate -> Execute -> Complete
+```
+
+新消息可以 supersede 旧候选，过期或冷却时不会发送。
+
+### 3.5 混合检索
+
+`queryMemoriesDualTrack` 并行调用 MySQL 关键词检索和 Qdrant 语义检索。Qdrant 失败时降级为 MySQL。结果使用 Reciprocal Rank Fusion（`1/(k+rank)`）融合，按 `MemoryID` 去重，并优先保留 MySQL 的完整字段，最终受 top-k 限制。
+
+## 4. 数据与接口
+
+| 对象 | 作用 | 存储 |
+| --- | --- | --- |
+| `ConversationEvent` | 不可变平台消息事实 | `messages` |
+| `GroupWorkingMemory` | 可重建群级投影 | `group_working_memory` |
+| `ThoughtCandidate` | 待执行行动候选 | 工作记忆 JSON |
+| `ThoughtRecord` | 可审计思考摘要 | `thought_records` |
+| `PersonaConfig` | 静态人格 | YAML/配置中心 |
+| `PersonaState` | 即时状态 | RuntimeStateStore |
+| `MemoryRecord` | 长期学习结果 | MySQL + Qdrant |
+
+主要接口：`ArchiveEvent`、`RecentEvents`、`LoadWorkingMemory`、`SaveWorkingMemory`、`Observe`、`EnqueueCandidate`、`ClaimDue`、`CanExecute`、`Complete`、`ScheduleCandidate`、`SearchMemories`、`SaveThought`。
+
+## 5. 分阶段提交
+
+1. `ea88711 feat: add incremental context projection and bounded prompt`
+2. `13e1224 feat: enqueue proactive thoughts through group actors`
+3. `7e1b8fb test: cover hybrid memory rank fusion`
+4. 本文档提交
+
+已有的学习链、Actor 恢复、ThoughtRecord 和工具 guard 保持各自提交，不与本文档混合。
+
+## 6. 验收标准
+
+- 事件重试不会重复归档或重复进入 Actor。
+- 重启后可恢复 recent tail、候选和媒体描述。
+- 快照带投影版本/游标；长历史按预算裁剪且当前事件不丢失。
+- 工具循环超过任一预算会停止，重复调用不会重复执行副作用工具。
+- 群级人格覆盖只影响当前群配置，不污染其他群或 `PersonaState`。
+- 主动候选只能经 Actor 入队，并接受到期、过期、supersede 和冷却检查。
+- MySQL 与 Qdrant 可融合去重，Qdrant 不可用时仍可关键词检索。
+- 完成的 deliberation 可写入不含隐藏推理的 `ThoughtRecord`。
+- `go test ./...` 与 `go test -race ./...` 通过。
+
+## 7. 后续演进
+
+1. 增加摘要 checkpoint 和 token 计数器。
+2. 将 `ScheduleCandidate` 接到 follow-up/open loop 管理器和可恢复 cron 表。
+3. 为工具增加副作用声明与按工具预算。
+4. 建立混合检索离线评估集，调节权重和时间衰减。
+5. 将 ThoughtRecord、Reflection 和 Memory 接入统一评估流水线，形成“观察 -> 反思 -> 学习 -> 行为”闭环。
