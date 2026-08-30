@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha1"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"strings"
@@ -21,6 +22,9 @@ type Service struct {
 	vectorStore ports.VectorMemeStore
 	cfg         config.MemeConfig
 	background  backgroundSubmitter
+	outbox      interface {
+		Enqueue(context.Context, string, string, []byte) error
+	}
 }
 
 // New 创建 MemeService，cfg 控制自动收集、配额、冷却等行为。
@@ -49,6 +53,18 @@ func WithBackgroundRuntime(runtime backgroundSubmitter) Option {
 // 未注入时降级为纯关键词搜索。
 func WithVectorStore(vs ports.VectorMemeStore) Option {
 	return func(s *Service) { s.vectorStore = vs }
+}
+
+func WithOutbox(runtime interface {
+	Enqueue(context.Context, string, string, []byte) error
+}) Option {
+	return func(s *Service) { s.outbox = runtime }
+}
+
+type VectorIndexTask struct {
+	MemeID  string `json:"meme_id"`
+	Text    string `json:"text"`
+	GroupID int64  `json:"group_id"`
 }
 
 // ObserveEvent 观察群聊事件，将图片/贴纸收入表情包库。
@@ -101,6 +117,17 @@ func (s *Service) ObserveEvent(ctx context.Context, event conversationdomain.Con
 		if s.vectorStore != nil {
 			indexText := buildIndexText(descriptor)
 			groupID := event.GroupID
+			if s.outbox != nil {
+				payload, marshalErr := json.Marshal(VectorIndexTask{MemeID: memeID, Text: indexText, GroupID: groupID})
+				if marshalErr == nil {
+					if enqueueErr := s.outbox.Enqueue(ctx, "meme_vector_index", memeID, payload); enqueueErr == nil {
+						continue
+					} else {
+						marshalErr = enqueueErr
+					}
+				}
+				slog.Warn("meme: outbox enqueue failed, using process-local queue", "meme_id", memeID, "err", marshalErr)
+			}
 			job := backgroundruntime.Job{
 				Name:    "meme_vector_index",
 				Timeout: 10 * time.Second,
@@ -118,6 +145,14 @@ func (s *Service) ObserveEvent(ctx context.Context, event conversationdomain.Con
 		}
 	}
 	return nil
+}
+
+// ProcessVectorIndex executes one durable meme vector indexing task.
+func (s *Service) ProcessVectorIndex(ctx context.Context, task VectorIndexTask) error {
+	if s == nil || s.vectorStore == nil {
+		return fmt.Errorf("meme: vector store is not configured")
+	}
+	return s.vectorStore.IndexMeme(ctx, task.MemeID, task.Text, task.GroupID)
 }
 
 // Search 搜索表情包，向量优先；向量无结果时 fallback 到关键词搜索。

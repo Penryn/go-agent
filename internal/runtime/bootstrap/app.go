@@ -178,6 +178,20 @@ func NewApp(ctx context.Context, cfg config.Config) (*App, error) {
 		memesvc.WithVectorStore(memeVectorStore),
 		memesvc.WithBackgroundRuntime(backgroundRuntime),
 	)
+	if durableOutbox != nil {
+		if err := durableOutbox.Register("meme_vector_index", func(jobCtx context.Context, payload []byte) error {
+			var task memesvc.VectorIndexTask
+			if err := json.Unmarshal(payload, &task); err != nil {
+				return fmt.Errorf("decode meme vector task: %w", err)
+			}
+			return memeService.ProcessVectorIndex(jobCtx, task)
+		}); err != nil {
+			_ = durableOutbox.Close()
+			_ = backgroundRuntime.Close(context.Background())
+			_ = stores.Close()
+			return nil, fmt.Errorf("register meme outbox handler: %w", err)
+		}
+	}
 	visionService := multimodalsvc.New(modelFactory, cfg.Multimodal)
 	perceptionOpts := []humanperception.Option{}
 	if durableOutbox != nil {
