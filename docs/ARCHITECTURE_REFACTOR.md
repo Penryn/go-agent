@@ -54,6 +54,10 @@ Qdrant 与 meme vector 的可选初始化已提取到 `bootstrap/graphs.go`。`N
 
 WorkingMemory、Thought 和 LearningWatermark 持久化方法已迁移到 `mysql/runtime_repository.go`，主 Store 文件聚焦事件、memory、meme 与 profile 数据访问；对外仍由同一个 adapter 实现各 port，后续可按领域继续拆分。
 
+### 11. 旧架构空目录清理
+
+删除未被 Git 跟踪、无文件且无引用的旧目录：`internal/core/usecase`、`internal/runtime/{bus,dispatcher,turn,workers}`、`internal/services/{autonomy,gate}`。运行数据目录和 `.serena` 工具缓存保留。
+
 ## 已完成：可靠后台任务
 
 持久化 outbox 已建立并接入主要异步副作用链路：
