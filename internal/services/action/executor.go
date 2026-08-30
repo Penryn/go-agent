@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"strconv"
+	"sync"
 	"time"
 
 	"github.com/phlin/go-agent/internal/core/ports"
@@ -22,12 +23,21 @@ var errDropSend = errors.New("drop send: no text content")
 var errGuardSilenced = errors.New("drop send: guard silenced")
 
 type Service struct {
-	sender     ports.OutboundSender
-	memes      *memesvc.Service
-	guard      outputguardsvc.Guard // 可为 nil，nil 时跳过清洗
-	background backgroundSubmitter
-	presence   PresenceObserver
-	selfID     int64
+	sender      ports.OutboundSender
+	memes       *memesvc.Service
+	guard       outputguardsvc.Guard // 可为 nil，nil 时跳过清洗
+	background  backgroundSubmitter
+	presence    PresenceObserver
+	selfID      int64
+	rhythmMu    sync.Mutex
+	rhythm      map[int64]rhythmEntry
+	rhythmSeq   uint64
+	bubbleDelay time.Duration
+}
+
+type rhythmEntry struct {
+	token  uint64
+	cancel context.CancelFunc
 }
 
 type PresenceObserver interface {
@@ -54,15 +64,36 @@ func WithSelfID(selfID int64) Option {
 
 type Option func(*Service)
 
+func WithBubbleDelay(delay time.Duration) Option {
+	return func(s *Service) {
+		if delay >= 0 {
+			s.bubbleDelay = delay
+		}
+	}
+}
+
 func New(sender ports.OutboundSender, memes *memesvc.Service, guard outputguardsvc.Guard, opts ...Option) *Service {
-	service := &Service{sender: sender, memes: memes, guard: guard}
+	service := &Service{sender: sender, memes: memes, guard: guard, rhythm: make(map[int64]rhythmEntry), bubbleDelay: 350 * time.Millisecond}
 	for _, opt := range opts {
 		opt(service)
 	}
 	return service
 }
 
+// CancelQueued drops unsent bubbles for a group when a newer message arrives.
+func (s *Service) CancelQueued(groupID int64) {
+	s.rhythmMu.Lock()
+	if entry, ok := s.rhythm[groupID]; ok {
+		entry.cancel()
+		delete(s.rhythm, groupID)
+	}
+	s.rhythmMu.Unlock()
+}
+
 func (s *Service) Execute(ctx context.Context, event conversationdomain.ConversationEvent, decision policydomain.AutonomyDecision, plan replydomain.ReplyPlan) (replydomain.ActionReceipt, error) {
+	if decision.Action == policydomain.ActionReply && len(plan.Bubbles) > 1 {
+		return s.executeRhythm(ctx, event, decision, plan)
+	}
 	if decision.Action == policydomain.ActionSilent {
 		return replydomain.ActionReceipt{
 			ActionID:   decision.DecisionID,
@@ -157,6 +188,49 @@ func (s *Service) Execute(ctx context.Context, event conversationdomain.Conversa
 		}
 	}
 
+	return receipt, nil
+}
+
+func (s *Service) executeRhythm(ctx context.Context, event conversationdomain.ConversationEvent, decision policydomain.AutonomyDecision, plan replydomain.ReplyPlan) (replydomain.ActionReceipt, error) {
+	rhythmCtx, cancel := context.WithCancel(ctx)
+	s.rhythmMu.Lock()
+	if previous, ok := s.rhythm[event.GroupID]; ok {
+		previous.cancel()
+	}
+	s.rhythmSeq++
+	token := s.rhythmSeq
+	s.rhythm[event.GroupID] = rhythmEntry{token: token, cancel: cancel}
+	s.rhythmMu.Unlock()
+	defer func() {
+		s.rhythmMu.Lock()
+		if current, ok := s.rhythm[event.GroupID]; ok && current.token == token {
+			delete(s.rhythm, event.GroupID)
+		}
+		s.rhythmMu.Unlock()
+		cancel()
+	}()
+
+	var receipt replydomain.ActionReceipt
+	for i, bubble := range plan.Bubbles {
+		if i > 0 {
+			timer := time.NewTimer(s.bubbleDelay)
+			select {
+			case <-rhythmCtx.Done():
+				return receipt, nil
+			case <-timer.C:
+			}
+		}
+		part := plan
+		part.Bubbles = []string{bubble}
+		if i > 0 {
+			part.ReplyToMessageID = ""
+		}
+		var err error
+		receipt, err = s.Execute(rhythmCtx, event, decision, part)
+		if err != nil {
+			return receipt, err
+		}
+	}
 	return receipt, nil
 }
 

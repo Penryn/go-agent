@@ -128,6 +128,25 @@ func TestExecuteReactFallsBackToEventMessageID(t *testing.T) {
 	}
 }
 
+func TestExecuteRhythmSendsBubblesSeparately(t *testing.T) {
+	sender := inmemory.NewSender()
+	executor := New(sender, nil, nil, WithBubbleDelay(0))
+	_, err := executor.Execute(context.Background(), conversationEvent(), policydomain.AutonomyDecision{
+		DecisionID: "d-rhythm",
+		Action:     policydomain.ActionReply,
+	}, replydomain.ReplyPlan{Bubbles: []string{"先说", "后说"}, ReplyToMessageID: "m1", SendMode: "group"})
+	if err != nil {
+		t.Fatalf("execute rhythm: %v", err)
+	}
+	actions := sender.Actions()
+	if len(actions) != 2 {
+		t.Fatalf("expected two bubble actions, got %d: %#v", len(actions), actions)
+	}
+	if actions[0].ReplyToMessageID != "m1" || actions[1].ReplyToMessageID != "" {
+		t.Fatalf("quote should only be attached to first bubble: %#v", actions)
+	}
+}
+
 func conversationEvent() conversationdomain.ConversationEvent {
 	return conversationdomain.ConversationEvent{GroupID: 1, MessageID: "m1"}
 }
