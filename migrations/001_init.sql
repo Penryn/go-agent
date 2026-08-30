@@ -116,3 +116,24 @@ CREATE TABLE IF NOT EXISTS learning_watermarks (
   updated_at DATETIME(6) NOT NULL,
   PRIMARY KEY (group_id, kind)
 );
+
+CREATE TABLE IF NOT EXISTS group_working_memory (
+  group_id BIGINT PRIMARY KEY,
+  state_json JSON NOT NULL,
+  updated_at DATETIME(6) NOT NULL,
+  KEY idx_group_working_memory_updated (updated_at)
+);
+
+CREATE TABLE IF NOT EXISTS thought_records (
+  thought_id VARCHAR(128) PRIMARY KEY,
+  candidate_id VARCHAR(128) NOT NULL,
+  group_id BIGINT NOT NULL,
+  event_id VARCHAR(128) NOT NULL,
+  interpretation TEXT NOT NULL,
+  evidence_json JSON NOT NULL,
+  uncertainty DOUBLE NOT NULL,
+  chosen_action VARCHAR(64) NOT NULL,
+  outcome VARCHAR(64) NOT NULL,
+  created_at DATETIME(6) NOT NULL,
+  KEY idx_thought_records_group_created (group_id, created_at)
+);

@@ -17,11 +17,13 @@ import (
 	policydomain "github.com/phlin/go-agent/internal/domain/policy"
 	profiledomain "github.com/phlin/go-agent/internal/domain/profile"
 	replydomain "github.com/phlin/go-agent/internal/domain/reply"
+	humandomain "github.com/phlin/go-agent/internal/humanbot/domain"
 )
 
 var (
 	_ ports.MemoryStore        = (*Store)(nil)
 	_ ports.LearningStateStore = (*Store)(nil)
+	_ ports.ThoughtStore       = (*Store)(nil)
 	_ ports.MemeStore          = (*Store)(nil)
 	_ ports.ProfileStore       = (*Store)(nil)
 	_ ports.RuntimeStateStore  = (*Store)(nil)
@@ -39,6 +41,34 @@ type Store struct {
 	runtimeStates map[int64]policydomain.RuntimeState
 	personaStates map[string]personadomain.PersonaState
 	learningMarks map[string]memorydomain.LearningWatermark
+	thoughts      []replydomain.ThoughtRecord
+	workingStates map[int64]humandomain.GroupWorkingMemory
+}
+
+func (s *Store) SaveThought(_ context.Context, thought replydomain.ThoughtRecord) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for i := range s.thoughts {
+		if s.thoughts[i].ThoughtID == thought.ThoughtID {
+			s.thoughts[i] = thought
+			return nil
+		}
+	}
+	s.thoughts = append(s.thoughts, thought)
+	return nil
+}
+
+func (s *Store) LoadWorkingMemory(_ context.Context, groupID int64) (humandomain.GroupWorkingMemory, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return cloneWorkingMemory(s.workingStates[groupID]), nil
+}
+
+func (s *Store) SaveWorkingMemory(_ context.Context, memory humandomain.GroupWorkingMemory) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.workingStates[memory.GroupID] = cloneWorkingMemory(memory)
+	return nil
 }
 
 func NewStore() *Store {
@@ -51,7 +81,21 @@ func NewStore() *Store {
 		runtimeStates: make(map[int64]policydomain.RuntimeState),
 		personaStates: make(map[string]personadomain.PersonaState),
 		learningMarks: make(map[string]memorydomain.LearningWatermark),
+		workingStates: make(map[int64]humandomain.GroupWorkingMemory),
 	}
+}
+
+func cloneWorkingMemory(memory humandomain.GroupWorkingMemory) humandomain.GroupWorkingMemory {
+	memory.RecentTail = append([]humandomain.EventRecord(nil), memory.RecentTail...)
+	memory.OpenLoops = append([]string(nil), memory.OpenLoops...)
+	memory.Candidates = append([]humandomain.ThoughtCandidate(nil), memory.Candidates...)
+	if memory.MediaByEvent != nil {
+		memory.MediaByEvent = make(map[string][]mediadomain.MediaDescriptor, len(memory.MediaByEvent))
+		for id, descriptors := range memory.MediaByEvent {
+			memory.MediaByEvent[id] = append([]mediadomain.MediaDescriptor(nil), descriptors...)
+		}
+	}
+	return memory
 }
 
 func (s *Store) EventsAfter(_ context.Context, groupID int64, after time.Time, afterEventID string, limit int) ([]conversationdomain.ConversationEvent, error) {

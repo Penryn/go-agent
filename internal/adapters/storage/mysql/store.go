@@ -16,11 +16,14 @@ import (
 	mediadomain "github.com/phlin/go-agent/internal/domain/media"
 	memorydomain "github.com/phlin/go-agent/internal/domain/memory"
 	profiledomain "github.com/phlin/go-agent/internal/domain/profile"
+	replydomain "github.com/phlin/go-agent/internal/domain/reply"
+	humandomain "github.com/phlin/go-agent/internal/humanbot/domain"
 )
 
 var (
 	_ ports.MemoryStore        = (*Store)(nil)
 	_ ports.LearningStateStore = (*Store)(nil)
+	_ ports.ThoughtStore       = (*Store)(nil)
 	_ ports.MemeStore          = (*Store)(nil)
 	_ ports.ProfileStore       = (*Store)(nil)
 )
@@ -45,6 +48,56 @@ func Open(ctx context.Context, dsn string) (*sql.DB, error) {
 
 func NewStore(db *sql.DB) *Store {
 	return &Store{db: db}
+}
+
+func (s *Store) LoadWorkingMemory(ctx context.Context, groupID int64) (humandomain.GroupWorkingMemory, error) {
+	var raw []byte
+	err := s.db.QueryRowContext(ctx, `SELECT state_json FROM group_working_memory WHERE group_id = ?`, groupID).Scan(&raw)
+	if errors.Is(err, sql.ErrNoRows) {
+		return humandomain.GroupWorkingMemory{GroupID: groupID}, nil
+	}
+	if err != nil {
+		return humandomain.GroupWorkingMemory{}, err
+	}
+	var memory humandomain.GroupWorkingMemory
+	if err := json.Unmarshal(raw, &memory); err != nil {
+		return humandomain.GroupWorkingMemory{}, err
+	}
+	return memory, nil
+}
+
+func (s *Store) SaveWorkingMemory(ctx context.Context, memory humandomain.GroupWorkingMemory) error {
+	raw, err := json.Marshal(memory)
+	if err != nil {
+		return err
+	}
+	_, err = s.db.ExecContext(ctx, `
+		INSERT INTO group_working_memory (group_id, state_json, updated_at)
+		VALUES (?, ?, ?)
+		ON DUPLICATE KEY UPDATE state_json = VALUES(state_json), updated_at = VALUES(updated_at)
+	`, memory.GroupID, raw, time.Now())
+	return err
+}
+
+func (s *Store) SaveThought(ctx context.Context, thought replydomain.ThoughtRecord) error {
+	evidence, err := json.Marshal(thought.Evidence)
+	if err != nil {
+		return err
+	}
+	if thought.CreatedAt.IsZero() {
+		thought.CreatedAt = time.Now()
+	}
+	_, err = s.db.ExecContext(ctx, `
+		INSERT INTO thought_records (
+			thought_id, candidate_id, group_id, event_id, interpretation, evidence_json,
+			uncertainty, chosen_action, outcome, created_at
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		ON DUPLICATE KEY UPDATE
+			interpretation = VALUES(interpretation), evidence_json = VALUES(evidence_json),
+			uncertainty = VALUES(uncertainty), chosen_action = VALUES(chosen_action), outcome = VALUES(outcome)
+	`, thought.ThoughtID, thought.CandidateID, thought.GroupID, thought.EventID, thought.Interpretation,
+		evidence, thought.Uncertainty, thought.ChosenAction, thought.Outcome, thought.CreatedAt)
+	return err
 }
 
 func (s *Store) ArchiveEvent(ctx context.Context, event conversationdomain.ConversationEvent) error {
