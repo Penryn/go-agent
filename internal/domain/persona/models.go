@@ -29,32 +29,68 @@ type SpeechPatterns struct {
 }
 
 type PersonaConfig struct {
-	ID                string          `json:"id" yaml:"id"`
-	Name              string          `json:"name" yaml:"name"`
-	Aliases           []string        `json:"aliases" yaml:"aliases"`
-	Interests         []string        `json:"interests" yaml:"interests"`
-	SpeechStyle       string          `json:"speech_style" yaml:"speech_style"`
-	Description       string          `json:"description" yaml:"description"`
-	Constraints       []string        `json:"constraints" yaml:"constraints"`
-	ReplyMaxChars     int             `json:"reply_max_chars" yaml:"reply_max_chars"`
-	ReplyMaxSentences int             `json:"reply_max_sentences" yaml:"reply_max_sentences"`
-	AllowTeasing      bool            `json:"allow_teasing" yaml:"allow_teasing"`
-	AllowQuestions    bool            `json:"allow_questions" yaml:"allow_questions"`
-	PreferMemes       bool            `json:"prefer_memes" yaml:"prefer_memes"`
+	ID string `json:"id" yaml:"id"`
+	// Version is an optional operator supplied revision. When empty, the
+	// resolver derives a short content hash so prompt/audit records remain
+	// attributable to the exact persona definition used for a turn.
+	Version           string   `json:"version" yaml:"version"`
+	Name              string   `json:"name" yaml:"name"`
+	Aliases           []string `json:"aliases" yaml:"aliases"`
+	Interests         []string `json:"interests" yaml:"interests"`
+	SpeechStyle       string   `json:"speech_style" yaml:"speech_style"`
+	Description       string   `json:"description" yaml:"description"`
+	Constraints       []string `json:"constraints" yaml:"constraints"`
+	ReplyMaxChars     int      `json:"reply_max_chars" yaml:"reply_max_chars"`
+	ReplyMaxSentences int      `json:"reply_max_sentences" yaml:"reply_max_sentences"`
+	AllowTeasing      bool     `json:"allow_teasing" yaml:"allow_teasing"`
+	AllowQuestions    bool     `json:"allow_questions" yaml:"allow_questions"`
+	PreferMemes       bool     `json:"prefer_memes" yaml:"prefer_memes"`
 	// Traits 是性格特征列表，如 ["直率", "爱开玩笑"]。
 	Traits     []string        `json:"traits" yaml:"traits"`
 	Background BackgroundStory `json:"background" yaml:"background"`
 	Speech     SpeechPatterns  `json:"speech" yaml:"speech"`
+	// GroupOverrides are static, typed per-group persona changes. Dynamic
+	// policy overlays are accepted separately by Resolve for backwards
+	// compatible config loading.
+	GroupOverrides map[int64]PersonaOverride `json:"group_overrides" yaml:"group_overrides"`
+}
+
+// PersonaOverride contains fields that may be changed for one group. Pointer
+// scalars preserve the distinction between "unset" and an explicit false/0.
+type PersonaOverride struct {
+	Version           *string          `json:"version,omitempty" yaml:"version,omitempty"`
+	Name              *string          `json:"name,omitempty" yaml:"name,omitempty"`
+	Description       *string          `json:"description,omitempty" yaml:"description,omitempty"`
+	SpeechStyle       *string          `json:"speech_style,omitempty" yaml:"speech_style,omitempty"`
+	Interests         []string         `json:"interests,omitempty" yaml:"interests,omitempty"`
+	Constraints       []string         `json:"constraints,omitempty" yaml:"constraints,omitempty"`
+	Traits            []string         `json:"traits,omitempty" yaml:"traits,omitempty"`
+	ReplyMaxChars     *int             `json:"reply_max_chars,omitempty" yaml:"reply_max_chars,omitempty"`
+	ReplyMaxSentences *int             `json:"reply_max_sentences,omitempty" yaml:"reply_max_sentences,omitempty"`
+	AllowTeasing      *bool            `json:"allow_teasing,omitempty" yaml:"allow_teasing,omitempty"`
+	AllowQuestions    *bool            `json:"allow_questions,omitempty" yaml:"allow_questions,omitempty"`
+	PreferMemes       *bool            `json:"prefer_memes,omitempty" yaml:"prefer_memes,omitempty"`
+	Speech            *SpeechPatterns  `json:"speech,omitempty" yaml:"speech,omitempty"`
+	ToolAllowlist     []string         `json:"tool_allowlist,omitempty" yaml:"tool_allowlist,omitempty"`
+	FewShotExamples   []FewShotExample `json:"few_shot_examples,omitempty" yaml:"few_shot_examples,omitempty"`
 }
 
 type PersonaProfile struct {
-	PersonaID      string             `json:"persona_id" yaml:"persona_id"`
-	DisplayName    string             `json:"display_name" yaml:"display_name"`
-	StableTraits   []string           `json:"stable_traits" yaml:"stable_traits"`
-	StyleRules     []string           `json:"style_rules" yaml:"style_rules"`
-	AutonomyBias   map[string]float64 `json:"autonomy_bias" yaml:"autonomy_bias"`
-	InteractionMap map[string]string  `json:"interaction_map" yaml:"interaction_map"`
-	OutputRules    []string           `json:"output_rules" yaml:"output_rules"`
+	PersonaID   string `json:"persona_id" yaml:"persona_id"`
+	DisplayName string `json:"display_name" yaml:"display_name"`
+	Version     string `json:"version" yaml:"version"`
+	Hash        string `json:"hash" yaml:"hash"`
+	// Config is the immutable resolved definition for this group turn. It is
+	// deliberately separate from PersonaState, which carries mutable mood and
+	// energy and is persisted by the runtime state store.
+	Config          PersonaConfig      `json:"config,omitempty" yaml:"config,omitempty"`
+	StableTraits    []string           `json:"stable_traits" yaml:"stable_traits"`
+	StyleRules      []string           `json:"style_rules" yaml:"style_rules"`
+	AutonomyBias    map[string]float64 `json:"autonomy_bias" yaml:"autonomy_bias"`
+	InteractionMap  map[string]string  `json:"interaction_map" yaml:"interaction_map"`
+	OutputRules     []string           `json:"output_rules" yaml:"output_rules"`
+	ToolAllowlist   []string           `json:"tool_allowlist" yaml:"tool_allowlist"`
+	FewShotExamples []FewShotExample   `json:"few_shot_examples" yaml:"few_shot_examples"`
 }
 
 type PersonaState struct {
