@@ -20,6 +20,7 @@ import (
 	replydomain "github.com/phlin/go-agent/internal/domain/reply"
 	memesvc "github.com/phlin/go-agent/internal/services/meme"
 	memsvc "github.com/phlin/go-agent/internal/services/memory"
+	"github.com/phlin/go-agent/internal/services/textutil"
 )
 
 type Runtime struct {
@@ -110,10 +111,10 @@ func ParseTerminalPlan(decisionID string, toolName string, raw string, session r
 		if err := json.Unmarshal([]byte(raw), &result); err != nil {
 			return replydomain.ReplyPlan{}, false, fmt.Errorf("decode speak_text result: %w", err)
 		}
-		cleanedText := stripThinkBlocks(result.Text)
+		cleanedText := textutil.StripThinkBlocks(result.Text)
 		cleanedBubbles := make([]string, 0, len(result.Bubbles))
 		for _, b := range result.Bubbles {
-			cleanedBubbles = append(cleanedBubbles, stripThinkBlocks(b))
+			cleanedBubbles = append(cleanedBubbles, textutil.StripThinkBlocks(b))
 		}
 		bubbles := cleanedBubbles
 		if len(bubbles) == 0 && strings.TrimSpace(cleanedText) != "" {
@@ -140,11 +141,11 @@ func ParseTerminalPlan(decisionID string, toolName string, raw string, session r
 		if err := json.Unmarshal([]byte(raw), &result); err != nil {
 			return replydomain.ReplyPlan{}, false, fmt.Errorf("decode quote_reply result: %w", err)
 		}
-		cleanedText := stripThinkBlocks(result.Text)
+		cleanedText := textutil.StripThinkBlocks(result.Text)
 		rawBubbles := compactStrings(result.Bubbles, 2)
 		cleanedBubbles := make([]string, 0, len(rawBubbles))
 		for _, b := range rawBubbles {
-			cleanedBubbles = append(cleanedBubbles, stripThinkBlocks(b))
+			cleanedBubbles = append(cleanedBubbles, textutil.StripThinkBlocks(b))
 		}
 		if result.ReplyToMessageID == "" {
 			// LLM 未提供引用 ID，降级为普通发言，不设置 ActionParams["tool"]
@@ -966,25 +967,4 @@ func (t *updateMemberProfileTool) InvokableRun(ctx context.Context, argumentsInJ
 	slog.Debug("tool: update_member_profile", "user_id", args.UserID,
 		"traits_added", len(args.AddTraits), "tags_added", len(args.AddTags))
 	return marshal(map[string]any{"accepted": true})
-}
-
-// stripThinkBlocks 移除模型输出中的 <think>...</think> 推理块。
-// 同时处理完整标签对和孤立的 </think> 闭合标签（框架剥离开头标签后的残留）。
-// 与 internal/services/prompting/agent_planner.go 中的同名函数逻辑完全一致；
-// 如需修改，请同步更新两处，或将其提取至共享 textutil 包。
-func stripThinkBlocks(s string) string {
-	for {
-		end := strings.Index(s, "</think>")
-		if end < 0 {
-			break
-		}
-		start := strings.Index(s, "<think>")
-		if start >= 0 && start < end {
-			s = s[:start] + s[end+len("</think>"):]
-		} else {
-			// 孤立的 </think>：其前面的内容均为推理过程，一并丢弃
-			s = s[end+len("</think>"):]
-		}
-	}
-	return strings.TrimSpace(s)
 }

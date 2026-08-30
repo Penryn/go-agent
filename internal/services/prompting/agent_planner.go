@@ -13,6 +13,7 @@ import (
 	conversationdomain "github.com/phlin/go-agent/internal/domain/conversation"
 	policydomain "github.com/phlin/go-agent/internal/domain/policy"
 	replydomain "github.com/phlin/go-agent/internal/domain/reply"
+	"github.com/phlin/go-agent/internal/services/textutil"
 	toolsvc "github.com/phlin/go-agent/internal/services/tools"
 )
 
@@ -59,25 +60,6 @@ func (p *AgentPlanner) SetToolRuntimeLimits(maxIterations, maxToolCalls, maxResu
 // a user-facing reply.
 func (p *AgentPlanner) SetToolAuditHook(hook ToolAuditHook) {
 	p.toolAuditHook = hook
-}
-
-// stripThinkBlocks 移除模型输出中的 <think>...</think> 推理块。
-// 兼容两种情形：完整标签对，以及框架已剥离开头 <think> 仅剩 </think> 的孤立闭合标签。
-func stripThinkBlocks(s string) string {
-	for {
-		end := strings.Index(s, "</think>")
-		if end < 0 {
-			break
-		}
-		start := strings.Index(s, "<think>")
-		if start >= 0 && start < end {
-			s = s[:start] + s[end+len("</think>"):]
-		} else {
-			// 孤立的 </think>：其前面的内容均为推理过程，一并丢弃
-			s = s[end+len("</think>"):]
-		}
-	}
-	return strings.TrimSpace(s)
 }
 
 func (p *AgentPlanner) Plan(ctx context.Context, snapshot conversationdomain.ContextSnapshot, decision policydomain.AutonomyDecision) (replydomain.ReplyPlan, error) {
@@ -216,7 +198,7 @@ func (p *AgentPlanner) Plan(ctx context.Context, snapshot conversationdomain.Con
 		}
 
 		if event.Output.MessageOutput.Role == schema.Assistant && strings.TrimSpace(msg.Content) != "" {
-			cleaned := stripThinkBlocks(msg.Content)
+			cleaned := textutil.StripThinkBlocks(msg.Content)
 			if strings.TrimSpace(cleaned) == "" {
 				continue
 			}

@@ -5,6 +5,8 @@ import (
 	"regexp"
 	"strings"
 	"unicode/utf8"
+
+	"github.com/phlin/go-agent/internal/services/textutil"
 )
 
 // Result 描述清洗结果。
@@ -49,11 +51,8 @@ func New(opts ...Option) Guard {
 // ---- 规则实现 ----
 
 // 规则1：ThinkBlock 过滤，清除 <think>...</think>（含跨行）
-var thinkBlockRe = regexp.MustCompile(`(?is)<think>.*?</think>`)
-
 func stripThinkBlocks(s string) (string, bool) {
-	cleaned := thinkBlockRe.ReplaceAllString(s, "")
-	cleaned = strings.TrimSpace(cleaned)
+	cleaned := textutil.StripThinkBlocks(s)
 	return cleaned, cleaned != s
 }
 

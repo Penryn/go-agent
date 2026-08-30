@@ -24,6 +24,10 @@
 - 队列满载、模型失败、候选过期和关闭期间，已 claim 的候选都会调用 `Complete` 收敛到终态。
 - worker pool 仍是进程内 best-effort 队列，未解决进程崩溃时的任务恢复问题。
 
+### 4. 模型文本清理逻辑集中化
+
+新增 `internal/services/textutil`，统一承载 `<think>...</think>` 和孤立 `</think>` 清理逻辑；prompting、tools、outputguard 共享同一实现，避免模型供应商差异导致的输出语义漂移。
+
 ## 下一阶段：可靠后台任务
 
 当前进程内队列在满载时会丢弃媒体理解、向量索引和策展任务。下一阶段应引入持久化 outbox：
