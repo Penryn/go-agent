@@ -2,6 +2,7 @@ package memory
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"time"
@@ -47,6 +48,9 @@ type Service struct {
 	typeTTL     map[string]string       // 按类型差异化 TTL，可为 nil
 	defaultTTL  string                  // 全局默认 TTL（如 "720h"），空时不设过期
 	background  backgroundSubmitter
+	outbox      interface {
+		Enqueue(context.Context, string, string, []byte) error
+	}
 }
 
 type backgroundSubmitter interface {
@@ -57,6 +61,12 @@ type backgroundSubmitter interface {
 // job owner instead of creating an untracked goroutine.
 func WithBackgroundRuntime(runtime backgroundSubmitter) Option {
 	return func(s *Service) { s.background = runtime }
+}
+
+func WithOutbox(runtime interface {
+	Enqueue(context.Context, string, string, []byte) error
+}) Option {
+	return func(s *Service) { s.outbox = runtime }
 }
 
 // New 创建 Service。vectorStore 通过 WithVectorStore Option 可选注入。
@@ -95,6 +105,17 @@ func (s *Service) MarkIntent(ctx context.Context, intent WriteIntent) (memorydom
 	if s.vectorStore != nil {
 		vs := s.vectorStore
 		r := record
+		if s.outbox != nil {
+			payload, marshalErr := json.Marshal(r)
+			if marshalErr == nil {
+				if enqueueErr := s.outbox.Enqueue(ctx, "memory_vector_index", r.MemoryID, payload); enqueueErr == nil {
+					return record, nil
+				} else {
+					marshalErr = enqueueErr
+				}
+			}
+			slog.Warn("memory: outbox enqueue failed, using process-local queue", "memory_id", r.MemoryID, "err", marshalErr)
+		}
 		job := backgroundruntime.Job{
 			Name:    "qdrant_store_memory",
 			Timeout: 10 * time.Second,
@@ -112,6 +133,14 @@ func (s *Service) MarkIntent(ctx context.Context, intent WriteIntent) (memorydom
 	}
 
 	return record, nil
+}
+
+// ProcessVectorIndex executes one durable vector synchronization task.
+func (s *Service) ProcessVectorIndex(ctx context.Context, record memorydomain.MemoryRecord) error {
+	if s == nil || s.vectorStore == nil {
+		return fmt.Errorf("memory: vector store is not configured")
+	}
+	return s.vectorStore.StoreMemory(ctx, record)
 }
 
 func (s *Service) Query(ctx context.Context, query ports.MemoryQuery) ([]memorydomain.MemoryRecord, error) {

@@ -2,11 +2,35 @@ package memory
 
 import (
 	"context"
+	"encoding/json"
 	"testing"
 
 	"github.com/phlin/go-agent/internal/adapters/inmemory"
 	"github.com/phlin/go-agent/internal/core/ports"
+	memorydomain "github.com/phlin/go-agent/internal/domain/memory"
 )
+
+type recordingOutbox struct {
+	kind string
+	key  string
+	body []byte
+}
+
+func (o *recordingOutbox) Enqueue(_ context.Context, kind, key string, body []byte) error {
+	o.kind, o.key, o.body = kind, key, append([]byte(nil), body...)
+	return nil
+}
+
+type recordingVectorStore struct{ records []memorydomain.MemoryRecord }
+
+func (s *recordingVectorStore) StoreMemory(_ context.Context, record memorydomain.MemoryRecord) error {
+	s.records = append(s.records, record)
+	return nil
+}
+
+func (s *recordingVectorStore) SearchMemories(context.Context, string, int, float64) ([]memorydomain.MemoryRecord, error) {
+	return nil, nil
+}
 
 func TestMarkIntentAndQuery(t *testing.T) {
 	store := inmemory.NewStore()
@@ -34,5 +58,26 @@ func TestMarkIntentAndQuery(t *testing.T) {
 	}
 	if len(records) == 0 || records[0].MemoryID != record.MemoryID {
 		t.Fatalf("unexpected records: %#v", records)
+	}
+}
+
+func TestMarkIntentEnqueuesVectorSync(t *testing.T) {
+	store := inmemory.NewStore()
+	outbox := &recordingOutbox{}
+	vector := &recordingVectorStore{}
+	service := New(store, WithVectorStore(vector), WithOutbox(outbox))
+	record, err := service.MarkIntent(context.Background(), WriteIntent{MemoryID: "memory-1", Scope: "group:1", MemoryType: "topic", Subject: "topic", Content: "content"})
+	if err != nil {
+		t.Fatalf("mark intent: %v", err)
+	}
+	if outbox.kind != "memory_vector_index" || outbox.key != record.MemoryID {
+		t.Fatalf("unexpected outbox envelope: kind=%q key=%q", outbox.kind, outbox.key)
+	}
+	var got memorydomain.MemoryRecord
+	if err := json.Unmarshal(outbox.body, &got); err != nil || got.MemoryID != record.MemoryID {
+		t.Fatalf("unexpected payload: record=%+v err=%v", got, err)
+	}
+	if len(vector.records) != 0 {
+		t.Fatal("vector store should be invoked by outbox handler, not inline")
 	}
 }

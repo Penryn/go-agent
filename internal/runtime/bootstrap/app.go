@@ -18,6 +18,7 @@ import (
 	"github.com/phlin/go-agent/internal/config"
 	"github.com/phlin/go-agent/internal/core/ports"
 	conversationdomain "github.com/phlin/go-agent/internal/domain/conversation"
+	memorydomain "github.com/phlin/go-agent/internal/domain/memory"
 	replydomain "github.com/phlin/go-agent/internal/domain/reply"
 	humandomain "github.com/phlin/go-agent/internal/humanbot/domain"
 	humanruntime "github.com/phlin/go-agent/internal/humanbot/runtime"
@@ -155,7 +156,24 @@ func NewApp(ctx context.Context, cfg config.Config) (*App, error) {
 		memOpts = append(memOpts, memsvc.WithTypeTTL(cfg.Memory.TypeTTL, cfg.Memory.DefaultTTL))
 	}
 	memOpts = append(memOpts, memsvc.WithBackgroundRuntime(backgroundRuntime))
+	if durableOutbox != nil {
+		memOpts = append(memOpts, memsvc.WithOutbox(durableOutbox))
+	}
 	memorySvc := memsvc.New(stores.memory, memOpts...)
+	if durableOutbox != nil {
+		if err := durableOutbox.Register("memory_vector_index", func(jobCtx context.Context, payload []byte) error {
+			var record memorydomain.MemoryRecord
+			if err := json.Unmarshal(payload, &record); err != nil {
+				return fmt.Errorf("decode memory vector task: %w", err)
+			}
+			return memorySvc.ProcessVectorIndex(jobCtx, record)
+		}); err != nil {
+			_ = durableOutbox.Close()
+			_ = backgroundRuntime.Close(context.Background())
+			_ = stores.Close()
+			return nil, fmt.Errorf("register memory outbox handler: %w", err)
+		}
+	}
 	memeService := memesvc.New(stores.meme, cfg.Meme,
 		memesvc.WithVectorStore(memeVectorStore),
 		memesvc.WithBackgroundRuntime(backgroundRuntime),
