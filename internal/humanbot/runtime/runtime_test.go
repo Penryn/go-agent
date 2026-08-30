@@ -60,6 +60,38 @@ func TestProcessRawEventUsesCandidateRuntime(t *testing.T) {
 	}
 }
 
+func TestProcessRawEventRespectsMinimumCandidateScore(t *testing.T) {
+	ctx := context.Background()
+	cfg := config.Default()
+	cfg.QQ.SelfID = 123456
+	cfg.DefaultPolicy.QuietHours = nil
+	store := inmemory.NewStore()
+	policy := policysvc.New(cfg)
+	normalizer := normalizer.New("onebot", cfg.QQ.SelfID, cfg.Persona.Aliases)
+	eventLog := ingress.NewMemoryEventLog()
+	working := group_actor.NewManager(eventLog)
+	defer working.Close()
+	contextService := contextsvc.New(store, ports.NoopVectorStore{}, store, store, policy, cfg.Persona)
+	contextService.WithWorkingMemory(working)
+	planner := promptingsvc.NewDeterministicPlanner(cfg.Persona)
+	sender := inmemory.NewSender()
+	executor := action.New(sender, nil, nil, action.WithPresenceObserver(working), action.WithSelfID(cfg.QQ.SelfID))
+	runtime := New(ctx, normalizer, working, deliberation.NewAdapter(contextService, planner), nil, nil, executor, Config{SelfID: cfg.QQ.SelfID})
+	defer runtime.Close()
+
+	payload := []byte(`{"post_type":"message","message_type":"group","time":1710000000,"self_id":123456,"group_id":100,"user_id":200,"message_id":"m-low","message":[{"type":"text","data":{"text":"普通闲聊"}}]}`)
+	outcome, err := runtime.ProcessRawEvent(ctx, payload)
+	if err != nil {
+		t.Fatalf("process raw event: %v", err)
+	}
+	if outcome.Decision.Action != policydomain.ActionSilent || outcome.Decision.ReasonCodes[0] != "candidate_below_score" {
+		t.Fatalf("expected below-score silence, got %+v", outcome.Decision)
+	}
+	if outcome.Receipt.Sent {
+		t.Fatalf("below-score candidate sent unexpectedly: %+v", outcome.Receipt)
+	}
+}
+
 func TestProcessCandidateCompletesAfterDeliberationError(t *testing.T) {
 	ctx := context.Background()
 	working := group_actor.NewManager(ingress.NewMemoryEventLog())

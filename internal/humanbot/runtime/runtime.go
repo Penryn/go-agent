@@ -86,6 +86,7 @@ type Runtime struct {
 	completedTurnObservers []CompletedTurnObserver
 	whitelist              map[int64]struct{}
 	selfID                 int64
+	minCandidateScore      float64
 
 	ctx       context.Context
 	cancel    context.CancelFunc
@@ -133,17 +134,18 @@ func New(parent context.Context, normalizer *normalizersvc.Service, working *gro
 	}
 	ctx, cancel := context.WithCancel(parent)
 	r := &Runtime{
-		normalizer:  normalizer,
-		working:     working,
-		deliberator: deliberator,
-		perception:  perception,
-		turns:       turns,
-		executor:    executor,
-		whitelist:   make(map[int64]struct{}, len(cfg.GroupWhitelist)),
-		selfID:      cfg.SelfID,
-		ctx:         ctx,
-		cancel:      cancel,
-		jobs:        make(chan candidateJob, cfg.WorkerCount*2),
+		normalizer:        normalizer,
+		working:           working,
+		deliberator:       deliberator,
+		perception:        perception,
+		turns:             turns,
+		executor:          executor,
+		whitelist:         make(map[int64]struct{}, len(cfg.GroupWhitelist)),
+		selfID:            cfg.SelfID,
+		minCandidateScore: cfg.MinCandidateScore,
+		ctx:               ctx,
+		cancel:            cancel,
+		jobs:              make(chan candidateJob, cfg.WorkerCount*2),
 	}
 	for _, groupID := range cfg.GroupWhitelist {
 		r.whitelist[groupID] = struct{}{}
@@ -219,6 +221,14 @@ func (r *Runtime) ProcessRawEvent(ctx context.Context, payload []byte) (Outcome,
 	}
 	if candidate.CandidateID == "" {
 		return Outcome{Envelope: envelope, Decision: silentDecision(envelope.TraceID, "no_candidate")}, nil
+	}
+	if candidate.Score < r.minCandidateScore {
+		_ = r.working.Complete(ctx, envelope.Event.GroupID, candidate.CandidateID)
+		return Outcome{
+			Envelope:  envelope,
+			Candidate: candidate,
+			Decision:  silentDecision(envelope.TraceID, "candidate_below_score"),
+		}, nil
 	}
 	outcome, err := r.process(ctx, envelope, candidate)
 	_ = r.working.Complete(ctx, envelope.Event.GroupID, candidate.CandidateID)
