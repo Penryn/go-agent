@@ -147,6 +147,55 @@ func TestExecuteRhythmSendsBubblesSeparately(t *testing.T) {
 	}
 }
 
+func TestExecuteRhythmDropsQueuedBubblesAfterCancellation(t *testing.T) {
+	sender := inmemory.NewSender()
+	executor := New(sender, nil, nil, WithBubbleDelay(100*time.Millisecond))
+	finished := make(chan error, 1)
+	go func() {
+		_, err := executor.Execute(context.Background(), conversationEvent(), policydomain.AutonomyDecision{
+			DecisionID: "d-cancel",
+			Action:     policydomain.ActionReply,
+		}, replydomain.ReplyPlan{Bubbles: []string{"先说", "不再发送"}})
+		finished <- err
+	}()
+
+	deadline := time.Now().Add(time.Second)
+	for len(sender.Actions()) == 0 && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	if got := len(sender.Actions()); got != 1 {
+		t.Fatalf("expected first bubble before cancellation, got %d", got)
+	}
+
+	executor.CancelQueued(conversationEvent().GroupID)
+	select {
+	case err := <-finished:
+		if err != nil {
+			t.Fatalf("cancelled rhythm returned error: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("cancelled rhythm did not finish")
+	}
+	if got := len(sender.Actions()); got != 1 {
+		t.Fatalf("expected queued bubble to be dropped, got %d actions", got)
+	}
+}
+
+func TestExecuteSingleBubbleRemainsOneAction(t *testing.T) {
+	sender := inmemory.NewSender()
+	executor := New(sender, nil, nil, WithBubbleDelay(time.Second))
+
+	if _, err := executor.Execute(context.Background(), conversationEvent(), policydomain.AutonomyDecision{
+		DecisionID: "d-single",
+		Action:     policydomain.ActionReply,
+	}, replydomain.ReplyPlan{Bubbles: []string{"单句"}}); err != nil {
+		t.Fatalf("execute single bubble: %v", err)
+	}
+	if got := len(sender.Actions()); got != 1 {
+		t.Fatalf("expected one action, got %d", got)
+	}
+}
+
 func conversationEvent() conversationdomain.ConversationEvent {
 	return conversationdomain.ConversationEvent{GroupID: 1, MessageID: "m1"}
 }

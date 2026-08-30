@@ -216,6 +216,7 @@ func (s *Service) executeRhythm(ctx context.Context, event conversationdomain.Co
 			timer := time.NewTimer(s.bubbleDelay)
 			select {
 			case <-rhythmCtx.Done():
+				timer.Stop()
 				return receipt, nil
 			case <-timer.C:
 			}
