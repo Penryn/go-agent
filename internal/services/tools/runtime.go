@@ -76,21 +76,10 @@ var speakingTools = map[string]bool{
 }
 
 func (r *Runtime) Tools(session replydomain.ToolContext) []tool.BaseTool {
-	all := []namedTool{
-		newSpeakTextTool(),
-		newStaySilentTool(),
-		newQueryMemoryTool(r.memoryStore, session),
-		newSearchMemeTool(r.memeStore, r.memeSvc, session),
-		newSendMemeTool(r.memeStore),
-		newQuoteReplyTool(),
-		newQueryMemberProfileTool(r.profileStore, session),
-		newWebSearchTool(r.searcher),
-		newRecallRecentMessageTool(),
-		newPokeMemberTool(),
-		newMarkMemoryIntentTool(r.memSvc, session),
-		newUpdateAffinityTool(r.profileStore, session, r.personaID),
-		newUpdateMemberProfileTool(r.profileStore, session, r.personaID),
-	}
+	all := make([]namedTool, 0, 13)
+	all = append(all, r.replyTools()...)
+	all = append(all, r.knowledgeTools(session)...)
+	all = append(all, r.profileTools(session)...)
 
 	allowed := make([]tool.BaseTool, 0, len(all))
 	for _, candidate := range all {
@@ -102,6 +91,34 @@ func (r *Runtime) Tools(session replydomain.ToolContext) []tool.BaseTool {
 		}
 	}
 	return allowed
+}
+
+func (r *Runtime) replyTools() []namedTool {
+	return []namedTool{
+		newSpeakTextTool(),
+		newStaySilentTool(),
+		newSendMemeTool(r.memeStore),
+		newQuoteReplyTool(),
+		newRecallRecentMessageTool(),
+		newPokeMemberTool(),
+	}
+}
+
+func (r *Runtime) knowledgeTools(session replydomain.ToolContext) []namedTool {
+	return []namedTool{
+		newQueryMemoryTool(r.memoryStore, session),
+		newSearchMemeTool(r.memeStore, r.memeSvc, session),
+		newWebSearchTool(r.searcher),
+	}
+}
+
+func (r *Runtime) profileTools(session replydomain.ToolContext) []namedTool {
+	return []namedTool{
+		newQueryMemberProfileTool(r.profileStore, session),
+		newMarkMemoryIntentTool(r.memSvc, session),
+		newUpdateAffinityTool(r.profileStore, session, r.personaID),
+		newUpdateMemberProfileTool(r.profileStore, session, r.personaID),
+	}
 }
 
 func ParseTerminalPlan(decisionID string, toolName string, raw string, session replydomain.ToolContext) (replydomain.ReplyPlan, bool, error) {

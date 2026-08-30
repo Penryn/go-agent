@@ -46,6 +46,10 @@ curator turn、媒体感知、memory 向量同步、meme 向量索引、表情�
 
 Qdrant 与 meme vector 的可选初始化已提取到 `bootstrap/graphs.go`。`NewApp` 只消费端口和生命周期注册结果，向量 adapter 的降级与资源探针逻辑集中在单一 Module。
 
+### 9. Tools catalog 分组
+
+`services/tools.Runtime` 保留统一的权限过滤 seam，但将工具目录构建拆为 reply、knowledge、profile 三个 catalog 函数。新增工具时可在对应职责组内注册，observe-only 与 allowlist 过滤仍集中处理。
+
 ## 已完成：可靠后台任务
 
 持久化 outbox 已建立并接入主要异步副作用链路：
