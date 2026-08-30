@@ -42,6 +42,10 @@ Group Actor Manager 新增可配置 `actor_idle_ttl` 和 `PruneIdle`。Runtime �
 
 curator turn、媒体感知、memory 向量同步、meme 向量索引、表情包发送计数和 learning extract 已完成迁移：分别以 `snapshot_id`、`event_id`、`memory_id`、`meme_id`、`group_id+时间片` 为幂等键进入 outbox，由注册 handler 执行对应副作用。
 
+### 8. Bootstrap 向量 graph 拆分
+
+Qdrant 与 meme vector 的可选初始化已提取到 `bootstrap/graphs.go`。`NewApp` 只消费端口和生命周期注册结果，向量 adapter 的降级与资源探针逻辑集中在单一 Module。
+
 ## 已完成：可靠后台任务
 
 持久化 outbox 已建立并接入主要异步副作用链路：

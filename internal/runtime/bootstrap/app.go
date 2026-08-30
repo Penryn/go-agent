@@ -14,7 +14,6 @@ import (
 	"github.com/phlin/go-agent/internal/adapters/inmemory"
 	modeladapter "github.com/phlin/go-agent/internal/adapters/model"
 	outboundnapcat "github.com/phlin/go-agent/internal/adapters/outbound/napcat"
-	qdrantstore "github.com/phlin/go-agent/internal/adapters/storage/qdrant"
 	"github.com/phlin/go-agent/internal/config"
 	"github.com/phlin/go-agent/internal/core/ports"
 	conversationdomain "github.com/phlin/go-agent/internal/domain/conversation"
@@ -79,42 +78,9 @@ func NewApp(ctx context.Context, cfg config.Config) (*App, error) {
 		return nil, err
 	}
 
-	// Qdrant 可选初始化（依赖 embedder + vector_dim 配置）
-	var qdrantVectorStore *qdrantstore.Store
-	var memeVectorStore ports.VectorMemeStore = ports.NoopVectorMemeStore{}
-	if cfg.Storage.Qdrant.VectorDim > 0 {
-		embedder, embErr := modelFactory.EmbeddingModel(ctx)
-		if embErr != nil {
-			slog.Warn("app: embedding model unavailable, skipping qdrant init", "err", embErr)
-		} else {
-			topK := cfg.Memory.SemanticTopK
-			if topK <= 0 {
-				topK = 6
-			}
-			qs, qdrantErr := qdrantstore.New(ctx, cfg.Storage.Qdrant, embedder, cfg.Storage.Qdrant.VectorDim, topK)
-			if qdrantErr != nil {
-				slog.Warn("app: qdrant init failed, vector search disabled", "err", qdrantErr)
-			} else {
-				qdrantVectorStore = qs
-				stores.closeFn = append(stores.closeFn, qs.Close)
-				stores.probeFn = append(stores.probeFn, qs.Ping)
-
-				// 表情包向量存储（可选，依赖 meme_collection 配置）
-				if cfg.Storage.Qdrant.MemeCollection != "" {
-					memeTopK := cfg.Meme.SemanticTopK
-					if memeTopK <= 0 {
-						memeTopK = 5
-					}
-					mvs, mvsErr := qdrantstore.NewMemeVectorStore(ctx, qs.Client(), cfg.Storage.Qdrant.MemeCollection, embedder, cfg.Storage.Qdrant.VectorDim, memeTopK)
-					if mvsErr != nil {
-						slog.Warn("app: meme vector store init failed, meme semantic search disabled", "err", mvsErr)
-					} else {
-						memeVectorStore = mvs
-					}
-				}
-			}
-		}
-	}
+	vectorGraph := buildVectorGraph(ctx, cfg, modelFactory, stores)
+	qdrantVectorStore := vectorGraph.memory
+	memeVectorStore := vectorGraph.meme
 
 	// contextService 需要 VectorMemoryStore（无 Qdrant 时降级为 NoopVectorStore）
 	var vectorStore ports.VectorMemoryStore = ports.NoopVectorStore{}
