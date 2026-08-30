@@ -1,6 +1,8 @@
 package reply
 
 import (
+	"time"
+
 	conversationdomain "github.com/phlin/go-agent/internal/domain/conversation"
 	mediadomain "github.com/phlin/go-agent/internal/domain/media"
 	memorydomain "github.com/phlin/go-agent/internal/domain/memory"
@@ -28,6 +30,21 @@ type ReplyPlan struct {
 	MemoryWriteIntents []string                      `json:"memory_write_intents" yaml:"memory_write_intents"`
 	SendMode           string                        `json:"send_mode" yaml:"send_mode"`
 	FallbackText       string                        `json:"fallback_text" yaml:"fallback_text"`
+}
+
+// ThoughtRecord is the durable, user-independent summary of one deliberation.
+// It records the decision basis without persisting private chain-of-thought.
+type ThoughtRecord struct {
+	ThoughtID      string    `json:"thought_id" yaml:"thought_id"`
+	CandidateID    string    `json:"candidate_id" yaml:"candidate_id"`
+	GroupID        int64     `json:"group_id" yaml:"group_id"`
+	EventID        string    `json:"event_id" yaml:"event_id"`
+	Interpretation string    `json:"interpretation" yaml:"interpretation"`
+	Evidence       []string  `json:"evidence" yaml:"evidence"`
+	Uncertainty    float64   `json:"uncertainty" yaml:"uncertainty"`
+	ChosenAction   string    `json:"chosen_action" yaml:"chosen_action"`
+	Outcome        string    `json:"outcome" yaml:"outcome"`
+	CreatedAt      time.Time `json:"created_at" yaml:"created_at"`
 }
 
 type ToolContext struct {

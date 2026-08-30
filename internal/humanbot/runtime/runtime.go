@@ -151,6 +151,9 @@ func (r *Runtime) SubmitRaw(ctx context.Context, payload []byte) error {
 	if r.shouldIgnore(envelope) {
 		return nil
 	}
+	if r.executor != nil {
+		r.executor.CancelQueued(envelope.Event.GroupID)
+	}
 	record := toEventRecord(envelope, humandomain.OriginInbound)
 	_, err = r.working.Observe(ctx, record)
 	if err == nil && r.perception != nil {
@@ -290,11 +293,6 @@ func (r *Runtime) processWithValidation(ctx context.Context, envelope conversati
 		return Outcome{}, fmt.Errorf("deliberate response: %w", err)
 	}
 	snapshot, decision, plan := result.Snapshot, result.Decision, result.Plan
-	if r.thoughts != nil {
-		if err := r.thoughts.SaveThought(ctx, result.Thought); err != nil {
-			slog.Warn("human runtime: record thought failed", "group_id", envelope.Event.GroupID, "err", err)
-		}
-	}
 	if validate != nil {
 		valid, err := validate(ctx)
 		if err != nil {
@@ -313,18 +311,21 @@ func (r *Runtime) processWithValidation(ctx context.Context, envelope conversati
 		if receipt.Sent {
 			outcome = "sent"
 		}
-		_ = r.thoughts.SaveThought(ctx, replydomain.ThoughtRecord{
-			ThoughtID:      envelope.TraceID + "-thought",
-			CandidateID:    candidate.CandidateID,
-			GroupID:        envelope.Event.GroupID,
-			EventID:        envelope.Event.EventID,
-			Interpretation: candidate.Intent,
-			Evidence:       append([]string(nil), candidate.SourceEventIDs...),
-			Uncertainty:    candidate.Uncertainty,
-			ChosenAction:   string(decision.Action),
-			Outcome:        outcome,
-			CreatedAt:      time.Now(),
-		})
+		thought := result.Thought
+		if thought.ThoughtID == "" {
+			thought.ThoughtID = envelope.TraceID + "-thought"
+		}
+		thought.CandidateID = candidate.CandidateID
+		thought.GroupID = envelope.Event.GroupID
+		thought.EventID = envelope.Event.EventID
+		thought.ChosenAction = string(decision.Action)
+		thought.Outcome = outcome
+		if thought.CreatedAt.IsZero() {
+			thought.CreatedAt = time.Now()
+		}
+		if err := r.thoughts.SaveThought(ctx, thought); err != nil {
+			slog.Warn("human runtime: record thought failed", "group_id", envelope.Event.GroupID, "err", err)
+		}
 	}
 	if r.turns != nil {
 		if err := r.turns.AfterTurn(ctx, snapshot, decision, receipt); err != nil {

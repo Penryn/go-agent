@@ -48,6 +48,12 @@ type MemoryStore interface {
 	QueryMemories(ctx context.Context, query MemoryQuery) ([]memorydomain.MemoryRecord, error)
 }
 
+// ThoughtStore persists structured deliberation summaries for evaluation and
+// future learning. It deliberately does not expose raw model chain-of-thought.
+type ThoughtStore interface {
+	SaveThought(ctx context.Context, thought replydomain.ThoughtRecord) error
+}
+
 // LearningStateStore owns the durable cursor for background projectors. It
 // is intentionally separate from MemoryStore because a projector needs a
 // stable ordered read, not just a rolling conversation window.

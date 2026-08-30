@@ -5,6 +5,7 @@ package deliberation
 
 import (
 	"context"
+	"time"
 
 	conversationdomain "github.com/phlin/go-agent/internal/domain/conversation"
 	policydomain "github.com/phlin/go-agent/internal/domain/policy"
@@ -23,6 +24,7 @@ type Result struct {
 	Snapshot conversationdomain.ContextSnapshot
 	Decision policydomain.AutonomyDecision
 	Plan     replydomain.ReplyPlan
+	Thought  replydomain.ThoughtRecord
 }
 
 type Deliberator interface {
@@ -55,7 +57,23 @@ func (a *Adapter) Deliberate(ctx context.Context, input Input) (Result, error) {
 		return Result{}, err
 	}
 	decision.Action = resolveAction(input.Candidate.Intent, decision.Action, plan.PlannedActions)
-	return Result{Snapshot: snapshot, Decision: decision, Plan: plan}, nil
+	return Result{
+		Snapshot: snapshot,
+		Decision: decision,
+		Plan:     plan,
+		Thought: replydomain.ThoughtRecord{
+			ThoughtID:      decision.DecisionID + "-thought",
+			CandidateID:    input.Candidate.CandidateID,
+			GroupID:        input.Envelope.Event.GroupID,
+			EventID:        input.Envelope.Event.EventID,
+			Interpretation: input.Candidate.Intent,
+			Evidence:       append([]string(nil), decision.ReasonCodes...),
+			Uncertainty:    input.Candidate.Uncertainty,
+			ChosenAction:   string(decision.Action),
+			Outcome:        string(plan.SendMode),
+			CreatedAt:      time.Now(),
+		},
+	}, nil
 }
 
 // resolveAction keeps policy ownership in the runtime while allowing the
