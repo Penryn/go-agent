@@ -9,6 +9,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/phlin/go-agent/internal/core/ports"
 	conversationdomain "github.com/phlin/go-agent/internal/domain/conversation"
 	policydomain "github.com/phlin/go-agent/internal/domain/policy"
 	replydomain "github.com/phlin/go-agent/internal/domain/reply"
@@ -29,6 +30,26 @@ type Config struct {
 
 type PerceptionSubmitter interface {
 	Submit(humandomain.EventRecord)
+}
+
+type EventObserver interface {
+	ObserveEvent(context.Context, conversationdomain.ConversationEvent) error
+}
+
+type EventObserverFunc func(context.Context, conversationdomain.ConversationEvent) error
+
+func (f EventObserverFunc) ObserveEvent(ctx context.Context, event conversationdomain.ConversationEvent) error {
+	return f(ctx, event)
+}
+
+type CompletedTurnObserver interface {
+	ObserveTurn(context.Context, conversationdomain.ContextSnapshot, replydomain.ActionReceipt) error
+}
+
+type CompletedTurnObserverFunc func(context.Context, conversationdomain.ContextSnapshot, replydomain.ActionReceipt) error
+
+func (f CompletedTurnObserverFunc) ObserveTurn(ctx context.Context, snapshot conversationdomain.ContextSnapshot, receipt replydomain.ActionReceipt) error {
+	return f(ctx, snapshot, receipt)
 }
 
 // TurnObserver closes the feedback loop between a realized action and future
@@ -53,20 +74,39 @@ type Outcome struct {
 }
 
 type Runtime struct {
-	normalizer  *normalizersvc.Service
-	working     *groupactor.Manager
-	deliberator deliberation.Deliberator
-	perception  PerceptionSubmitter
-	turns       TurnObserver
-	executor    *action.Service
-	whitelist   map[int64]struct{}
-	selfID      int64
+	normalizer             *normalizersvc.Service
+	working                *groupactor.Manager
+	deliberator            deliberation.Deliberator
+	perception             PerceptionSubmitter
+	turns                  TurnObserver
+	executor               *action.Service
+	thoughts               ports.ThoughtStore
+	eventObservers         []EventObserver
+	completedTurnObservers []CompletedTurnObserver
+	whitelist              map[int64]struct{}
+	selfID                 int64
 
 	ctx    context.Context
 	cancel context.CancelFunc
 	wg     sync.WaitGroup
 	jobsWG sync.WaitGroup
 	locks  sync.Map
+}
+
+// SetThoughtStore enables durable, concise deliberation records. It is
+// optional so replay and in-memory callers can keep the runtime lightweight.
+func (r *Runtime) SetThoughtStore(store ports.ThoughtStore) { r.thoughts = store }
+
+func (r *Runtime) AddEventObserver(observer EventObserver) {
+	if observer != nil {
+		r.eventObservers = append(r.eventObservers, observer)
+	}
+}
+
+func (r *Runtime) AddCompletedTurnObserver(observer CompletedTurnObserver) {
+	if observer != nil {
+		r.completedTurnObservers = append(r.completedTurnObservers, observer)
+	}
 }
 
 func New(parent context.Context, normalizer *normalizersvc.Service, working *groupactor.Manager, deliberator deliberation.Deliberator, perception PerceptionSubmitter, turns TurnObserver, executor *action.Service, cfg Config) *Runtime {
@@ -116,7 +156,20 @@ func (r *Runtime) SubmitRaw(ctx context.Context, payload []byte) error {
 	if err == nil && r.perception != nil {
 		r.perception.Submit(record)
 	}
+	if err == nil {
+		r.observeEvent(ctx, envelope.Event)
+	}
 	return err
+}
+
+// ScheduleCandidate is the runtime seam for proactive work. The candidate
+// enters the same group mailbox as inbound-derived thoughts and receives the
+// same staleness, throttling, and action validation.
+func (r *Runtime) ScheduleCandidate(ctx context.Context, groupID int64, candidate humandomain.ThoughtCandidate) error {
+	if r == nil || r.working == nil {
+		return errors.New("human runtime: working memory is nil")
+	}
+	return r.working.EnqueueCandidate(ctx, groupID, candidate)
 }
 
 // ProcessRawEvent is the synchronous replay surface. It records the event,
@@ -137,6 +190,7 @@ func (r *Runtime) ProcessRawEvent(ctx context.Context, payload []byte) (Outcome,
 	if r.perception != nil {
 		r.perception.Submit(record)
 	}
+	r.observeEvent(ctx, envelope.Event)
 	var candidate humandomain.ThoughtCandidate
 	for i := len(memory.Candidates) - 1; i >= 0; i-- {
 		if contains(memory.Candidates[i].SourceEventIDs, envelope.Event.EventID) {
@@ -236,6 +290,11 @@ func (r *Runtime) processWithValidation(ctx context.Context, envelope conversati
 		return Outcome{}, fmt.Errorf("deliberate response: %w", err)
 	}
 	snapshot, decision, plan := result.Snapshot, result.Decision, result.Plan
+	if r.thoughts != nil {
+		if err := r.thoughts.SaveThought(ctx, result.Thought); err != nil {
+			slog.Warn("human runtime: record thought failed", "group_id", envelope.Event.GroupID, "err", err)
+		}
+	}
 	if validate != nil {
 		valid, err := validate(ctx)
 		if err != nil {
@@ -249,12 +308,43 @@ func (r *Runtime) processWithValidation(ctx context.Context, envelope conversati
 	if err != nil {
 		return Outcome{}, fmt.Errorf("realize response: %w", err)
 	}
+	if r.thoughts != nil {
+		outcome := "silent"
+		if receipt.Sent {
+			outcome = "sent"
+		}
+		_ = r.thoughts.SaveThought(ctx, replydomain.ThoughtRecord{
+			ThoughtID:      envelope.TraceID + "-thought",
+			CandidateID:    candidate.CandidateID,
+			GroupID:        envelope.Event.GroupID,
+			EventID:        envelope.Event.EventID,
+			Interpretation: candidate.Intent,
+			Evidence:       append([]string(nil), candidate.SourceEventIDs...),
+			Uncertainty:    candidate.Uncertainty,
+			ChosenAction:   string(decision.Action),
+			Outcome:        outcome,
+			CreatedAt:      time.Now(),
+		})
+	}
 	if r.turns != nil {
 		if err := r.turns.AfterTurn(ctx, snapshot, decision, receipt); err != nil {
 			slog.Warn("human runtime: record turn failed", "group_id", envelope.Event.GroupID, "decision_id", decision.DecisionID, "err", err)
 		}
 	}
+	for _, observer := range r.completedTurnObservers {
+		if err := observer.ObserveTurn(ctx, snapshot, receipt); err != nil {
+			slog.Warn("human runtime: completed turn observer failed", "group_id", envelope.Event.GroupID, "err", err)
+		}
+	}
 	return Outcome{Envelope: envelope, Snapshot: snapshot, Candidate: candidate, Decision: decision, Plan: plan, Receipt: receipt}, nil
+}
+
+func (r *Runtime) observeEvent(ctx context.Context, event conversationdomain.ConversationEvent) {
+	for _, observer := range r.eventObservers {
+		if err := observer.ObserveEvent(ctx, event); err != nil {
+			slog.Warn("human runtime: event observer failed", "group_id", event.GroupID, "user_id", event.UserID, "err", err)
+		}
+	}
 }
 
 func (r *Runtime) normalize(payload []byte) (conversationdomain.EventEnvelope, error) {

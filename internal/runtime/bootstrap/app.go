@@ -16,6 +16,8 @@ import (
 	qdrantstore "github.com/phlin/go-agent/internal/adapters/storage/qdrant"
 	"github.com/phlin/go-agent/internal/config"
 	"github.com/phlin/go-agent/internal/core/ports"
+	conversationdomain "github.com/phlin/go-agent/internal/domain/conversation"
+	replydomain "github.com/phlin/go-agent/internal/domain/reply"
 	humanruntime "github.com/phlin/go-agent/internal/humanbot/runtime"
 	humandeliberation "github.com/phlin/go-agent/internal/humanbot/runtime/deliberation"
 	humanactor "github.com/phlin/go-agent/internal/humanbot/runtime/group_actor"
@@ -26,6 +28,7 @@ import (
 	"github.com/phlin/go-agent/internal/runtime/scheduler"
 	actionsvc "github.com/phlin/go-agent/internal/services/action"
 	contextsvc "github.com/phlin/go-agent/internal/services/context"
+	curatorsvc "github.com/phlin/go-agent/internal/services/curator"
 	learningsvc "github.com/phlin/go-agent/internal/services/learning"
 	memesvc "github.com/phlin/go-agent/internal/services/meme"
 	memsvc "github.com/phlin/go-agent/internal/services/memory"
@@ -34,6 +37,7 @@ import (
 	outputguardsvc "github.com/phlin/go-agent/internal/services/outputguard"
 	personasvc "github.com/phlin/go-agent/internal/services/persona"
 	policysvc "github.com/phlin/go-agent/internal/services/policy"
+	profilesvc "github.com/phlin/go-agent/internal/services/profile"
 	promptingsvc "github.com/phlin/go-agent/internal/services/prompting"
 	reviewsvc "github.com/phlin/go-agent/internal/services/review"
 	toolsvc "github.com/phlin/go-agent/internal/services/tools"
@@ -114,7 +118,11 @@ func NewApp(ctx context.Context, cfg config.Config) (*App, error) {
 	}
 	contextService := contextsvc.New(stores.memory, vectorStore, stores.profile, stores.state, policyService, cfg.Persona)
 	eventLog := humaningress.NewMemoryEventLog()
-	presenceManager := humanactor.NewManager(eventLog, humanactor.WithArchive(stores.memory))
+	actorOptions := []humanactor.Option{humanactor.WithArchive(stores.memory)}
+	if stateStore, ok := stores.memory.(humanactor.WorkingMemoryStore); ok {
+		actorOptions = append(actorOptions, humanactor.WithStateStore(stateStore))
+	}
+	presenceManager := humanactor.NewManager(eventLog, actorOptions...)
 	contextService.WithWorkingMemory(presenceManager)
 	if cfg.Memory.SemanticTopK > 0 || cfg.Memory.SemanticThreshold > 0 {
 		contextService.WithSemanticConfig(cfg.Memory.SemanticTopK, cfg.Memory.SemanticThreshold)
@@ -181,6 +189,9 @@ func NewApp(ctx context.Context, cfg config.Config) (*App, error) {
 		SelfID:         cfg.QQ.SelfID,
 		JobTimeout:     120 * time.Second,
 	})
+	if thoughtStore, ok := stores.memory.(ports.ThoughtStore); ok {
+		humanRuntime.SetThoughtStore(thoughtStore)
+	}
 
 	// Scheduler：注册所有定时任务
 	sched := scheduler.New()
@@ -188,6 +199,35 @@ func NewApp(ctx context.Context, cfg config.Config) (*App, error) {
 
 	// learning service：接入运行时，每 6 小时对白名单群跑一次增量学习
 	reviewService := reviewsvc.New(memorySvc)
+	profileService := profilesvc.New(stores.profile, cfg.Persona.ID)
+	curatorService, curatorErr := curatorsvc.New(ctx)
+	if curatorErr != nil {
+		_ = backgroundRuntime.Close(context.Background())
+		_ = stores.Close()
+		return nil, fmt.Errorf("curator service init: %w", curatorErr)
+	}
+	humanRuntime.AddEventObserver(profileService)
+	humanRuntime.AddCompletedTurnObserver(humanruntime.CompletedTurnObserverFunc(func(turnCtx context.Context, snapshot conversationdomain.ContextSnapshot, receipt replydomain.ActionReceipt) error {
+		ok := backgroundRuntime.Submit(backgroundruntime.Job{
+			Name:    "curator_turn",
+			Timeout: 30 * time.Second,
+			Run: func(jobCtx context.Context) error {
+				out, err := curatorService.Run(jobCtx, curatorsvc.Input{Snapshot: snapshot})
+				if err != nil {
+					return err
+				}
+				if err := reviewService.ApplyCurator(jobCtx, out.MemoryIntents); err != nil {
+					return err
+				}
+				_ = receipt
+				return nil
+			},
+		})
+		if !ok {
+			return fmt.Errorf("curator job queue is full")
+		}
+		return nil
+	}))
 	learningSvc, learnErr := learningsvc.New(ctx, stores.memory, stores.learning, reviewService)
 	if learnErr != nil {
 		_ = backgroundRuntime.Close(context.Background())
