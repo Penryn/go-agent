@@ -40,6 +40,8 @@ Group Actor Manager 新增可配置 `actor_idle_ttl` 和 `PruneIdle`。Runtime �
 
 新增 `ports.OutboxStore`、内存 adapter 及 MySQL `async_outbox` 表迁移，统一定义幂等入队、租约领取、完成、重试和 dead-letter 状态。现有后台 Runtime 仍保持进程内执行，下一步将把媒体、向量和策展任务改为带 payload 的注册 handler，并接入该 seam。
 
+curator turn 已完成第一条迁移：`ContextSnapshot` 以 `snapshot_id` 为幂等键进入 outbox，由注册 handler 执行 curator/review；其余媒体、向量和 learning 任务按同一模式逐步迁移。
+
 ## 下一阶段：可靠后台任务
 
 当前进程内队列在满载时会丢弃媒体理解、向量索引和策展任务。下一阶段应引入持久化 outbox：

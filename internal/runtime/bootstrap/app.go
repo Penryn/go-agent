@@ -2,6 +2,7 @@ package bootstrap
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -25,6 +26,7 @@ import (
 	humanperception "github.com/phlin/go-agent/internal/humanbot/runtime/perception"
 	humanreflection "github.com/phlin/go-agent/internal/humanbot/runtime/reflection"
 	backgroundruntime "github.com/phlin/go-agent/internal/runtime/background"
+	outboxruntime "github.com/phlin/go-agent/internal/runtime/outbox"
 	"github.com/phlin/go-agent/internal/runtime/scheduler"
 	actionsvc "github.com/phlin/go-agent/internal/services/action"
 	contextsvc "github.com/phlin/go-agent/internal/services/context"
@@ -47,6 +49,7 @@ type App struct {
 	cfg          config.Config
 	humanRuntime *humanruntime.Runtime
 	background   *backgroundruntime.Runtime
+	outbox       *outboxruntime.Runtime
 	inbound      ports.InboundSource
 	server       *http.Server
 	sched        *scheduler.Scheduler
@@ -135,6 +138,12 @@ func NewApp(ctx context.Context, cfg config.Config) (*App, error) {
 		QueueSize:   cfg.Runtime.QueueLength,
 		WorkerCount: cfg.Runtime.WorkerCount,
 	})
+	var durableOutbox *outboxruntime.Runtime
+	if outboxStore, ok := stores.memory.(ports.OutboxStore); ok {
+		durableOutbox = outboxruntime.New(context.WithoutCancel(ctx), outboxStore, outboxruntime.Config{
+			WorkerCount: cfg.Runtime.WorkerCount,
+		})
+	}
 
 	// memorySvc：有 Qdrant 时注入 WithVectorStore；同时注入差异化 TTL 配置
 	memOpts := []memsvc.Option{}
@@ -210,8 +219,37 @@ func NewApp(ctx context.Context, cfg config.Config) (*App, error) {
 		_ = stores.Close()
 		return nil, fmt.Errorf("curator service init: %w", curatorErr)
 	}
+	if durableOutbox != nil {
+		if err := durableOutbox.Register("curator_turn", func(jobCtx context.Context, payload []byte) error {
+			var snapshot conversationdomain.ContextSnapshot
+			if err := json.Unmarshal(payload, &snapshot); err != nil {
+				return fmt.Errorf("decode curator snapshot: %w", err)
+			}
+			out, err := curatorService.Run(jobCtx, curatorsvc.Input{Snapshot: snapshot})
+			if err != nil {
+				return err
+			}
+			return reviewService.ApplyCurator(jobCtx, out.MemoryIntents)
+		}); err != nil {
+			_ = durableOutbox.Close()
+			_ = backgroundRuntime.Close(context.Background())
+			_ = stores.Close()
+			return nil, fmt.Errorf("register curator outbox handler: %w", err)
+		}
+	}
 	humanRuntime.AddEventObserver(profileService)
 	humanRuntime.AddCompletedTurnObserver(humanruntime.CompletedTurnObserverFunc(func(turnCtx context.Context, snapshot conversationdomain.ContextSnapshot, receipt replydomain.ActionReceipt) error {
+		if durableOutbox != nil {
+			payload, err := json.Marshal(snapshot)
+			if err != nil {
+				return fmt.Errorf("encode curator snapshot: %w", err)
+			}
+			key := snapshot.SnapshotID
+			if key == "" {
+				key = snapshot.Event.EventID
+			}
+			return durableOutbox.Enqueue(turnCtx, "curator_turn", key, payload)
+		}
 		ok := backgroundRuntime.Submit(backgroundruntime.Job{
 			Name:    "curator_turn",
 			Timeout: 30 * time.Second,
@@ -244,9 +282,14 @@ func NewApp(ctx context.Context, cfg config.Config) (*App, error) {
 		cfg:          cfg,
 		humanRuntime: humanRuntime,
 		background:   backgroundRuntime,
+		outbox:       durableOutbox,
 		sched:        sched,
 		cleanup: func() error {
-			return errors.Join(humanRuntime.Close(), presenceManager.Close(), stores.Close())
+			var outboxErr error
+			if durableOutbox != nil {
+				outboxErr = durableOutbox.Close()
+			}
+			return errors.Join(outboxErr, humanRuntime.Close(), presenceManager.Close(), stores.Close())
 		},
 		healthCheck: stores.HealthCheck,
 	}
