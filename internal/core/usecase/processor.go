@@ -79,11 +79,17 @@ func WithPersonaService(svc *personasvc.Service) ProcessorOption {
 }
 
 type ProcessResult struct {
-	Envelope conversationdomain.EventEnvelope   `json:"envelope"`
-	Snapshot conversationdomain.ContextSnapshot `json:"snapshot"`
-	Decision policydomain.AutonomyDecision      `json:"decision"`
-	Plan     replydomain.ReplyPlan              `json:"plan"`
-	Receipt  replydomain.ActionReceipt          `json:"receipt"`
+	Envelope       conversationdomain.EventEnvelope   `json:"envelope"`
+	Snapshot       conversationdomain.ContextSnapshot `json:"snapshot"`
+	Decision       policydomain.AutonomyDecision      `json:"decision"`
+	Plan           replydomain.ReplyPlan              `json:"plan"`
+	Receipt        replydomain.ActionReceipt          `json:"receipt"`
+	BackgroundJobs []BackgroundJobResult              `json:"background_jobs,omitempty"`
+}
+
+type BackgroundJobResult struct {
+	Name   string `json:"name"`
+	Status string `json:"status"`
 }
 
 func NewProcessor(
@@ -178,14 +184,15 @@ func (p *Processor) ProcessEnvelope(ctx context.Context, envelope conversationdo
 	// Preserve request values for the synchronous compatibility path. The
 	// Background Runtime owns cancellation for queued production jobs.
 	bgCtx := context.WithoutCancel(ctx)
+	backgroundJobs := make([]BackgroundJobResult, 0, 4)
 
-	p.submitBackground(bgCtx, backgroundruntime.Job{
+	backgroundJobs = append(backgroundJobs, p.submitBackground(bgCtx, backgroundruntime.Job{
 		Name:    "archive_event",
 		Timeout: 3 * time.Second,
 		Run: func(ctx context.Context) error {
 			return p.memory.ArchiveEvent(ctx, envelope.Event)
 		},
-	})
+	}))
 
 	// profileSvc 保持同步：ObserveEvent 写入的 profile 数据会被后续 BuildSnapshot 立即读取
 	if p.profileSvc != nil {
@@ -218,13 +225,13 @@ func (p *Processor) ProcessEnvelope(ctx context.Context, envelope conversationdo
 		svc := p.memeSvc
 		ev := envelope.Event
 		descs := mediaDescriptors
-		p.submitBackground(bgCtx, backgroundruntime.Job{
+		backgroundJobs = append(backgroundJobs, p.submitBackground(bgCtx, backgroundruntime.Job{
 			Name:    "meme_observe_event",
 			Timeout: 5 * time.Second,
 			Run: func(ctx context.Context) error {
 				return svc.ObserveEvent(ctx, ev, descs)
 			},
-		})
+		}))
 	}
 
 	snapshot, err := p.context.BuildSnapshot(ctx, envelope, mediaDescriptors)
@@ -276,13 +283,13 @@ func (p *Processor) ProcessEnvelope(ctx context.Context, envelope conversationdo
 			Importance:    0.3,
 			Confidence:    0.8,
 		}
-		p.submitBackground(bgCtx, backgroundruntime.Job{
+		backgroundJobs = append(backgroundJobs, p.submitBackground(bgCtx, backgroundruntime.Job{
 			Name: "mark_reply_intent",
 			Run: func(ctx context.Context) error {
 				_, err := svc.MarkIntent(ctx, intent)
 				return err
 			},
-		})
+		}))
 	}
 
 	// F2 Mood Loop: 在每次回复结束后异步更新情绪状态。
@@ -292,30 +299,33 @@ func (p *Processor) ProcessEnvelope(ctx context.Context, envelope conversationdo
 		snap := snapshot
 		dec := decision
 		replied := receipt.Sent || receipt.DropReason == "guard_silenced"
-		p.submitBackground(bgCtx, backgroundruntime.Job{
+		backgroundJobs = append(backgroundJobs, p.submitBackground(bgCtx, backgroundruntime.Job{
 			Name:    "persona_mood_update",
 			Timeout: 5 * time.Second,
 			Run: func(ctx context.Context) error {
 				return svc.UpdateAfterTurn(ctx, snap, dec, replied)
 			},
-		})
+		}))
 	}
 
 	return ProcessResult{
-		Envelope: envelope,
-		Snapshot: snapshot,
-		Decision: decision,
-		Plan:     plan,
-		Receipt:  receipt,
+		Envelope:       envelope,
+		Snapshot:       snapshot,
+		Decision:       decision,
+		Plan:           plan,
+		Receipt:        receipt,
+		BackgroundJobs: backgroundJobs,
 	}, nil
 }
 
-func (p *Processor) submitBackground(ctx context.Context, job backgroundruntime.Job) {
+func (p *Processor) submitBackground(ctx context.Context, job backgroundruntime.Job) BackgroundJobResult {
 	if p.background != nil {
 		if !p.background.Submit(job) {
 			slog.Warn("background job dropped", "job", job.Name)
+			return BackgroundJobResult{Name: job.Name, Status: "dropped"}
 		}
-		return
+		return BackgroundJobResult{Name: job.Name, Status: "queued"}
 	}
 	backgroundruntime.RunInline(ctx, job)
+	return BackgroundJobResult{Name: job.Name, Status: "inline"}
 }

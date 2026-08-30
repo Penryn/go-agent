@@ -40,13 +40,14 @@ type Failure struct {
 // retained during migration; callers should depend on this type instead of
 // usecase.ProcessResult.
 type Outcome struct {
-	Envelope conversationdomain.EventEnvelope   `json:"envelope"`
-	Snapshot conversationdomain.ContextSnapshot `json:"snapshot"`
-	Decision policydomain.AutonomyDecision      `json:"decision"`
-	Plan     replydomain.ReplyPlan              `json:"plan"`
-	Receipt  replydomain.ActionReceipt          `json:"receipt"`
-	Stages   []StageTrace                       `json:"stages,omitempty"`
-	Failure  *Failure                           `json:"failure,omitempty"`
+	Envelope       conversationdomain.EventEnvelope   `json:"envelope"`
+	Snapshot       conversationdomain.ContextSnapshot `json:"snapshot"`
+	Decision       policydomain.AutonomyDecision      `json:"decision"`
+	Plan           replydomain.ReplyPlan              `json:"plan"`
+	Receipt        replydomain.ActionReceipt          `json:"receipt"`
+	BackgroundJobs []usecase.BackgroundJobResult      `json:"background_jobs,omitempty"`
+	Stages         []StageTrace                       `json:"stages,omitempty"`
+	Failure        *Failure                           `json:"failure,omitempty"`
 }
 
 // Runtime is the real-time turn boundary.
@@ -112,11 +113,12 @@ func (r *Runtime) ProcessEnvelope(ctx context.Context, envelope conversationdoma
 
 func fromProcessResult(result usecase.ProcessResult) Outcome {
 	return Outcome{
-		Envelope: result.Envelope,
-		Snapshot: result.Snapshot,
-		Decision: result.Decision,
-		Plan:     result.Plan,
-		Receipt:  result.Receipt,
+		Envelope:       result.Envelope,
+		Snapshot:       result.Snapshot,
+		Decision:       result.Decision,
+		Plan:           result.Plan,
+		Receipt:        result.Receipt,
+		BackgroundJobs: result.BackgroundJobs,
 	}
 }
 

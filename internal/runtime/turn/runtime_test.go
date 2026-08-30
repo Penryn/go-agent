@@ -111,3 +111,16 @@ func TestRuntimeUsesInjectableClockForStageDuration(t *testing.T) {
 		t.Fatalf("unexpected stage duration: %s", outcome.Stages[0].Duration)
 	}
 }
+
+func TestRuntimeProjectsBackgroundJobResults(t *testing.T) {
+	fake := &fakeProcessor{result: usecase.ProcessResult{
+		BackgroundJobs: []usecase.BackgroundJobResult{{Name: "archive_event", Status: "queued"}},
+	}}
+	outcome, err := turn.New(fake).ProcessEnvelope(context.Background(), conversationdomain.EventEnvelope{})
+	if err != nil {
+		t.Fatalf("process envelope: %v", err)
+	}
+	if len(outcome.BackgroundJobs) != 1 || outcome.BackgroundJobs[0].Name != "archive_event" || outcome.BackgroundJobs[0].Status != "queued" {
+		t.Fatalf("unexpected background jobs: %+v", outcome.BackgroundJobs)
+	}
+}
