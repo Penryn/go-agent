@@ -12,6 +12,7 @@ import (
 	conversationdomain "github.com/phlin/go-agent/internal/domain/conversation"
 	policydomain "github.com/phlin/go-agent/internal/domain/policy"
 	replydomain "github.com/phlin/go-agent/internal/domain/reply"
+	humandomain "github.com/phlin/go-agent/internal/humanbot/domain"
 	backgroundruntime "github.com/phlin/go-agent/internal/runtime/background"
 	memesvc "github.com/phlin/go-agent/internal/services/meme"
 	outputguardsvc "github.com/phlin/go-agent/internal/services/outputguard"
@@ -25,6 +26,12 @@ type Service struct {
 	memes      *memesvc.Service
 	guard      outputguardsvc.Guard // 可为 nil，nil 时跳过清洗
 	background backgroundSubmitter
+	presence   PresenceObserver
+	selfID     int64
+}
+
+type PresenceObserver interface {
+	Observe(context.Context, humandomain.EventRecord) (humandomain.GroupWorkingMemory, error)
 }
 
 type backgroundSubmitter interface {
@@ -35,6 +42,14 @@ type backgroundSubmitter interface {
 // owner instead of creating an untracked goroutine.
 func WithBackgroundRuntime(runtime backgroundSubmitter) Option {
 	return func(s *Service) { s.background = runtime }
+}
+
+func WithPresenceObserver(observer PresenceObserver) Option {
+	return func(s *Service) { s.presence = observer }
+}
+
+func WithSelfID(selfID int64) Option {
+	return func(s *Service) { s.selfID = selfID }
 }
 
 type Option func(*Service)
@@ -96,6 +111,29 @@ func (s *Service) Execute(ctx context.Context, event conversationdomain.Conversa
 	if err != nil {
 		return replydomain.ActionReceipt{}, err
 	}
+	if receipt.Sent && s.presence != nil {
+		selfEvent := conversationdomain.ConversationEvent{
+			EventID:          "outbound-" + action.ActionID,
+			GroupID:          action.GroupID,
+			UserID:           s.selfID,
+			MessageID:        receipt.PlatformMessageID,
+			ReplyToMessageID: action.ReplyToMessageID,
+			Kind:             conversationdomain.EventMessage,
+			Segments:         action.Segments,
+			Text:             actionText(action.Segments),
+			TimestampUnix:    time.Now().Unix(),
+		}
+		if _, observeErr := s.presence.Observe(ctx, humandomain.EventRecord{
+			EventID:   selfEvent.EventID,
+			GroupID:   selfEvent.GroupID,
+			UserID:    selfEvent.UserID,
+			Origin:    humandomain.OriginOutbound,
+			Timestamp: time.Now(),
+			Event:     selfEvent,
+		}); observeErr != nil {
+			slog.Warn("executor: observe outbound event failed", "action_id", action.ActionID, "err", observeErr)
+		}
+	}
 
 	// B-1: 发送成功后提交标记表情包已发送的后台任务。
 	if receipt.Sent && decision.Action == policydomain.ActionMemeOnly {
@@ -120,6 +158,19 @@ func (s *Service) Execute(ctx context.Context, event conversationdomain.Conversa
 	}
 
 	return receipt, nil
+}
+
+func actionText(segments []conversationdomain.MessageSegment) string {
+	var text string
+	for _, segment := range segments {
+		if segment.Type != "text" {
+			continue
+		}
+		if value, ok := segment.Data["text"].(string); ok {
+			text += value
+		}
+	}
+	return text
 }
 
 func (s *Service) buildAction(ctx context.Context, event conversationdomain.ConversationEvent, decision policydomain.AutonomyDecision, plan replydomain.ReplyPlan) (replydomain.ActionExecution, error) {

@@ -14,8 +14,16 @@ import (
 	memorydomain "github.com/phlin/go-agent/internal/domain/memory"
 	personadomain "github.com/phlin/go-agent/internal/domain/persona"
 	profiledomain "github.com/phlin/go-agent/internal/domain/profile"
+	humandomain "github.com/phlin/go-agent/internal/humanbot/domain"
 	policysvc "github.com/phlin/go-agent/internal/services/policy"
 )
+
+// WorkingMemoryReader supplies the fast, per-group conversation state. It is
+// preferred over the durable store for the live tail because it already
+// contains the event currently being processed.
+type WorkingMemoryReader interface {
+	Snapshot(context.Context, int64) (humandomain.GroupWorkingMemory, error)
+}
 
 type Service struct {
 	memoryStore       ports.MemoryStore
@@ -26,6 +34,11 @@ type Service struct {
 	persona           personadomain.PersonaConfig
 	semanticTopK      int
 	semanticThreshold float64
+	workingMemory     WorkingMemoryReader
+}
+
+func (s *Service) WithWorkingMemory(reader WorkingMemoryReader) {
+	s.workingMemory = reader
 }
 
 func New(
@@ -59,9 +72,22 @@ func (s *Service) WithSemanticConfig(topK int, threshold float64) {
 }
 
 func (s *Service) BuildSnapshot(ctx context.Context, envelope conversationdomain.EventEnvelope, mediaDescriptors []mediadomain.MediaDescriptor) (conversationdomain.ContextSnapshot, error) {
-	recentTurns, err := s.memoryStore.RecentEvents(ctx, envelope.Event.GroupID, s.policy.AutonomyPolicy().ObserveWindowSize)
-	if err != nil {
-		return conversationdomain.ContextSnapshot{}, fmt.Errorf("load recent events: %w", err)
+	var recentTurns []conversationdomain.ConversationEvent
+	if s.workingMemory != nil {
+		working, wmErr := s.workingMemory.Snapshot(ctx, envelope.Event.GroupID)
+		if wmErr != nil {
+			return conversationdomain.ContextSnapshot{}, fmt.Errorf("load working memory: %w", wmErr)
+		}
+		recentTurns = make([]conversationdomain.ConversationEvent, 0, len(working.RecentTail))
+		for _, record := range working.RecentTail {
+			recentTurns = append(recentTurns, record.Event)
+		}
+	} else {
+		var err error
+		recentTurns, err = s.memoryStore.RecentEvents(ctx, envelope.Event.GroupID, s.policy.AutonomyPolicy().ObserveWindowSize)
+		if err != nil {
+			return conversationdomain.ContextSnapshot{}, fmt.Errorf("load recent events: %w", err)
+		}
 	}
 
 	relevantMemories, err := s.queryMemoriesDualTrack(ctx, envelope.Event.GroupID, envelope.Event.UserID, envelope.Event.Text)

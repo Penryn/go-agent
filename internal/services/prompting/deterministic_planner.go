@@ -52,6 +52,22 @@ func (p *DeterministicPlanner) Plan(_ context.Context, snapshot conversationdoma
 		return plan, nil
 	}
 
+	if decision.Action == policydomain.ActionReact {
+		plan.PlannedActions = []policydomain.DecisionAction{policydomain.ActionReact}
+		plan.ActionParams = map[string]any{
+			"message_id": snapshot.Event.MessageID,
+			// NapCat accepts an empty emoji id only for adapters that choose a
+			// platform default; keep the action explicit for future model choice.
+			"emoji_id": "",
+		}
+		return plan, nil
+	}
+
+	if decision.Action == policydomain.ActionMemeOnly {
+		plan.PlannedActions = []policydomain.DecisionAction{policydomain.ActionMemeOnly}
+		return plan, nil
+	}
+
 	// ActionPokeReply：被戳后用对话回复，LLM 失败时随机选一条降级气泡
 	if decision.Action == policydomain.ActionPokeReply {
 		plan.PlannedActions = []policydomain.DecisionAction{policydomain.ActionPokeReply}

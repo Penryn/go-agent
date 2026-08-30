@@ -16,42 +16,37 @@ import (
 	qdrantstore "github.com/phlin/go-agent/internal/adapters/storage/qdrant"
 	"github.com/phlin/go-agent/internal/config"
 	"github.com/phlin/go-agent/internal/core/ports"
-	"github.com/phlin/go-agent/internal/core/usecase"
+	humanruntime "github.com/phlin/go-agent/internal/humanbot/runtime"
+	humandeliberation "github.com/phlin/go-agent/internal/humanbot/runtime/deliberation"
+	humanactor "github.com/phlin/go-agent/internal/humanbot/runtime/group_actor"
+	humaningress "github.com/phlin/go-agent/internal/humanbot/runtime/ingress"
 	backgroundruntime "github.com/phlin/go-agent/internal/runtime/background"
-	"github.com/phlin/go-agent/internal/runtime/dispatcher"
 	"github.com/phlin/go-agent/internal/runtime/scheduler"
-	turnruntime "github.com/phlin/go-agent/internal/runtime/turn"
 	actionsvc "github.com/phlin/go-agent/internal/services/action"
-	autonomysvc "github.com/phlin/go-agent/internal/services/autonomy"
 	contextsvc "github.com/phlin/go-agent/internal/services/context"
-	gatesvc "github.com/phlin/go-agent/internal/services/gate"
 	learningsvc "github.com/phlin/go-agent/internal/services/learning"
 	memesvc "github.com/phlin/go-agent/internal/services/meme"
 	memsvc "github.com/phlin/go-agent/internal/services/memory"
-	multimodalsvc "github.com/phlin/go-agent/internal/services/multimodal"
 	normalizersvc "github.com/phlin/go-agent/internal/services/normalizer"
 	outputguardsvc "github.com/phlin/go-agent/internal/services/outputguard"
 	personasvc "github.com/phlin/go-agent/internal/services/persona"
 	policysvc "github.com/phlin/go-agent/internal/services/policy"
-	profilesvc "github.com/phlin/go-agent/internal/services/profile"
 	promptingsvc "github.com/phlin/go-agent/internal/services/prompting"
 	reviewsvc "github.com/phlin/go-agent/internal/services/review"
 	toolsvc "github.com/phlin/go-agent/internal/services/tools"
 )
 
 type App struct {
-	cfg         config.Config
-	turnRuntime *turnruntime.Runtime
-	background  *backgroundruntime.Runtime
-	normalizer  *normalizersvc.Service
-	dispatcher  *dispatcher.GroupDispatcher
-	inbound     ports.InboundSource
-	server      *http.Server
-	sched       *scheduler.Scheduler
-	closeOnce   sync.Once
-	closeErr    error
-	cleanup     func() error
-	healthCheck func(context.Context) error
+	cfg          config.Config
+	humanRuntime *humanruntime.Runtime
+	background   *backgroundruntime.Runtime
+	inbound      ports.InboundSource
+	server       *http.Server
+	sched        *scheduler.Scheduler
+	closeOnce    sync.Once
+	closeErr     error
+	cleanup      func() error
+	healthCheck  func(context.Context) error
 }
 
 func NewApp(ctx context.Context, cfg config.Config) (*App, error) {
@@ -115,13 +110,13 @@ func NewApp(ctx context.Context, cfg config.Config) (*App, error) {
 		vectorStore = qdrantVectorStore
 	}
 	contextService := contextsvc.New(stores.memory, vectorStore, stores.profile, stores.state, policyService, cfg.Persona)
+	eventLog := humaningress.NewMemoryEventLog()
+	presenceManager := humanactor.NewManager(eventLog, humanactor.WithArchive(stores.memory))
+	contextService.WithWorkingMemory(presenceManager)
 	if cfg.Memory.SemanticTopK > 0 || cfg.Memory.SemanticThreshold > 0 {
 		contextService.WithSemanticConfig(cfg.Memory.SemanticTopK, cfg.Memory.SemanticThreshold)
 	}
 
-	gateService := gatesvc.New(modelFactory)
-	autonomyService := autonomysvc.New(policyService, gateService)
-	visionService := multimodalsvc.New(modelFactory, cfg.Multimodal)
 	backgroundRuntime := backgroundruntime.New(context.WithoutCancel(ctx), backgroundruntime.Config{
 		QueueSize:   cfg.Runtime.QueueLength,
 		WorkerCount: cfg.Runtime.WorkerCount,
@@ -162,31 +157,24 @@ func NewApp(ctx context.Context, cfg config.Config) (*App, error) {
 		outputguardsvc.WithMaxChars(cfg.Persona.ReplyMaxChars),
 		outputguardsvc.WithMaxSentences(cfg.Persona.ReplyMaxSentences),
 	)
-	executor := actionsvc.New(sender, memeService, guard, actionsvc.WithBackgroundRuntime(backgroundRuntime))
+	executor := actionsvc.New(sender, memeService, guard,
+		actionsvc.WithBackgroundRuntime(backgroundRuntime),
+		actionsvc.WithPresenceObserver(presenceManager),
+		actionsvc.WithSelfID(cfg.QQ.SelfID),
+	)
 
 	// F2 PersonaService：情绪状态动态驱动
 	moodSvc := personasvc.New(stores.state, cfg.Persona.ID)
 
-	profileService := profilesvc.New(stores.profile, cfg.Persona.ID)
-
-	processor := usecase.NewProcessor(
-		normalizer,
-		contextService,
-		autonomyService,
-		planner,
-		executor,
-		stores.memory,
-		stores.state,
-		cfg.QQ.GroupWhitelist,
-		cfg.Persona.ID,
-		usecase.WithMemoryService(memorySvc),
-		usecase.WithProfileService(profileService),
-		usecase.WithMemeService(memeService),
-		usecase.WithVisionService(visionService),
-		usecase.WithPersonaService(moodSvc),
-		usecase.WithBackgroundRuntime(backgroundRuntime),
-	)
-	turnRuntime := turnruntime.New(processor)
+	// Human Presence Runtime owns ingress, per-group working memory, candidate
+	// scheduling, deliberation, realization, and outbound self-observation.
+	// Context projection and planner compatibility remain behind this adapter.
+	deliberator := humandeliberation.NewAdapter(contextService, planner)
+	humanRuntime := humanruntime.New(ctx, normalizer, presenceManager, deliberator, executor, humanruntime.Config{
+		GroupWhitelist: cfg.QQ.GroupWhitelist,
+		SelfID:         cfg.QQ.SelfID,
+		JobTimeout:     120 * time.Second,
+	})
 
 	// Scheduler：注册所有定时任务
 	sched := scheduler.New()
@@ -203,12 +191,13 @@ func NewApp(ctx context.Context, cfg config.Config) (*App, error) {
 	learningSvc.RegisterJobs(sched, cfg.QQ.GroupWhitelist)
 
 	app := &App{
-		cfg:         cfg,
-		turnRuntime: turnRuntime,
-		background:  backgroundRuntime,
-		normalizer:  normalizer,
-		sched:       sched,
-		cleanup:     stores.Close,
+		cfg:          cfg,
+		humanRuntime: humanRuntime,
+		background:   backgroundRuntime,
+		sched:        sched,
+		cleanup: func() error {
+			return errors.Join(humanRuntime.Close(), presenceManager.Close(), stores.Close())
+		},
 		healthCheck: stores.HealthCheck,
 	}
 	if cfg.QQ.Enabled && cfg.QQ.EventWSURL != "" {
@@ -217,10 +206,10 @@ func NewApp(ctx context.Context, cfg config.Config) (*App, error) {
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", app.handleHealth)
-	// HTTP handler 通过 app.dispatch 调用 dispatcher；
-	// dispatcher 在 Run() 时才被初始化，此处闭包延迟求值，运行期安全。
 	mux.Handle(cfg.QQ.InboundRoute, inboundnapcat.NewHandler(cfg.QQ.AccessToken, func(ctx context.Context, payload []byte) (any, error) {
-		app.dispatch(ctx, payload)
+		if err := app.humanRuntime.SubmitRaw(ctx, payload); err != nil {
+			slog.Warn("human runtime: http event rejected", "err", err)
+		}
 		return struct{}{}, nil
 	}))
 
@@ -238,14 +227,6 @@ func (a *App) Run(ctx context.Context) error {
 	// 启动定时任务调度器（情绪衰减等 background job）
 	a.sched.Start(ctx)
 
-	// 用运行期 ctx 初始化 dispatcher，使 worker goroutine 的生命周期绑定到 ctx。
-	a.dispatcher = dispatcher.New(
-		ctx,
-		a.normalizer,
-		a.turnRuntime,
-		dispatcher.DefaultConfig(),
-	)
-
 	errCh := make(chan error, 1)
 	go func() {
 		if err := a.server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
@@ -254,12 +235,8 @@ func (a *App) Run(ctx context.Context) error {
 	}()
 	if a.inbound != nil {
 		go func() {
-			// WS 入口：readLoop 是串行的，handler 同步返回后才读下一条。
-			// 改为调用 dispatcher.Dispatch，将消息投入对应群的串行队列后立即返回，
-			// 不等待处理完成，从而让 readLoop 可以尽快读取下一条消息。
 			if err := a.inbound.Receive(ctx, func(inner context.Context, payload []byte) error {
-				a.dispatch(inner, payload)
-				return nil
+				return a.humanRuntime.SubmitRaw(inner, payload)
 			}); err != nil && !errors.Is(err, context.Canceled) {
 				errCh <- err
 			}
@@ -277,21 +254,8 @@ func (a *App) Run(ctx context.Context) error {
 	}
 }
 
-// dispatch 将 payload 投递给 dispatcher。
-// 在 Run() 启动前（dispatcher 为 nil）的极端情况下，降级为直接同步处理。
-func (a *App) dispatch(ctx context.Context, payload []byte) {
-	if a.dispatcher != nil {
-		a.dispatcher.Dispatch(ctx, payload)
-		return
-	}
-	// 降级路径：dispatcher 尚未初始化时直接调用（理论上不会发生）
-	if _, err := a.turnRuntime.ProcessRawEvent(ctx, payload); err != nil {
-		slog.Error("dispatch fallback: process raw event failed", "error", err)
-	}
-}
-
-func (a *App) ProcessRawEvent(ctx context.Context, payload []byte) (turnruntime.Outcome, error) {
-	return a.turnRuntime.ProcessRawEvent(ctx, payload)
+func (a *App) ProcessRawEvent(ctx context.Context, payload []byte) (humanruntime.Outcome, error) {
+	return a.humanRuntime.ProcessRawEvent(ctx, payload)
 }
 
 func (a *App) Close() error {

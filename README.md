@@ -175,11 +175,11 @@ go run ./cmd/qqbotd -config configs/config.yaml
 |--------|------|
 | `app` | 应用名、运行模式（dev / prod） |
 | `server` | HTTP 监听地址、读写超时 |
-| `models` | 主模型 / Gate / Vision / Embedding 的 provider、model、base_url |
+| `models` | 主模型 / Vision / Embedding 的 provider、model、base_url |
 | `persona` | 人设名、别名、说话风格、约束、回复字数上限 |
 | `default_policy` | 默认群策略（存在感级别、安静时段、连续发言上限等） |
 | `group_policies` | 按群号覆写策略 |
-| `autonomy` | 自主决策参数（观察窗口、主动概率、限流阈值） |
+| `autonomy` | Presence Runtime 的观察窗口、主动概率和限流参数 |
 | `tools` | Agent 工具白名单、超时、预算 |
 | `memory` | 长期记忆 top_k、TTL、写入阈值 |
 | `meme` | 表情包收藏、去重阈值、发送冷却 |
@@ -218,14 +218,14 @@ go-agent/
 │   │   ├── profile/         #   群友画像、关系状态
 │   │   └── reply/           #   回复计划、动作执行
 │   ├── core/
-│   │   ├── ports/           #   端口接口（依赖倒置边界）
-│   │   └── usecase/         #   核心处理流程编排
+│   │   └── ports/           #   端口接口（依赖倒置边界）
+│   ├── humanbot/
+│   │   ├── domain/          #   Presence、working memory、thought candidate
+│   │   └── runtime/         #   ingress、群 Actor、scheduler、deliberation
 │   ├── services/            # 业务服务
 │   │   ├── normalizer/      #   OneBot 事件标准化
 │   │   ├── context/         #   上下文快照构建
-│   │   ├── autonomy/        #   自主决策状态机
 │   │   ├── policy/          #   群策略引擎
-│   │   ├── gate/            #   Gate Agent
 │   │   ├── prompting/       #   Prompt 编排 & Agent Planner
 │   │   ├── action/          #   动作执行器
 │   │   ├── memory/          #   记忆读写

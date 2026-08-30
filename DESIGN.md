@@ -8,6 +8,19 @@
 
 ## 一、总体设计结论
 
+### 1.0 当前实现基线
+
+本仓库已经完成主链路的完全迁移，生产入口不再使用旧的 `Processor`、`Dispatcher`、`Turn Runtime`、`Autonomy` 或 `Gate` 编排。当前唯一的前台入口是 `internal/humanbot/runtime`：
+
+```text
+NapCat/OneBot → Normalize → Event Log + durable archive
+→ Group Actor → Working Memory → Thought Candidate
+→ Presence Scheduler → Deliberator → Action Executor
+→ Outbound → outbound self event
+```
+
+`ContextSnapshot`、`Planner` 和既有存储适配器仍作为叶子能力由 `runtime/deliberation` 适配，Runtime 本身只依赖窄的 `Deliberator` 接口。后续 Reflection、Curator 和 durable learning watermark 应继续接入这条链路，不得恢复旧主流程。
+
 ### 1.1 结论
 
 这不是一个“有人问才回答”的问答 Bot，而是一个长期在线、能观察群聊、具备稳定人格、能理解多模态内容、能自主决定是否发言的 AI 群成员。
@@ -108,7 +121,7 @@
 结合 `eino-adk`、`eino-compose`、`eino-components` 的能力边界，这套方案需要补一个明确约束：
 
 - `Main Persona Agent` 适合用 `adk.ChatModelAgent + Runner` 落地，因为它需要受控工具调用和回合式决策。
-- `Gate Agent` 不适合强行做成 ADK Agent。它更适合直接用 `BaseChatModel.Generate` 做低成本结构化判断。
+- 语义门控不再作为独立 Gate Agent 存在；候选生成和发言时机由 Presence Runtime 的规则内核负责。
 - `Vision Agent` 也不适合走 ADK ReAct。它更适合直接调用多模态 `ChatModel`，并使用 Eino 当前推荐的 `UserInputMultiContent` 输入，而不是旧的 `MultiContent`。
 - `Curator Agent` 和 `Learning Agent` 本质上是后台流水线，更适合用 `compose.Workflow / Graph`，而不是用一个长 prompt 的 supervisor agent 串起来。
 - 不建议让 `supervisor` 或 `parallel agent` 接管整个 Runtime Kernel。Kernel 仍然必须是确定性代码，不交给 ADK。
@@ -136,8 +149,8 @@
 | Context Engine | 维护观察窗口和上下文快照 | 决策与回复共享一份上下文 | 混合 | 有状态 |
 | Persona Engine | 人格编译、人格状态维护 | 人格必须从 prompt 文案升级为执行时能力 | 规则 | 有状态 |
 | Policy Engine | 编译并执行群策略和运行策略 | 策略热更新与评估收口 | 规则 | 有状态 |
-| Autonomy Engine | 自主发言状态机与评分决策 | 可解释、可配置、可观测的决策核心 | 规则优先 + LLM 辅助 | 有状态 |
-| Gate Agent | 轻量语义门控 | 判断是否值得像群友一样接一句 | LLM | 无状态 |
+| Presence Scheduler | 按时间、紧迫度和认知负载调度候选 | 把“是否现在参与”从消息处理解耦 | 规则 | 有状态 |
+| Deliberator | 对候选做窄上下文思考并选择表达意图 | 隔离 Runtime Kernel 与模型 Planner | 规则 + LLM | 无状态 |
 | Main Persona Agent | 生成前台回复和动作意图 | 专注拟人化表达，不承担后台学习 | LLM | 无状态 |
 | Action Executor | 执行发言、沉默、戳一戳、撤回等动作 | 对高风险动作做二次校验 | 规则 | 有状态 |
 | Prompt Composer | 拼装多层 prompt | 限制 prompt 结构和输入面 | 规则 | 无状态 |
@@ -154,17 +167,14 @@
 
 实时主链路：
 
-1. Inbound Adapter 接收平台事件。
-2. Event Normalizer 生成 `EventEnvelope`。
-3. Media Pipeline 对附件做预处理。
-4. Meme System 只做轻量候选标记、hash 去重和缓存命中检查，重描述与正式入库异步执行。
-5. Context Engine 更新观察窗口并生成 `ContextSnapshot`。
-6. Policy Engine + Autonomy Engine 做规则决策。
-7. 必要时调用 Gate Agent 补充语义判断。
-8. 决定需要回复后，Main Persona Agent 生成 `ReplyPlan`。
-9. Tool Runtime 与 Action Executor 协作执行工具和平台动作。
-10. Outbound Adapter 发送结果。
-11. Memory/Profile/Meme/Observability 通过异步事件写回。
+1. Inbound Adapter 接收平台事件，Normalizer 生成 `EventEnvelope`。
+2. Group Actor 先写 Event Log 和持久化消息归档，再串行更新 working memory。
+3. Actor 生成可延迟、可过期的 `ThoughtCandidate`，不把每条消息直接变成回复。
+4. Presence Scheduler 按 due time、urgency 和认知负载 claim 候选。
+5. Deliberator 在窄投影后调用 Planner，按 candidate intent 选择 reply、react、meme 或 silent。
+6. Action Executor 做最终动作校验并调用 Outbound Adapter。
+7. 发送成功后立即写入 `origin=outbound` self event，供下一轮上下文和学习使用。
+8. Reflection、Curator、Learning 通过 Event Log/持久化归档异步消费，不阻塞入站读取。
 
 后台异步链路：
 
@@ -200,25 +210,15 @@
 - 后台学习
 - 主存写入判定
 
-#### Gate Agent
+#### Deliberator
 
 职责：
 
-- 判断这句是否真的在 cue Bot
-- 判断是否有自然插话口子
-- 对模糊场景给出保守建议
+- 接收 Presence Scheduler 已经选中的 ThoughtCandidate
+- 只读取该候选所需的窄 Context Projection
+- 选择 `reply`、`react`、`meme`、`follow_up` 或 `silent`，再交给 Action Executor 校验
 
-特点：
-
-- 小模型或低成本模型
-- 短上下文
-- 只输出结构化判断，不负责生成正式回复
-
-实现建议：
-
-- 直接调用 `BaseChatModel.Generate`
-- 输出严格受 schema 约束
-- 不需要用 ADK ReAct，也不需要工具循环
+Runtime 不再设置独立的 Gate Agent，也不把“是否该发言”交给模型临时决定；候选生成和调度由群 Actor 与 Presence Scheduler 完成。
 
 #### Vision Agent
 
@@ -273,7 +273,6 @@
 - Event Normalizer
 - Prompt Composer
 - Main Persona Agent
-- Gate Agent
 - Vision Agent
 - Outbound Adapter
 
@@ -282,7 +281,6 @@
 - Context Engine
 - Persona Engine
 - Policy Engine
-- Autonomy Engine
 - Memory System
 - Profile System
 - Review Pipeline
@@ -1728,7 +1726,14 @@ internal/
 
   core/
     ports/
-    usecase/
+
+  humanbot/
+    domain/
+    runtime/
+      ingress/
+      group_actor/
+      presence/
+      deliberation/
 
   runtime/
     bootstrap/
@@ -1752,7 +1757,6 @@ internal/
     context/
     persona/
     policy/
-    autonomy/
     prompting/
     tools/
     action/
@@ -1762,9 +1766,8 @@ internal/
     review/
     outputguard/
 
-  agents/
+  agents/                 # 可选的模型叶子实现
     mainpersona/
-    gate/
     vision/
     curator/
     learning/
@@ -1793,23 +1796,22 @@ configs/
 
 ## 十一、关键流程图
 
-### 11.1 被 @ 的消息处理流程
+### 11.1 一条群消息的 Presence 处理流程
 
 ```mermaid
 flowchart TD
   A[NapCat/OB11 Event] --> B[Inbound Adapter]
   B --> C[Event Normalizer]
-  C --> D[Media Pipeline]
-  C --> E[Context Engine]
-  D --> E
-  E --> F[Policy Engine]
-  F --> G[Autonomy Engine]
-  G -->|direct triggered| H[Main Persona Agent]
-  H --> I[Tool Runtime]
-  I --> J[Output Guard]
-  J --> K[Action Executor]
-  K --> L[Outbound Adapter]
-  L --> M[Writeback + Audit]
+  C --> D[Event Log + Durable Archive]
+  D --> E[Group Presence Actor]
+  E --> F[Working Memory + Thought Candidate]
+  F --> G[Presence Scheduler]
+  G --> H[Deliberator / Context Projection]
+  H --> I[Planner + Tool Runtime]
+  I --> J[Action Executor]
+  J --> K[Outbound Adapter]
+  K --> L[Outbound Self Event]
+  L --> M[Reflection + Learning]
 ```
 
 ### 11.2 普通群消息观察与主动插话流程
@@ -1822,9 +1824,9 @@ flowchart TD
    - cooldown
    - bot dominance
 4. 若通过，进入 `proactive_candidate`。
-5. Gate Agent 评估是否值得自然插话。
-6. 命中阈值和概率才进入 Main Persona Agent。
-7. 否则记录原因并保持沉默。
+5. Scheduler claim 后进入 Deliberator，按 candidate intent 选择表达动作。
+6. Action Executor 做最终策略和过期校验。
+7. 未命中的候选保持 pending/deferred/expired，不影响后续消息感知。
 
 ### 11.3 图片 / 表情包 / 视频进入后的多模态处理流程
 
@@ -1966,10 +1968,11 @@ flowchart TD
 
 - `模块化单体`
 - `进程内事件总线`
-- `前台 3 Agent`
-  - Main Persona Agent
-  - Gate Agent
-  - Vision Agent
+- `Presence Runtime + 前台 Persona Agent`
+  - Group Presence Actor
+  - Presence Scheduler
+  - Deliberator / Main Persona Agent
+  - Vision Agent（异步）
 - `后台 2 Agent`
   - Curator Agent
   - Learning Agent
