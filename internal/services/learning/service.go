@@ -2,6 +2,7 @@ package learning
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"math"
@@ -50,9 +51,20 @@ type Service struct {
 	store     ports.MemoryStore
 	state     ports.LearningStateStore
 	reviewSvc *reviewsvc.Service
+	outbox    interface {
+		Enqueue(context.Context, string, string, []byte) error
+	}
 }
 
-func New(ctx context.Context, store ports.MemoryStore, state ports.LearningStateStore, reviewSvc *reviewsvc.Service) (*Service, error) {
+type Option func(*Service)
+
+func WithOutbox(runtime interface {
+	Enqueue(context.Context, string, string, []byte) error
+}) Option {
+	return func(s *Service) { s.outbox = runtime }
+}
+
+func New(ctx context.Context, store ports.MemoryStore, state ports.LearningStateStore, reviewSvc *reviewsvc.Service, opts ...Option) (*Service, error) {
 	workflow := compose.NewWorkflow[Input, Output]()
 	workflow.AddLambdaNode("extract", compose.InvokableLambda(extractCandidates)).AddInput(compose.START)
 	workflow.AddLambdaNode("review", compose.InvokableLambda(reviewCandidates)).AddInput("extract")
@@ -62,7 +74,11 @@ func New(ctx context.Context, store ports.MemoryStore, state ports.LearningState
 	if err != nil {
 		return nil, err
 	}
-	return &Service{runnable: runnable, store: store, state: state, reviewSvc: reviewSvc}, nil
+	service := &Service{runnable: runnable, store: store, state: state, reviewSvc: reviewSvc}
+	for _, opt := range opts {
+		opt(service)
+	}
+	return service, nil
 }
 
 func (s *Service) Run(ctx context.Context, input Input) (Output, error) {
@@ -77,12 +93,31 @@ func (s *Service) RegisterJobs(sched *scheduler.Scheduler, groupIDs []int64) {
 func (s *Service) learnAllGroups(groupIDs []int64) func(ctx context.Context) error {
 	return func(ctx context.Context) error {
 		for _, gid := range groupIDs {
+			if s.outbox != nil {
+				payload, marshalErr := json.Marshal(struct {
+					GroupID int64 `json:"group_id"`
+				}{GroupID: gid})
+				key := fmt.Sprintf("%d-%d", gid, time.Now().Unix()/(6*60*60))
+				if marshalErr == nil {
+					if enqueueErr := s.outbox.Enqueue(ctx, "learning_extract", key, payload); enqueueErr == nil {
+						continue
+					} else {
+						marshalErr = enqueueErr
+					}
+				}
+				slog.Warn("learning: outbox enqueue failed, running inline", "group_id", gid, "err", marshalErr)
+			}
 			if err := s.learnGroup(ctx, gid); err != nil {
 				slog.Warn("learning: group failed", "group_id", gid, "err", err)
 			}
 		}
 		return nil
 	}
+}
+
+// ProcessGroup executes one durable learning task.
+func (s *Service) ProcessGroup(ctx context.Context, groupID int64) error {
+	return s.learnGroup(ctx, groupID)
 }
 
 func (s *Service) learnGroup(ctx context.Context, groupID int64) error {

@@ -339,11 +339,31 @@ func NewApp(ctx context.Context, cfg config.Config) (*App, error) {
 		}
 		return nil
 	}))
-	learningSvc, learnErr := learningsvc.New(ctx, stores.memory, stores.learning, reviewService)
+	learningOpts := []learningsvc.Option{}
+	if durableOutbox != nil {
+		learningOpts = append(learningOpts, learningsvc.WithOutbox(durableOutbox))
+	}
+	learningSvc, learnErr := learningsvc.New(ctx, stores.memory, stores.learning, reviewService, learningOpts...)
 	if learnErr != nil {
 		_ = backgroundRuntime.Close(context.Background())
 		_ = stores.Close()
 		return nil, fmt.Errorf("learning service init: %w", learnErr)
+	}
+	if durableOutbox != nil {
+		if err := durableOutbox.Register("learning_extract", func(jobCtx context.Context, payload []byte) error {
+			var task struct {
+				GroupID int64 `json:"group_id"`
+			}
+			if err := json.Unmarshal(payload, &task); err != nil {
+				return fmt.Errorf("decode learning task: %w", err)
+			}
+			return learningSvc.ProcessGroup(jobCtx, task.GroupID)
+		}); err != nil {
+			_ = durableOutbox.Close()
+			_ = backgroundRuntime.Close(context.Background())
+			_ = stores.Close()
+			return nil, fmt.Errorf("register learning outbox handler: %w", err)
+		}
 	}
 	learningSvc.RegisterJobs(sched, cfg.QQ.GroupWhitelist)
 
