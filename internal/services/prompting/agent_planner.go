@@ -96,6 +96,10 @@ func (p *AgentPlanner) Plan(ctx context.Context, snapshot conversationdomain.Con
 	if decision.Action == policydomain.ActionPokeBack {
 		return p.fallback.Plan(ctx, snapshot, decision)
 	}
+	if p.tools == nil {
+		slog.Warn("planner: no tool runtime, fallback", "trace_id", snapshot.SnapshotID)
+		return p.fallback.Plan(ctx, snapshot, decision)
+	}
 
 	chatModel, err := p.factory.MainChatModel(ctx)
 	if err != nil || chatModel == nil {

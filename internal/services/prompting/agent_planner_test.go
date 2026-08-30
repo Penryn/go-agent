@@ -96,6 +96,22 @@ func TestAgentPlannerStaySilent(t *testing.T) {
 	}
 }
 
+func TestAgentPlannerWithoutToolRuntimeFallsBack(t *testing.T) {
+	planner := NewAgentPlanner(
+		modeladapter.StaticFactory{MainModel: modeladapter.NewMockChatModel()},
+		nil,
+		NewComposer(defaultPersona()),
+		NewDeterministicPlanner(defaultPersona()),
+	)
+	plan, err := planner.Plan(context.Background(), sampleSnapshot(), sampleDecision())
+	if err != nil {
+		t.Fatalf("planner fallback: %v", err)
+	}
+	if len(plan.Bubbles) == 0 {
+		t.Fatalf("expected deterministic fallback plan, got %+v", plan)
+	}
+}
+
 func defaultPersona() personadomain.PersonaConfig {
 	return personadomain.PersonaConfig{
 		ID:                "main",
