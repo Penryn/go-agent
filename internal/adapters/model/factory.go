@@ -42,10 +42,6 @@ func (f *Factory) MainChatModel(ctx context.Context) (modelcomponent.BaseChatMod
 	return f.chatModel(ctx, "main", f.cfg.Main)
 }
 
-func (f *Factory) GateChatModel(ctx context.Context) (modelcomponent.BaseChatModel, error) {
-	return f.chatModel(ctx, "gate", f.cfg.Gate)
-}
-
 func (f *Factory) VisionChatModel(ctx context.Context) (modelcomponent.BaseChatModel, error) {
 	return f.chatModel(ctx, "vision", f.cfg.Vision)
 }
@@ -60,7 +56,6 @@ func (f *Factory) Warmup(ctx context.Context) error {
 		cfg  config.ModelProviderConfig
 	}{
 		{name: "main", cfg: f.cfg.Main},
-		{name: "gate", cfg: f.cfg.Gate},
 		{name: "vision", cfg: f.cfg.Vision},
 	}
 
@@ -113,10 +108,10 @@ func (f *Factory) newChatModel(ctx context.Context, cfg config.ModelProviderConf
 	case "ark":
 		timeout := parseTimeout(cfg.Timeout, 30*time.Second)
 		return arkmodel.NewChatModel(ctx, &arkmodel.ChatModelConfig{
-			APIKey:  cfg.APIKey,
-			Model:   cfg.Model,
-			BaseURL: strings.TrimSpace(cfg.BaseURL),
-			Timeout: durationPtr(timeout),
+			APIKey:   cfg.APIKey,
+			Model:    cfg.Model,
+			BaseURL:  strings.TrimSpace(cfg.BaseURL),
+			Timeout:  durationPtr(timeout),
 			Thinking: &arkruntime.Thinking{Type: arkruntime.ThinkingTypeDisabled}, // 禁用深度思考，避免长时间等待
 		})
 	case "openai":
@@ -231,7 +226,6 @@ func durationPtr(value time.Duration) *time.Duration {
 
 type StaticFactory struct {
 	MainModel   modelcomponent.BaseChatModel
-	GateModel   modelcomponent.BaseChatModel
 	VisionModel modelcomponent.BaseChatModel
 }
 
@@ -240,13 +234,6 @@ func (f StaticFactory) MainChatModel(_ context.Context) (modelcomponent.BaseChat
 		return nil, ErrModelUnavailable
 	}
 	return f.MainModel, nil
-}
-
-func (f StaticFactory) GateChatModel(_ context.Context) (modelcomponent.BaseChatModel, error) {
-	if f.GateModel == nil {
-		return nil, ErrModelUnavailable
-	}
-	return f.GateModel, nil
 }
 
 func (f StaticFactory) VisionChatModel(_ context.Context) (modelcomponent.BaseChatModel, error) {

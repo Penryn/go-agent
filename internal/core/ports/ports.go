@@ -88,7 +88,6 @@ type RuntimeStateStore interface {
 
 type ChatModelFactory interface {
 	MainChatModel(ctx context.Context) (model.BaseChatModel, error)
-	GateChatModel(ctx context.Context) (model.BaseChatModel, error)
 	VisionChatModel(ctx context.Context) (model.BaseChatModel, error)
 }
 

@@ -35,13 +35,6 @@ models:
     base_url: "https://ark.cn-beijing.volces.com/api/v3"
     # 私密项 API Key 从 .env 的 QQBOT_MAIN_MODEL_API_KEY 读取。
     timeout: 20s
-  # Gate Agent 使用的轻量判定模型。
-  gate:
-    provider: ark
-    model: ""
-    base_url: "https://ark.cn-beijing.volces.com/api/v3"
-    # 私密项 API Key 从 .env 的 QQBOT_GATE_MODEL_API_KEY 读取。
-    timeout: 5s
   # Vision Agent 使用的多模态模型。
   vision:
     provider: ark

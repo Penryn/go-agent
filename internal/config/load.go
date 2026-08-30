@@ -30,7 +30,6 @@ func Default() Config {
 		},
 		Models: ModelsConfig{
 			Main:      ModelProviderConfig{Provider: "ark", Timeout: "20s"},
-			Gate:      ModelProviderConfig{Provider: "ark", Timeout: "5s"},
 			Vision:    ModelProviderConfig{Provider: "ark", Timeout: "15s"},
 			Embedding: ModelProviderConfig{Provider: "ark", Timeout: "15s"},
 		},
@@ -191,7 +190,6 @@ func dotenvCandidates(configPath string) []string {
 
 func overrideWithEnvSecrets(cfg *Config) {
 	stringOverride("QQBOT_MAIN_MODEL_API_KEY", &cfg.Models.Main.APIKey)
-	stringOverride("QQBOT_GATE_MODEL_API_KEY", &cfg.Models.Gate.APIKey)
 	stringOverride("QQBOT_VISION_MODEL_API_KEY", &cfg.Models.Vision.APIKey)
 	stringOverride("QQBOT_EMBEDDING_MODEL_API_KEY", &cfg.Models.Embedding.APIKey)
 	stringOverride("QQBOT_STORAGE_MYSQL_PASSWORD", &cfg.Storage.MySQL.Password)

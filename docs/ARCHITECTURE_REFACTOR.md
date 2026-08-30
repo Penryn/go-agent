@@ -28,6 +28,10 @@
 
 新增 `internal/services/textutil`，统一承载 `<think>...</think>` 和孤立 `</think>` 清理逻辑；prompting、tools、outputguard 共享同一实现，避免模型供应商差异导致的输出语义漂移。
 
+### 5. 删除未接线 Gate 模型 seam
+
+`ports.ChatModelFactory` 不再暴露未被任何调用方使用的 `GateChatModel`；模型 Factory、StaticFactory、warmup 流程和默认 YAML 中对应的死配置一并移除。自治策略中的 `LLMGate*` 字段暂时保留，作为兼容配置，待策略实现确定后再单独处理。
+
 ## 下一阶段：可靠后台任务
 
 当前进程内队列在满载时会丢弃媒体理解、向量索引和策展任务。下一阶段应引入持久化 outbox：
@@ -54,7 +58,7 @@ event -> per-group queue -> bounded global workers -> per-group serialization
 - 将 `runtime/bootstrap.NewApp` 拆成 StorageGraph、ModelGraph、BusinessGraph、RuntimeGraph。
 - 将 `services/tools.Runtime` 按 reply/memory/meme/profile/web 拆为独立 Module，保留统一注册表。
 - 将 MySQL Store 按 Memory、Meme、Profile、Learning、Thought、Conversation port 拆成 repository。
-- 删除已废弃的 Gate 接口，清理未接线配置；共享 `stripThinkBlocks` 和集合滑窗工具。
+- 清理剩余未接线的自治 Gate 配置；共享集合滑窗工具。
 
 ## 验证门槛
 
