@@ -233,11 +233,29 @@ func NewApp(ctx context.Context, cfg config.Config) (*App, error) {
 		outputguardsvc.WithMaxChars(cfg.Persona.ReplyMaxChars),
 		outputguardsvc.WithMaxSentences(cfg.Persona.ReplyMaxSentences),
 	)
-	executor := actionsvc.New(sender, memeService, guard,
+	actionOpts := []actionsvc.Option{
 		actionsvc.WithBackgroundRuntime(backgroundRuntime),
 		actionsvc.WithPresenceObserver(presenceManager),
 		actionsvc.WithSelfID(cfg.QQ.SelfID),
-	)
+	}
+	if durableOutbox != nil {
+		actionOpts = append(actionOpts, actionsvc.WithOutbox(durableOutbox))
+	}
+	executor := actionsvc.New(sender, memeService, guard, actionOpts...)
+	if durableOutbox != nil {
+		if err := durableOutbox.Register("meme_mark_sent", func(jobCtx context.Context, payload []byte) error {
+			var task actionsvc.MarkMemeSentTask
+			if err := json.Unmarshal(payload, &task); err != nil {
+				return fmt.Errorf("decode meme mark-sent task: %w", err)
+			}
+			return memeService.MarkSent(jobCtx, task.MemeID)
+		}); err != nil {
+			_ = durableOutbox.Close()
+			_ = backgroundRuntime.Close(context.Background())
+			_ = stores.Close()
+			return nil, fmt.Errorf("register meme sent outbox handler: %w", err)
+		}
+	}
 
 	// F2 PersonaService：情绪状态动态驱动
 	moodSvc := personasvc.New(stores.state, cfg.Persona.ID)

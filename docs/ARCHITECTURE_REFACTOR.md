@@ -40,7 +40,7 @@ Group Actor Manager 新增可配置 `actor_idle_ttl` 和 `PruneIdle`。Runtime �
 
 新增 `ports.OutboxStore`、内存 adapter 及 MySQL `async_outbox` 表迁移，统一定义幂等入队、租约领取、完成、重试和 dead-letter 状态。现有后台 Runtime 仍保持进程内执行，下一步将把媒体、向量和策展任务改为带 payload 的注册 handler，并接入该 seam。
 
-curator turn、媒体感知、memory 向量同步和 meme 向量索引已完成迁移：分别以 `snapshot_id`、`event_id`、`memory_id`、`meme_id` 为幂等键进入 outbox，由注册 handler 执行对应副作用；learning 与动作类任务按同一模式逐步迁移。
+curator turn、媒体感知、memory 向量同步、meme 向量索引和表情包发送计数已完成迁移：分别以 `snapshot_id`、`event_id`、`memory_id`、`meme_id` 为幂等键进入 outbox，由注册 handler 执行对应副作用；learning 任务按同一模式逐步迁移。
 
 ## 下一阶段：可靠后台任务
 

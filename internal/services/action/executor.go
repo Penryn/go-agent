@@ -2,6 +2,7 @@ package action
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -23,10 +24,13 @@ var errDropSend = errors.New("drop send: no text content")
 var errGuardSilenced = errors.New("drop send: guard silenced")
 
 type Service struct {
-	sender      ports.OutboundSender
-	memes       *memesvc.Service
-	guard       outputguardsvc.Guard // 可为 nil，nil 时跳过清洗
-	background  backgroundSubmitter
+	sender     ports.OutboundSender
+	memes      *memesvc.Service
+	guard      outputguardsvc.Guard // 可为 nil，nil 时跳过清洗
+	background backgroundSubmitter
+	outbox     interface {
+		Enqueue(context.Context, string, string, []byte) error
+	}
 	presence    PresenceObserver
 	selfID      int64
 	rhythmMu    sync.Mutex
@@ -52,6 +56,16 @@ type backgroundSubmitter interface {
 // owner instead of creating an untracked goroutine.
 func WithBackgroundRuntime(runtime backgroundSubmitter) Option {
 	return func(s *Service) { s.background = runtime }
+}
+
+func WithOutbox(runtime interface {
+	Enqueue(context.Context, string, string, []byte) error
+}) Option {
+	return func(s *Service) { s.outbox = runtime }
+}
+
+type MarkMemeSentTask struct {
+	MemeID string `json:"meme_id"`
 }
 
 func WithPresenceObserver(observer PresenceObserver) Option {
@@ -170,6 +184,17 @@ func (s *Service) Execute(ctx context.Context, event conversationdomain.Conversa
 	if receipt.Sent && decision.Action == policydomain.ActionMemeOnly {
 		if memeID, _ := plan.ActionParams["meme_id"].(string); memeID != "" && s.memes != nil {
 			bgCtx := context.WithoutCancel(ctx)
+			if s.outbox != nil {
+				payload, marshalErr := json.Marshal(MarkMemeSentTask{MemeID: memeID})
+				if marshalErr == nil {
+					if enqueueErr := s.outbox.Enqueue(bgCtx, "meme_mark_sent", memeID, payload); enqueueErr == nil {
+						return receipt, nil
+					} else {
+						marshalErr = enqueueErr
+					}
+				}
+				slog.Warn("executor: outbox enqueue failed, using process-local queue", "meme_id", memeID, "err", marshalErr)
+			}
 			memes := s.memes
 			job := backgroundruntime.Job{
 				Name:    "meme_mark_sent",
