@@ -205,6 +205,15 @@ func (s *Store) FailOutbox(_ context.Context, id string, taskErr error, retryAt 
 	return nil
 }
 
+// LookupOutbox is a test and diagnostics helper for the in-memory adapter.
+func (s *Store) LookupOutbox(id string) (ports.OutboxTask, bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	task, ok := s.outbox[id]
+	task.Payload = append([]byte(nil), task.Payload...)
+	return task, ok
+}
+
 func minInt(a, b int) int {
 	if a < b {
 		return a
