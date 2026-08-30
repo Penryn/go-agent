@@ -20,6 +20,7 @@ const burstWindow = 2 * time.Second
 type Manager struct {
 	log      ingress.EventLog
 	archive  ports.MemoryStore
+	state    WorkingMemoryStore
 	tailSize int
 
 	mu     sync.Mutex
@@ -28,6 +29,12 @@ type Manager struct {
 }
 
 type Option func(*Manager)
+
+// WorkingMemoryStore persists the actor's rebuildable per-group projection.
+type WorkingMemoryStore interface {
+	LoadWorkingMemory(context.Context, int64) (humandomain.GroupWorkingMemory, error)
+	SaveWorkingMemory(context.Context, humandomain.GroupWorkingMemory) error
+}
 
 func WithTailSize(size int) Option {
 	return func(m *Manager) {
@@ -42,6 +49,10 @@ func WithTailSize(size int) Option {
 // returned so callers can retry without losing the in-memory observation.
 func WithArchive(store ports.MemoryStore) Option {
 	return func(m *Manager) { m.archive = store }
+}
+
+func WithStateStore(store WorkingMemoryStore) Option {
+	return func(m *Manager) { m.state = store }
 }
 
 func NewManager(log ingress.EventLog, opts ...Option) *Manager {
@@ -85,45 +96,60 @@ func (m *Manager) Observe(ctx context.Context, record humandomain.EventRecord) (
 	} else if err := m.log.Append(ctx, record); err != nil {
 		return humandomain.GroupWorkingMemory{}, err
 	}
-	m.mu.Lock()
-	if m.closed {
-		m.mu.Unlock()
-		return humandomain.GroupWorkingMemory{}, errors.New("group actor: manager is closed")
+	a, err := m.actor(ctx, record.GroupID)
+	if err != nil {
+		return humandomain.GroupWorkingMemory{}, err
 	}
-	a := m.groups[record.GroupID]
-	if a == nil {
-		a = newActor(record.GroupID, m.tailSize)
-		m.groups[record.GroupID] = a
+	memory, err := a.observe(ctx, record)
+	if err == nil {
+		err = m.save(ctx, memory)
 	}
-	m.mu.Unlock()
-	return a.observe(ctx, record)
+	return memory, err
 }
 
 func (m *Manager) Snapshot(ctx context.Context, groupID int64) (humandomain.GroupWorkingMemory, error) {
-	m.mu.Lock()
-	if m.closed {
-		m.mu.Unlock()
-		return humandomain.GroupWorkingMemory{}, errors.New("group actor: manager is closed")
+	a, err := m.actor(ctx, groupID)
+	if err != nil {
+		return humandomain.GroupWorkingMemory{}, err
 	}
-	a := m.groups[groupID]
-	if a == nil {
-		a = newActor(groupID, m.tailSize)
-		m.groups[groupID] = a
-	}
-	m.mu.Unlock()
 	return a.snapshot(ctx)
 }
 
-func (m *Manager) ClaimDue(ctx context.Context, groupID int64, now time.Time, minScore float64) (humandomain.ThoughtCandidate, bool, error) {
+func (m *Manager) actor(ctx context.Context, groupID int64) (*actor, error) {
 	m.mu.Lock()
+	defer m.mu.Unlock()
 	if m.closed {
-		m.mu.Unlock()
-		return humandomain.ThoughtCandidate{}, false, errors.New("group actor: manager is closed")
+		return nil, errors.New("group actor: manager is closed")
 	}
-	a := m.groups[groupID]
-	m.mu.Unlock()
-	if a == nil {
-		return humandomain.ThoughtCandidate{}, false, nil
+	if a := m.groups[groupID]; a != nil {
+		return a, nil
+	}
+	initial := humandomain.GroupWorkingMemory{GroupID: groupID}
+	if m.state != nil {
+		loaded, err := m.state.LoadWorkingMemory(ctx, groupID)
+		if err != nil {
+			return nil, err
+		}
+		if loaded.GroupID != 0 {
+			initial = loaded
+		}
+	}
+	a := newActor(groupID, m.tailSize, initial)
+	m.groups[groupID] = a
+	return a, nil
+}
+
+func (m *Manager) save(ctx context.Context, memory humandomain.GroupWorkingMemory) error {
+	if m.state == nil {
+		return nil
+	}
+	return m.state.SaveWorkingMemory(ctx, memory)
+}
+
+func (m *Manager) ClaimDue(ctx context.Context, groupID int64, now time.Time, minScore float64) (humandomain.ThoughtCandidate, bool, error) {
+	a, err := m.actor(ctx, groupID)
+	if err != nil {
+		return humandomain.ThoughtCandidate{}, false, err
 	}
 	resultCh := make(chan result, 1)
 	select {
@@ -138,6 +164,9 @@ func (m *Manager) ClaimDue(ctx context.Context, groupID int64, now time.Time, mi
 		if result.candidate == nil {
 			return humandomain.ThoughtCandidate{}, false, nil
 		}
+		if err := m.save(ctx, result.memory); err != nil {
+			return humandomain.ThoughtCandidate{}, false, err
+		}
 		return *result.candidate, true, result.err
 	case <-ctx.Done():
 		return humandomain.ThoughtCandidate{}, false, ctx.Err()
@@ -146,16 +175,56 @@ func (m *Manager) ClaimDue(ctx context.Context, groupID int64, now time.Time, mi
 	}
 }
 
-func (m *Manager) Complete(ctx context.Context, groupID int64, candidateID string) error {
-	m.mu.Lock()
-	if m.closed {
-		m.mu.Unlock()
-		return errors.New("group actor: manager is closed")
+// EnqueueCandidate injects proactive or follow-up work into the owning group
+// actor. Execution still flows through ClaimDue, deliberation, and action.
+func (m *Manager) EnqueueCandidate(ctx context.Context, groupID int64, candidate humandomain.ThoughtCandidate) error {
+	if candidate.CandidateID == "" {
+		return errors.New("group actor: candidate id is required")
 	}
-	a := m.groups[groupID]
-	m.mu.Unlock()
-	if a == nil {
-		return nil
+	if candidate.Status == "" {
+		candidate.Status = humandomain.CandidatePending
+	}
+	if candidate.DeliveryTarget == "" {
+		candidate.DeliveryTarget = "group"
+	}
+	if candidate.DueAt.IsZero() {
+		candidate.DueAt = time.Now()
+	}
+	if candidate.ExpiresAt.IsZero() {
+		candidate.ExpiresAt = candidate.DueAt.Add(10 * time.Minute)
+	}
+	if candidate.Score == 0 {
+		candidate.Score = candidate.Urgency
+	}
+	a, err := m.actor(ctx, groupID)
+	if err != nil {
+		return err
+	}
+	resultCh := make(chan result, 1)
+	select {
+	case a.mailbox <- request{op: "enqueue", candidate: &candidate, result: resultCh}:
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-a.done:
+		return errors.New("group actor: actor stopped")
+	}
+	select {
+	case result := <-resultCh:
+		if result.err != nil {
+			return result.err
+		}
+		return m.save(ctx, result.memory)
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-a.done:
+		return errors.New("group actor: actor stopped")
+	}
+}
+
+func (m *Manager) Complete(ctx context.Context, groupID int64, candidateID string) error {
+	a, err := m.actor(ctx, groupID)
+	if err != nil {
+		return err
 	}
 	resultCh := make(chan result, 1)
 	select {
@@ -167,6 +236,9 @@ func (m *Manager) Complete(ctx context.Context, groupID int64, candidateID strin
 	}
 	select {
 	case result := <-resultCh:
+		if result.err == nil {
+			result.err = m.save(ctx, result.memory)
+		}
 		return result.err
 	case <-ctx.Done():
 		return ctx.Err()
@@ -178,33 +250,36 @@ func (m *Manager) Complete(ctx context.Context, groupID int64, candidateID strin
 // CanExecute confirms that an accepted candidate has not been superseded or
 // expired while a worker was waiting on group serialization or model latency.
 func (m *Manager) CanExecute(ctx context.Context, groupID int64, candidateID string, now time.Time) (bool, error) {
-	m.mu.Lock()
-	if m.closed {
-		m.mu.Unlock()
-		return false, errors.New("group actor: manager is closed")
+	a, err := m.actor(ctx, groupID)
+	if err != nil {
+		return false, err
 	}
-	a := m.groups[groupID]
-	m.mu.Unlock()
-	if a == nil {
-		return false, nil
+	valid, err := a.canExecute(ctx, candidateID, now)
+	if err == nil {
+		memory, snapshotErr := a.snapshot(ctx)
+		if snapshotErr != nil {
+			return false, snapshotErr
+		}
+		err = m.save(ctx, memory)
 	}
-	return a.canExecute(ctx, candidateID, now)
+	return valid, err
 }
 
 // EnrichMedia writes asynchronous perception results through the owning group
 // actor. Workers never mutate working memory directly.
 func (m *Manager) EnrichMedia(ctx context.Context, groupID int64, eventID string, descriptors []mediadomain.MediaDescriptor) error {
-	m.mu.Lock()
-	if m.closed {
-		m.mu.Unlock()
-		return errors.New("group actor: manager is closed")
+	a, err := m.actor(ctx, groupID)
+	if err != nil {
+		return err
 	}
-	a := m.groups[groupID]
-	m.mu.Unlock()
-	if a == nil {
-		return nil
+	if err = a.enrichMedia(ctx, eventID, descriptors); err != nil {
+		return err
 	}
-	return a.enrichMedia(ctx, eventID, descriptors)
+	memory, err := a.snapshot(ctx)
+	if err != nil {
+		return err
+	}
+	return m.save(ctx, memory)
 }
 
 func (m *Manager) GroupIDs() []int64 {
@@ -246,6 +321,7 @@ type request struct {
 	candidateID string
 	eventID     string
 	descriptors []mediadomain.MediaDescriptor
+	candidate   *humandomain.ThoughtCandidate
 	result      chan result
 }
 
@@ -265,7 +341,7 @@ type actor struct {
 	seen     map[string]struct{}
 }
 
-func newActor(groupID int64, tailSize int) *actor {
+func newActor(groupID int64, tailSize int, initial humandomain.GroupWorkingMemory) *actor {
 	a := &actor{
 		groupID:  groupID,
 		tailSize: tailSize,
@@ -274,13 +350,21 @@ func newActor(groupID int64, tailSize int) *actor {
 		done:     make(chan struct{}),
 		seen:     make(map[string]struct{}),
 	}
-	go a.run()
+	for _, record := range initial.RecentTail {
+		if record.EventID != "" {
+			a.seen[record.EventID] = struct{}{}
+		}
+	}
+	go a.run(initial)
 	return a
 }
 
-func (a *actor) run() {
+func (a *actor) run(initial humandomain.GroupWorkingMemory) {
 	defer close(a.done)
-	memory := humandomain.GroupWorkingMemory{GroupID: a.groupID}
+	memory := initial
+	if memory.GroupID == 0 {
+		memory.GroupID = a.groupID
+	}
 	for {
 		select {
 		case <-a.stop:
@@ -295,6 +379,17 @@ func (a *actor) run() {
 			case "claim":
 				candidate := claimCandidate(&memory, req.now, req.minScore)
 				req.result <- result{memory: cloneMemory(memory), candidate: candidate}
+				continue
+			case "enqueue":
+				if req.candidate == nil {
+					req.result <- result{err: errors.New("group actor: candidate is nil")}
+					continue
+				}
+				if !enqueueCandidate(&memory, *req.candidate) {
+					req.result <- result{memory: cloneMemory(memory), err: errors.New("group actor: candidate already exists")}
+					continue
+				}
+				req.result <- result{memory: cloneMemory(memory)}
 				continue
 			case "complete":
 				completeCandidate(&memory, req.candidateID)
@@ -493,8 +588,35 @@ func candidateFor(record humandomain.EventRecord, burst humandomain.Conversation
 		DueAt:          record.Timestamp.Add(delay),
 		ExpiresAt:      record.Timestamp.Add(10 * time.Second),
 		Uncertainty:    1 - urgency,
+		ReasonCode:     reasonCode(record, direct),
+		DeliveryTarget: "group",
 		Status:         humandomain.CandidatePending,
 	}
+}
+
+func reasonCode(record humandomain.EventRecord, direct bool) string {
+	if direct {
+		return "direct_address"
+	}
+	if len(record.Event.Attachments) > 0 {
+		return "media_reaction"
+	}
+	if strings.ContainsAny(record.Event.Text, "?？") {
+		return "question_observed"
+	}
+	return "topic_continuation"
+}
+
+func enqueueCandidate(memory *humandomain.GroupWorkingMemory, candidate humandomain.ThoughtCandidate) bool {
+	for _, existing := range memory.Candidates {
+		if existing.CandidateID == candidate.CandidateID {
+			return false
+		}
+	}
+	memory.Candidates = append(memory.Candidates, candidate)
+	memory.Version++
+	memory.LastUpdatedAt = time.Now()
+	return true
 }
 
 func enrichMedia(memory *humandomain.GroupWorkingMemory, eventID string, descriptors []mediadomain.MediaDescriptor) {

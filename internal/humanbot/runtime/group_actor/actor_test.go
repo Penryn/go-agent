@@ -91,6 +91,65 @@ func TestManagerEnrichesMediaOnlyForRecentEvent(t *testing.T) {
 	}
 }
 
+func TestManagerEnqueuesProactiveCandidateThroughActor(t *testing.T) {
+	store := inmemory.NewStore()
+	manager := NewManager(ingress.NewMemoryEventLog(), WithStateStore(store))
+	defer manager.Close()
+
+	due := time.Unix(100, 0)
+	candidate := humandomain.ThoughtCandidate{
+		CandidateID: "follow-up-1",
+		Intent:      "follow_up",
+		ReasonCode:  "open_loop",
+		Urgency:     0.8,
+		DueAt:       due,
+		ExpiresAt:   due.Add(time.Minute),
+	}
+	if err := manager.EnqueueCandidate(context.Background(), 9, candidate); err != nil {
+		t.Fatalf("enqueue candidate: %v", err)
+	}
+	if err := manager.EnqueueCandidate(context.Background(), 9, candidate); err == nil {
+		t.Fatal("duplicate candidate should be rejected")
+	}
+	selected, ok, err := manager.ClaimDue(context.Background(), 9, due.Add(time.Second), 0.5)
+	if err != nil || !ok {
+		t.Fatalf("claim enqueued candidate: candidate=%+v ok=%v err=%v", selected, ok, err)
+	}
+	if selected.CandidateID != candidate.CandidateID || selected.DeliveryTarget != "group" || selected.Status != humandomain.CandidateAccepted {
+		t.Fatalf("unexpected candidate defaults: %+v", selected)
+	}
+	loaded, err := store.LoadWorkingMemory(context.Background(), 9)
+	if err != nil || len(loaded.Candidates) != 1 || loaded.Candidates[0].Status != humandomain.CandidateAccepted {
+		t.Fatalf("candidate was not persisted: memory=%+v err=%v", loaded, err)
+	}
+}
+
+func TestManagerRestoresWorkingMemoryAfterRestart(t *testing.T) {
+	store := inmemory.NewStore()
+	record := eventRecord("persist-1", 9, 7, "状态要保留", time.Unix(100, 0))
+
+	first := NewManager(ingress.NewMemoryEventLog(), WithStateStore(store))
+	if _, err := first.Observe(context.Background(), record); err != nil {
+		t.Fatalf("observe: %v", err)
+	}
+	if err := first.Close(); err != nil {
+		t.Fatalf("close first manager: %v", err)
+	}
+
+	second := NewManager(ingress.NewMemoryEventLog(), WithStateStore(store))
+	defer second.Close()
+	memory, err := second.Snapshot(context.Background(), 9)
+	if err != nil {
+		t.Fatalf("restore snapshot: %v", err)
+	}
+	if len(memory.RecentTail) != 1 || len(memory.Candidates) != 1 {
+		t.Fatalf("working memory was not restored: %+v", memory)
+	}
+	if memory.Candidates[0].Status != humandomain.CandidatePending {
+		t.Fatalf("candidate status changed during restore: %+v", memory.Candidates[0])
+	}
+}
+
 func eventRecord(id string, groupID, userID int64, text string, at time.Time) humandomain.EventRecord {
 	return humandomain.EventRecord{
 		EventID:   id,

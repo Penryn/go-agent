@@ -72,6 +72,8 @@ type ThoughtCandidate struct {
 	DueAt          time.Time       `json:"due_at"`
 	ExpiresAt      time.Time       `json:"expires_at"`
 	Uncertainty    float64         `json:"uncertainty"`
+	ReasonCode     string          `json:"reason_code,omitempty"`
+	DeliveryTarget string          `json:"delivery_target,omitempty"`
 	Status         CandidateStatus `json:"status"`
 }
 
