@@ -35,7 +35,7 @@ func TestProcessRawEventUsesCandidateRuntime(t *testing.T) {
 	planner := promptingsvc.NewDeterministicPlanner(cfg.Persona)
 	sender := inmemory.NewSender()
 	executor := action.New(sender, nil, nil, action.WithPresenceObserver(working), action.WithSelfID(cfg.QQ.SelfID))
-	runtime := New(ctx, normalizer, working, deliberation.NewAdapter(contextService, planner), executor, Config{SelfID: cfg.QQ.SelfID})
+	runtime := New(ctx, normalizer, working, deliberation.NewAdapter(contextService, planner), nil, executor, Config{SelfID: cfg.QQ.SelfID})
 	defer runtime.Close()
 
 	payload := []byte(`{"post_type":"message","message_type":"group","time":1710000000,"self_id":123456,"group_id":100,"user_id":200,"message_id":"m1","message":[{"type":"text","data":{"text":"hello?"}}]}`)

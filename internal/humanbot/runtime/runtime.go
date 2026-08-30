@@ -28,6 +28,10 @@ type Config struct {
 	SelfID            int64
 }
 
+type PerceptionSubmitter interface {
+	Submit(humandomain.EventRecord)
+}
+
 func DefaultConfig() Config {
 	return Config{PollInterval: 100 * time.Millisecond, MinCandidateScore: 0.5, JobTimeout: 120 * time.Second}
 }
@@ -45,6 +49,7 @@ type Runtime struct {
 	normalizer  *normalizersvc.Service
 	working     *groupactor.Manager
 	deliberator deliberation.Deliberator
+	perception  PerceptionSubmitter
 	executor    *action.Service
 	scheduler   presencesvc.Scheduler
 	whitelist   map[int64]struct{}
@@ -57,7 +62,7 @@ type Runtime struct {
 	locks  sync.Map
 }
 
-func New(parent context.Context, normalizer *normalizersvc.Service, working *groupactor.Manager, deliberator deliberation.Deliberator, executor *action.Service, cfg Config) *Runtime {
+func New(parent context.Context, normalizer *normalizersvc.Service, working *groupactor.Manager, deliberator deliberation.Deliberator, perception PerceptionSubmitter, executor *action.Service, cfg Config) *Runtime {
 	defaults := DefaultConfig()
 	if cfg.PollInterval <= 0 {
 		cfg.PollInterval = defaults.PollInterval
@@ -73,6 +78,7 @@ func New(parent context.Context, normalizer *normalizersvc.Service, working *gro
 		normalizer:  normalizer,
 		working:     working,
 		deliberator: deliberator,
+		perception:  perception,
 		executor:    executor,
 		scheduler:   presencesvc.NewScheduler(1),
 		whitelist:   make(map[int64]struct{}, len(cfg.GroupWhitelist)),
@@ -98,7 +104,11 @@ func (r *Runtime) SubmitRaw(ctx context.Context, payload []byte) error {
 	if r.shouldIgnore(envelope) {
 		return nil
 	}
-	_, err = r.working.Observe(ctx, toEventRecord(envelope, humandomain.OriginInbound))
+	record := toEventRecord(envelope, humandomain.OriginInbound)
+	_, err = r.working.Observe(ctx, record)
+	if err == nil && r.perception != nil {
+		r.perception.Submit(record)
+	}
 	return err
 }
 
@@ -112,9 +122,13 @@ func (r *Runtime) ProcessRawEvent(ctx context.Context, payload []byte) (Outcome,
 	if r.shouldIgnore(envelope) {
 		return Outcome{Envelope: envelope, Decision: silentDecision(envelope.TraceID, "ignored")}, nil
 	}
-	memory, err := r.working.Observe(ctx, toEventRecord(envelope, humandomain.OriginInbound))
+	record := toEventRecord(envelope, humandomain.OriginInbound)
+	memory, err := r.working.Observe(ctx, record)
 	if err != nil {
 		return Outcome{}, fmt.Errorf("observe event: %w", err)
+	}
+	if r.perception != nil {
+		r.perception.Submit(record)
 	}
 	var candidate humandomain.ThoughtCandidate
 	for i := len(memory.Candidates) - 1; i >= 0; i-- {

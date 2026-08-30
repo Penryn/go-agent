@@ -176,6 +176,10 @@ func (s *Service) normalizeAttachment(idx int, segment oneBotSegment) mediadomai
 	switch segment.Type {
 	case "mface":
 		kind = mediadomain.MediaSticker
+	case "image":
+		if subType, ok := intField(segment.Data["sub_type"]); ok && subType == 1 {
+			kind = mediadomain.MediaSticker
+		}
 	case "video":
 		kind = mediadomain.MediaVideo
 	case "record":
@@ -186,11 +190,13 @@ func (s *Service) normalizeAttachment(idx int, segment oneBotSegment) mediadomai
 
 	file, _ := stringField(segment.Data["file"])
 	url, _ := stringField(segment.Data["url"])
+	summary, _ := stringField(segment.Data["summary"])
 	return mediadomain.MultimodalAttachment{
 		AttachmentID: fmt.Sprintf("%s-%d", file, idx),
 		Kind:         kind,
 		URL:          url,
 		ObjectKey:    file,
+		PlatformHint: summary,
 		MIME:         mimeForSegmentType(segment.Type),
 	}
 }
@@ -233,6 +239,22 @@ func stringField(value any) (string, bool) {
 		return strconv.FormatInt(typed, 10), true
 	default:
 		return "", false
+	}
+}
+
+func intField(value any) (int, bool) {
+	switch typed := value.(type) {
+	case int:
+		return typed, true
+	case int64:
+		return int(typed), true
+	case float64:
+		return int(typed), true
+	case string:
+		parsed, err := strconv.Atoi(typed)
+		return parsed, err == nil
+	default:
+		return 0, false
 	}
 }
 

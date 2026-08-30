@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"strings"
 	"time"
 
 	"golang.org/x/sync/errgroup"
@@ -73,8 +74,10 @@ func (s *Service) WithSemanticConfig(topK int, threshold float64) {
 
 func (s *Service) BuildSnapshot(ctx context.Context, envelope conversationdomain.EventEnvelope, mediaDescriptors []mediadomain.MediaDescriptor) (conversationdomain.ContextSnapshot, error) {
 	var recentTurns []conversationdomain.ConversationEvent
+	var working humandomain.GroupWorkingMemory
 	if s.workingMemory != nil {
-		working, wmErr := s.workingMemory.Snapshot(ctx, envelope.Event.GroupID)
+		var wmErr error
+		working, wmErr = s.workingMemory.Snapshot(ctx, envelope.Event.GroupID)
 		if wmErr != nil {
 			return conversationdomain.ContextSnapshot{}, fmt.Errorf("load working memory: %w", wmErr)
 		}
@@ -115,6 +118,9 @@ func (s *Service) BuildSnapshot(ctx context.Context, envelope conversationdomain
 		return conversationdomain.ContextSnapshot{}, fmt.Errorf("load persona state: %w", err)
 	}
 
+	if len(mediaDescriptors) == 0 {
+		mediaDescriptors = append([]mediadomain.MediaDescriptor(nil), working.MediaByEvent[envelope.Event.EventID]...)
+	}
 	if len(mediaDescriptors) == 0 {
 		mediaDescriptors = attachmentsAsDescriptors(envelope.Event.Attachments)
 	}
@@ -233,11 +239,18 @@ func attachmentsAsDescriptors(attachments []mediadomain.MultimodalAttachment) []
 		descriptors = append(descriptors, mediadomain.MediaDescriptor{
 			AttachmentID: attachment.AttachmentID,
 			Kind:         attachment.Kind,
-			Summary:      fmt.Sprintf("收到一个%s附件", attachment.Kind),
+			Summary:      attachmentSummary(attachment),
 			Confidence:   0.2,
 		})
 	}
 	return descriptors
+}
+
+func attachmentSummary(attachment mediadomain.MultimodalAttachment) string {
+	if hint := strings.TrimSpace(attachment.PlatformHint); hint != "" {
+		return hint
+	}
+	return fmt.Sprintf("收到一个%s附件", attachment.Kind)
 }
 
 func ensureMemberProfile(profile profiledomain.MemberProfile, event conversationdomain.ConversationEvent) profiledomain.MemberProfile {

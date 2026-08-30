@@ -20,6 +20,7 @@ import (
 	humandeliberation "github.com/phlin/go-agent/internal/humanbot/runtime/deliberation"
 	humanactor "github.com/phlin/go-agent/internal/humanbot/runtime/group_actor"
 	humaningress "github.com/phlin/go-agent/internal/humanbot/runtime/ingress"
+	humanperception "github.com/phlin/go-agent/internal/humanbot/runtime/perception"
 	backgroundruntime "github.com/phlin/go-agent/internal/runtime/background"
 	"github.com/phlin/go-agent/internal/runtime/scheduler"
 	actionsvc "github.com/phlin/go-agent/internal/services/action"
@@ -27,6 +28,7 @@ import (
 	learningsvc "github.com/phlin/go-agent/internal/services/learning"
 	memesvc "github.com/phlin/go-agent/internal/services/meme"
 	memsvc "github.com/phlin/go-agent/internal/services/memory"
+	multimodalsvc "github.com/phlin/go-agent/internal/services/multimodal"
 	normalizersvc "github.com/phlin/go-agent/internal/services/normalizer"
 	outputguardsvc "github.com/phlin/go-agent/internal/services/outputguard"
 	personasvc "github.com/phlin/go-agent/internal/services/persona"
@@ -136,6 +138,8 @@ func NewApp(ctx context.Context, cfg config.Config) (*App, error) {
 		memesvc.WithVectorStore(memeVectorStore),
 		memesvc.WithBackgroundRuntime(backgroundRuntime),
 	)
+	visionService := multimodalsvc.New(modelFactory, cfg.Multimodal)
+	perceptionPipeline := humanperception.New(visionService, memeService, presenceManager, backgroundRuntime)
 
 	toolRuntime := toolsvc.NewRuntime(stores.memory, stores.meme,
 		toolsvc.WithProfileStore(stores.profile),
@@ -170,7 +174,7 @@ func NewApp(ctx context.Context, cfg config.Config) (*App, error) {
 	// scheduling, deliberation, realization, and outbound self-observation.
 	// Context projection and planner compatibility remain behind this adapter.
 	deliberator := humandeliberation.NewAdapter(contextService, planner)
-	humanRuntime := humanruntime.New(ctx, normalizer, presenceManager, deliberator, executor, humanruntime.Config{
+	humanRuntime := humanruntime.New(ctx, normalizer, presenceManager, deliberator, perceptionPipeline, executor, humanruntime.Config{
 		GroupWhitelist: cfg.QQ.GroupWhitelist,
 		SelfID:         cfg.QQ.SelfID,
 		JobTimeout:     120 * time.Second,

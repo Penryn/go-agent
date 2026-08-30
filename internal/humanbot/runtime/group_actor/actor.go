@@ -9,6 +9,7 @@ import (
 
 	"github.com/phlin/go-agent/internal/core/ports"
 	conversationdomain "github.com/phlin/go-agent/internal/domain/conversation"
+	mediadomain "github.com/phlin/go-agent/internal/domain/media"
 	humandomain "github.com/phlin/go-agent/internal/humanbot/domain"
 	"github.com/phlin/go-agent/internal/humanbot/runtime/ingress"
 )
@@ -172,6 +173,22 @@ func (m *Manager) Complete(ctx context.Context, groupID int64, candidateID strin
 	}
 }
 
+// EnrichMedia writes asynchronous perception results through the owning group
+// actor. Workers never mutate working memory directly.
+func (m *Manager) EnrichMedia(ctx context.Context, groupID int64, eventID string, descriptors []mediadomain.MediaDescriptor) error {
+	m.mu.Lock()
+	if m.closed {
+		m.mu.Unlock()
+		return errors.New("group actor: manager is closed")
+	}
+	a := m.groups[groupID]
+	m.mu.Unlock()
+	if a == nil {
+		return nil
+	}
+	return a.enrichMedia(ctx, eventID, descriptors)
+}
+
 func (m *Manager) GroupIDs() []int64 {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -209,6 +226,8 @@ type request struct {
 	now         time.Time
 	minScore    float64
 	candidateID string
+	eventID     string
+	descriptors []mediadomain.MediaDescriptor
 	result      chan result
 }
 
@@ -262,10 +281,32 @@ func (a *actor) run() {
 				completeCandidate(&memory, req.candidateID)
 				req.result <- result{memory: cloneMemory(memory)}
 				continue
+			case "enrich_media":
+				enrichMedia(&memory, req.eventID, req.descriptors)
 			case "snapshot":
 			}
 			req.result <- result{memory: cloneMemory(memory)}
 		}
+	}
+}
+
+func (a *actor) enrichMedia(ctx context.Context, eventID string, descriptors []mediadomain.MediaDescriptor) error {
+	resultCh := make(chan result, 1)
+	copyDescriptors := append([]mediadomain.MediaDescriptor(nil), descriptors...)
+	select {
+	case a.mailbox <- request{op: "enrich_media", eventID: eventID, descriptors: copyDescriptors, result: resultCh}:
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-a.done:
+		return errors.New("group actor: actor stopped")
+	}
+	select {
+	case result := <-resultCh:
+		return result.err
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-a.done:
+		return errors.New("group actor: actor stopped")
 	}
 }
 
@@ -319,6 +360,7 @@ func reduce(memory humandomain.GroupWorkingMemory, record humandomain.EventRecor
 	if len(memory.RecentTail) > tailSize {
 		memory.RecentTail = memory.RecentTail[len(memory.RecentTail)-tailSize:]
 	}
+	pruneMedia(&memory)
 
 	if record.Origin == humandomain.OriginOutbound {
 		memory.ActiveTopic = strings.TrimSpace(record.Event.Text)
@@ -367,7 +409,7 @@ func candidateFor(record humandomain.EventRecord, burst humandomain.Conversation
 		intent = "acknowledge"
 		urgency = 0.55
 	}
-	if len(record.Event.Attachments) > 0 {
+	if len(record.Event.Attachments) > 0 && !direct {
 		intent = "react"
 		urgency = 0.5
 	}
@@ -384,6 +426,36 @@ func candidateFor(record humandomain.EventRecord, burst humandomain.Conversation
 		Uncertainty:    1 - urgency,
 		Status:         humandomain.CandidatePending,
 	}
+}
+
+func enrichMedia(memory *humandomain.GroupWorkingMemory, eventID string, descriptors []mediadomain.MediaDescriptor) {
+	if eventID == "" || !eventInTail(memory.RecentTail, eventID) {
+		return
+	}
+	if memory.MediaByEvent == nil {
+		memory.MediaByEvent = make(map[string][]mediadomain.MediaDescriptor)
+	}
+	memory.MediaByEvent[eventID] = append([]mediadomain.MediaDescriptor(nil), descriptors...)
+}
+
+func pruneMedia(memory *humandomain.GroupWorkingMemory) {
+	if len(memory.MediaByEvent) == 0 {
+		return
+	}
+	for eventID := range memory.MediaByEvent {
+		if !eventInTail(memory.RecentTail, eventID) {
+			delete(memory.MediaByEvent, eventID)
+		}
+	}
+}
+
+func eventInTail(records []humandomain.EventRecord, eventID string) bool {
+	for _, record := range records {
+		if record.EventID == eventID {
+			return true
+		}
+	}
+	return false
 }
 
 func memoryTopic(text string) string {
@@ -446,6 +518,13 @@ func cloneMemory(memory humandomain.GroupWorkingMemory) humandomain.GroupWorking
 	memory.Candidates = append([]humandomain.ThoughtCandidate(nil), memory.Candidates...)
 	for i := range memory.Candidates {
 		memory.Candidates[i].SourceEventIDs = append([]string(nil), memory.Candidates[i].SourceEventIDs...)
+	}
+	if len(memory.MediaByEvent) > 0 {
+		media := make(map[string][]mediadomain.MediaDescriptor, len(memory.MediaByEvent))
+		for eventID, descriptors := range memory.MediaByEvent {
+			media[eventID] = append([]mediadomain.MediaDescriptor(nil), descriptors...)
+		}
+		memory.MediaByEvent = media
 	}
 	return memory
 }

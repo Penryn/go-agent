@@ -5,6 +5,7 @@ import (
 	"time"
 
 	conversationdomain "github.com/phlin/go-agent/internal/domain/conversation"
+	mediadomain "github.com/phlin/go-agent/internal/domain/media"
 )
 
 type EventOrigin string
@@ -38,14 +39,15 @@ type ConversationBurst struct {
 }
 
 type GroupWorkingMemory struct {
-	GroupID       int64              `json:"group_id"`
-	Version       uint64             `json:"version"`
-	RecentTail    []EventRecord      `json:"recent_tail"`
-	CurrentBurst  ConversationBurst  `json:"current_burst"`
-	ActiveTopic   string             `json:"active_topic"`
-	OpenLoops     []string           `json:"open_loops"`
-	Candidates    []ThoughtCandidate `json:"candidates"`
-	LastUpdatedAt time.Time          `json:"last_updated_at"`
+	GroupID       int64                                    `json:"group_id"`
+	Version       uint64                                   `json:"version"`
+	RecentTail    []EventRecord                            `json:"recent_tail"`
+	CurrentBurst  ConversationBurst                        `json:"current_burst"`
+	ActiveTopic   string                                   `json:"active_topic"`
+	OpenLoops     []string                                 `json:"open_loops"`
+	Candidates    []ThoughtCandidate                       `json:"candidates"`
+	MediaByEvent  map[string][]mediadomain.MediaDescriptor `json:"media_by_event"`
+	LastUpdatedAt time.Time                                `json:"last_updated_at"`
 }
 
 type CandidateStatus string

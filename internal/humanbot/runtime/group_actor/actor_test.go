@@ -7,6 +7,7 @@ import (
 
 	"github.com/phlin/go-agent/internal/adapters/inmemory"
 	conversationdomain "github.com/phlin/go-agent/internal/domain/conversation"
+	mediadomain "github.com/phlin/go-agent/internal/domain/media"
 	humandomain "github.com/phlin/go-agent/internal/humanbot/domain"
 	"github.com/phlin/go-agent/internal/humanbot/runtime/ingress"
 )
@@ -50,6 +51,37 @@ func TestManagerMergesShortBurstAndKeepsOutboundEvent(t *testing.T) {
 	}
 	if len(archived) != 3 {
 		t.Fatalf("duplicate event was archived: %d", len(archived))
+	}
+}
+
+func TestManagerEnrichesMediaOnlyForRecentEvent(t *testing.T) {
+	manager := NewManager(ingress.NewMemoryEventLog())
+	defer manager.Close()
+
+	record := eventRecord("media-1", 1, 7, "", time.Unix(100, 0))
+	record.Event.Attachments = []mediadomain.MultimodalAttachment{{AttachmentID: "sticker-1", Kind: mediadomain.MediaSticker}}
+	if _, err := manager.Observe(context.Background(), record); err != nil {
+		t.Fatalf("observe: %v", err)
+	}
+	if err := manager.EnrichMedia(context.Background(), 1, "media-1", []mediadomain.MediaDescriptor{{AttachmentID: "sticker-1", Kind: mediadomain.MediaSticker, Summary: "开心小狗"}}); err != nil {
+		t.Fatalf("enrich media: %v", err)
+	}
+	memory, err := manager.Snapshot(context.Background(), 1)
+	if err != nil {
+		t.Fatalf("snapshot: %v", err)
+	}
+	if got := memory.MediaByEvent["media-1"][0].Summary; got != "开心小狗" {
+		t.Fatalf("unexpected media summary: %q", got)
+	}
+	if err := manager.EnrichMedia(context.Background(), 1, "missing", []mediadomain.MediaDescriptor{{Summary: "ignored"}}); err != nil {
+		t.Fatalf("enrich missing event: %v", err)
+	}
+	memory, err = manager.Snapshot(context.Background(), 1)
+	if err != nil {
+		t.Fatalf("snapshot after missing enrichment: %v", err)
+	}
+	if _, ok := memory.MediaByEvent["missing"]; ok {
+		t.Fatal("missing event should not have media enrichment")
 	}
 }
 

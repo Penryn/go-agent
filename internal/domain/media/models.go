@@ -17,6 +17,7 @@ type MultimodalAttachment struct {
 	Kind         MediaKind `json:"kind" yaml:"kind"`
 	URL          string    `json:"url" yaml:"url"`
 	ObjectKey    string    `json:"object_key" yaml:"object_key"`
+	PlatformHint string    `json:"platform_hint" yaml:"platform_hint"`
 	MIME         string    `json:"mime" yaml:"mime"`
 	SizeBytes    int64     `json:"size_bytes" yaml:"size_bytes"`
 	Width        int       `json:"width" yaml:"width"`
@@ -42,16 +43,16 @@ type MediaDescriptor struct {
 }
 
 type MemeAsset struct {
-	MemeID         string    `json:"meme_id" yaml:"meme_id"`
-	GroupID        int64     `json:"group_id" yaml:"group_id"`
-	SourceEventID  string    `json:"source_event_id" yaml:"source_event_id"`
-	ObjectKey      string    `json:"object_key" yaml:"object_key"`
-	FileExt        string    `json:"file_ext" yaml:"file_ext"`
-	ContentHash    string    `json:"content_hash" yaml:"content_hash"`
-	PerceptualHash string    `json:"perceptual_hash" yaml:"perceptual_hash"`
-	Width          int       `json:"width" yaml:"width"`
-	Height         int       `json:"height" yaml:"height"`
-	Animated       bool      `json:"animated" yaml:"animated"`
+	MemeID         string     `json:"meme_id" yaml:"meme_id"`
+	GroupID        int64      `json:"group_id" yaml:"group_id"`
+	SourceEventID  string     `json:"source_event_id" yaml:"source_event_id"`
+	ObjectKey      string     `json:"object_key" yaml:"object_key"`
+	FileExt        string     `json:"file_ext" yaml:"file_ext"`
+	ContentHash    string     `json:"content_hash" yaml:"content_hash"`
+	PerceptualHash string     `json:"perceptual_hash" yaml:"perceptual_hash"`
+	Width          int        `json:"width" yaml:"width"`
+	Height         int        `json:"height" yaml:"height"`
+	Animated       bool       `json:"animated" yaml:"animated"`
 	Status         string     `json:"status" yaml:"status"`
 	CreatedAt      time.Time  `json:"created_at" yaml:"created_at"`
 	LastSentAt     *time.Time `json:"last_sent_at,omitempty" yaml:"last_sent_at,omitempty"`

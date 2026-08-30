@@ -54,6 +54,33 @@ func TestNormalizeRecordSegment(t *testing.T) {
 	}
 }
 
+func TestNormalizeStickerSegments(t *testing.T) {
+	payload := []byte(`{
+		"post_type":"message","message_type":"group","time":1700000000,
+		"self_id":123456,"group_id":1,"user_id":2,"message_id":"40003",
+		"message":[
+			{"type":"image","data":{"file":"sticker.gif","url":"http://example.com/sticker.gif","sub_type":1,"summary":"开心小狗"}},
+			{"type":"mface","data":{"file":"market.webp","url":"http://example.com/market.webp","summary":"商城表情"}}
+		]
+	}`)
+
+	envelope, err := New("onebot", 123456, nil).Normalize(payload)
+	if err != nil {
+		t.Fatalf("normalize: %v", err)
+	}
+	if len(envelope.Event.Attachments) != 2 {
+		t.Fatalf("expected 2 attachments, got %d", len(envelope.Event.Attachments))
+	}
+	for _, attachment := range envelope.Event.Attachments {
+		if attachment.Kind != "sticker" {
+			t.Fatalf("expected sticker kind, got %s", attachment.Kind)
+		}
+	}
+	if envelope.Event.Attachments[0].PlatformHint != "开心小狗" {
+		t.Fatalf("platform hint missing: %+v", envelope.Event.Attachments[0])
+	}
+}
+
 func TestNormalizeFileSegment(t *testing.T) {
 	payload := []byte(`{
 		"post_type":"message","message_type":"group","time":1700000000,
