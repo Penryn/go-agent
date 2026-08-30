@@ -42,16 +42,16 @@ Group Actor Manager 新增可配置 `actor_idle_ttl` 和 `PruneIdle`。Runtime �
 
 curator turn、媒体感知、memory 向量同步、meme 向量索引、表情包发送计数和 learning extract 已完成迁移：分别以 `snapshot_id`、`event_id`、`memory_id`、`meme_id`、`group_id+时间片` 为幂等键进入 outbox，由注册 handler 执行对应副作用。
 
-## 下一阶段：可靠后台任务
+## 已完成：可靠后台任务
 
-当前进程内队列在满载时会丢弃媒体理解、向量索引和策展任务。下一阶段应引入持久化 outbox：
+持久化 outbox 已建立并接入主要异步副作用链路：
 
 1. 任务写入带幂等键的 `pending` 记录。
 2. Worker 原子领取并设置 `running`，超时进入 `retry`。
 3. 达到重试上限进入 `dead_letter`，保留错误和最后尝试时间。
 4. 只有成功或明确不可重试时才确认完成。
 
-向量索引键使用 `memory_id/meme_id`，媒体理解使用 `event_id`，策展使用 `snapshot_id`。队列只作为唤醒机制，不能作为事实来源。
+向量索引键使用 `memory_id/meme_id`，媒体理解使用 `event_id`，策展使用 `snapshot_id`；队列只作为唤醒机制，不能作为事实来源。
 
 ## 下一阶段：调度与 Actor 生命周期
 
