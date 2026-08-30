@@ -32,6 +32,10 @@
 
 `ports.ChatModelFactory` 不再暴露未被任何调用方使用的 `GateChatModel`；模型 Factory、StaticFactory、warmup 流程和默认 YAML 中对应的死配置一并移除。自治策略中的 `LLMGate*` 字段暂时保留，作为兼容配置，待策略实现确定后再单独处理。
 
+### 6. Actor idle TTL 生命周期
+
+Group Actor Manager 新增可配置 `actor_idle_ttl` 和 `PruneIdle`。Runtime 每个调度周期回收长期无操作且没有 live candidate 的 Actor；回收请求经过 Actor mailbox 串行确认，working memory 已由各写操作持久化后再退出。默认配置为 30 分钟。
+
 ## 下一阶段：可靠后台任务
 
 当前进程内队列在满载时会丢弃媒体理解、向量索引和策展任务。下一阶段应引入持久化 outbox：
@@ -45,13 +49,13 @@
 
 ## 下一阶段：调度与 Actor 生命周期
 
-`humanbot/runtime` 已完成固定 worker pool 和 per-group serialization；下一步应将固定 tick 的全量群遍历改为可唤醒的 per-group queue，并增加 Actor idle TTL：
+`humanbot/runtime` 已完成固定 worker pool、per-group serialization 和 Actor idle TTL；下一步应将固定 tick 的全量群遍历改为可唤醒的 per-group queue：
 
 ```text
 event -> per-group queue -> bounded global workers -> per-group serialization
 ```
 
-同时为长期无活动的群增加 Actor idle TTL；回收前将 working memory 持久化，重新出现消息时从持久化状态恢复。
+重新出现消息时继续从持久化 working memory 恢复。
 
 ## 下一阶段：模块深化
 

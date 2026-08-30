@@ -171,6 +171,38 @@ func TestManagerBoundsCandidateState(t *testing.T) {
 	}
 }
 
+func TestManagerPrunesIdleActorsButKeepsLiveCandidates(t *testing.T) {
+	store := inmemory.NewStore()
+	manager := NewManager(ingress.NewMemoryEventLog(), WithStateStore(store), WithIdleTTL(time.Minute))
+	defer manager.Close()
+
+	idleRecord := eventRecord("idle-1", 21, 7, "hello", time.Now())
+	idleRecord.Origin = humandomain.OriginOutbound
+	if _, err := manager.Observe(context.Background(), idleRecord); err != nil {
+		t.Fatalf("observe: %v", err)
+	}
+	future := time.Now().Add(2 * time.Minute)
+	if retired := manager.PruneIdle(context.Background(), future); retired != 1 {
+		t.Fatalf("expected one idle actor retired, got %d", retired)
+	}
+	if ids := manager.GroupIDs(); len(ids) != 0 {
+		t.Fatalf("idle actor still registered: %v", ids)
+	}
+	if _, err := store.LoadWorkingMemory(context.Background(), 21); err != nil {
+		t.Fatalf("working memory was not persisted before retirement: %v", err)
+	}
+
+	due := time.Now()
+	if err := manager.EnqueueCandidate(context.Background(), 22, humandomain.ThoughtCandidate{
+		CandidateID: "live-1", DueAt: due, ExpiresAt: due.Add(time.Hour), Score: 1,
+	}); err != nil {
+		t.Fatalf("enqueue: %v", err)
+	}
+	if retired := manager.PruneIdle(context.Background(), time.Now().Add(2*time.Minute)); retired != 0 {
+		t.Fatalf("actor with live candidate should not retire, got %d", retired)
+	}
+}
+
 func eventRecord(id string, groupID, userID int64, text string, at time.Time) humandomain.EventRecord {
 	return humandomain.EventRecord{
 		EventID:   id,

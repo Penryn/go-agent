@@ -39,8 +39,9 @@ type ServerConfig struct {
 }
 
 type RuntimeConfig struct {
-	WorkerCount int `yaml:"worker_count"`
-	QueueLength int `yaml:"queue_length"`
+	WorkerCount  int    `yaml:"worker_count"`
+	QueueLength  int    `yaml:"queue_length"`
+	ActorIdleTTL string `yaml:"actor_idle_ttl"`
 }
 
 type ModelProviderConfig struct {

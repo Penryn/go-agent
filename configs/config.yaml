@@ -23,6 +23,8 @@ runtime:
   worker_count: 2
   # 预留的事件队列长度。
   queue_length: 128
+  # 长期无活动群的 Actor 回收时间。
+  actor_idle_ttl: 30m
 
 models:
   # Main Persona Agent 使用的主模型。

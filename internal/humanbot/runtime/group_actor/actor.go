@@ -5,6 +5,7 @@ import (
 	"errors"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/phlin/go-agent/internal/core/ports"
@@ -26,6 +27,7 @@ type Manager struct {
 	tailSize      int
 	maxCandidates int
 	maxSeen       int
+	idleTTL       time.Duration
 
 	mu     sync.Mutex
 	closed bool
@@ -57,6 +59,17 @@ func WithArchive(store ports.MemoryStore) Option {
 
 func WithStateStore(store WorkingMemoryStore) Option {
 	return func(m *Manager) { m.state = store }
+}
+
+// WithIdleTTL enables lifecycle reclamation for groups that have not received
+// any actor operation for the given duration. A non-positive duration disables
+// reclamation.
+func WithIdleTTL(ttl time.Duration) Option {
+	return func(m *Manager) {
+		if ttl > 0 {
+			m.idleTTL = ttl
+		}
+	}
 }
 
 func NewManager(log ingress.EventLog, opts ...Option) *Manager {
@@ -296,6 +309,60 @@ func (m *Manager) GroupIDs() []int64 {
 	return ids
 }
 
+// PruneIdle retires actors that have been inactive longer than the configured
+// TTL and have no live candidates. Retirement is serialized through each
+// actor's mailbox, so working memory is persisted before the actor exits.
+func (m *Manager) PruneIdle(ctx context.Context, now time.Time) int {
+	if m == nil || m.idleTTL <= 0 {
+		return 0
+	}
+	m.mu.Lock()
+	actors := make(map[int64]*actor, len(m.groups))
+	for groupID, a := range m.groups {
+		actors[groupID] = a
+	}
+	m.mu.Unlock()
+
+	retired := 0
+	for groupID, a := range actors {
+		if now.Sub(a.lastUsed()) < m.idleTTL {
+			continue
+		}
+		resultCh := make(chan result, 1)
+		ackCh := make(chan error, 1)
+		select {
+		case a.mailbox <- request{op: "retire_if_idle", now: now, idleTTL: m.idleTTL, result: resultCh, ack: ackCh}:
+		case <-ctx.Done():
+			return retired
+		case <-a.done:
+			continue
+		}
+		select {
+		case result := <-resultCh:
+			if !result.retire {
+				continue
+			}
+			if err := m.save(ctx, result.memory); err != nil {
+				ackCh <- err
+				continue
+			}
+			ackCh <- nil
+		case <-ctx.Done():
+			ackCh <- ctx.Err()
+			return retired
+		case <-a.done:
+			continue
+		}
+		m.mu.Lock()
+		if m.groups[groupID] == a {
+			delete(m.groups, groupID)
+			retired++
+		}
+		m.mu.Unlock()
+	}
+	return retired
+}
+
 func (m *Manager) Close() error {
 	m.mu.Lock()
 	if m.closed {
@@ -322,17 +389,20 @@ type request struct {
 	record      humandomain.EventRecord
 	now         time.Time
 	minScore    float64
+	idleTTL     time.Duration
 	candidateID string
 	eventID     string
 	descriptors []mediadomain.MediaDescriptor
 	candidate   *humandomain.ThoughtCandidate
 	result      chan result
+	ack         chan error
 }
 
 type result struct {
 	memory    humandomain.GroupWorkingMemory
 	candidate *humandomain.ThoughtCandidate
 	valid     bool
+	retire    bool
 	err       error
 }
 
@@ -345,6 +415,7 @@ type actor struct {
 	stop          chan struct{}
 	done          chan struct{}
 	seen          map[string]struct{}
+	lastUsedNano  atomic.Int64
 }
 
 func newActor(groupID int64, tailSize, maxCandidates, maxSeen int, initial humandomain.GroupWorkingMemory) *actor {
@@ -358,6 +429,7 @@ func newActor(groupID int64, tailSize, maxCandidates, maxSeen int, initial human
 		done:          make(chan struct{}),
 		seen:          make(map[string]struct{}),
 	}
+	a.lastUsedNano.Store(time.Now().UnixNano())
 	for _, record := range initial.RecentTail {
 		if record.EventID != "" {
 			a.seen[record.EventID] = struct{}{}
@@ -378,6 +450,9 @@ func (a *actor) run(initial humandomain.GroupWorkingMemory) {
 		case <-a.stop:
 			return
 		case req := <-a.mailbox:
+			if req.op != "retire_if_idle" {
+				a.touch()
+			}
 			switch req.op {
 			case "observe":
 				if _, duplicate := a.seen[req.record.EventID]; !duplicate {
@@ -415,10 +490,46 @@ func (a *actor) run(initial humandomain.GroupWorkingMemory) {
 			case "enrich_media":
 				enrichMedia(&memory, req.eventID, req.descriptors)
 			case "snapshot":
+			case "retire_if_idle":
+				idle := nowIdle(a.lastUsed(), req.now, req.idleTTL)
+				if idle && !hasLiveCandidates(memory.Candidates) {
+					req.result <- result{retire: true, memory: cloneMemory(memory)}
+					if req.ack != nil {
+						if err := <-req.ack; err != nil {
+							continue
+						}
+					}
+					return
+				}
+				req.result <- result{retire: false, memory: cloneMemory(memory)}
+				continue
 			}
 			req.result <- result{memory: cloneMemory(memory)}
 		}
 	}
+}
+
+func nowIdle(lastUsed, now time.Time, ttl time.Duration) bool {
+	return ttl > 0 && !lastUsed.IsZero() && now.Sub(lastUsed) >= ttl
+}
+
+func hasLiveCandidates(candidates []humandomain.ThoughtCandidate) bool {
+	for _, candidate := range candidates {
+		if isLive(candidate.Status) {
+			return true
+		}
+	}
+	return false
+}
+
+func isLive(status humandomain.CandidateStatus) bool {
+	return status == humandomain.CandidatePending || status == humandomain.CandidateDeferred || status == humandomain.CandidateAccepted
+}
+
+func (a *actor) touch() { a.lastUsedNano.Store(time.Now().UnixNano()) }
+
+func (a *actor) lastUsed() time.Time {
+	return time.Unix(0, a.lastUsedNano.Load())
 }
 
 func (a *actor) canExecute(ctx context.Context, candidateID string, now time.Time) (bool, error) {
@@ -725,9 +836,6 @@ func claimCandidate(memory *humandomain.GroupWorkingMemory, now time.Time, minSc
 func pruneCandidates(memory *humandomain.GroupWorkingMemory, max int) {
 	if max <= 0 || len(memory.Candidates) <= max {
 		return
-	}
-	isLive := func(status humandomain.CandidateStatus) bool {
-		return status == humandomain.CandidatePending || status == humandomain.CandidateDeferred || status == humandomain.CandidateAccepted
 	}
 	liveCount := 0
 	for _, candidate := range memory.Candidates {

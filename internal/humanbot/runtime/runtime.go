@@ -235,6 +235,7 @@ func (r *Runtime) loop(interval time.Duration, minScore float64, timeout time.Du
 		case <-r.ctx.Done():
 			return
 		case now := <-ticker.C:
+			r.working.PruneIdle(r.ctx, now)
 			for _, groupID := range r.working.GroupIDs() {
 				if r.turns != nil {
 					allowed, err := r.turns.CanDeliberate(r.ctx, groupID, now)

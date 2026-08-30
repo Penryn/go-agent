@@ -25,8 +25,9 @@ func Default() Config {
 			WriteTimeout: "10s",
 		},
 		Runtime: RuntimeConfig{
-			WorkerCount: 2,
-			QueueLength: 128,
+			WorkerCount:  2,
+			QueueLength:  128,
+			ActorIdleTTL: "30m",
 		},
 		Models: ModelsConfig{
 			Main:      ModelProviderConfig{Provider: "ark", Timeout: "20s"},

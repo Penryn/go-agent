@@ -118,7 +118,10 @@ func NewApp(ctx context.Context, cfg config.Config) (*App, error) {
 	}
 	contextService := contextsvc.New(stores.memory, vectorStore, stores.profile, stores.state, policyService, cfg.Persona)
 	eventLog := humaningress.NewMemoryEventLog()
-	actorOptions := []humanactor.Option{humanactor.WithArchive(stores.memory)}
+	actorOptions := []humanactor.Option{
+		humanactor.WithArchive(stores.memory),
+		humanactor.WithIdleTTL(mustDuration(cfg.Runtime.ActorIdleTTL, 30*time.Minute)),
+	}
 	if stateStore, ok := stores.memory.(humanactor.WorkingMemoryStore); ok {
 		actorOptions = append(actorOptions, humanactor.WithStateStore(stateStore))
 	}
