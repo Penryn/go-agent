@@ -54,3 +54,42 @@ func TestInstructionDefaultsEmptyMoodAndEnergy(t *testing.T) {
 		t.Fatalf("expected default energy 'normal', got:\n%s", instruction)
 	}
 }
+
+func TestInstructionUsesGroupPersonaOverlay(t *testing.T) {
+	c := NewComposer(defaultPersona())
+	snapshot := conversationdomain.ContextSnapshot{
+		Event: conversationdomain.ConversationEvent{GroupID: 42},
+		GroupPolicy: policydomain.GroupPolicy{PersonaOverlay: map[string]any{
+			"name":         "群里的艾莲",
+			"speech_style": "只说半句",
+		}},
+	}
+
+	instruction := c.Instruction(snapshot, policydomain.AutonomyDecision{})
+	if !strings.Contains(instruction, "你是 群里的艾莲") {
+		t.Fatalf("expected group persona name, got:\n%s", instruction)
+	}
+	if !strings.Contains(instruction, "说话风格: 只说半句") {
+		t.Fatalf("expected group speech style, got:\n%s", instruction)
+	}
+}
+
+func TestMessagesTruncateOldContextButKeepCurrentEvent(t *testing.T) {
+	c := NewComposer(defaultPersona())
+	c.SetContextBudgets(80, 100)
+	snapshot := conversationdomain.ContextSnapshot{
+		Event: conversationdomain.ConversationEvent{EventID: "current", MessageID: "m-current", UserID: 7, TimestampUnix: 100},
+		RecentTurns: []conversationdomain.ConversationEvent{
+			{EventID: "old", MessageID: "m-old", UserID: 8, Text: strings.Repeat("旧", 80), TimestampUnix: 90},
+			{EventID: "current", MessageID: "m-current", UserID: 7, Text: "当前消息", TimestampUnix: 100},
+		},
+	}
+	messages := c.Messages(snapshot)
+	content := messages[0].Content
+	if !strings.Contains(content, "当前消息") {
+		t.Fatalf("current event was dropped: %s", content)
+	}
+	if !strings.Contains(content, "较早上下文已裁剪") {
+		t.Fatalf("expected truncation marker: %s", content)
+	}
+}

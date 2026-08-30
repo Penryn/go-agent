@@ -60,6 +60,7 @@ type ConversationContext struct {
 
 type ContextSnapshot struct {
 	SnapshotID        string                          `json:"snapshot_id" yaml:"snapshot_id"`
+	Projection        ProjectionMetadata              `json:"projection" yaml:"projection"`
 	Event             ConversationEvent               `json:"event" yaml:"event"`
 	RecentTurns       []ConversationEvent             `json:"recent_turns" yaml:"recent_turns"`
 	RelevantMemories  []memorydomain.MemoryRecord     `json:"relevant_memories" yaml:"relevant_memories"`
@@ -73,4 +74,21 @@ type ContextSnapshot struct {
 	GroupPolicy       policydomain.GroupPolicy        `json:"group_policy" yaml:"group_policy"`
 	RuntimeState      policydomain.RuntimeState       `json:"runtime_state" yaml:"runtime_state"`
 	DecisionHints     []string                        `json:"decision_hints" yaml:"decision_hints"`
+}
+
+// ContextCursor identifies the last archived fact included in a snapshot.
+// It is independent from SnapshotID so a projector can resume after restart.
+type ContextCursor struct {
+	EventID       string `json:"event_id" yaml:"event_id"`
+	TimestampUnix int64  `json:"timestamp_unix" yaml:"timestamp_unix"`
+}
+
+// ProjectionMetadata describes how the live context was assembled. The
+// metadata is a seam for future summary/checkpoint projections.
+type ProjectionMetadata struct {
+	Name            string        `json:"name" yaml:"name"`
+	Version         uint64        `json:"version" yaml:"version"`
+	Cursor          ContextCursor `json:"cursor" yaml:"cursor"`
+	Complete        bool          `json:"complete" yaml:"complete"`
+	RecentTruncated bool          `json:"recent_truncated" yaml:"recent_truncated"`
 }

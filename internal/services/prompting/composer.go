@@ -12,14 +12,39 @@ import (
 )
 
 type Composer struct {
-	persona personadomain.PersonaConfig
+	persona       personadomain.PersonaConfig
+	recentMaxChar int
+	memoryMaxChar int
 }
 
 func NewComposer(persona personadomain.PersonaConfig) *Composer {
-	return &Composer{persona: persona}
+	return &Composer{persona: persona, recentMaxChar: 6000, memoryMaxChar: 3000}
 }
 
+// SetContextBudgets bounds model-facing context while keeping the current
+// event intact. A value <= 0 leaves the existing budget unchanged.
+func (c *Composer) SetContextBudgets(recentChars, memoryChars int) {
+	if recentChars > 0 {
+		c.recentMaxChar = recentChars
+	}
+	if memoryChars > 0 {
+		c.memoryMaxChar = memoryChars
+	}
+}
+
+// Instruction resolves group-specific persona configuration for this turn,
+// while keeping the mutable PersonaState in the conversation snapshot.
 func (c *Composer) Instruction(snapshot conversationdomain.ContextSnapshot, decision policydomain.AutonomyDecision) string {
+	resolved := personadomain.Resolve(c.persona, snapshot.Event.GroupID, snapshot.GroupPolicy.PersonaOverlay)
+	if resolved.Hash != personadomain.Hash(c.persona) {
+		clone := *c
+		clone.persona = resolved.Config
+		return clone.instruction(snapshot, decision)
+	}
+	return c.instruction(snapshot, decision)
+}
+
+func (c *Composer) instruction(snapshot conversationdomain.ContextSnapshot, decision policydomain.AutonomyDecision) string {
 	if decision.Action == policydomain.ActionSilent {
 		sections := []string{
 			"长期人格层:",
@@ -191,7 +216,8 @@ func (c *Composer) Messages(snapshot conversationdomain.ContextSnapshot) []*sche
 	baseTS := snapshot.Event.TimestampUnix // 当前触发消息时间戳，作为相对时间基准
 	currentUserID := snapshot.Event.UserID
 
-	recentTurns := make([]string, 0, len(snapshot.RecentTurns))
+	formattedTurns := make([]string, 0, len(snapshot.RecentTurns))
+	currentIndex := -1
 	for _, turn := range snapshot.RecentTurns {
 		if strings.TrimSpace(turn.Text) == "" {
 			continue
@@ -215,13 +241,19 @@ func (c *Composer) Messages(snapshot conversationdomain.ContextSnapshot) []*sche
 			timeTag = fmt.Sprintf("[T-%ds]", diffSec)
 		}
 
-		recentTurns = append(recentTurns, fmt.Sprintf("%s%s %s", timeTag, roleTag, strings.TrimSpace(turn.Text)))
+		formattedTurns = append(formattedTurns, fmt.Sprintf("%s%s %s", timeTag, roleTag, strings.TrimSpace(turn.Text)))
+		if (snapshot.Event.EventID != "" && turn.EventID == snapshot.Event.EventID) ||
+			(snapshot.Event.EventID == "" && snapshot.Event.MessageID != "" && turn.MessageID == snapshot.Event.MessageID) {
+			currentIndex = len(formattedTurns) - 1
+		}
 	}
+	recentTurns, recentTruncated := retainRecentTurns(formattedTurns, currentIndex, snapshot.Event, snapshot.Event.UserID, baseTS, c.recentMaxChar)
 
 	memorySnippets := make([]string, 0, len(snapshot.RelevantMemories))
 	for _, record := range snapshot.RelevantMemories {
 		memorySnippets = append(memorySnippets, fmt.Sprintf("%s:%s", record.Subject, record.Content))
 	}
+	memorySnippets, _ = retainNewestStrings(memorySnippets, c.memoryMaxChar)
 
 	mediaSnippets := make([]string, 0, len(snapshot.MediaDescriptors))
 	for _, descriptor := range snapshot.MediaDescriptors {
@@ -253,13 +285,81 @@ func (c *Composer) Messages(snapshot conversationdomain.ContextSnapshot) []*sche
 		workingState = append(workingState, "未解决问题: "+strings.Join(snapshot.OpenLoops, " / "))
 	}
 
+	recentContext := strings.Join(recentTurns, " | ")
+	if recentTruncated {
+		recentContext = "[较早上下文已裁剪] " + recentContext
+	}
 	content := strings.Join([]string{
 		fmt.Sprintf("当前事件: user=%d msg_id=%s text=%q", snapshot.Event.UserID, snapshot.Event.MessageID, snapshot.Event.Text),
-		fmt.Sprintf("最近上下文: %s", strings.Join(recentTurns, " | ")),
+		fmt.Sprintf("最近上下文: %s", recentContext),
 		fmt.Sprintf("工作记忆: %s", strings.Join(workingState, " | ")),
 		fmt.Sprintf("相关记忆: %s", strings.Join(memorySnippets, " | ")),
 		fmt.Sprintf("媒体摘要: %s", strings.Join(mediaSnippets, " | ")),
 	}, "\n")
 
 	return []*schema.Message{schema.UserMessage(content)}
+}
+
+func retainRecentTurns(lines []string, currentIndex int, current conversationdomain.ConversationEvent, currentUserID int64, baseTS int64, budget int) ([]string, bool) {
+	if len(lines) == 0 {
+		return []string{formatTurn(current, currentUserID, baseTS)}, false
+	}
+	selected := make([]bool, len(lines))
+	used := 0
+	if currentIndex >= 0 {
+		selected[currentIndex] = true
+		used = len([]byte(lines[currentIndex]))
+	}
+	for i := len(lines) - 1; i >= 0; i-- {
+		if selected[i] || (budget > 0 && used+len([]byte(lines[i])) > budget) {
+			continue
+		}
+		selected[i] = true
+		used += len([]byte(lines[i]))
+	}
+	result := make([]string, 0, len(lines)+1)
+	truncated := false
+	for i, line := range lines {
+		if selected[i] {
+			result = append(result, line)
+		} else {
+			truncated = true
+		}
+	}
+	if currentIndex < 0 {
+		result = append(result, formatTurn(current, currentUserID, baseTS))
+	}
+	return result, truncated
+}
+
+func retainNewestStrings(values []string, budget int) ([]string, bool) {
+	if budget <= 0 {
+		return values, false
+	}
+	used := 0
+	start := len(values)
+	for i := len(values) - 1; i >= 0; i-- {
+		if used+len([]byte(values[i])) > budget {
+			break
+		}
+		used += len([]byte(values[i]))
+		start = i
+	}
+	return values[start:], start > 0
+}
+
+func formatTurn(turn conversationdomain.ConversationEvent, currentUserID int64, baseTS int64) string {
+	roleTag := fmt.Sprintf("[用户%d]", turn.UserID)
+	if turn.UserID == currentUserID {
+		roleTag = "[当前用户]"
+	}
+	timeTag := ""
+	if baseTS > 0 && turn.TimestampUnix > 0 {
+		diffSec := baseTS - turn.TimestampUnix
+		if diffSec < 0 {
+			diffSec = 0
+		}
+		timeTag = fmt.Sprintf("[T-%ds]", diffSec)
+	}
+	return fmt.Sprintf("%s%s %s", timeTag, roleTag, strings.TrimSpace(turn.Text))
 }

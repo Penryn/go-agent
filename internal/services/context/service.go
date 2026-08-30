@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"sort"
 	"strings"
 	"time"
 
@@ -132,9 +133,38 @@ func (s *Service) BuildSnapshot(ctx context.Context, envelope conversationdomain
 	if len(mediaDescriptors) == 0 {
 		mediaDescriptors = attachmentsAsDescriptors(envelope.Event.Attachments)
 	}
+	groupPolicy := s.policy.EffectiveGroupPolicy(envelope.Event.GroupID)
+	resolvedPersona := personadomain.Resolve(s.persona, envelope.Event.GroupID, groupPolicy.PersonaOverlay)
+	personaConfig := resolvedPersona.Config
+	if resolvedPersona.ToolAllowlist != nil {
+		groupPolicy.ToolAllowlist = append([]string(nil), resolvedPersona.ToolAllowlist...)
+	}
+	personaProfile := personadomain.PersonaProfile{
+		PersonaID:       personaConfig.ID,
+		DisplayName:     personaConfig.Name,
+		Version:         resolvedPersona.Version,
+		Hash:            resolvedPersona.Hash,
+		Config:          personaConfig,
+		StableTraits:    []string{personaConfig.SpeechStyle, personaConfig.Description},
+		StyleRules:      []string{"像真人，不像客服", "优先短句"},
+		AutonomyBias:    map[string]float64{"prefer_memes": boolFloat(personaConfig.PreferMemes), "allow_teasing": boolFloat(personaConfig.AllowTeasing)},
+		OutputRules:     []string{fmt.Sprintf("最大 %d 字", personaConfig.ReplyMaxChars), fmt.Sprintf("最大 %d 句", personaConfig.ReplyMaxSentences)},
+		ToolAllowlist:   append([]string(nil), resolvedPersona.ToolAllowlist...),
+		FewShotExamples: append([]personadomain.FewShotExample(nil), resolvedPersona.FewShotExamples...),
+	}
 
+	projection := conversationdomain.ProjectionMetadata{
+		Name:     "group_working_memory+archive",
+		Version:  working.Version,
+		Complete: true,
+	}
+	if len(recentTurns) > 0 {
+		last := recentTurns[len(recentTurns)-1]
+		projection.Cursor = conversationdomain.ContextCursor{EventID: last.EventID, TimestampUnix: last.TimestampUnix}
+	}
 	return conversationdomain.ContextSnapshot{
 		SnapshotID:        fmt.Sprintf("snapshot-%d", time.Now().UnixNano()),
+		Projection:        projection,
 		Event:             envelope.Event,
 		RecentTurns:       recentTurns,
 		RelevantMemories:  relevantMemories,
@@ -143,27 +173,11 @@ func (s *Service) BuildSnapshot(ctx context.Context, envelope conversationdomain
 		OpenLoops:         append([]string(nil), working.OpenLoops...),
 		MemberProfile:     ensureMemberProfile(memberProfile, envelope.Event),
 		RelationshipState: relationship,
-		PersonaProfile: personadomain.PersonaProfile{
-			PersonaID:    s.persona.ID,
-			DisplayName:  s.persona.Name,
-			StableTraits: []string{s.persona.SpeechStyle, s.persona.Description},
-			StyleRules: []string{
-				"像真人，不像客服",
-				"优先短句",
-			},
-			AutonomyBias: map[string]float64{
-				"prefer_memes":  boolFloat(s.persona.PreferMemes),
-				"allow_teasing": boolFloat(s.persona.AllowTeasing),
-			},
-			OutputRules: []string{
-				fmt.Sprintf("最大 %d 字", s.persona.ReplyMaxChars),
-				fmt.Sprintf("最大 %d 句", s.persona.ReplyMaxSentences),
-			},
-		},
-		PersonaState:  personaState,
-		GroupPolicy:   s.policy.EffectiveGroupPolicy(envelope.Event.GroupID),
-		RuntimeState:  runtimeState,
-		DecisionHints: buildDecisionHints(envelope.Event),
+		PersonaProfile:    personaProfile,
+		PersonaState:      personaState,
+		GroupPolicy:       groupPolicy,
+		RuntimeState:      runtimeState,
+		DecisionHints:     buildDecisionHints(envelope.Event),
 	}, nil
 }
 
@@ -234,36 +248,63 @@ func (s *Service) queryMemoriesDualTrack(ctx context.Context, groupID, userID in
 		return nil, err
 	}
 
-	return mergeMemoryResults(mysqlRecords, qdrantRecords, mysqlTopK), nil
+	limit := mysqlTopK
+	if s.semanticTopK > limit {
+		limit = s.semanticTopK
+	}
+	return mergeMemoryResults(mysqlRecords, qdrantRecords, limit), nil
 }
 
 // mergeMemoryResults 将 MySQL 和 Qdrant 的结果去重合并。
 // MySQL 结果作为主数据源（字段完整），Qdrant 补充语义相关但关键词未命中的记录。
 func mergeMemoryResults(mysqlRecords, qdrantRecords []memorydomain.MemoryRecord, limit int) []memorydomain.MemoryRecord {
-	if len(qdrantRecords) == 0 {
-		return mysqlRecords
+	// Reciprocal rank fusion keeps exact lexical hits and semantic neighbours
+	// comparable without pretending the two providers share a score scale.
+	const k = 60.0
+	type ranked struct {
+		record memorydomain.MemoryRecord
+		score  float64
+		order  int
 	}
-
-	seen := make(map[string]struct{}, len(mysqlRecords))
-	for _, r := range mysqlRecords {
-		seen[r.MemoryID] = struct{}{}
-	}
-
-	merged := make([]memorydomain.MemoryRecord, 0, len(mysqlRecords)+len(qdrantRecords))
-	merged = append(merged, mysqlRecords...)
-
-	for _, r := range qdrantRecords {
-		if _, exists := seen[r.MemoryID]; exists {
-			continue
+	byID := make(map[string]*ranked, len(mysqlRecords)+len(qdrantRecords))
+	add := func(records []memorydomain.MemoryRecord) {
+		for rank, record := range records {
+			id := record.MemoryID
+			if id == "" {
+				id = record.Scope + "\x00" + record.Subject + "\x00" + record.Content
+			}
+			item := byID[id]
+			if item == nil {
+				item = &ranked{record: record, order: len(byID)}
+				byID[id] = item
+			}
+			item.score += 1 / (k + float64(rank+1))
+			// Lexical storage is authoritative for complete fields.
+			if item.record.Content == "" && record.Content != "" {
+				item.record = record
+			}
 		}
-		seen[r.MemoryID] = struct{}{}
-		merged = append(merged, r)
 	}
-
-	if limit > 0 && len(merged) > limit {
-		return merged[:limit]
+	add(mysqlRecords)
+	add(qdrantRecords)
+	merged := make([]ranked, 0, len(byID))
+	for _, item := range byID {
+		merged = append(merged, *item)
 	}
-	return merged
+	sort.SliceStable(merged, func(i, j int) bool {
+		if merged[i].score == merged[j].score {
+			return merged[i].order < merged[j].order
+		}
+		return merged[i].score > merged[j].score
+	})
+	result := make([]memorydomain.MemoryRecord, 0, len(merged))
+	for _, item := range merged {
+		result = append(result, item.record)
+		if limit > 0 && len(result) >= limit {
+			break
+		}
+	}
+	return result
 }
 
 func attachmentsAsDescriptors(attachments []mediadomain.MultimodalAttachment) []mediadomain.MediaDescriptor {
