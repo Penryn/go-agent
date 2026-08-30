@@ -6,50 +6,58 @@ Bot 会自动判断何时该说话、何时沉默，用短句和表情包自然�
 
 ## 特性
 
-- 🧠 **自主决策** — 状态机 + LLM Gate 双重判断，控制发言时机与频率
+- 🧠 **Presence Runtime** — 持续感知群聊，按候选、时机和认知负载决定是否参与
 - 🎭 **人格系统** — 可配置说话风格、心情、精力，按群独立覆写策略
 - 👀 **多模态理解** — 图片 / 视频 / 梗图自动识别，Vision Agent 提取摘要
 - 🃏 **表情包库** — 自动收藏群内表情包，语义检索精准复用，去重 + 冷却
 - 📝 **长期记忆** — 记住群友偏好与关系，Qdrant 向量检索 + MySQL 结构化存储
 - 👤 **群友画像** — 跟踪活跃度、常用短语、亲密度，动态调整互动方式
-- 🔄 **后台学习** — Curator + Learning Agent 异步提炼群聊黑话和高频表达
+- 🔄 **后台学习** — 从持久化事件归档中异步提炼群聊黑话和高频表达
 - 🔌 **类型安全的 NapCat 接入** — 使用 [`zjutjh/napcat-sdk`](https://github.com/zjutjh/napcat-sdk) 统一处理 WebSocket 事件、HTTP action 与协议错误
 
 ## 架构
 
 ```
-┌──────────────────────────────────────────────────────────────┐
-│                     NapCat / OneBot 11                        │
-│               (QQ 协议层 · WebSocket + HTTP)                  │
-└────────────┬─────────────────────────────────┬───────────────┘
-             │ 事件                            ▲ 动作
-             ▼                                 │
-┌──────────────────────────────────────────────────────────────┐
-│                   确定性 Runtime Kernel                       │
-│  事件标准化 → 上下文构建 → 策略/自主决策 → 动作执行             │
-└──────┬────────┬────────┬────────┬────────┬───────────────────┘
-       │        │        │        │        │
-       ▼        ▼        ▼        ▼        ▼
-   ┌───────┐┌───────┐┌───────┐┌────────┐┌────────┐
-   │ Main  ││ Gate  ││Vision ││Curator ││Learning│
-   │Persona││ Agent ││ Agent ││ Agent  ││ Agent  │
-   │ (ADK) ││(Chat) ││(Chat) ││(Graph) ││(Work-  │
-   │       ││ Model ││ Model ││       ││ flow)  │
-   └───────┘└───────┘└───────┘└────────┘└────────┘
-       │        │        │        │        │
-       ▼        ▼        ▼        ▼        ▼
-┌──────────────────────────────────────────────────────────────┐
-│               存储层：MySQL · Redis · Qdrant · MinIO          │
-└──────────────────────────────────────────────────────────────┘
+NapCat / OneBot 11
+        │ inbound event
+        ▼
+Normalize → Event Log + durable archive
+        ▼
+Group Presence Actor
+  ├─ Working Memory / burst 合并
+  ├─ Topic / open loop
+  └─ Thought Candidate
+        ▼
+Presence Scheduler
+        ▼
+Deliberator → Context Projection → Persona Planner
+        ▼
+Action Executor → NapCat outbound
+        │
+        └── origin=outbound self event → Reflection / Learning
 ```
 
-| Agent | 职责 | 实现方式 |
-|-------|------|---------|
-| **Main Persona** | 生成自然回复，调用运行时工具 | Eino ADK `ChatModelAgent` |
-| **Gate** | 轻量判定是否值得回复 | `BaseChatModel.Generate` + 启发式回退 |
-| **Vision** | 图片 / 视频内容理解 | `BaseChatModel.Generate`（多模态） |
-| **Curator** | 后台提炼记忆和画像候选 | `compose.Graph` |
-| **Learning** | 定时学习群聊黑话和表达 | `compose.Workflow` |
+Runtime 的核心原则是：所有消息都被感知，但不是所有消息都值得回复。回复是候选经过调度和思考后的副作用，不是入站消息的必然结果。
+
+| 模块 | 职责 | 实现方式 |
+|------|------|---------|
+| **Group Presence Actor** | 串行维护每群 working memory、burst、话题和候选 | Go mailbox |
+| **Presence Scheduler** | 按 due time、urgency、过期时间和认知负载选择候选 | 确定性规则 |
+| **Deliberator** | 为候选构建窄上下文，并选择 reply/react/meme/silent | Runtime seam + Eino Planner |
+| **Main Persona** | 生成自然短句、引用和工具调用 | Eino ADK `ChatModelAgent` |
+| **Vision** | 图片 / 视频内容理解 | 多模态 `ChatModel`，异步接入 |
+| **Curator / Learning** | 从归档事件提炼记忆、画像和群聊表达 | `compose.Graph/Workflow` |
+
+## 一条群消息的链路
+
+1. NapCat 通过 WebSocket 或 HTTP 将 OneBot 事件交给 Bot。
+2. Normalizer 生成统一的 `EventEnvelope`，并按事件 ID 去重。
+3. Group Actor 写入 Event Log 和 MySQL 消息归档，再更新群的 working memory。
+4. Actor 将消息转成可延迟、可取消、可过期的 `ThoughtCandidate`。
+5. Presence Scheduler 在合适的时间 claim 候选，避免每条消息都立即触发模型。
+6. Deliberator 读取窄上下文，选择回复、表情回应、表情包或保持沉默。
+7. Action Executor 做输出约束和平台动作校验，然后调用 NapCat。
+8. 发送成功后主动写入 Bot 自己的 `origin=outbound` 事件，供下一轮上下文和学习使用。
 
 ## 环境要求
 
@@ -157,7 +165,6 @@ go run ./cmd/qqbotd -config configs/config.yaml
 |------|------|
 | `QQBOT_QQ_ACCESS_TOKEN` | NapCat Access Token |
 | `QQBOT_MAIN_MODEL_API_KEY` | 主模型 API Key |
-| `QQBOT_GATE_MODEL_API_KEY` | Gate 模型 Key（可选，可复用主 Key） |
 | `QQBOT_VISION_MODEL_API_KEY` | Vision 模型 Key（可选） |
 | `QQBOT_EMBEDDING_MODEL_API_KEY` | Embedding 模型 Key（预留） |
 | `QQBOT_STORAGE_MYSQL_PASSWORD` | MySQL 密码 |
@@ -266,8 +273,11 @@ mysql -h 127.0.0.1 -u qqbot -p qqbot < migrations/001_init.sql
 go mod tidy        # 依赖整理
 go build ./...     # 编译
 go test ./...      # 全量测试
+go test -race ./... # 竞态检测
 docker compose config  # 验证 compose 配置
 ```
+
+完整的重构设计和事件生命周期说明见 [`HUMAN_PRESENCE_REDESIGN.md`](HUMAN_PRESENCE_REDESIGN.md)。
 
 ## License
 
