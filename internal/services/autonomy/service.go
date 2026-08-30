@@ -14,12 +14,39 @@ import (
 )
 
 type Service struct {
-	policy *policysvc.Service
-	gate   *gatesvc.Service
+	policy    *policysvc.Service
+	gate      *gatesvc.Service
+	randFloat func() float64
+	now       func() time.Time
 }
 
-func New(policy *policysvc.Service, gate *gatesvc.Service) *Service {
-	return &Service{policy: policy, gate: gate}
+// Option customizes non-deterministic inputs for tests.
+type Option func(*Service)
+
+// WithRandFloat replaces the random source used by poke decisions.
+func WithRandFloat(randFloat func() float64) Option {
+	return func(s *Service) {
+		if randFloat != nil {
+			s.randFloat = randFloat
+		}
+	}
+}
+
+// WithClock replaces the clock used for state updates.
+func WithClock(now func() time.Time) Option {
+	return func(s *Service) {
+		if now != nil {
+			s.now = now
+		}
+	}
+}
+
+func New(policy *policysvc.Service, gate *gatesvc.Service, opts ...Option) *Service {
+	service := &Service{policy: policy, gate: gate, randFloat: rand.Float64, now: time.Now}
+	for _, opt := range opts {
+		opt(service)
+	}
+	return service
 }
 
 func (s *Service) Decide(ctx context.Context, snapshot conversationdomain.ContextSnapshot) (policydomain.AutonomyDecision, policydomain.RuntimeState, error) {
@@ -58,7 +85,7 @@ func (s *Service) Decide(ctx context.Context, snapshot conversationdomain.Contex
 
 	direct := snapshot.Event.MentionedBot || snapshot.Event.NamedBot || snapshot.Event.IsReplyToBot
 	if direct {
-		decision, runtimeState = reply(decision, runtimeState, policydomain.StateCooldown, "direct_triggered", 1)
+		decision, runtimeState = reply(decision, runtimeState, policydomain.StateCooldown, "direct_triggered", 1, s.now())
 		return decision, runtimeState, nil
 	}
 
@@ -71,7 +98,7 @@ func (s *Service) Decide(ctx context.Context, snapshot conversationdomain.Contex
 	// 三路决策：戳回（ActionPokeBack）/ 对话回复（ActionPokeReply）/ 静默。
 	// 不更新 LastDirectedAt / CooldownUntil，poke 是轻社交信号，不重置冷却。
 	if snapshot.Event.Kind == conversationdomain.EventPoke {
-		decision, runtimeState = decidePoke(decision, runtimeState, groupPolicy)
+		decision, runtimeState = decidePoke(decision, runtimeState, groupPolicy, s.randFloat, s.now())
 		return decision, runtimeState, nil
 	}
 
@@ -149,7 +176,7 @@ func silent(decision policydomain.AutonomyDecision, state policydomain.RuntimeSt
 	return decision, state
 }
 
-func reply(decision policydomain.AutonomyDecision, state policydomain.RuntimeState, nextState policydomain.AutonomyState, trigger string, score float64) (policydomain.AutonomyDecision, policydomain.RuntimeState) {
+func reply(decision policydomain.AutonomyDecision, state policydomain.RuntimeState, nextState policydomain.AutonomyState, trigger string, score float64, now time.Time) (policydomain.AutonomyDecision, policydomain.RuntimeState) {
 	decision.Action = policydomain.ActionReply
 	decision.StateAfter = nextState
 	decision.TriggerType = trigger
@@ -157,7 +184,6 @@ func reply(decision policydomain.AutonomyDecision, state policydomain.RuntimeSta
 	decision.ReasonCodes = []string{trigger}
 	decision.Explain[trigger] = score
 	state.State = nextState
-	now := time.Now()
 	state.LastDirectedAt = now
 	state.LastBotSpeakAt = now
 	state.CooldownUntil = now.Add(30 * time.Second)
@@ -172,6 +198,8 @@ func decidePoke(
 	decision policydomain.AutonomyDecision,
 	state policydomain.RuntimeState,
 	groupPolicy policydomain.GroupPolicy,
+	randFloat func() float64,
+	now time.Time,
 ) (policydomain.AutonomyDecision, policydomain.RuntimeState) {
 	// 推导基础戳回概率
 	pokeBackBase := groupPolicy.PokeBackChance
@@ -198,7 +226,7 @@ func decidePoke(
 		replyW = replyW / total
 	}
 
-	r := rand.Float64()
+	r := randFloat()
 	switch {
 	case r < pokeBackW:
 		decision.Action = policydomain.ActionPokeBack
@@ -207,7 +235,7 @@ func decidePoke(
 		decision.ReasonCodes = []string{"poke_back"}
 		decision.Explain["poke_back"] = pokeBackW
 	case r < pokeBackW+replyW:
-		decision, state = pokeReply(decision, state, replyW)
+		decision, state = pokeReply(decision, state, replyW, now)
 	default:
 		decision, state = silent(decision, state, state.State, "poke_silent")
 	}
@@ -220,6 +248,7 @@ func pokeReply(
 	decision policydomain.AutonomyDecision,
 	state policydomain.RuntimeState,
 	score float64,
+	now time.Time,
 ) (policydomain.AutonomyDecision, policydomain.RuntimeState) {
 	decision.Action = policydomain.ActionPokeReply
 	decision.StateAfter = state.State // 不跳 StateCooldown
@@ -227,7 +256,7 @@ func pokeReply(
 	decision.Score = score
 	decision.ReasonCodes = []string{"poke_reply"}
 	decision.Explain["poke_reply"] = score
-	state.LastBotSpeakAt = time.Now()
+	state.LastBotSpeakAt = now
 	state.ConsecutiveBotTurns++
 	return decision, state
 }

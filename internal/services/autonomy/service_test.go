@@ -118,7 +118,7 @@ func TestDecidePokeBack(t *testing.T) {
 	cfg.DefaultPolicy.QuietHours = nil
 	cfg.DefaultPolicy.AllowPokeBack = true
 	policySvc := policysvc.New(cfg)
-	svc := New(policySvc, nil)
+	svc := New(policySvc, nil, WithRandFloat(func() float64 { return 0 }))
 
 	snapshot := conversationdomain.ContextSnapshot{
 		Event: conversationdomain.ConversationEvent{
@@ -140,6 +140,56 @@ func TestDecidePokeBack(t *testing.T) {
 	}
 	if decision.Action != policydomain.ActionPokeBack {
 		t.Fatalf("expected poke_back action, got %s", decision.Action)
+	}
+}
+
+func TestDecidePokeBranchesAreDeterministicWithInjectedRandomSource(t *testing.T) {
+	tests := []struct {
+		name   string
+		random float64
+		action policydomain.DecisionAction
+	}{
+		{name: "poke back", random: 0.1, action: policydomain.ActionPokeBack},
+		{name: "poke reply", random: 0.6, action: policydomain.ActionPokeReply},
+		{name: "silent", random: 0.99, action: policydomain.ActionSilent},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := config.Default()
+			cfg.DefaultPolicy.QuietHours = nil
+			cfg.DefaultPolicy.AllowPokeBack = true
+			cfg.DefaultPolicy.PokeBackChance = 0.4
+			policySvc := policysvc.New(cfg)
+			fixedNow := time.Unix(1700000000, 0)
+			svc := New(policySvc, nil,
+				WithRandFloat(func() float64 { return tt.random }),
+				WithClock(func() time.Time { return fixedNow }),
+			)
+
+			decision, state, err := svc.Decide(context.Background(), conversationdomain.ContextSnapshot{
+				Event: conversationdomain.ConversationEvent{
+					Kind:          conversationdomain.EventPoke,
+					GroupID:       1,
+					UserID:        2,
+					TimestampUnix: fixedNow.Unix(),
+				},
+				GroupPolicy: cfg.DefaultPolicy,
+				RuntimeState: policydomain.RuntimeState{
+					GroupID: 1,
+					State:   policydomain.StateObserving,
+				},
+			})
+			if err != nil {
+				t.Fatalf("decide: %v", err)
+			}
+			if decision.Action != tt.action {
+				t.Fatalf("expected action %q, got %q", tt.action, decision.Action)
+			}
+			if tt.action == policydomain.ActionPokeReply && !state.LastBotSpeakAt.Equal(fixedNow) {
+				t.Fatalf("expected injected clock to set last bot speak time, got %s", state.LastBotSpeakAt)
+			}
+		})
 	}
 }
 
