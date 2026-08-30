@@ -64,6 +64,8 @@ type ContextSnapshot struct {
 	RecentTurns       []ConversationEvent             `json:"recent_turns" yaml:"recent_turns"`
 	RelevantMemories  []memorydomain.MemoryRecord     `json:"relevant_memories" yaml:"relevant_memories"`
 	MediaDescriptors  []mediadomain.MediaDescriptor   `json:"media_descriptors" yaml:"media_descriptors"`
+	ActiveTopic       string                          `json:"active_topic,omitempty" yaml:"active_topic,omitempty"`
+	OpenLoops         []string                        `json:"open_loops,omitempty" yaml:"open_loops,omitempty"`
 	MemberProfile     profiledomain.MemberProfile     `json:"member_profile" yaml:"member_profile"`
 	RelationshipState profiledomain.RelationshipState `json:"relationship_state" yaml:"relationship_state"`
 	PersonaProfile    personadomain.PersonaProfile    `json:"persona_profile" yaml:"persona_profile"`

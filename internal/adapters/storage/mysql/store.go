@@ -19,9 +19,10 @@ import (
 )
 
 var (
-	_ ports.MemoryStore  = (*Store)(nil)
-	_ ports.MemeStore    = (*Store)(nil)
-	_ ports.ProfileStore = (*Store)(nil)
+	_ ports.MemoryStore        = (*Store)(nil)
+	_ ports.LearningStateStore = (*Store)(nil)
+	_ ports.MemeStore          = (*Store)(nil)
+	_ ports.ProfileStore       = (*Store)(nil)
 )
 
 type Store struct {
@@ -142,6 +143,78 @@ func (s *Store) RecentEvents(ctx context.Context, groupID int64, limit int) ([]c
 
 	reverse(events)
 	return events, nil
+}
+
+func (s *Store) EventsAfter(ctx context.Context, groupID int64, after time.Time, afterEventID string, limit int) ([]conversationdomain.ConversationEvent, error) {
+	if limit <= 0 {
+		limit = 200
+	}
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT event_id, group_id, user_id, message_id, reply_to_message_id, kind, text_content,
+		       segments_json, attachments_json, mentioned_bot, named_bot, is_reply_to_bot, occurred_at
+		FROM messages
+		WHERE group_id = ? AND (occurred_at > ? OR (occurred_at = ? AND event_id > ?))
+		ORDER BY occurred_at ASC, event_id ASC
+		LIMIT ?
+	`, groupID, after, after, afterEventID, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	events := []conversationdomain.ConversationEvent{}
+	for rows.Next() {
+		var (
+			event           conversationdomain.ConversationEvent
+			replyTo         sql.NullString
+			segmentsJSON    []byte
+			attachmentsJSON []byte
+			occurredAt      time.Time
+			kind            string
+		)
+		if err := rows.Scan(
+			&event.EventID, &event.GroupID, &event.UserID, &event.MessageID, &replyTo, &kind, &event.Text,
+			&segmentsJSON, &attachmentsJSON, &event.MentionedBot, &event.NamedBot, &event.IsReplyToBot, &occurredAt,
+		); err != nil {
+			return nil, err
+		}
+		event.Kind = conversationdomain.EventKind(kind)
+		event.ReplyToMessageID = replyTo.String
+		event.TimestampUnix = occurredAt.Unix()
+		if err := json.Unmarshal(segmentsJSON, &event.Segments); err != nil {
+			return nil, err
+		}
+		if err := json.Unmarshal(attachmentsJSON, &event.Attachments); err != nil {
+			return nil, err
+		}
+		events = append(events, event)
+	}
+	return events, rows.Err()
+}
+
+func (s *Store) GetLearningWatermark(ctx context.Context, groupID int64, kind string) (memorydomain.LearningWatermark, error) {
+	watermark := memorydomain.LearningWatermark{GroupID: groupID, Kind: kind}
+	err := s.db.QueryRowContext(ctx, `
+		SELECT occurred_at, event_id, updated_at
+		FROM learning_watermarks
+		WHERE group_id = ? AND kind = ?
+	`, groupID, kind).Scan(&watermark.OccurredAt, &watermark.EventID, &watermark.UpdatedAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return watermark, nil
+	}
+	return watermark, err
+}
+
+func (s *Store) SaveLearningWatermark(ctx context.Context, watermark memorydomain.LearningWatermark) error {
+	if watermark.UpdatedAt.IsZero() {
+		watermark.UpdatedAt = time.Now()
+	}
+	_, err := s.db.ExecContext(ctx, `
+		INSERT INTO learning_watermarks (group_id, kind, occurred_at, event_id, updated_at)
+		VALUES (?, ?, ?, ?, ?)
+		ON DUPLICATE KEY UPDATE occurred_at = VALUES(occurred_at), event_id = VALUES(event_id), updated_at = VALUES(updated_at)
+	`, watermark.GroupID, watermark.Kind, watermark.OccurredAt, watermark.EventID, watermark.UpdatedAt)
+	return err
 }
 
 func (s *Store) UpsertMemory(ctx context.Context, record memorydomain.MemoryRecord) error {

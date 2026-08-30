@@ -67,22 +67,24 @@ func (m *Manager) Observe(ctx context.Context, record humandomain.EventRecord) (
 	if record.Origin == "" {
 		record.Origin = humandomain.OriginInbound
 	}
-	isNew := true
+	// The durable archive is the source of truth for received facts. Write it
+	// before advancing the in-memory deduplication cursor so a transient store
+	// failure can be retried with the same event ID.
+	if m.archive != nil {
+		if err := m.archive.ArchiveEvent(ctx, record.Event); err != nil {
+			return humandomain.GroupWorkingMemory{}, err
+		}
+	}
+
 	if dedup, ok := m.log.(ingress.DeduplicatingEventLog); ok {
 		var err error
-		isNew, err = dedup.AppendIfNew(ctx, record)
+		_, err = dedup.AppendIfNew(ctx, record)
 		if err != nil {
 			return humandomain.GroupWorkingMemory{}, err
 		}
 	} else if err := m.log.Append(ctx, record); err != nil {
 		return humandomain.GroupWorkingMemory{}, err
 	}
-	if isNew && m.archive != nil {
-		if err := m.archive.ArchiveEvent(ctx, record.Event); err != nil {
-			return humandomain.GroupWorkingMemory{}, err
-		}
-	}
-
 	m.mu.Lock()
 	if m.closed {
 		m.mu.Unlock()
@@ -173,6 +175,22 @@ func (m *Manager) Complete(ctx context.Context, groupID int64, candidateID strin
 	}
 }
 
+// CanExecute confirms that an accepted candidate has not been superseded or
+// expired while a worker was waiting on group serialization or model latency.
+func (m *Manager) CanExecute(ctx context.Context, groupID int64, candidateID string, now time.Time) (bool, error) {
+	m.mu.Lock()
+	if m.closed {
+		m.mu.Unlock()
+		return false, errors.New("group actor: manager is closed")
+	}
+	a := m.groups[groupID]
+	m.mu.Unlock()
+	if a == nil {
+		return false, nil
+	}
+	return a.canExecute(ctx, candidateID, now)
+}
+
 // EnrichMedia writes asynchronous perception results through the owning group
 // actor. Workers never mutate working memory directly.
 func (m *Manager) EnrichMedia(ctx context.Context, groupID int64, eventID string, descriptors []mediadomain.MediaDescriptor) error {
@@ -234,6 +252,7 @@ type request struct {
 type result struct {
 	memory    humandomain.GroupWorkingMemory
 	candidate *humandomain.ThoughtCandidate
+	valid     bool
 	err       error
 }
 
@@ -281,12 +300,35 @@ func (a *actor) run() {
 				completeCandidate(&memory, req.candidateID)
 				req.result <- result{memory: cloneMemory(memory)}
 				continue
+			case "can_execute":
+				valid := canExecuteCandidate(&memory, req.candidateID, req.now)
+				req.result <- result{memory: cloneMemory(memory), valid: valid}
+				continue
 			case "enrich_media":
 				enrichMedia(&memory, req.eventID, req.descriptors)
 			case "snapshot":
 			}
 			req.result <- result{memory: cloneMemory(memory)}
 		}
+	}
+}
+
+func (a *actor) canExecute(ctx context.Context, candidateID string, now time.Time) (bool, error) {
+	resultCh := make(chan result, 1)
+	select {
+	case a.mailbox <- request{op: "can_execute", candidateID: candidateID, now: now, result: resultCh}:
+	case <-ctx.Done():
+		return false, ctx.Err()
+	case <-a.done:
+		return false, errors.New("group actor: actor stopped")
+	}
+	select {
+	case result := <-resultCh:
+		return result.valid, result.err
+	case <-ctx.Done():
+		return false, ctx.Err()
+	case <-a.done:
+		return false, errors.New("group actor: actor stopped")
 	}
 }
 
@@ -386,6 +428,7 @@ func reduce(memory humandomain.GroupWorkingMemory, record humandomain.EventRecor
 		}
 	}
 	memory.CurrentBurst = burst
+	supersedeBurstCandidates(&memory, burst.EventIDs)
 	if text := strings.TrimSpace(record.Event.Text); text != "" {
 		memory.ActiveTopic = text
 		if strings.ContainsAny(text, "?？") {
@@ -394,6 +437,32 @@ func reduce(memory humandomain.GroupWorkingMemory, record humandomain.EventRecor
 	}
 	memory.Candidates = append(memory.Candidates, candidateFor(record, burst))
 	return memory
+}
+
+func supersedeBurstCandidates(memory *humandomain.GroupWorkingMemory, eventIDs []string) {
+	if len(eventIDs) < 2 {
+		return
+	}
+	for i := range memory.Candidates {
+		candidate := &memory.Candidates[i]
+		if candidate.Status != humandomain.CandidatePending && candidate.Status != humandomain.CandidateDeferred && candidate.Status != humandomain.CandidateAccepted {
+			continue
+		}
+		if overlaps(candidate.SourceEventIDs, eventIDs[:len(eventIDs)-1]) {
+			candidate.Status = humandomain.CandidateCancelled
+		}
+	}
+}
+
+func overlaps(left, right []string) bool {
+	for _, l := range left {
+		for _, r := range right {
+			if l == r {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func candidateFor(record humandomain.EventRecord, burst humandomain.ConversationBurst) humandomain.ThoughtCandidate {
@@ -504,11 +573,29 @@ func claimCandidate(memory *humandomain.GroupWorkingMemory, now time.Time, minSc
 
 func completeCandidate(memory *humandomain.GroupWorkingMemory, candidateID string) {
 	for i := range memory.Candidates {
-		if memory.Candidates[i].CandidateID == candidateID {
+		if memory.Candidates[i].CandidateID == candidateID && memory.Candidates[i].Status == humandomain.CandidateAccepted {
 			memory.Candidates[i].Status = humandomain.CandidateCompleted
 			return
 		}
 	}
+}
+
+func canExecuteCandidate(memory *humandomain.GroupWorkingMemory, candidateID string, now time.Time) bool {
+	for i := range memory.Candidates {
+		candidate := &memory.Candidates[i]
+		if candidate.CandidateID != candidateID {
+			continue
+		}
+		if candidate.Status != humandomain.CandidateAccepted {
+			return false
+		}
+		if !now.Before(candidate.ExpiresAt) {
+			candidate.Status = humandomain.CandidateExpired
+			return false
+		}
+		return true
+	}
+	return false
 }
 
 func cloneMemory(memory humandomain.GroupWorkingMemory) humandomain.GroupWorkingMemory {

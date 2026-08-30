@@ -32,6 +32,12 @@ func TestManagerMergesShortBurstAndKeepsOutboundEvent(t *testing.T) {
 	if len(memory.CurrentBurst.EventIDs) != 2 || memory.CurrentBurst.Text != "今晚开黑吗 八点行不行" {
 		t.Fatalf("burst was not merged: %+v", memory.CurrentBurst)
 	}
+	if memory.Candidates[0].Status != humandomain.CandidateCancelled || memory.Candidates[1].Status != humandomain.CandidatePending {
+		t.Fatalf("burst candidates were not superseded: %+v", memory.Candidates)
+	}
+	if ok, err := manager.CanExecute(context.Background(), 1, memory.Candidates[0].CandidateID, base.Add(time.Second)); err != nil || ok {
+		t.Fatalf("superseded candidate must not execute: ok=%v err=%v", ok, err)
+	}
 
 	outbound := eventRecord("out-1", 1, 999, "那就八点", base.Add(3*time.Second))
 	outbound.Origin = humandomain.OriginOutbound

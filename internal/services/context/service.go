@@ -85,6 +85,14 @@ func (s *Service) BuildSnapshot(ctx context.Context, envelope conversationdomain
 		for _, record := range working.RecentTail {
 			recentTurns = append(recentTurns, record.Event)
 		}
+		// Working memory is process-local. Merge the archive to preserve the
+		// conversation tail immediately after a restart and while the actor has
+		// not yet observed a full window of new events.
+		archived, err := s.memoryStore.RecentEvents(ctx, envelope.Event.GroupID, s.policy.AutonomyPolicy().ObserveWindowSize)
+		if err != nil {
+			return conversationdomain.ContextSnapshot{}, fmt.Errorf("load archived events: %w", err)
+		}
+		recentTurns = mergeRecentTurns(archived, recentTurns)
 	} else {
 		var err error
 		recentTurns, err = s.memoryStore.RecentEvents(ctx, envelope.Event.GroupID, s.policy.AutonomyPolicy().ObserveWindowSize)
@@ -131,6 +139,8 @@ func (s *Service) BuildSnapshot(ctx context.Context, envelope conversationdomain
 		RecentTurns:       recentTurns,
 		RelevantMemories:  relevantMemories,
 		MediaDescriptors:  mediaDescriptors,
+		ActiveTopic:       working.ActiveTopic,
+		OpenLoops:         append([]string(nil), working.OpenLoops...),
 		MemberProfile:     ensureMemberProfile(memberProfile, envelope.Event),
 		RelationshipState: relationship,
 		PersonaProfile: personadomain.PersonaProfile{
@@ -155,6 +165,29 @@ func (s *Service) BuildSnapshot(ctx context.Context, envelope conversationdomain
 		RuntimeState:  runtimeState,
 		DecisionHints: buildDecisionHints(envelope.Event),
 	}, nil
+}
+
+func mergeRecentTurns(archived, live []conversationdomain.ConversationEvent) []conversationdomain.ConversationEvent {
+	merged := make([]conversationdomain.ConversationEvent, 0, len(archived)+len(live))
+	seen := make(map[string]struct{}, len(archived)+len(live))
+	appendUnique := func(events []conversationdomain.ConversationEvent) {
+		for _, event := range events {
+			key := event.EventID
+			if key == "" {
+				key = event.MessageID
+			}
+			if key != "" {
+				if _, ok := seen[key]; ok {
+					continue
+				}
+				seen[key] = struct{}{}
+			}
+			merged = append(merged, event)
+		}
+	}
+	appendUnique(archived)
+	appendUnique(live)
+	return merged
 }
 
 // queryMemoriesDualTrack 并发执行 MySQL 关键词检索 + Qdrant 语义检索，

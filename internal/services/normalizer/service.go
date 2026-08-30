@@ -1,6 +1,7 @@
 package normalizer
 
 import (
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"strconv"
@@ -144,17 +145,17 @@ func (s *Service) Normalize(payload []byte) (conversationdomain.EventEnvelope, e
 		now = time.Now()
 	}
 	messageID := normalizeID(raw.MessageID)
-	traceID := fmt.Sprintf("trace-%d-%s", now.UnixNano(), messageID)
+	eventID := stableEventID(s.source, raw.GroupID, messageID, payload)
 
 	return conversationdomain.EventEnvelope{
 		Source:        s.source,
 		SelfID:        selfID,
 		ReceivedAt:    time.Now(),
 		RawPayload:    payload,
-		TraceID:       traceID,
+		TraceID:       eventID,
 		CorrelationID: messageID,
 		Event: conversationdomain.ConversationEvent{
-			EventID:          traceID,
+			EventID:          eventID,
 			GroupID:          raw.GroupID,
 			UserID:           raw.UserID,
 			MessageID:        messageID,
@@ -169,6 +170,14 @@ func (s *Service) Normalize(payload []byte) (conversationdomain.EventEnvelope, e
 			TimestampUnix:    now.Unix(),
 		},
 	}, nil
+}
+
+func stableEventID(source string, groupID int64, messageID string, payload []byte) string {
+	if messageID != "" {
+		return fmt.Sprintf("%s:%d:%s", source, groupID, messageID)
+	}
+	sum := sha256.Sum256(payload)
+	return fmt.Sprintf("%s:%d:raw-%x", source, groupID, sum[:12])
 }
 
 func (s *Service) normalizeAttachment(idx int, segment oneBotSegment) mediadomain.MultimodalAttachment {

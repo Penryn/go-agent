@@ -54,7 +54,43 @@ func (a *Adapter) Deliberate(ctx context.Context, input Input) (Result, error) {
 	if err != nil {
 		return Result{}, err
 	}
+	decision.Action = resolveAction(input.Candidate.Intent, decision.Action, plan.PlannedActions)
 	return Result{Snapshot: snapshot, Decision: decision, Plan: plan}, nil
+}
+
+// resolveAction keeps policy ownership in the runtime while allowing the
+// planner to choose among the expression modes that a candidate permits.
+// The executor receives this resolved decision as its sole action authority.
+func resolveAction(intent string, fallback policydomain.DecisionAction, proposed []policydomain.DecisionAction) policydomain.DecisionAction {
+	if len(proposed) == 0 {
+		return fallback
+	}
+	action := proposed[0]
+	allowed := func(actions ...policydomain.DecisionAction) bool {
+		for _, candidate := range actions {
+			if action == candidate {
+				return true
+			}
+		}
+		return false
+	}
+	switch intent {
+	case "answer", "acknowledge", "continue_topic", "follow_up":
+		if allowed(policydomain.ActionReply, policydomain.ActionMemeOnly, policydomain.ActionSilent) {
+			return action
+		}
+	case "react":
+		if allowed(policydomain.ActionReact, policydomain.ActionReply, policydomain.ActionMemeOnly, policydomain.ActionSilent) {
+			return action
+		}
+	case "send_meme":
+		if allowed(policydomain.ActionMemeOnly, policydomain.ActionSilent) {
+			return action
+		}
+	case "observe_only":
+		return policydomain.ActionSilent
+	}
+	return fallback
 }
 
 func decisionFor(envelope conversationdomain.EventEnvelope, candidate humandomain.ThoughtCandidate) policydomain.AutonomyDecision {

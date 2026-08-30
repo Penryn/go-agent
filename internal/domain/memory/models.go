@@ -31,3 +31,14 @@ type LearningCandidate struct {
 	// 零值表示群级别候选。
 	TargetUserID int64 `json:"target_user_id,omitempty" yaml:"target_user_id,omitempty"`
 }
+
+// LearningWatermark records the last archived fact consumed by one learning
+// projector. The timestamp and event ID form a stable cursor when several
+// OneBot events share the same second.
+type LearningWatermark struct {
+	GroupID    int64     `json:"group_id" yaml:"group_id"`
+	Kind       string    `json:"kind" yaml:"kind"`
+	OccurredAt time.Time `json:"occurred_at" yaml:"occurred_at"`
+	EventID    string    `json:"event_id" yaml:"event_id"`
+	UpdatedAt  time.Time `json:"updated_at" yaml:"updated_at"`
+}

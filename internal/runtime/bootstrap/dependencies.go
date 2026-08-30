@@ -18,22 +18,24 @@ import (
 )
 
 type storeBundle struct {
-	memory  ports.MemoryStore
-	meme    ports.MemeStore
-	profile ports.ProfileStore
-	state   ports.RuntimeStateStore
-	closeFn []func() error
-	probeFn []func(context.Context) error
+	memory   ports.MemoryStore
+	meme     ports.MemeStore
+	profile  ports.ProfileStore
+	state    ports.RuntimeStateStore
+	learning ports.LearningStateStore
+	closeFn  []func() error
+	probeFn  []func(context.Context) error
 }
 
 func newStoreBundle(ctx context.Context, cfg config.Config) (*storeBundle, error) {
 	if strings.EqualFold(cfg.App.Mode, "test") {
 		store := inmemory.NewStore()
 		return &storeBundle{
-			memory:  store,
-			meme:    store,
-			profile: store,
-			state:   store,
+			memory:   store,
+			meme:     store,
+			profile:  store,
+			state:    store,
+			learning: store,
 		}, nil
 	}
 
@@ -53,6 +55,7 @@ func newStoreBundle(ctx context.Context, cfg config.Config) (*storeBundle, error
 
 	mysqlPersistentStore := mysqlstore.NewStore(db)
 	bundle.memory = mysqlPersistentStore
+	bundle.learning = mysqlPersistentStore
 	bundle.meme = mysqlPersistentStore
 	bundle.profile = mysqlPersistentStore
 	bundle.probeFn = append(bundle.probeFn, func(ctx context.Context) error {

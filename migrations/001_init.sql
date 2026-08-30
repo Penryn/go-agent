@@ -107,3 +107,12 @@ CREATE TABLE IF NOT EXISTS learning_candidates (
   status VARCHAR(32) NOT NULL,
   created_at DATETIME(6) NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS learning_watermarks (
+  group_id BIGINT NOT NULL,
+  kind VARCHAR(64) NOT NULL,
+  occurred_at DATETIME(6) NOT NULL,
+  event_id VARCHAR(128) NOT NULL,
+  updated_at DATETIME(6) NOT NULL,
+  PRIMARY KEY (group_id, kind)
+);

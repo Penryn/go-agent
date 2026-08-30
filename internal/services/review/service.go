@@ -45,14 +45,19 @@ func (s *Service) ApplyLearning(ctx context.Context, candidates []memory.Learnin
 			scope = fmt.Sprintf("group:%d:user:%d", candidate.GroupID, candidate.TargetUserID)
 		}
 
+		evidenceEventID := ""
+		if len(candidate.ExampleEventIDs) > 0 {
+			evidenceEventID = candidate.ExampleEventIDs[0]
+		}
 		if _, err := s.memory.MarkIntent(ctx, memsvc.WriteIntent{
-			MemoryID:   memID,
-			Scope:      scope,
-			MemoryType: candidate.Kind,
-			Subject:    candidate.Value,
-			Content:    candidate.Meaning,
-			Importance: float64(candidate.EvidenceCount) / 20,
-			Confidence: candidate.Confidence,
+			MemoryID:      memID,
+			Scope:         scope,
+			MemoryType:    candidate.Kind,
+			Subject:       candidate.Value,
+			Content:       candidate.Meaning,
+			SourceEventID: evidenceEventID,
+			Importance:    float64(candidate.EvidenceCount) / 20,
+			Confidence:    candidate.Confidence,
 		}); err != nil {
 			return err
 		}

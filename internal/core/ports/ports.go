@@ -2,6 +2,7 @@ package ports
 
 import (
 	"context"
+	"time"
 
 	"github.com/cloudwego/eino/components/model"
 
@@ -45,6 +46,15 @@ type MemoryStore interface {
 	RecentEvents(ctx context.Context, groupID int64, limit int) ([]conversationdomain.ConversationEvent, error)
 	UpsertMemory(ctx context.Context, record memorydomain.MemoryRecord) error
 	QueryMemories(ctx context.Context, query MemoryQuery) ([]memorydomain.MemoryRecord, error)
+}
+
+// LearningStateStore owns the durable cursor for background projectors. It
+// is intentionally separate from MemoryStore because a projector needs a
+// stable ordered read, not just a rolling conversation window.
+type LearningStateStore interface {
+	EventsAfter(ctx context.Context, groupID int64, after time.Time, afterEventID string, limit int) ([]conversationdomain.ConversationEvent, error)
+	GetLearningWatermark(ctx context.Context, groupID int64, kind string) (memorydomain.LearningWatermark, error)
+	SaveLearningWatermark(ctx context.Context, watermark memorydomain.LearningWatermark) error
 }
 
 type MemeStore interface {

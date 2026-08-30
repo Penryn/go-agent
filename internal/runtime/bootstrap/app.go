@@ -21,6 +21,7 @@ import (
 	humanactor "github.com/phlin/go-agent/internal/humanbot/runtime/group_actor"
 	humaningress "github.com/phlin/go-agent/internal/humanbot/runtime/ingress"
 	humanperception "github.com/phlin/go-agent/internal/humanbot/runtime/perception"
+	humanreflection "github.com/phlin/go-agent/internal/humanbot/runtime/reflection"
 	backgroundruntime "github.com/phlin/go-agent/internal/runtime/background"
 	"github.com/phlin/go-agent/internal/runtime/scheduler"
 	actionsvc "github.com/phlin/go-agent/internal/services/action"
@@ -169,12 +170,13 @@ func NewApp(ctx context.Context, cfg config.Config) (*App, error) {
 
 	// F2 PersonaService：情绪状态动态驱动
 	moodSvc := personasvc.New(stores.state, cfg.Persona.ID)
+	turnObserver := humanreflection.New(stores.state, moodSvc, time.Duration(cfg.Autonomy.MinReplyIntervalSec)*time.Second)
 
 	// Human Presence Runtime owns ingress, per-group working memory, candidate
 	// scheduling, deliberation, realization, and outbound self-observation.
 	// Context projection and planner compatibility remain behind this adapter.
 	deliberator := humandeliberation.NewAdapter(contextService, planner)
-	humanRuntime := humanruntime.New(ctx, normalizer, presenceManager, deliberator, perceptionPipeline, executor, humanruntime.Config{
+	humanRuntime := humanruntime.New(ctx, normalizer, presenceManager, deliberator, perceptionPipeline, turnObserver, executor, humanruntime.Config{
 		GroupWhitelist: cfg.QQ.GroupWhitelist,
 		SelfID:         cfg.QQ.SelfID,
 		JobTimeout:     120 * time.Second,
@@ -186,7 +188,7 @@ func NewApp(ctx context.Context, cfg config.Config) (*App, error) {
 
 	// learning service：接入运行时，每 6 小时对白名单群跑一次增量学习
 	reviewService := reviewsvc.New(memorySvc)
-	learningSvc, learnErr := learningsvc.New(ctx, stores.memory, reviewService)
+	learningSvc, learnErr := learningsvc.New(ctx, stores.memory, stores.learning, reviewService)
 	if learnErr != nil {
 		_ = backgroundRuntime.Close(context.Background())
 		_ = stores.Close()

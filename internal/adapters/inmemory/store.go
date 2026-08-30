@@ -20,11 +20,12 @@ import (
 )
 
 var (
-	_ ports.MemoryStore       = (*Store)(nil)
-	_ ports.MemeStore         = (*Store)(nil)
-	_ ports.ProfileStore      = (*Store)(nil)
-	_ ports.RuntimeStateStore = (*Store)(nil)
-	_ ports.OutboundSender    = (*Sender)(nil)
+	_ ports.MemoryStore        = (*Store)(nil)
+	_ ports.LearningStateStore = (*Store)(nil)
+	_ ports.MemeStore          = (*Store)(nil)
+	_ ports.ProfileStore       = (*Store)(nil)
+	_ ports.RuntimeStateStore  = (*Store)(nil)
+	_ ports.OutboundSender     = (*Sender)(nil)
 )
 
 type Store struct {
@@ -37,6 +38,7 @@ type Store struct {
 	relations     map[string]profiledomain.RelationshipState
 	runtimeStates map[int64]policydomain.RuntimeState
 	personaStates map[string]personadomain.PersonaState
+	learningMarks map[string]memorydomain.LearningWatermark
 }
 
 func NewStore() *Store {
@@ -48,14 +50,58 @@ func NewStore() *Store {
 		relations:     make(map[string]profiledomain.RelationshipState),
 		runtimeStates: make(map[int64]policydomain.RuntimeState),
 		personaStates: make(map[string]personadomain.PersonaState),
+		learningMarks: make(map[string]memorydomain.LearningWatermark),
 	}
+}
+
+func (s *Store) EventsAfter(_ context.Context, groupID int64, after time.Time, afterEventID string, limit int) ([]conversationdomain.ConversationEvent, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	result := make([]conversationdomain.ConversationEvent, 0)
+	for _, event := range s.eventsByGroup[groupID] {
+		occurredAt := time.Unix(event.TimestampUnix, 0)
+		if occurredAt.Before(after) || (occurredAt.Equal(after) && event.EventID <= afterEventID) {
+			continue
+		}
+		result = append(result, event)
+		if limit > 0 && len(result) >= limit {
+			break
+		}
+	}
+	return result, nil
+}
+
+func (s *Store) GetLearningWatermark(_ context.Context, groupID int64, kind string) (memorydomain.LearningWatermark, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.learningMarks[learningMarkKey(groupID, kind)], nil
+}
+
+func (s *Store) SaveLearningWatermark(_ context.Context, watermark memorydomain.LearningWatermark) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.learningMarks[learningMarkKey(watermark.GroupID, watermark.Kind)] = watermark
+	return nil
+}
+
+func learningMarkKey(groupID int64, kind string) string {
+	return strconv.FormatInt(groupID, 10) + ":" + kind
 }
 
 func (s *Store) ArchiveEvent(_ context.Context, event conversationdomain.ConversationEvent) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	s.eventsByGroup[event.GroupID] = append(s.eventsByGroup[event.GroupID], event)
+	events := s.eventsByGroup[event.GroupID]
+	for i := range events {
+		if event.EventID != "" && events[i].EventID == event.EventID {
+			events[i] = event
+			s.eventsByGroup[event.GroupID] = events
+			return nil
+		}
+	}
+	s.eventsByGroup[event.GroupID] = append(events, event)
 	return nil
 }
 

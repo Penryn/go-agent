@@ -245,9 +245,18 @@ func (c *Composer) Messages(snapshot conversationdomain.ContextSnapshot) []*sche
 		mediaSnippets = append(mediaSnippets, strings.Join(parts, " "))
 	}
 
+	workingState := make([]string, 0, 2)
+	if topic := strings.TrimSpace(snapshot.ActiveTopic); topic != "" {
+		workingState = append(workingState, "当前话题: "+topic)
+	}
+	if len(snapshot.OpenLoops) > 0 {
+		workingState = append(workingState, "未解决问题: "+strings.Join(snapshot.OpenLoops, " / "))
+	}
+
 	content := strings.Join([]string{
 		fmt.Sprintf("当前事件: user=%d msg_id=%s text=%q", snapshot.Event.UserID, snapshot.Event.MessageID, snapshot.Event.Text),
 		fmt.Sprintf("最近上下文: %s", strings.Join(recentTurns, " | ")),
+		fmt.Sprintf("工作记忆: %s", strings.Join(workingState, " | ")),
 		fmt.Sprintf("相关记忆: %s", strings.Join(memorySnippets, " | ")),
 		fmt.Sprintf("媒体摘要: %s", strings.Join(mediaSnippets, " | ")),
 	}, "\n")

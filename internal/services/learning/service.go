@@ -2,6 +2,7 @@ package learning
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"math"
 	"strings"
@@ -9,12 +10,12 @@ import (
 
 	"github.com/cloudwego/eino/compose"
 
+	"github.com/phlin/go-agent/internal/core/ports"
 	conversationdomain "github.com/phlin/go-agent/internal/domain/conversation"
 	mediadomain "github.com/phlin/go-agent/internal/domain/media"
 	memorydomain "github.com/phlin/go-agent/internal/domain/memory"
-	"github.com/phlin/go-agent/internal/core/ports"
-	reviewsvc "github.com/phlin/go-agent/internal/services/review"
 	"github.com/phlin/go-agent/internal/runtime/scheduler"
+	reviewsvc "github.com/phlin/go-agent/internal/services/review"
 )
 
 // stopWords 是停用词集合，gram 首 rune 或末 rune 在此集合中时跳过该子串。
@@ -47,10 +48,11 @@ type Output struct {
 type Service struct {
 	runnable  compose.Runnable[Input, Output]
 	store     ports.MemoryStore
+	state     ports.LearningStateStore
 	reviewSvc *reviewsvc.Service
 }
 
-func New(ctx context.Context, store ports.MemoryStore, reviewSvc *reviewsvc.Service) (*Service, error) {
+func New(ctx context.Context, store ports.MemoryStore, state ports.LearningStateStore, reviewSvc *reviewsvc.Service) (*Service, error) {
 	workflow := compose.NewWorkflow[Input, Output]()
 	workflow.AddLambdaNode("extract", compose.InvokableLambda(extractCandidates)).AddInput(compose.START)
 	workflow.AddLambdaNode("review", compose.InvokableLambda(reviewCandidates)).AddInput("extract")
@@ -60,7 +62,7 @@ func New(ctx context.Context, store ports.MemoryStore, reviewSvc *reviewsvc.Serv
 	if err != nil {
 		return nil, err
 	}
-	return &Service{runnable: runnable, store: store, reviewSvc: reviewSvc}, nil
+	return &Service{runnable: runnable, store: store, state: state, reviewSvc: reviewSvc}, nil
 }
 
 func (s *Service) Run(ctx context.Context, input Input) (Output, error) {
@@ -84,7 +86,18 @@ func (s *Service) learnAllGroups(groupIDs []int64) func(ctx context.Context) err
 }
 
 func (s *Service) learnGroup(ctx context.Context, groupID int64) error {
-	events, err := s.store.RecentEvents(ctx, groupID, 200)
+	if s.state == nil {
+		return fmt.Errorf("learning: watermark store is nil")
+	}
+	watermark, err := s.state.GetLearningWatermark(ctx, groupID, "learning_extract")
+	if err != nil {
+		return err
+	}
+	after := watermark.OccurredAt
+	if after.IsZero() {
+		after = time.Unix(0, 0)
+	}
+	events, err := s.state.EventsAfter(ctx, groupID, after, watermark.EventID, 200)
 	if err != nil {
 		return err
 	}
@@ -95,10 +108,19 @@ func (s *Service) learnGroup(ctx context.Context, groupID int64) error {
 	if err != nil {
 		return err
 	}
-	if len(out.Candidates) == 0 {
-		return nil
+	if len(out.Candidates) > 0 {
+		if err := s.reviewSvc.ApplyLearning(ctx, out.Candidates); err != nil {
+			return err
+		}
 	}
-	return s.reviewSvc.ApplyLearning(ctx, out.Candidates)
+	last := events[len(events)-1]
+	return s.state.SaveLearningWatermark(ctx, memorydomain.LearningWatermark{
+		GroupID:    groupID,
+		Kind:       "learning_extract",
+		OccurredAt: time.Unix(last.TimestampUnix, 0),
+		EventID:    last.EventID,
+		UpdatedAt:  time.Now(),
+	})
 }
 
 func extractCandidates(_ context.Context, input Input) (Output, error) {
@@ -115,14 +137,14 @@ func extractCandidates(_ context.Context, input Input) (Output, error) {
 		text := strings.TrimSpace(event.Text)
 
 		// 统计群级 n-gram
-		extractNgrams(text, event.UserID, event.MessageID, counter)
+		extractNgrams(text, event.UserID, event.EventID, counter)
 
 		// 统计用户级 n-gram（user_catchphrase）
 		if event.UserID != 0 {
 			if userCounter[event.UserID] == nil {
 				userCounter[event.UserID] = map[string]*phraseStats{}
 			}
-			extractNgrams(text, event.UserID, event.MessageID, userCounter[event.UserID])
+			extractNgrams(text, event.UserID, event.EventID, userCounter[event.UserID])
 		}
 
 		// 提取回复套路前置文本（reaction_pattern/conversation）

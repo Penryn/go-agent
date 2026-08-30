@@ -27,3 +27,25 @@ func TestDecisionForCandidateIntent(t *testing.T) {
 		}
 	}
 }
+
+func TestResolveActionUsesAllowedPlannerProposal(t *testing.T) {
+	cases := []struct {
+		name     string
+		intent   string
+		fallback policydomain.DecisionAction
+		proposed policydomain.DecisionAction
+		want     policydomain.DecisionAction
+	}{
+		{name: "reply can choose meme", intent: "answer", fallback: policydomain.ActionReply, proposed: policydomain.ActionMemeOnly, want: policydomain.ActionMemeOnly},
+		{name: "image reaction can choose text", intent: "react", fallback: policydomain.ActionReact, proposed: policydomain.ActionReply, want: policydomain.ActionReply},
+		{name: "planner can stay silent", intent: "answer", fallback: policydomain.ActionReply, proposed: policydomain.ActionSilent, want: policydomain.ActionSilent},
+		{name: "reply cannot recall", intent: "answer", fallback: policydomain.ActionReply, proposed: policydomain.ActionRecall, want: policydomain.ActionReply},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := resolveAction(tc.intent, tc.fallback, []policydomain.DecisionAction{tc.proposed}); got != tc.want {
+				t.Fatalf("resolveAction() = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}

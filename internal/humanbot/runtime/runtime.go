@@ -15,7 +15,6 @@ import (
 	humandomain "github.com/phlin/go-agent/internal/humanbot/domain"
 	"github.com/phlin/go-agent/internal/humanbot/runtime/deliberation"
 	groupactor "github.com/phlin/go-agent/internal/humanbot/runtime/group_actor"
-	presencesvc "github.com/phlin/go-agent/internal/humanbot/runtime/presence"
 	"github.com/phlin/go-agent/internal/services/action"
 	normalizersvc "github.com/phlin/go-agent/internal/services/normalizer"
 )
@@ -30,6 +29,14 @@ type Config struct {
 
 type PerceptionSubmitter interface {
 	Submit(humandomain.EventRecord)
+}
+
+// TurnObserver closes the feedback loop between a realized action and future
+// scheduling. Implementations own durable cooldown, persona, and reflection
+// state; Runtime only invokes the narrow lifecycle hooks.
+type TurnObserver interface {
+	CanDeliberate(context.Context, int64, time.Time) (bool, error)
+	AfterTurn(context.Context, conversationdomain.ContextSnapshot, policydomain.AutonomyDecision, replydomain.ActionReceipt) error
 }
 
 func DefaultConfig() Config {
@@ -50,8 +57,8 @@ type Runtime struct {
 	working     *groupactor.Manager
 	deliberator deliberation.Deliberator
 	perception  PerceptionSubmitter
+	turns       TurnObserver
 	executor    *action.Service
-	scheduler   presencesvc.Scheduler
 	whitelist   map[int64]struct{}
 	selfID      int64
 
@@ -62,7 +69,7 @@ type Runtime struct {
 	locks  sync.Map
 }
 
-func New(parent context.Context, normalizer *normalizersvc.Service, working *groupactor.Manager, deliberator deliberation.Deliberator, perception PerceptionSubmitter, executor *action.Service, cfg Config) *Runtime {
+func New(parent context.Context, normalizer *normalizersvc.Service, working *groupactor.Manager, deliberator deliberation.Deliberator, perception PerceptionSubmitter, turns TurnObserver, executor *action.Service, cfg Config) *Runtime {
 	defaults := DefaultConfig()
 	if cfg.PollInterval <= 0 {
 		cfg.PollInterval = defaults.PollInterval
@@ -79,8 +86,8 @@ func New(parent context.Context, normalizer *normalizersvc.Service, working *gro
 		working:     working,
 		deliberator: deliberator,
 		perception:  perception,
+		turns:       turns,
 		executor:    executor,
-		scheduler:   presencesvc.NewScheduler(1),
 		whitelist:   make(map[int64]struct{}, len(cfg.GroupWhitelist)),
 		selfID:      cfg.SelfID,
 		ctx:         ctx,
@@ -155,6 +162,15 @@ func (r *Runtime) loop(interval time.Duration, minScore float64, timeout time.Du
 			return
 		case now := <-ticker.C:
 			for _, groupID := range r.working.GroupIDs() {
+				if r.turns != nil {
+					allowed, err := r.turns.CanDeliberate(r.ctx, groupID, now)
+					if err != nil || !allowed {
+						if err != nil {
+							slog.Warn("human runtime: presence check failed", "group_id", groupID, "err", err)
+						}
+						continue
+					}
+				}
 				candidate, ok, err := r.working.ClaimDue(r.ctx, groupID, now, minScore)
 				if err != nil || !ok {
 					continue
@@ -177,6 +193,11 @@ func (r *Runtime) loop(interval time.Duration, minScore float64, timeout time.Du
 }
 
 func (r *Runtime) processCandidate(ctx context.Context, groupID int64, candidate humandomain.ThoughtCandidate) (Outcome, error) {
+	if ok, err := r.working.CanExecute(ctx, groupID, candidate.CandidateID, time.Now()); err != nil {
+		return Outcome{}, err
+	} else if !ok {
+		return Outcome{Candidate: candidate, Decision: silentDecision(candidate.CandidateID, "candidate_stale")}, nil
+	}
 	memory, err := r.working.Snapshot(ctx, groupID)
 	if err != nil {
 		return Outcome{}, err
@@ -194,12 +215,18 @@ func (r *Runtime) processCandidate(ctx context.Context, groupID int64, candidate
 		return Outcome{}, errors.New("candidate source event no longer in working memory")
 	}
 	envelope := conversationdomain.EventEnvelope{Source: "humanbot", SelfID: r.selfID, ReceivedAt: time.Now(), Event: event, TraceID: event.EventID, CorrelationID: event.MessageID}
-	outcome, err := r.process(ctx, envelope, candidate)
+	outcome, err := r.processWithValidation(ctx, envelope, candidate, func(checkCtx context.Context) (bool, error) {
+		return r.working.CanExecute(checkCtx, groupID, candidate.CandidateID, time.Now())
+	})
 	_ = r.working.Complete(ctx, groupID, candidate.CandidateID)
 	return outcome, err
 }
 
 func (r *Runtime) process(ctx context.Context, envelope conversationdomain.EventEnvelope, candidate humandomain.ThoughtCandidate) (Outcome, error) {
+	return r.processWithValidation(ctx, envelope, candidate, nil)
+}
+
+func (r *Runtime) processWithValidation(ctx context.Context, envelope conversationdomain.EventEnvelope, candidate humandomain.ThoughtCandidate, validate func(context.Context) (bool, error)) (Outcome, error) {
 	memory, err := r.working.Snapshot(ctx, envelope.Event.GroupID)
 	if err != nil {
 		return Outcome{}, fmt.Errorf("load working memory: %w", err)
@@ -209,9 +236,23 @@ func (r *Runtime) process(ctx context.Context, envelope conversationdomain.Event
 		return Outcome{}, fmt.Errorf("deliberate response: %w", err)
 	}
 	snapshot, decision, plan := result.Snapshot, result.Decision, result.Plan
+	if validate != nil {
+		valid, err := validate(ctx)
+		if err != nil {
+			return Outcome{}, fmt.Errorf("validate candidate before action: %w", err)
+		}
+		if !valid {
+			return Outcome{Envelope: envelope, Snapshot: snapshot, Candidate: candidate, Decision: silentDecision(envelope.TraceID, "candidate_stale"), Plan: plan}, nil
+		}
+	}
 	receipt, err := r.executor.Execute(ctx, envelope.Event, decision, plan)
 	if err != nil {
 		return Outcome{}, fmt.Errorf("realize response: %w", err)
+	}
+	if r.turns != nil {
+		if err := r.turns.AfterTurn(ctx, snapshot, decision, receipt); err != nil {
+			slog.Warn("human runtime: record turn failed", "group_id", envelope.Event.GroupID, "decision_id", decision.DecisionID, "err", err)
+		}
 	}
 	return Outcome{Envelope: envelope, Snapshot: snapshot, Candidate: candidate, Decision: decision, Plan: plan, Receipt: receipt}, nil
 }

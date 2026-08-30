@@ -26,6 +26,25 @@ func TestNormalizeMentionEvent(t *testing.T) {
 	if envelope.Event.MessageID != "30003" {
 		t.Fatalf("message id mismatch: %s", envelope.Event.MessageID)
 	}
+	if envelope.Event.EventID != "onebot:10001:30003" {
+		t.Fatalf("event id mismatch: %s", envelope.Event.EventID)
+	}
+}
+
+func TestNormalizeMissingMessageIDIsStable(t *testing.T) {
+	payload := []byte(`{"post_type":"notice","notice_type":"group_recall","time":0,"self_id":1,"group_id":2,"user_id":3}`)
+	svc := New("onebot", 1, nil)
+	first, err := svc.Normalize(payload)
+	if err != nil {
+		t.Fatalf("normalize first: %v", err)
+	}
+	second, err := svc.Normalize(payload)
+	if err != nil {
+		t.Fatalf("normalize second: %v", err)
+	}
+	if first.Event.EventID != second.Event.EventID || first.TraceID != second.TraceID {
+		t.Fatalf("unstable fallback event ID: first=%q second=%q", first.Event.EventID, second.Event.EventID)
+	}
 }
 
 func TestNormalizeRecordSegment(t *testing.T) {
