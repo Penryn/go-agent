@@ -125,6 +125,9 @@ func (r *Runtime) worker(index int) {
 }
 
 func (r *Runtime) processBatch(workerID string, now time.Time) {
+	if r.store == nil {
+		return
+	}
 	tasks, err := r.store.ClaimOutbox(r.ctx, workerID, now, r.cfg.Lease, r.cfg.WorkerCount)
 	if err != nil {
 		slog.Warn("outbox: claim failed", "worker", workerID, "error", err)
