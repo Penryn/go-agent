@@ -122,6 +122,10 @@ func NewApp(ctx context.Context, cfg config.Config) (*App, error) {
 	gateService := gatesvc.New(modelFactory)
 	autonomyService := autonomysvc.New(policyService, gateService)
 	visionService := multimodalsvc.New(modelFactory, cfg.Multimodal)
+	backgroundRuntime := backgroundruntime.New(context.WithoutCancel(ctx), backgroundruntime.Config{
+		QueueSize:   cfg.Runtime.QueueLength,
+		WorkerCount: cfg.Runtime.WorkerCount,
+	})
 
 	// memorySvc：有 Qdrant 时注入 WithVectorStore；同时注入差异化 TTL 配置
 	memOpts := []memsvc.Option{}
@@ -131,8 +135,12 @@ func NewApp(ctx context.Context, cfg config.Config) (*App, error) {
 	if len(cfg.Memory.TypeTTL) > 0 || cfg.Memory.DefaultTTL != "" {
 		memOpts = append(memOpts, memsvc.WithTypeTTL(cfg.Memory.TypeTTL, cfg.Memory.DefaultTTL))
 	}
+	memOpts = append(memOpts, memsvc.WithBackgroundRuntime(backgroundRuntime))
 	memorySvc := memsvc.New(stores.memory, memOpts...)
-	memeService := memesvc.New(stores.meme, cfg.Meme, memesvc.WithVectorStore(memeVectorStore))
+	memeService := memesvc.New(stores.meme, cfg.Meme,
+		memesvc.WithVectorStore(memeVectorStore),
+		memesvc.WithBackgroundRuntime(backgroundRuntime),
+	)
 
 	toolRuntime := toolsvc.NewRuntime(stores.memory, stores.meme,
 		toolsvc.WithProfileStore(stores.profile),
@@ -154,16 +162,12 @@ func NewApp(ctx context.Context, cfg config.Config) (*App, error) {
 		outputguardsvc.WithMaxChars(cfg.Persona.ReplyMaxChars),
 		outputguardsvc.WithMaxSentences(cfg.Persona.ReplyMaxSentences),
 	)
-	executor := actionsvc.New(sender, memeService, guard)
+	executor := actionsvc.New(sender, memeService, guard, actionsvc.WithBackgroundRuntime(backgroundRuntime))
 
 	// F2 PersonaService：情绪状态动态驱动
 	moodSvc := personasvc.New(stores.state, cfg.Persona.ID)
 
 	profileService := profilesvc.New(stores.profile, cfg.Persona.ID)
-	backgroundRuntime := backgroundruntime.New(context.WithoutCancel(ctx), backgroundruntime.Config{
-		QueueSize:   cfg.Runtime.QueueLength,
-		WorkerCount: cfg.Runtime.WorkerCount,
-	})
 
 	processor := usecase.NewProcessor(
 		normalizer,

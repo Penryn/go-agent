@@ -13,12 +13,14 @@ import (
 	"github.com/phlin/go-agent/internal/core/ports"
 	conversationdomain "github.com/phlin/go-agent/internal/domain/conversation"
 	mediadomain "github.com/phlin/go-agent/internal/domain/media"
+	backgroundruntime "github.com/phlin/go-agent/internal/runtime/background"
 )
 
 type Service struct {
 	store       ports.MemeStore
 	vectorStore ports.VectorMemeStore
 	cfg         config.MemeConfig
+	background  backgroundSubmitter
 }
 
 // New 创建 MemeService，cfg 控制自动收集、配额、冷却等行为。
@@ -32,6 +34,16 @@ func New(store ports.MemeStore, cfg config.MemeConfig, opts ...Option) *Service 
 
 // Option 是 MemeService 的可选配置函数。
 type Option func(*Service)
+
+type backgroundSubmitter interface {
+	Submit(backgroundruntime.Job) bool
+}
+
+// WithBackgroundRuntime routes vector indexing through the application job
+// owner instead of creating an untracked goroutine.
+func WithBackgroundRuntime(runtime backgroundSubmitter) Option {
+	return func(s *Service) { s.background = runtime }
+}
 
 // WithVectorStore 注入 VectorMemeStore，启用语义向量搜索。
 // 未注入时降级为纯关键词搜索。
@@ -84,17 +96,25 @@ func (s *Service) ObserveEvent(ctx context.Context, event conversationdomain.Con
 			return err
 		}
 
-		// 异步写向量索引，使用独立 context 避免主链路 ctx cancel 中断写操作
+		// Vector indexing is background work; the runtime owns its timeout and
+		// lifecycle. The inline path keeps standalone service tests deterministic.
 		if s.vectorStore != nil {
 			indexText := buildIndexText(descriptor)
 			groupID := event.GroupID
-			go func() {
-				indexCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-				defer cancel()
-				if err := s.vectorStore.IndexMeme(indexCtx, memeID, indexText, groupID); err != nil {
-					slog.Warn("meme: async vector index failed", "meme_id", memeID, "err", err)
+			job := backgroundruntime.Job{
+				Name:    "meme_vector_index",
+				Timeout: 10 * time.Second,
+				Run: func(ctx context.Context) error {
+					return s.vectorStore.IndexMeme(ctx, memeID, indexText, groupID)
+				},
+			}
+			if s.background != nil {
+				if !s.background.Submit(job) {
+					slog.Warn("meme: vector index job dropped", "meme_id", memeID)
 				}
-			}()
+			} else {
+				backgroundruntime.RunInline(ctx, job)
+			}
 		}
 	}
 	return nil

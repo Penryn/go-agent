@@ -6,11 +6,13 @@ import (
 	"fmt"
 	"log/slog"
 	"strconv"
+	"time"
 
 	"github.com/phlin/go-agent/internal/core/ports"
 	conversationdomain "github.com/phlin/go-agent/internal/domain/conversation"
 	policydomain "github.com/phlin/go-agent/internal/domain/policy"
 	replydomain "github.com/phlin/go-agent/internal/domain/reply"
+	backgroundruntime "github.com/phlin/go-agent/internal/runtime/background"
 	memesvc "github.com/phlin/go-agent/internal/services/meme"
 	outputguardsvc "github.com/phlin/go-agent/internal/services/outputguard"
 )
@@ -19,13 +21,30 @@ var errDropSend = errors.New("drop send: no text content")
 var errGuardSilenced = errors.New("drop send: guard silenced")
 
 type Service struct {
-	sender ports.OutboundSender
-	memes  *memesvc.Service
-	guard  outputguardsvc.Guard // 可为 nil，nil 时跳过清洗
+	sender     ports.OutboundSender
+	memes      *memesvc.Service
+	guard      outputguardsvc.Guard // 可为 nil，nil 时跳过清洗
+	background backgroundSubmitter
 }
 
-func New(sender ports.OutboundSender, memes *memesvc.Service, guard outputguardsvc.Guard) *Service {
-	return &Service{sender: sender, memes: memes, guard: guard}
+type backgroundSubmitter interface {
+	Submit(backgroundruntime.Job) bool
+}
+
+// WithBackgroundRuntime routes post-send work through the application job
+// owner instead of creating an untracked goroutine.
+func WithBackgroundRuntime(runtime backgroundSubmitter) Option {
+	return func(s *Service) { s.background = runtime }
+}
+
+type Option func(*Service)
+
+func New(sender ports.OutboundSender, memes *memesvc.Service, guard outputguardsvc.Guard, opts ...Option) *Service {
+	service := &Service{sender: sender, memes: memes, guard: guard}
+	for _, opt := range opts {
+		opt(service)
+	}
+	return service
 }
 
 func (s *Service) Execute(ctx context.Context, event conversationdomain.ConversationEvent, decision policydomain.AutonomyDecision, plan replydomain.ReplyPlan) (replydomain.ActionReceipt, error) {
@@ -78,16 +97,25 @@ func (s *Service) Execute(ctx context.Context, event conversationdomain.Conversa
 		return replydomain.ActionReceipt{}, err
 	}
 
-	// B-1: 发送成功后异步标记表情包已发送
+	// B-1: 发送成功后提交标记表情包已发送的后台任务。
 	if receipt.Sent && decision.Action == policydomain.ActionMemeOnly {
 		if memeID, _ := plan.ActionParams["meme_id"].(string); memeID != "" && s.memes != nil {
 			bgCtx := context.WithoutCancel(ctx)
 			memes := s.memes
-			go func() {
-				if markErr := memes.MarkSent(bgCtx, memeID); markErr != nil {
-					slog.Warn("executor: MarkSent failed", "meme_id", memeID, "err", markErr)
+			job := backgroundruntime.Job{
+				Name:    "meme_mark_sent",
+				Timeout: 10 * time.Second,
+				Run: func(jobCtx context.Context) error {
+					return memes.MarkSent(jobCtx, memeID)
+				},
+			}
+			if s.background != nil {
+				if !s.background.Submit(job) {
+					slog.Warn("executor: MarkSent job dropped", "meme_id", memeID)
 				}
-			}()
+			} else {
+				backgroundruntime.RunInline(bgCtx, job)
+			}
 		}
 	}
 

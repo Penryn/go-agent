@@ -8,6 +8,7 @@ import (
 
 	"github.com/phlin/go-agent/internal/core/ports"
 	memorydomain "github.com/phlin/go-agent/internal/domain/memory"
+	backgroundruntime "github.com/phlin/go-agent/internal/runtime/background"
 )
 
 type WriteIntent struct {
@@ -45,6 +46,17 @@ type Service struct {
 	vectorStore ports.VectorMemoryStore // 可为 nil，nil 时跳过向量写入
 	typeTTL     map[string]string       // 按类型差异化 TTL，可为 nil
 	defaultTTL  string                  // 全局默认 TTL（如 "720h"），空时不设过期
+	background  backgroundSubmitter
+}
+
+type backgroundSubmitter interface {
+	Submit(backgroundruntime.Job) bool
+}
+
+// WithBackgroundRuntime routes vector synchronization through the application
+// job owner instead of creating an untracked goroutine.
+func WithBackgroundRuntime(runtime backgroundSubmitter) Option {
+	return func(s *Service) { s.background = runtime }
 }
 
 // New 创建 Service。vectorStore 通过 WithVectorStore Option 可选注入。
@@ -79,20 +91,24 @@ func (s *Service) MarkIntent(ctx context.Context, intent WriteIntent) (memorydom
 		return memorydomain.MemoryRecord{}, err
 	}
 
-	// Step 2: 异步写入 Qdrant（副存储，失败只打日志，不影响主流程）
+	// Step 2: submit Qdrant synchronization as background work (副存储，失败只打日志，不影响主流程)
 	if s.vectorStore != nil {
 		vs := s.vectorStore
 		r := record
-		safeGo("qdrant_store_memory", func() {
-			storeCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-			defer cancel()
-			if err := vs.StoreMemory(storeCtx, r); err != nil {
-				slog.Warn("memory: async qdrant sync failed",
-					"memory_id", r.MemoryID,
-					"err", err,
-				)
+		job := backgroundruntime.Job{
+			Name:    "qdrant_store_memory",
+			Timeout: 10 * time.Second,
+			Run: func(ctx context.Context) error {
+				return vs.StoreMemory(ctx, r)
+			},
+		}
+		if s.background != nil {
+			if !s.background.Submit(job) {
+				slog.Warn("memory: qdrant sync job dropped", "memory_id", r.MemoryID)
 			}
-		})
+		} else {
+			backgroundruntime.RunInline(ctx, job)
+		}
 	}
 
 	return record, nil
@@ -120,16 +136,4 @@ func (s *Service) resolveExpiresAt(memType string) *time.Time {
 	}
 	t := time.Now().Add(d)
 	return &t
-}
-
-// safeGo 在独立 goroutine 中执行 fn，带 panic recover 保护。
-func safeGo(label string, fn func()) {
-	go func() {
-		defer func() {
-			if r := recover(); r != nil {
-				slog.Error("memory: async goroutine panic", "label", label, "panic", r)
-			}
-		}()
-		fn()
-	}()
 }
