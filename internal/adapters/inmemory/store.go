@@ -43,6 +43,9 @@ type Store struct {
 	learningMarks map[string]memorydomain.LearningWatermark
 	thoughts      []replydomain.ThoughtRecord
 	workingStates map[int64]humandomain.GroupWorkingMemory
+	outbox        map[string]ports.OutboxTask
+	outboxByKey   map[string]string
+	outboxSeq     int64
 }
 
 func (s *Store) SaveThought(_ context.Context, thought replydomain.ThoughtRecord) error {
@@ -82,7 +85,131 @@ func NewStore() *Store {
 		personaStates: make(map[string]personadomain.PersonaState),
 		learningMarks: make(map[string]memorydomain.LearningWatermark),
 		workingStates: make(map[int64]humandomain.GroupWorkingMemory),
+		outbox:        make(map[string]ports.OutboxTask),
+		outboxByKey:   make(map[string]string),
 	}
+}
+
+var _ ports.OutboxStore = (*Store)(nil)
+
+func (s *Store) EnqueueOutbox(_ context.Context, task ports.OutboxTask) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if task.Kind == "" || task.IdempotencyKey == "" {
+		return errors.New("outbox: kind and idempotency key are required")
+	}
+	if _, exists := s.outboxByKey[task.IdempotencyKey]; exists {
+		return nil
+	}
+	now := time.Now()
+	if task.ID == "" {
+		s.outboxSeq++
+		task.ID = "outbox-" + strconv.FormatInt(s.outboxSeq, 10)
+	}
+	if task.Status == "" {
+		task.Status = ports.OutboxPending
+	}
+	if task.AvailableAt.IsZero() {
+		task.AvailableAt = now
+	}
+	if task.MaxAttempts <= 0 {
+		task.MaxAttempts = 5
+	}
+	if task.CreatedAt.IsZero() {
+		task.CreatedAt = now
+	}
+	task.UpdatedAt = now
+	task.Payload = append([]byte(nil), task.Payload...)
+	s.outbox[task.ID] = task
+	s.outboxByKey[task.IdempotencyKey] = task.ID
+	return nil
+}
+
+func (s *Store) ClaimOutbox(_ context.Context, workerID string, now time.Time, lease time.Duration, limit int) ([]ports.OutboxTask, error) {
+	if workerID == "" {
+		return nil, errors.New("outbox: worker id is required")
+	}
+	if limit <= 0 {
+		limit = 1
+	}
+	if lease <= 0 {
+		lease = time.Minute
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	ids := make([]string, 0, len(s.outbox))
+	for id, task := range s.outbox {
+		ready := (task.Status == ports.OutboxPending || task.Status == ports.OutboxRetry) && !task.AvailableAt.After(now)
+		expired := task.Status == ports.OutboxRunning && !task.LockedUntil.After(now)
+		if ready || expired {
+			ids = append(ids, id)
+		}
+	}
+	sort.Slice(ids, func(i, j int) bool {
+		return s.outbox[ids[i]].CreatedAt.Before(s.outbox[ids[j]].CreatedAt)
+	})
+	claimed := make([]ports.OutboxTask, 0, minInt(limit, len(ids)))
+	for _, id := range ids {
+		if len(claimed) >= limit {
+			break
+		}
+		task := s.outbox[id]
+		task.Status = ports.OutboxRunning
+		task.Attempts++
+		task.LockedBy = workerID
+		task.LockedUntil = now.Add(lease)
+		task.UpdatedAt = now
+		s.outbox[id] = task
+		task.Payload = append([]byte(nil), task.Payload...)
+		claimed = append(claimed, task)
+	}
+	return claimed, nil
+}
+
+func (s *Store) CompleteOutbox(_ context.Context, id string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	task, ok := s.outbox[id]
+	if !ok {
+		return errors.New("outbox: task not found")
+	}
+	task.Status = ports.OutboxCompleted
+	task.LockedBy = ""
+	task.LockedUntil = time.Time{}
+	task.UpdatedAt = time.Now()
+	s.outbox[id] = task
+	return nil
+}
+
+func (s *Store) FailOutbox(_ context.Context, id string, taskErr error, retryAt time.Time) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	task, ok := s.outbox[id]
+	if !ok {
+		return errors.New("outbox: task not found")
+	}
+	task.LastError = ""
+	if taskErr != nil {
+		task.LastError = taskErr.Error()
+	}
+	if retryAt.IsZero() || (task.MaxAttempts > 0 && task.Attempts >= task.MaxAttempts) {
+		task.Status = ports.OutboxDeadLetter
+	} else {
+		task.Status = ports.OutboxRetry
+		task.AvailableAt = retryAt
+	}
+	task.LockedBy = ""
+	task.LockedUntil = time.Time{}
+	task.UpdatedAt = time.Now()
+	s.outbox[id] = task
+	return nil
+}
+
+func minInt(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
 }
 
 func cloneWorkingMemory(memory humandomain.GroupWorkingMemory) humandomain.GroupWorkingMemory {

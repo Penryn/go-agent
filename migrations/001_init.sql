@@ -137,3 +137,22 @@ CREATE TABLE IF NOT EXISTS thought_records (
   created_at DATETIME(6) NOT NULL,
   KEY idx_thought_records_group_created (group_id, created_at)
 );
+
+CREATE TABLE IF NOT EXISTS async_outbox (
+  task_id VARCHAR(128) PRIMARY KEY,
+  kind VARCHAR(64) NOT NULL,
+  idempotency_key VARCHAR(255) NOT NULL,
+  payload_json JSON NOT NULL,
+  status VARCHAR(32) NOT NULL,
+  attempts INT NOT NULL DEFAULT 0,
+  max_attempts INT NOT NULL DEFAULT 5,
+  available_at DATETIME(6) NOT NULL,
+  locked_until DATETIME(6) NULL,
+  locked_by VARCHAR(128) NULL,
+  last_error TEXT NULL,
+  created_at DATETIME(6) NOT NULL,
+  updated_at DATETIME(6) NOT NULL,
+  UNIQUE KEY uniq_async_outbox_idempotency (idempotency_key),
+  KEY idx_async_outbox_claim (status, available_at, locked_until),
+  KEY idx_async_outbox_updated (updated_at)
+);

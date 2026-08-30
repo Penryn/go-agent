@@ -36,6 +36,10 @@
 
 Group Actor Manager 新增可配置 `actor_idle_ttl` 和 `PruneIdle`。Runtime 每个调度周期回收长期无操作且没有 live candidate 的 Actor；回收请求经过 Actor mailbox 串行确认，working memory 已由各写操作持久化后再退出。默认配置为 30 分钟。
 
+### 7. Outbox 持久化 seam
+
+新增 `ports.OutboxStore`、内存 adapter 及 MySQL `async_outbox` 表迁移，统一定义幂等入队、租约领取、完成、重试和 dead-letter 状态。现有后台 Runtime 仍保持进程内执行，下一步将把媒体、向量和策展任务改为带 payload 的注册 handler，并接入该 seam。
+
 ## 下一阶段：可靠后台任务
 
 当前进程内队列在满载时会丢弃媒体理解、向量索引和策展任务。下一阶段应引入持久化 outbox：

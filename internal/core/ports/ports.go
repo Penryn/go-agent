@@ -54,6 +54,41 @@ type ThoughtStore interface {
 	SaveThought(ctx context.Context, thought replydomain.ThoughtRecord) error
 }
 
+// OutboxTask is the durable envelope for asynchronous work. Payload is
+// versioned by Kind and must be safe to replay; IdempotencyKey prevents
+// duplicate enqueue on retries.
+type OutboxTask struct {
+	ID             string
+	Kind           string
+	IdempotencyKey string
+	Payload        []byte
+	Status         string
+	Attempts       int
+	MaxAttempts    int
+	AvailableAt    time.Time
+	LockedUntil    time.Time
+	LockedBy       string
+	LastError      string
+	CreatedAt      time.Time
+	UpdatedAt      time.Time
+}
+
+const (
+	OutboxPending    = "pending"
+	OutboxRunning    = "running"
+	OutboxRetry      = "retry"
+	OutboxCompleted  = "completed"
+	OutboxDeadLetter = "dead_letter"
+)
+
+// OutboxStore is the persistence seam for replayable background tasks.
+type OutboxStore interface {
+	EnqueueOutbox(ctx context.Context, task OutboxTask) error
+	ClaimOutbox(ctx context.Context, workerID string, now time.Time, lease time.Duration, limit int) ([]OutboxTask, error)
+	CompleteOutbox(ctx context.Context, id string) error
+	FailOutbox(ctx context.Context, id string, taskErr error, retryAt time.Time) error
+}
+
 // LearningStateStore owns the durable cursor for background projectors. It
 // is intentionally separate from MemoryStore because a projector needs a
 // stable ordered read, not just a rolling conversation window.

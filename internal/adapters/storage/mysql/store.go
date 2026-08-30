@@ -26,6 +26,7 @@ var (
 	_ ports.ThoughtStore       = (*Store)(nil)
 	_ ports.MemeStore          = (*Store)(nil)
 	_ ports.ProfileStore       = (*Store)(nil)
+	_ ports.OutboxStore        = (*Store)(nil)
 )
 
 type Store struct {
@@ -48,6 +49,138 @@ func Open(ctx context.Context, dsn string) (*sql.DB, error) {
 
 func NewStore(db *sql.DB) *Store {
 	return &Store{db: db}
+}
+
+func (s *Store) EnqueueOutbox(ctx context.Context, task ports.OutboxTask) error {
+	if task.Kind == "" || task.IdempotencyKey == "" || task.ID == "" {
+		return errors.New("outbox: id, kind and idempotency key are required")
+	}
+	if task.Status == "" {
+		task.Status = ports.OutboxPending
+	}
+	if task.AvailableAt.IsZero() {
+		task.AvailableAt = time.Now()
+	}
+	if task.MaxAttempts <= 0 {
+		task.MaxAttempts = 5
+	}
+	if task.CreatedAt.IsZero() {
+		task.CreatedAt = time.Now()
+	}
+	if task.UpdatedAt.IsZero() {
+		task.UpdatedAt = task.CreatedAt
+	}
+	_, err := s.db.ExecContext(ctx, `
+		INSERT INTO async_outbox (
+			task_id, kind, idempotency_key, payload_json, status, attempts, max_attempts,
+			available_at, locked_until, locked_by, last_error, created_at, updated_at
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL, ?, ?)
+		ON DUPLICATE KEY UPDATE task_id = task_id
+	`, task.ID, task.Kind, task.IdempotencyKey, task.Payload, task.Status, task.Attempts, task.MaxAttempts,
+		task.AvailableAt, task.CreatedAt, task.UpdatedAt)
+	return err
+}
+
+func (s *Store) ClaimOutbox(ctx context.Context, workerID string, now time.Time, lease time.Duration, limit int) ([]ports.OutboxTask, error) {
+	if workerID == "" {
+		return nil, errors.New("outbox: worker id is required")
+	}
+	if lease <= 0 {
+		lease = time.Minute
+	}
+	if limit <= 0 {
+		limit = 1
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback()
+	rows, err := tx.QueryContext(ctx, `
+		SELECT task_id, kind, idempotency_key, payload_json, status, attempts, max_attempts,
+		       available_at, locked_until, locked_by, last_error, created_at, updated_at
+		FROM async_outbox
+		WHERE (status IN (?, ?) AND available_at <= ?)
+		   OR (status = ? AND (locked_until IS NULL OR locked_until <= ?))
+		ORDER BY created_at ASC, task_id ASC
+		LIMIT ?
+		FOR UPDATE SKIP LOCKED
+	`, ports.OutboxPending, ports.OutboxRetry, now, ports.OutboxRunning, now, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	tasks := make([]ports.OutboxTask, 0, limit)
+	for rows.Next() {
+		var task ports.OutboxTask
+		var lockedUntil sql.NullTime
+		var lockedBy, lastError sql.NullString
+		if err := rows.Scan(&task.ID, &task.Kind, &task.IdempotencyKey, &task.Payload, &task.Status, &task.Attempts, &task.MaxAttempts,
+			&task.AvailableAt, &lockedUntil, &lockedBy, &lastError, &task.CreatedAt, &task.UpdatedAt); err != nil {
+			return nil, err
+		}
+		if lockedUntil.Valid {
+			task.LockedUntil = lockedUntil.Time
+		}
+		task.LockedBy = lockedBy.String
+		task.LastError = lastError.String
+		task.Status = ports.OutboxRunning
+		task.Attempts++
+		task.LockedBy = workerID
+		task.LockedUntil = now.Add(lease)
+		task.UpdatedAt = now
+		if _, err := tx.ExecContext(ctx, `UPDATE async_outbox SET status = ?, attempts = ?, locked_until = ?, locked_by = ?, updated_at = ? WHERE task_id = ?`,
+			ports.OutboxRunning, task.Attempts, task.LockedUntil, workerID, now, task.ID); err != nil {
+			return nil, err
+		}
+		tasks = append(tasks, task)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, err
+	}
+	return tasks, nil
+}
+
+func (s *Store) CompleteOutbox(ctx context.Context, id string) error {
+	result, err := s.db.ExecContext(ctx, `UPDATE async_outbox SET status = ?, locked_until = NULL, locked_by = NULL, updated_at = ? WHERE task_id = ?`, ports.OutboxCompleted, time.Now(), id)
+	if err != nil {
+		return err
+	}
+	if affected, _ := result.RowsAffected(); affected == 0 {
+		return errors.New("outbox: task not found")
+	}
+	return nil
+}
+
+func (s *Store) FailOutbox(ctx context.Context, id string, taskErr error, retryAt time.Time) error {
+	var attempts, maxAttempts int
+	if err := s.db.QueryRowContext(ctx, `SELECT attempts, max_attempts FROM async_outbox WHERE task_id = ?`, id).Scan(&attempts, &maxAttempts); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return errors.New("outbox: task not found")
+		}
+		return err
+	}
+	status := ports.OutboxRetry
+	if retryAt.IsZero() || (maxAttempts > 0 && attempts >= maxAttempts) {
+		status = ports.OutboxDeadLetter
+	}
+	var retry any
+	if status == ports.OutboxRetry {
+		retry = retryAt
+	}
+	_, err := s.db.ExecContext(ctx, `UPDATE async_outbox SET status = ?, available_at = COALESCE(?, available_at), locked_until = NULL, locked_by = NULL, last_error = ?, updated_at = ? WHERE task_id = ?`,
+		status, retry, nullableError(taskErr), time.Now(), id)
+	return err
+}
+
+func nullableError(err error) any {
+	if err == nil {
+		return nil
+	}
+	return err.Error()
 }
 
 func (s *Store) LoadWorkingMemory(ctx context.Context, groupID int64) (humandomain.GroupWorkingMemory, error) {
