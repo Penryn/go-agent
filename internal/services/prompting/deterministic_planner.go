@@ -12,15 +12,13 @@ import (
 	replydomain "github.com/phlin/go-agent/internal/domain/reply"
 )
 
-// pokeReplyFallbacks 是 ActionPokeReply LLM 失败时的降级气泡候选，符合艾莲酱角色语气。
+// pokeReplyFallbacks 是 ActionPokeReply LLM 失败时的通用降级气泡候选。
 var pokeReplyFallbacks = []string{
 	"？",
-	"干嘛",
-	"戳什么戳",
-	"……",
 	"嗯？",
-	"你好你好",
-	"有事说事",
+	"怎么了？",
+	"……",
+	"有事吗？",
 }
 
 type DeterministicPlanner struct {

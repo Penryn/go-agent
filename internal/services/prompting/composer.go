@@ -161,7 +161,7 @@ func (c *Composer) instruction(snapshot conversationdomain.ContextSnapshot, deci
 		"输出约束层:",
 		fmt.Sprintf("最多 %d 字，最多 %d 句。", c.persona.ReplyMaxChars, c.persona.ReplyMaxSentences),
 		"避免客服腔、总结腔、长解释。",
-		"拒绝行为请求时禁止说「很抱歉」「抱歉无法帮您」「我无法完成」等客服式措辞；用角色自然语气拒绝，例如「懒得动」「你不会自己查吗」「没空」「不想」。",
+		"拒绝行为请求时禁止说「很抱歉」「抱歉无法帮您」「我无法完成」等客服式措辞；用符合当前人格的自然语气说明原因，简短直接即可。",
 	)
 	for _, constraint := range c.persona.Constraints {
 		if constraint != "" {
