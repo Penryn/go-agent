@@ -220,8 +220,6 @@ meme:
   # 是否自动收藏群内表情包候选。
   auto_collect: true
   candidate_threshold: 0.6
-  # 哈希/相似度去重阈值。
-  dedup_threshold: 0.92
   per_group_limit: 5000
   search_top_k: 5
   # 同一张表情包重复发送冷却。
@@ -237,6 +235,31 @@ multimodal:
   max_video_bytes: 52428800
   max_video_seconds: 60
 
+tools:
+  # Eino 直接加载 MCP tools。工具会以 mcp_<server>_<tool> 暴露给主模型。
+  mcp_servers: []
+  # 示例：
+  # - name: web
+  #   enabled: true
+  #   required: false
+  #   transport: stdio
+  #   command: npx
+  #   args: ["-y", "@your/mcp-server"]
+  #   tools: [] # 空表示加载服务端的全部工具
+  #   timeout: 15s
+
+  # 外部 MCP/Codex 工具必须显式加入相应群的 tool_allowlist，不能只开启此处配置。
+  # 本机 Codex 通过 app-server stdio 协议执行复杂、多步的只读任务。
+  # 默认关闭；启用前请确认运行 bot 的系统账号已登录 Codex。
+  codex:
+    enabled: false
+    binary: codex
+    model: "" # 空表示沿用本机 Codex 默认模型
+    cwd: ""   # 空表示项目启动目录
+    network_enabled: false # 浏览/联网研究时才开启
+    timeout: 5m
+    max_concurrency: 1
+
 storage:
   # 当前默认启动仍使用 in-memory store。
   # 这里的配置已经用于适配器与集成测试，后续可切到主运行时。
@@ -246,7 +269,7 @@ storage:
     database: qqbot
     user: qqbot
     ssl_mode: disable
-    # 向量维度，须与 embedding 模型输出维度一致。Doubao embedding-large 为 2048，lite 为 1024。
+    # embedding 模型输出维度；超过 pgvector schema 的 2000 维时由 adapter 一致截断。
     vector_dim: 2048
     # 私密项 password 从 .env 的 QQBOT_STORAGE_POSTGRES_PASSWORD 读取。
 

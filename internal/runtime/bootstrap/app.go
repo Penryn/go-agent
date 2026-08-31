@@ -138,10 +138,14 @@ func NewApp(ctx context.Context, cfg config.Config) (*App, error) {
 			return nil, fmt.Errorf("register memory outbox handler: %w", err)
 		}
 	}
-	memeService := memesvc.New(stores.meme, cfg.Meme,
+	memeOpts := []memesvc.Option{
 		memesvc.WithVectorStore(memeVectorStore),
 		memesvc.WithBackgroundRuntime(backgroundRuntime),
-	)
+	}
+	if durableOutbox != nil {
+		memeOpts = append(memeOpts, memesvc.WithOutbox(durableOutbox))
+	}
+	memeService := memesvc.New(stores.meme, cfg.Meme, memeOpts...)
 	if durableOutbox != nil {
 		if err := durableOutbox.Register("meme_vector_index", func(jobCtx context.Context, payload []byte) error {
 			var task memesvc.VectorIndexTask
@@ -177,12 +181,38 @@ func NewApp(ctx context.Context, cfg config.Config) (*App, error) {
 		}
 	}
 
+	mcpTools, err := toolsvc.ConnectMCP(ctx, cfg.Tools.MCPServers)
+	if err != nil {
+		_ = backgroundRuntime.Close(context.Background())
+		_ = stores.Close()
+		return nil, err
+	}
+	mcpOwned := true
+	defer func() {
+		if mcpOwned {
+			_ = mcpTools.Close()
+		}
+	}()
 	toolRuntime := toolsvc.NewRuntime(stores.memory, stores.meme,
 		toolsvc.WithProfileStore(stores.profile),
 		toolsvc.WithPersonaID(cfg.Persona.ID),
 		toolsvc.WithMemoryService(memorySvc),
 		toolsvc.WithMemeService(memeService),
 	)
+	if err := toolRuntime.RegisterTools(ctx, mcpTools.Tools...); err != nil {
+		_ = mcpTools.Close()
+		_ = backgroundRuntime.Close(context.Background())
+		_ = stores.Close()
+		return nil, fmt.Errorf("register MCP tools: %w", err)
+	}
+	if codexTool := toolsvc.NewCodexTool(cfg.Tools.Codex); codexTool != nil {
+		if err := toolRuntime.RegisterTools(ctx, codexTool); err != nil {
+			_ = mcpTools.Close()
+			_ = backgroundRuntime.Close(context.Background())
+			_ = stores.Close()
+			return nil, fmt.Errorf("register Codex tool: %w", err)
+		}
+	}
 	fallbackPlanner := promptingsvc.NewDeterministicPlanner(cfg.Persona)
 	planner := promptingsvc.NewAgentPlanner(
 		modelFactory,
@@ -356,7 +386,7 @@ func NewApp(ctx context.Context, cfg config.Config) (*App, error) {
 			if durableOutbox != nil {
 				outboxErr = durableOutbox.Close()
 			}
-			return errors.Join(outboxErr, humanRuntime.Close(), presenceManager.Close(), stores.Close())
+			return errors.Join(outboxErr, humanRuntime.Close(), presenceManager.Close(), mcpTools.Close(), stores.Close())
 		},
 		healthCheck: stores.HealthCheck,
 	}
@@ -374,6 +404,7 @@ func NewApp(ctx context.Context, cfg config.Config) (*App, error) {
 		WriteTimeout: 10 * time.Second,
 	}
 
+	mcpOwned = false
 	return app, nil
 }
 

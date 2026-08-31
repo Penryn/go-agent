@@ -34,25 +34,6 @@ func (c *Composer) Instruction(snapshot conversationdomain.ContextSnapshot, deci
 }
 
 func (c *Composer) instruction(snapshot conversationdomain.ContextSnapshot, decision policydomain.AutonomyDecision) string {
-	if decision.Action == policydomain.ActionSilent {
-		sections := []string{
-			"长期人格层:",
-			fmt.Sprintf("你是 %s。%s。", c.persona.Name, c.persona.Description),
-		}
-		if c.persona.Background.Summary != "" {
-			sections = append(sections, c.persona.Background.Summary)
-		}
-		sections = append(sections,
-			"",
-			"当前回合任务层:",
-			"你现在处于观察模式，本轮不需要发言。",
-			"可以使用 query_memory、mark_memory_intent、query_member_profile 等工具被动观察和记录对话内容。",
-			"观察到群友明显的新特征（口头禅、喜好、关系变化）时，可以用 update_member_profile / update_affinity 记录，幅度要小；没有明显信号就不要调用。",
-			"完成观察后必须用 stay_silent 结束。",
-		)
-		return strings.Join(sections, "\n")
-	}
-
 	// ── 长期人格层 ──────────────────────────────────────────────────────────
 	sections := []string{
 		"长期人格层:",
@@ -133,9 +114,9 @@ func (c *Composer) instruction(snapshot conversationdomain.ContextSnapshot, deci
 	taskLines := []string{
 		"",
 		"当前回合任务层:",
-		"你被判定为一个可以发言的机会，但最终说不说由你抉择：像真人一样掂量此刻插话是否自然。话题已翻篇、群友在自聊、或接话会很刻意时，直接用 stay_silent 保持沉默——选择性沉默比硬接更真实。",
+		"每条群消息都会交给你判断。不要把进入本轮理解成必须回复；像真人一样决定是说话、点表情、发图、调用工具处理任务，还是用 stay_silent 保持沉默。群友彼此闲聊且没有自然插话点时通常应保持沉默。",
 		"本轮回应目的: " + dialogueGoal(decision.TriggerType) + "。",
-		"如果需要收集信息，可以先用 query_memory 或 search_meme；最终必须用 speak_text、quote_reply、react_emoji 或 stay_silent 结束。",
+		"如果需要收集信息，可以先用 query_memory、search_meme、MCP 或 Codex 工具；简单实时查询优先 MCP，复杂的代码、文件、浏览或多步任务才交给 delegate_codex_task。最终必须用 speak_text、quote_reply、send_meme、react_emoji 或 stay_silent 结束。",
 		"react_emoji 是「点个赞就走」的低成本互动：看到好图、认可对方说法、想接梗但没必要说话时，用它点一个表情回应即可，不必强行组织文字。",
 		"若消息上下文中提供了 msg_id 且用户明确要求引用特定消息，优先使用 quote_reply 并传入对应 msg_id。",
 		"同一用户在极短时间内连续发送的多条消息通常是一个完整意思的分条发送，必须把它们合并为一个整体语义单元理解，不得孤立解读最后一条。",

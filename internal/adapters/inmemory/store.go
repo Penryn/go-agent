@@ -405,9 +405,11 @@ func (s *Store) SearchMemes(_ context.Context, query ports.MemeQuery) ([]mediado
 	for memeID, descriptor := range s.memeDesc {
 		if query.GroupID != 0 {
 			asset, ok := s.memeAssets[memeID]
-			if !ok || (asset.GroupID != query.GroupID && asset.GroupID != 0) {
+			if !ok || asset.Status != "approved" || (asset.GroupID != query.GroupID && asset.GroupID != 0) {
 				continue
 			}
+		} else if asset, ok := s.memeAssets[memeID]; !ok || asset.Status != "approved" {
+			continue
 		}
 
 		score := 0.0

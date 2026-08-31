@@ -30,6 +30,7 @@ type Runtime struct {
 	personaID    string
 	memSvc       *memsvc.Service
 	memeSvc      *memesvc.Service
+	external     []registeredTool
 }
 
 type Option func(*Runtime)
@@ -71,21 +72,69 @@ var speakingTools = map[string]bool{
 }
 
 func (r *Runtime) Tools(session replydomain.ToolContext) []tool.BaseTool {
-	all := make([]namedTool, 0, 13)
-	all = append(all, r.replyTools()...)
-	all = append(all, r.knowledgeTools(session)...)
-	all = append(all, r.profileTools(session)...)
+	internal := make([]namedTool, 0, 13)
+	internal = append(internal, r.replyTools()...)
+	internal = append(internal, r.knowledgeTools(session)...)
+	internal = append(internal, r.profileTools(session)...)
+	all := make([]registeredTool, 0, len(internal)+len(r.external))
+	for _, candidate := range internal {
+		all = append(all, registeredTool{name: candidate.Name(), tool: candidate})
+	}
+	all = append(all, r.external...)
 
 	allowed := make([]tool.BaseTool, 0, len(all))
 	for _, candidate := range all {
-		if session.ObserveOnly && speakingTools[candidate.Name()] {
+		if session.ObserveOnly && speakingTools[candidate.name] {
 			continue
 		}
-		if len(session.AllowedTools) == 0 || slices.Contains(session.AllowedTools, candidate.Name()) {
-			allowed = append(allowed, candidate)
+		if (candidate.external && !slices.Contains(session.AllowedTools, candidate.name)) ||
+			(!candidate.external && len(session.AllowedTools) > 0 && !slices.Contains(session.AllowedTools, candidate.name)) {
+			continue
+		}
+		{
+			allowed = append(allowed, candidate.tool)
 		}
 	}
 	return allowed
+}
+
+type registeredTool struct {
+	name     string
+	tool     tool.BaseTool
+	external bool
+}
+
+// RegisterTools adds tools discovered at startup (for example MCP and Codex)
+// while preserving the existing per-group allowlist behavior.
+func (r *Runtime) RegisterTools(ctx context.Context, tools ...tool.BaseTool) error {
+	known := make(map[string]bool, len(r.external)+13)
+	for _, candidate := range r.replyTools() {
+		known[candidate.Name()] = true
+	}
+	for _, candidate := range r.knowledgeTools(replydomain.ToolContext{}) {
+		known[candidate.Name()] = true
+	}
+	for _, candidate := range r.profileTools(replydomain.ToolContext{}) {
+		known[candidate.Name()] = true
+	}
+	for _, candidate := range r.external {
+		known[candidate.name] = true
+	}
+	for _, candidate := range tools {
+		info, err := candidate.Info(ctx)
+		if err != nil {
+			return fmt.Errorf("read external tool info: %w", err)
+		}
+		if info == nil || strings.TrimSpace(info.Name) == "" {
+			return errors.New("external tool name is required")
+		}
+		if known[info.Name] {
+			return fmt.Errorf("duplicate tool name %q", info.Name)
+		}
+		known[info.Name] = true
+		r.external = append(r.external, registeredTool{name: info.Name, tool: candidate, external: true})
+	}
+	return nil
 }
 
 func (r *Runtime) replyTools() []namedTool {
@@ -482,8 +531,10 @@ func (t *searchMemeTool) InvokableRun(ctx context.Context, argumentsInJSON strin
 		Query:         args.Query,
 		Emotion:       args.Emotion,
 		Scene:         args.Scene,
-		TopK:          clamp(args.TopK, 1, 5),
 		ExcludeRecent: args.ExcludeRecent,
+	}
+	if args.TopK > 0 {
+		query.TopK = clamp(args.TopK, 1, 5)
 	}
 	var (
 		results []mediadomain.MemeSearchResult
@@ -536,7 +587,8 @@ func (t *sendMemeTool) InvokableRun(ctx context.Context, argumentsInJSON string,
 		return "", err
 	}
 	if t.store != nil {
-		if _, _, err := t.store.GetMeme(ctx, args.MemeID); err != nil {
+		asset, _, err := t.store.GetMeme(ctx, args.MemeID)
+		if err != nil || asset.Status != "approved" {
 			return marshal(map[string]any{
 				"error": "meme_not_found",
 				"hint":  "use search_meme to find a valid meme_id first",

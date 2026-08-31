@@ -96,33 +96,12 @@ func (p *Pipeline) process(ctx context.Context, record humandomain.EventRecord) 
 	if err := p.working.EnrichMedia(ctx, record.GroupID, record.EventID, descriptors); err != nil {
 		return err
 	}
-	if p.memes != nil && hasSticker(record.Event.Attachments) {
-		stickerEvent := record.Event
-		stickerEvent.Attachments = stickersOnly(record.Event.Attachments)
-		if err := p.memes.ObserveEvent(ctx, stickerEvent, descriptors); err != nil {
+	if p.memes != nil {
+		if err := p.memes.ObserveEvent(ctx, record.Event, descriptors); err != nil {
 			return err
 		}
 	}
 	return nil
-}
-
-func hasSticker(attachments []mediadomain.MultimodalAttachment) bool {
-	for _, attachment := range attachments {
-		if attachment.Kind == mediadomain.MediaSticker {
-			return true
-		}
-	}
-	return false
-}
-
-func stickersOnly(attachments []mediadomain.MultimodalAttachment) []mediadomain.MultimodalAttachment {
-	stickers := make([]mediadomain.MultimodalAttachment, 0, len(attachments))
-	for _, attachment := range attachments {
-		if attachment.Kind == mediadomain.MediaSticker {
-			stickers = append(stickers, attachment)
-		}
-	}
-	return stickers
 }
 
 func fallbackDescriptors(attachments []mediadomain.MultimodalAttachment) []mediadomain.MediaDescriptor {

@@ -606,7 +606,8 @@ func (s *Store) SearchMemes(ctx context.Context, query ports.MemeQuery) ([]media
 		       d.usage_hints_json, d.language, d.confidence, d.reviewed
 		FROM meme_assets a
 		JOIN meme_descriptors d ON d.meme_id = a.meme_id
-		WHERE (a.group_id = $1 OR a.group_id = 0)
+		WHERE a.status = 'approved'
+		  AND (a.group_id = $1 OR a.group_id = 0)
 		  AND (d.title LIKE $2 OR d.summary LIKE $3 OR d.keywords_json::text LIKE $4)
 		ORDER BY a.send_count DESC, d.updated_at DESC
 		LIMIT $5

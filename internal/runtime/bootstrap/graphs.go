@@ -24,12 +24,6 @@ func buildVectorGraph(ctx context.Context, cfg config.Config, factory *modeladap
 	if dim <= 0 {
 		return graph
 	}
-	// spec 承诺的启动校验:配置维度超 pgvector hnsw 上限时禁用向量检索并显式报错,
-	// 不静默钳制(运行时才由 PG 报错会把发现时机拖到第一次写入)。
-	if dim > 2000 {
-		slog.Error("app: postgres.vector_dim exceeds pgvector hnsw limit 2000, vector search disabled", "vector_dim", dim)
-		return graph
-	}
 	embedder, err := factory.EmbeddingModel(ctx)
 	if err != nil {
 		slog.Warn("app: embedding model unavailable, skipping vector store init", "err", err)

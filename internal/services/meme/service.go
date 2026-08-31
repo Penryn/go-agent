@@ -153,9 +153,13 @@ func (s *Service) ObserveEvent(ctx context.Context, event conversationdomain.Con
 		if attachment.Kind != mediadomain.MediaImage && attachment.Kind != mediadomain.MediaSticker {
 			continue
 		}
+		descriptor, ok := descriptorFor(attachment.AttachmentID, descriptors)
+		if !ok || !s.collectible(attachment, descriptor) {
+			continue
+		}
 
 		memeID := buildMemeID(attachment)
-		descriptor := buildMemeDescriptor(memeID, attachment, descriptors, s.cfg.CandidateThreshold)
+		memeDescriptor := buildMemeDescriptor(memeID, attachment, []mediadomain.MediaDescriptor{descriptor}, s.cfg.CandidateThreshold)
 		err := s.store.UpsertMeme(ctx, mediadomain.MemeAsset{
 			MemeID:         memeID,
 			GroupID:        event.GroupID,
@@ -169,7 +173,7 @@ func (s *Service) ObserveEvent(ctx context.Context, event conversationdomain.Con
 			Animated:       strings.EqualFold(fileExt(attachment.ObjectKey), ".gif"),
 			Status:         "approved",
 			CreatedAt:      time.Now(),
-		}, descriptor)
+		}, memeDescriptor)
 		if err != nil {
 			return err
 		}
@@ -177,7 +181,7 @@ func (s *Service) ObserveEvent(ctx context.Context, event conversationdomain.Con
 		// Vector indexing is background work; the runtime owns its timeout and
 		// lifecycle. The inline path keeps standalone service tests deterministic.
 		if s.vectorStore != nil {
-			indexText := buildIndexText(descriptor)
+			indexText := buildIndexText(memeDescriptor)
 			groupID := event.GroupID
 			if s.outbox != nil {
 				payload, marshalErr := json.Marshal(VectorIndexTask{MemeID: memeID, Text: indexText, GroupID: groupID})
@@ -220,84 +224,129 @@ func (s *Service) ProcessVectorIndex(ctx context.Context, task VectorIndexTask) 
 // Search 搜索表情包，向量优先；向量无结果时 fallback 到关键词搜索。
 // 关键词搜索路径自动应用 RepeatCooldown 冷却过滤；若冷却期内无结果则放开冷却重试。
 func (s *Service) Search(ctx context.Context, query ports.MemeQuery) ([]mediadomain.MemeSearchResult, error) {
-	// 顺带结算过期的哑弹观察（群彻底没人说话时没有 ObserveEvent 可触发）
 	s.sweepExpiredDuds(ctx, time.Now())
-	// 向量优先路径
+	if query.TopK <= 0 {
+		query.TopK = s.cfg.SearchTopK
+	}
+	if query.TopK <= 0 {
+		query.TopK = 5
+	}
+
+	// ponytail: bounded overfetch keeps tag filtering local; push filters into
+	// adapters only if large meme libraries make this measurably inaccurate.
+	retrieve := query
+	retrieve.TopK = max(query.TopK*4, 20)
+	var results []mediadomain.MemeSearchResult
+
 	if s.vectorStore != nil && s.cfg.SemanticTopK > 0 && strings.TrimSpace(query.Query) != "" {
-		vectorResults, err := s.vectorStore.SearchMemes(ctx, query.GroupID, query.Query, s.cfg.SemanticTopK, s.cfg.SemanticThreshold)
+		vectorTopK := max(s.cfg.SemanticTopK, retrieve.TopK)
+		vectorResults, err := s.vectorStore.SearchMemes(ctx, query.GroupID, query.Query, vectorTopK, s.cfg.SemanticThreshold)
 		if err != nil {
 			slog.Warn("meme.Search: vector search failed, fallback to keyword", "group_id", query.GroupID, "err", err)
 		} else if len(vectorResults) > 0 {
-			// 用 memeID 回查关系表补全 Descriptor，并走 RepeatCooldown 过滤
-			return s.enrichAndFilter(ctx, vectorResults, query)
+			results = vectorResults
+			if query.GroupID != 0 {
+				global, globalErr := s.vectorStore.SearchMemes(ctx, 0, query.Query, vectorTopK, s.cfg.SemanticThreshold)
+				if globalErr == nil {
+					results = appendUniqueResults(results, global...)
+				}
+			}
+		}
+		if len(results) == 0 && query.GroupID != 0 {
+			if global, globalErr := s.vectorStore.SearchMemes(ctx, 0, query.Query, vectorTopK, s.cfg.SemanticThreshold); globalErr == nil {
+				results = global
+			}
 		}
 	}
-
-	// fallback：关键词搜索路径（含 RepeatCooldown 冷却过滤）
-	return s.keywordSearch(ctx, query)
-}
-
-// keywordSearch 执行关键词搜索并应用 RepeatCooldown 冷却过滤。
-func (s *Service) keywordSearch(ctx context.Context, query ports.MemeQuery) ([]mediadomain.MemeSearchResult, error) {
-	results, err := s.store.SearchMemes(ctx, query)
-	if err != nil || len(results) == 0 {
-		return results, err
-	}
-	return s.applyCooldown(ctx, results, query)
-}
-
-// enrichAndFilter 根据向量搜索返回的 memeID 回查关系表补全 Descriptor，然后应用冷却过滤。
-func (s *Service) enrichAndFilter(ctx context.Context, vectorResults []mediadomain.MemeSearchResult, query ports.MemeQuery) ([]mediadomain.MemeSearchResult, error) {
-	enriched := make([]mediadomain.MemeSearchResult, 0, len(vectorResults))
-	for _, r := range vectorResults {
-		_, desc, err := s.store.GetMeme(ctx, r.MemeID)
+	if len(results) == 0 {
+		var err error
+		results, err = s.store.SearchMemes(ctx, retrieve)
 		if err != nil {
-			slog.Warn("meme.enrichAndFilter: GetMeme failed, skipping", "meme_id", r.MemeID, "err", err)
-			continue
+			return nil, err
 		}
-		r.Descriptor = desc
-		enriched = append(enriched, r)
 	}
-	if len(enriched) == 0 {
-		return s.keywordSearch(ctx, query)
-	}
-	return s.applyCooldown(ctx, enriched, query)
+	return s.rankAndFilter(ctx, results, query)
 }
 
-// applyCooldown 按 RepeatCooldown 过滤最近发送过的表情包，再按哑弹率
-// 排序（效果差的排后面）；若全部被过滤则放开限制返回原结果。
-func (s *Service) applyCooldown(ctx context.Context, results []mediadomain.MemeSearchResult, _ ports.MemeQuery) ([]mediadomain.MemeSearchResult, error) {
-	cooldown, _ := time.ParseDuration(s.cfg.RepeatCooldown)
-	now := time.Now()
-	cutoff := now.Add(-cooldown)
-	filtered := make([]mediadomain.MemeSearchResult, 0, len(results))
-	for _, r := range results {
-		asset, _, getErr := s.store.GetMeme(ctx, r.MemeID)
-		if getErr != nil {
-			filtered = append(filtered, r)
+func appendUniqueResults(results []mediadomain.MemeSearchResult, additions ...mediadomain.MemeSearchResult) []mediadomain.MemeSearchResult {
+	seen := make(map[string]struct{}, len(results)+len(additions))
+	for _, result := range results {
+		seen[result.MemeID] = struct{}{}
+	}
+	for _, result := range additions {
+		if _, ok := seen[result.MemeID]; ok {
 			continue
 		}
-		if asset.LastSentAt == nil || asset.LastSentAt.Before(cutoff) {
-			filtered = append(filtered, r)
-		}
+		seen[result.MemeID] = struct{}{}
+		results = append(results, result)
 	}
-	if len(filtered) == 0 {
-		slog.Debug("meme.Search: all results in cooldown, fallback without cooldown filter")
-		filtered = results
+	return results
+}
+
+type rankedMeme struct {
+	result mediadomain.MemeSearchResult
+	asset  mediadomain.MemeAsset
+	recent bool
+}
+
+func (s *Service) rankAndFilter(ctx context.Context, results []mediadomain.MemeSearchResult, query ports.MemeQuery) ([]mediadomain.MemeSearchResult, error) {
+	cooldown, _ := time.ParseDuration(s.cfg.RepeatCooldown)
+	cutoff := time.Now().Add(-cooldown)
+	ranked := make([]rankedMeme, 0, len(results))
+	for _, result := range results {
+		asset, descriptor, err := s.store.GetMeme(ctx, result.MemeID)
+		if err != nil || asset.Status != "approved" {
+			continue
+		}
+		if !matchesTag(descriptor.EmotionTags, query.Emotion) || !matchesTag(descriptor.SceneTags, query.Scene) {
+			continue
+		}
+		recent := cooldown > 0 && asset.LastSentAt != nil && !asset.LastSentAt.Before(cutoff)
+		if query.ExcludeRecent && recent {
+			continue
+		}
+		result.Descriptor = descriptor
+		ranked = append(ranked, rankedMeme{result: result, asset: asset, recent: recent})
 	}
 
-	// 哑弹降权：DudCount/SendCount 高的表情沉底。发送次数少时不惩罚
-	// （新表情值得机会）；冷却未启用时 parseErr 会非空，排序仍然生效。
-	sort.SliceStable(filtered, func(i, j int) bool {
-		return dudRate(filtered[i].MemeID, s) < dudRate(filtered[j].MemeID, s)
+	sort.SliceStable(ranked, func(i, j int) bool {
+		left, right := ranked[i], ranked[j]
+		if s.cfg.PreferGroupScoped && (left.asset.GroupID == query.GroupID) != (right.asset.GroupID == query.GroupID) {
+			return left.asset.GroupID == query.GroupID
+		}
+		if left.recent != right.recent {
+			return !left.recent
+		}
+		if leftRate, rightRate := dudRate(left.asset), dudRate(right.asset); leftRate != rightRate {
+			return leftRate < rightRate
+		}
+		return left.result.Score > right.result.Score
 	})
+	if len(ranked) > query.TopK {
+		ranked = ranked[:query.TopK]
+	}
+	filtered := make([]mediadomain.MemeSearchResult, len(ranked))
+	for i := range ranked {
+		filtered[i] = ranked[i].result
+	}
 	return filtered, nil
 }
 
-// dudRate 返回表情的哑弹率；发送不足 3 次视为 0（样本太少不可信）。
-func dudRate(memeID string, s *Service) float64 {
-	asset, _, err := s.store.GetMeme(context.Background(), memeID)
-	if err != nil || asset.SendCount < 3 {
+func matchesTag(tags []string, wanted string) bool {
+	wanted = strings.ToLower(strings.TrimSpace(wanted))
+	if wanted == "" {
+		return true
+	}
+	for _, tag := range tags {
+		if strings.Contains(strings.ToLower(tag), wanted) {
+			return true
+		}
+	}
+	return false
+}
+
+func dudRate(asset mediadomain.MemeAsset) float64 {
+	if asset.SendCount < 3 {
 		return 0
 	}
 	return float64(asset.DudCount) / float64(asset.SendCount)
@@ -308,6 +357,9 @@ func (s *Service) BuildSendSegments(ctx context.Context, memeID string, replyToM
 	asset, _, err := s.store.GetMeme(ctx, memeID)
 	if err != nil {
 		return nil, err
+	}
+	if asset.Status != "approved" {
+		return nil, fmt.Errorf("meme %s is not approved", memeID)
 	}
 
 	segments := make([]conversationdomain.MessageSegment, 0, 3)
@@ -328,6 +380,34 @@ func (s *Service) BuildSendSegments(ctx context.Context, memeID string, replyToM
 		})
 	}
 	return segments, nil
+}
+
+func descriptorFor(attachmentID string, descriptors []mediadomain.MediaDescriptor) (mediadomain.MediaDescriptor, bool) {
+	for _, descriptor := range descriptors {
+		if descriptor.AttachmentID == attachmentID {
+			return descriptor, true
+		}
+	}
+	return mediadomain.MediaDescriptor{}, false
+}
+
+func (s *Service) collectible(attachment mediadomain.MultimodalAttachment, descriptor mediadomain.MediaDescriptor) bool {
+	if descriptor.Confidence < s.cfg.CandidateThreshold || len(descriptor.SafetySignals) > 0 {
+		return false
+	}
+	if attachment.Kind == mediadomain.MediaSticker {
+		return true
+	}
+	return len(descriptor.MemeSignals) > 0 || len(descriptor.MemeKeywords) > 0 || containsFold(descriptor.SceneTags, "meme")
+}
+
+func containsFold(values []string, wanted string) bool {
+	for _, value := range values {
+		if strings.EqualFold(strings.TrimSpace(value), wanted) {
+			return true
+		}
+	}
+	return false
 }
 
 // MarkSent 标记表情包已发送，更新发送计数和最后发送时间。

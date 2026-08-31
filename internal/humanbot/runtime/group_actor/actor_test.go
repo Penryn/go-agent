@@ -91,20 +91,34 @@ func TestManagerEnrichesMediaOnlyForRecentEvent(t *testing.T) {
 	manager := NewManager(ingress.NewMemoryEventLog())
 	defer manager.Close()
 
-	record := eventRecord("media-1", 1, 7, "", time.Unix(100, 0))
+	base := time.Now()
+	record := eventRecord("media-1", 1, 7, "", base)
 	record.Event.Attachments = []mediadomain.MultimodalAttachment{{AttachmentID: "sticker-1", Kind: mediadomain.MediaSticker}}
-	if _, err := manager.Observe(context.Background(), record); err != nil {
+	memory, err := manager.Observe(context.Background(), record)
+	if err != nil {
 		t.Fatalf("observe: %v", err)
+	}
+	if memory.Candidates[0].Status != humandomain.CandidateDeferred {
+		t.Fatalf("media candidate should wait for perception: %+v", memory.Candidates[0])
+	}
+	if _, ok, err := manager.ClaimDue(context.Background(), 1, base.Add(20*time.Second), 0.5); err != nil || ok {
+		t.Fatalf("media candidate claimed before enrichment: ok=%v err=%v", ok, err)
 	}
 	if err := manager.EnrichMedia(context.Background(), 1, "media-1", []mediadomain.MediaDescriptor{{AttachmentID: "sticker-1", Kind: mediadomain.MediaSticker, Summary: "开心小狗"}}); err != nil {
 		t.Fatalf("enrich media: %v", err)
 	}
-	memory, err := manager.Snapshot(context.Background(), 1)
+	memory, err = manager.Snapshot(context.Background(), 1)
 	if err != nil {
 		t.Fatalf("snapshot: %v", err)
 	}
 	if got := memory.MediaByEvent["media-1"][0].Summary; got != "开心小狗" {
 		t.Fatalf("unexpected media summary: %q", got)
+	}
+	if memory.Candidates[0].Status != humandomain.CandidatePending {
+		t.Fatalf("media candidate was not released: %+v", memory.Candidates[0])
+	}
+	if _, ok, err := manager.ClaimDue(context.Background(), 1, base.Add(20*time.Second), 0.5); err != nil || !ok {
+		t.Fatalf("released media candidate not claimable: ok=%v err=%v", ok, err)
 	}
 	if err := manager.EnrichMedia(context.Background(), 1, "missing", []mediadomain.MediaDescriptor{{Summary: "ignored"}}); err != nil {
 		t.Fatalf("enrich missing event: %v", err)

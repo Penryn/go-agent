@@ -25,7 +25,6 @@ import (
 
 type Config struct {
 	PollInterval      time.Duration
-	MinCandidateScore float64
 	JobTimeout        time.Duration
 	WorkerCount       int
 	GroupWhitelist    []int64
@@ -53,15 +52,11 @@ type CompletedTurnObserverFunc func(context.Context, conversationdomain.ContextS
 // state; Runtime only invokes the narrow lifecycle hooks.
 type TurnObserver interface {
 	CanDeliberate(context.Context, int64, time.Time) (bool, error)
-	// DeliberationThreshold adjusts the claim threshold for one group based on
-	// durable persona state (mood/energy/talkBias). Implementations must be
-	// cheap and fail-open (return the base threshold on any error).
-	DeliberationThreshold(context.Context, int64, float64) float64
 	AfterTurn(context.Context, conversationdomain.ContextSnapshot, policydomain.AutonomyDecision, replydomain.ActionReceipt) error
 }
 
 func DefaultConfig() Config {
-	return Config{PollInterval: 100 * time.Millisecond, MinCandidateScore: 0.5, JobTimeout: 120 * time.Second, WorkerCount: 4}
+	return Config{PollInterval: 100 * time.Millisecond, JobTimeout: 120 * time.Second, WorkerCount: 4}
 }
 
 // 主动开口的触发条件：群冷场超过该时长，且群里有未接上的话题（OpenLoops）
@@ -100,7 +95,6 @@ type Runtime struct {
 	completedTurnObservers []CompletedTurnObserverFunc
 	whitelist              map[int64]struct{}
 	selfID                 int64
-	minCandidateScore      float64
 	proactiveInterval      time.Duration
 	proactiveProbability   float64
 	proactiveThreshold     float64
@@ -146,9 +140,6 @@ func New(parent context.Context, normalizer *normalizersvc.Service, working *gro
 	if cfg.PollInterval <= 0 {
 		cfg.PollInterval = defaults.PollInterval
 	}
-	if cfg.MinCandidateScore <= 0 {
-		cfg.MinCandidateScore = defaults.MinCandidateScore
-	}
 	if cfg.JobTimeout <= 0 {
 		cfg.JobTimeout = defaults.JobTimeout
 	}
@@ -165,7 +156,6 @@ func New(parent context.Context, normalizer *normalizersvc.Service, working *gro
 		executor:             executor,
 		whitelist:            make(map[int64]struct{}, len(cfg.GroupWhitelist)),
 		selfID:               cfg.SelfID,
-		minCandidateScore:    cfg.MinCandidateScore,
 		proactiveInterval:    cfg.ProactiveInterval,
 		proactiveProbability: cfg.ProactiveBaseProbability,
 		proactiveThreshold:   cfg.ProactiveScoreThreshold,
@@ -182,7 +172,7 @@ func New(parent context.Context, normalizer *normalizersvc.Service, working *gro
 		r.workersWG.Add(1)
 		go r.worker()
 	}
-	go r.loop(cfg.PollInterval, cfg.MinCandidateScore, cfg.JobTimeout)
+	go r.loop(cfg.PollInterval, cfg.JobTimeout)
 	if r.proactiveInterval > 0 && r.proactiveProbability > 0 {
 		r.wg.Add(1)
 		go r.proactiveLoop()
@@ -253,20 +243,12 @@ func (r *Runtime) ProcessRawEvent(ctx context.Context, payload []byte) (Outcome,
 	if candidate.CandidateID == "" {
 		return Outcome{Envelope: envelope, Decision: silentDecision(envelope.TraceID, "no_candidate")}, nil
 	}
-	if candidate.Score < r.minCandidateScore {
-		_ = r.working.Complete(ctx, envelope.Event.GroupID, candidate.CandidateID)
-		return Outcome{
-			Envelope:  envelope,
-			Candidate: candidate,
-			Decision:  silentDecision(envelope.TraceID, "candidate_below_score"),
-		}, nil
-	}
 	outcome, err := r.process(ctx, envelope, candidate)
 	_ = r.working.Complete(ctx, envelope.Event.GroupID, candidate.CandidateID)
 	return outcome, err
 }
 
-func (r *Runtime) loop(interval time.Duration, minScore float64, timeout time.Duration) {
+func (r *Runtime) loop(interval, timeout time.Duration) {
 	defer r.wg.Done()
 	defer close(r.jobs)
 	ticker := time.NewTicker(interval)
@@ -278,18 +260,7 @@ func (r *Runtime) loop(interval time.Duration, minScore float64, timeout time.Du
 		case now := <-ticker.C:
 			r.working.PruneIdle(r.ctx, now)
 			for _, groupID := range r.working.GroupIDs() {
-				threshold := minScore
-				if r.turns != nil {
-					allowed, err := r.turns.CanDeliberate(r.ctx, groupID, now)
-					if err != nil || !allowed {
-						if err != nil {
-							slog.Warn("human runtime: presence check failed", "group_id", groupID, "err", err)
-						}
-						continue
-					}
-					threshold = r.turns.DeliberationThreshold(r.ctx, groupID, minScore)
-				}
-				candidate, ok, err := r.working.ClaimDue(r.ctx, groupID, now, threshold)
+				candidate, ok, err := r.working.ClaimDue(r.ctx, groupID, now, 0)
 				if err != nil || !ok {
 					continue
 				}
@@ -312,7 +283,7 @@ func (r *Runtime) loop(interval time.Duration, minScore float64, timeout time.Du
 
 // proactiveLoop 是主动开口扫描器：群冷场且仍有未接话题时，以配置的
 // 基础概率投递一个低分长延迟的主动 candidate。是否真的说出来仍由
-// ClaimDue 阈值、情绪状态与模型抉择共同决定——这里只制造机会。
+	// 模型抉择共同决定——这里只制造机会。
 func (r *Runtime) proactiveLoop() {
 	defer r.wg.Done()
 	ticker := time.NewTicker(r.proactiveInterval)

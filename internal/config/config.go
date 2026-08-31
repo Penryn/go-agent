@@ -22,6 +22,7 @@ type Config struct {
 	Memory        MemoryConfig                `yaml:"memory"`
 	Meme          MemeConfig                  `yaml:"meme"`
 	Multimodal    MultimodalConfig            `yaml:"multimodal"`
+	Tools         ToolsConfig                 `yaml:"tools"`
 	Storage       StorageConfig               `yaml:"storage"`
 	QQ            QQConfig                    `yaml:"qq"`
 }
@@ -73,19 +74,48 @@ type MemoryConfig struct {
 type MemeConfig struct {
 	AutoCollect        bool    `yaml:"auto_collect"`
 	CandidateThreshold float64 `yaml:"candidate_threshold"`
-	DedupThreshold     float64 `yaml:"dedup_threshold"`
-	PerGroupLimit      int     `yaml:"per_group_limit"`
-	SearchTopK         int     `yaml:"search_top_k"`
-	RepeatCooldown     string  `yaml:"repeat_cooldown"`
-	PreferGroupScoped  bool    `yaml:"prefer_group_scoped"`
-	SemanticTopK       int     `yaml:"semantic_top_k"`     // 向量搜索返回数量，0 时禁用向量搜索
-	SemanticThreshold  float64 `yaml:"semantic_threshold"` // 向量相似度过滤阈值，低于此值的结果被丢弃
+	// DedupThreshold is retained for config compatibility; precise perceptual
+	// deduplication is not implemented until real media bytes are available.
+	DedupThreshold    float64 `yaml:"dedup_threshold"`
+	PerGroupLimit     int     `yaml:"per_group_limit"`
+	SearchTopK        int     `yaml:"search_top_k"`
+	RepeatCooldown    string  `yaml:"repeat_cooldown"`
+	PreferGroupScoped bool    `yaml:"prefer_group_scoped"`
+	SemanticTopK      int     `yaml:"semantic_top_k"`     // 向量搜索返回数量，0 时禁用向量搜索
+	SemanticThreshold float64 `yaml:"semantic_threshold"` // 向量相似度过滤阈值，低于此值的结果被丢弃
 }
 
 type MultimodalConfig struct {
 	DownloadTimeout string `yaml:"download_timeout"`
 	MaxVideoBytes   int64  `yaml:"max_video_bytes"`
 	MaxVideoSeconds int    `yaml:"max_video_seconds"`
+}
+
+type ToolsConfig struct {
+	MCPServers []MCPServerConfig `yaml:"mcp_servers"`
+	Codex      CodexConfig       `yaml:"codex"`
+}
+
+type MCPServerConfig struct {
+	Name      string   `yaml:"name"`
+	Enabled   bool     `yaml:"enabled"`
+	Required  bool     `yaml:"required"`
+	Transport string   `yaml:"transport"` // stdio / http
+	Command   string   `yaml:"command"`
+	Args      []string `yaml:"args"`
+	URL       string   `yaml:"url"`
+	Tools     []string `yaml:"tools"`
+	Timeout   string   `yaml:"timeout"`
+}
+
+type CodexConfig struct {
+	Enabled        bool   `yaml:"enabled"`
+	Binary         string `yaml:"binary"`
+	Model          string `yaml:"model"`
+	CWD            string `yaml:"cwd"`
+	NetworkEnabled bool   `yaml:"network_enabled"`
+	Timeout        string `yaml:"timeout"`
+	MaxConcurrency int    `yaml:"max_concurrency"`
 }
 
 type StorageConfig struct {

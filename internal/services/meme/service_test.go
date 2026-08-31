@@ -28,12 +28,14 @@ func TestObserveEventAndBuildSendSegments(t *testing.T) {
 				ContentHash:  "hash-a1",
 			},
 		},
-	}, nil)
+	}, []mediadomain.MediaDescriptor{{
+		AttachmentID: "a1", Kind: mediadomain.MediaSticker, Summary: "测试表情", Confidence: 1,
+	}})
 	if err != nil {
 		t.Fatalf("observe event: %v", err)
 	}
 
-	results, err := service.Search(context.Background(), ports.MemeQuery{GroupID: 1, Query: "群聊", TopK: 3})
+	results, err := service.Search(context.Background(), ports.MemeQuery{GroupID: 1, Query: "测试", TopK: 3})
 	if err != nil {
 		t.Fatalf("search meme: %v", err)
 	}
@@ -61,7 +63,10 @@ func TestDudFeedbackSinksColdMemes(t *testing.T) {
 			EventID: fmt.Sprintf("ev-%d", i), GroupID: 1, UserID: 7, Text: text,
 			Attachments: []mediadomain.MultimodalAttachment{{AttachmentID: fmt.Sprintf("a-%d", i), Kind: mediadomain.MediaImage, ObjectKey: fmt.Sprintf("k%d.jpg", i)}},
 		}
-		if err := svc.ObserveEvent(ctx, event, nil); err != nil {
+		if err := svc.ObserveEvent(ctx, event, []mediadomain.MediaDescriptor{{
+			AttachmentID: fmt.Sprintf("a-%d", i), Kind: mediadomain.MediaImage,
+			Summary: text, MemeSignals: []string{"reaction"}, Confidence: 1,
+		}}); err != nil {
 			t.Fatalf("observe: %v", err)
 		}
 	}
@@ -105,6 +110,109 @@ func TestDudFeedbackSinksColdMemes(t *testing.T) {
 	if results[len(results)-1].MemeID != dud {
 		t.Fatalf("dud meme %s should rank last, got order %+v", dud, results)
 	}
+}
+
+func TestCollectsOnlySafeConfidentMemeCandidates(t *testing.T) {
+	store := inmemory.NewStore()
+	svc := New(store, config.MemeConfig{AutoCollect: true, CandidateThreshold: 0.6})
+	event := conversationdomain.ConversationEvent{EventID: "e1", GroupID: 1, Attachments: []mediadomain.MultimodalAttachment{
+		{AttachmentID: "safe", Kind: mediadomain.MediaImage, ObjectKey: "safe.jpg"},
+		{AttachmentID: "unsafe", Kind: mediadomain.MediaSticker, ObjectKey: "unsafe.webp"},
+		{AttachmentID: "unclear", Kind: mediadomain.MediaSticker, ObjectKey: "unclear.webp"},
+	}}
+	descriptors := []mediadomain.MediaDescriptor{
+		{AttachmentID: "safe", Kind: mediadomain.MediaImage, MemeKeywords: []string{"doge"}, Confidence: 0.9},
+		{AttachmentID: "unsafe", Kind: mediadomain.MediaSticker, SafetySignals: []string{"violence"}, Confidence: 0.9},
+		{AttachmentID: "unclear", Kind: mediadomain.MediaSticker, Confidence: 0.2},
+	}
+	if err := svc.ObserveEvent(context.Background(), event, descriptors); err != nil {
+		t.Fatalf("observe: %v", err)
+	}
+	results, err := svc.Search(context.Background(), ports.MemeQuery{GroupID: 1, Query: "doge", TopK: 5})
+	if err != nil || len(results) != 1 {
+		t.Fatalf("expected one safe meme, results=%+v err=%v", results, err)
+	}
+}
+
+func TestSearchAppliesTagsDefaultsScopeAndStrictCooldown(t *testing.T) {
+	store := inmemory.NewStore()
+	seed := func(id string, groupID int64, emotion string) {
+		t.Helper()
+		if err := store.UpsertMeme(context.Background(), mediadomain.MemeAsset{
+			MemeID: id, GroupID: groupID, ObjectKey: id + ".webp", Status: "approved", CreatedAt: time.Now(),
+		}, mediadomain.MemeDescriptor{
+			MemeID: id, Summary: "reaction", EmotionTags: []string{emotion}, SceneTags: []string{"chat"}, Confidence: 1,
+		}); err != nil {
+			t.Fatalf("seed %s: %v", id, err)
+		}
+	}
+	seed("global", 0, "happy")
+	seed("local", 1, "happy")
+	seed("wrong-emotion", 1, "sad")
+	svc := New(store, config.MemeConfig{SearchTopK: 2, RepeatCooldown: "10m", PreferGroupScoped: true})
+
+	results, err := svc.Search(context.Background(), ports.MemeQuery{GroupID: 1, Emotion: "happy", Scene: "chat"})
+	if err != nil || len(results) != 2 || results[0].MemeID != "local" {
+		t.Fatalf("unexpected filtered ranking: results=%+v err=%v", results, err)
+	}
+	if err := store.MarkMemeSent(context.Background(), "local"); err != nil {
+		t.Fatalf("mark sent: %v", err)
+	}
+	results, err = svc.Search(context.Background(), ports.MemeQuery{GroupID: 1, Emotion: "happy", Scene: "chat", ExcludeRecent: true})
+	if err != nil || len(results) != 1 || results[0].MemeID != "global" {
+		t.Fatalf("strict cooldown failed: results=%+v err=%v", results, err)
+	}
+}
+
+func TestBuildSendSegmentsRejectsUnapprovedMeme(t *testing.T) {
+	store := inmemory.NewStore()
+	if err := store.UpsertMeme(context.Background(), mediadomain.MemeAsset{
+		MemeID: "pending", GroupID: 1, ObjectKey: "pending.webp", Status: "pending",
+	}, mediadomain.MemeDescriptor{MemeID: "pending"}); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	if _, err := New(store, config.MemeConfig{}).BuildSendSegments(context.Background(), "pending", "", ""); err == nil {
+		t.Fatal("unapproved meme should not be sent")
+	}
+}
+
+type vectorIndexer struct{ calls int }
+
+func (v *vectorIndexer) IndexMeme(_ context.Context, _ string, _ string, _ int64) error {
+	v.calls++
+	return nil
+}
+
+func (v *vectorIndexer) SearchMemes(context.Context, int64, string, int, float64) ([]mediadomain.MemeSearchResult, error) {
+	return nil, nil
+}
+
+func (v *vectorIndexer) DeleteMeme(context.Context, string) error { return nil }
+
+func TestObserveEventUsesOutboxForVectorIndex(t *testing.T) {
+	store := inmemory.NewStore()
+	indexer := &vectorIndexer{}
+	outbox := &recordingMemeOutbox{}
+	svc := New(store, config.MemeConfig{AutoCollect: true, CandidateThreshold: 0.6}, WithVectorStore(indexer), WithOutbox(outbox))
+	if err := svc.ObserveEvent(context.Background(), conversationdomain.ConversationEvent{
+		EventID: "e-outbox", GroupID: 1,
+		Attachments: []mediadomain.MultimodalAttachment{{AttachmentID: "a", Kind: mediadomain.MediaSticker, ObjectKey: "a.webp"}},
+	}, []mediadomain.MediaDescriptor{{AttachmentID: "a", Kind: mediadomain.MediaSticker, Confidence: 1, MemeSignals: []string{"reaction"}}}); err != nil {
+		t.Fatalf("observe: %v", err)
+	}
+	if outbox.kind != "meme_vector_index" || indexer.calls != 0 {
+		t.Fatalf("vector index was not durable: outbox=%+v calls=%d", outbox, indexer.calls)
+	}
+}
+
+type recordingMemeOutbox struct {
+	kind, key string
+	body      []byte
+}
+
+func (o *recordingMemeOutbox) Enqueue(_ context.Context, kind, key string, body []byte) error {
+	o.kind, o.key, o.body = kind, key, body
+	return nil
 }
 
 // memeIds 辅助：inmemory 没有列表接口，从检索拿全部。

@@ -71,7 +71,6 @@ func Default() Config {
 		Meme: MemeConfig{
 			AutoCollect:        true,
 			CandidateThreshold: 0.6,
-			DedupThreshold:     0.92,
 			PerGroupLimit:      5000,
 			SearchTopK:         5,
 			RepeatCooldown:     "10m",
@@ -82,6 +81,11 @@ func Default() Config {
 			MaxVideoBytes:   50 << 20,
 			MaxVideoSeconds: 60,
 		},
+		Tools: ToolsConfig{Codex: CodexConfig{
+			Binary:         "codex",
+			Timeout:        "5m",
+			MaxConcurrency: 1,
+		}},
 		Storage: StorageConfig{
 			Postgres: PostgresConfig{
 				Host:      "127.0.0.1",
@@ -197,6 +201,26 @@ func Validate(cfg Config) error {
 	}
 	if cfg.QQ.Enabled && cfg.QQ.SelfID <= 0 {
 		return errors.New("qq.self_id must be a positive QQ number when qq.enabled=true")
+	}
+	for _, server := range cfg.Tools.MCPServers {
+		if !server.Enabled {
+			continue
+		}
+		if strings.TrimSpace(server.Name) == "" {
+			return errors.New("tools.mcp_servers[].name is required when enabled")
+		}
+		switch server.Transport {
+		case "stdio":
+			if strings.TrimSpace(server.Command) == "" {
+				return fmt.Errorf("tools.mcp_servers[%s].command is required for stdio", server.Name)
+			}
+		case "http":
+			if strings.TrimSpace(server.URL) == "" {
+				return fmt.Errorf("tools.mcp_servers[%s].url is required for http", server.Name)
+			}
+		default:
+			return fmt.Errorf("tools.mcp_servers[%s].transport must be stdio or http", server.Name)
+		}
 	}
 	return nil
 }

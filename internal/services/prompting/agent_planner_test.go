@@ -10,6 +10,7 @@ import (
 	"github.com/phlin/go-agent/internal/adapters/inmemory"
 	modeladapter "github.com/phlin/go-agent/internal/adapters/model"
 	conversationdomain "github.com/phlin/go-agent/internal/domain/conversation"
+	mediadomain "github.com/phlin/go-agent/internal/domain/media"
 	memorydomain "github.com/phlin/go-agent/internal/domain/memory"
 	personadomain "github.com/phlin/go-agent/internal/domain/persona"
 	policydomain "github.com/phlin/go-agent/internal/domain/policy"
@@ -93,6 +94,60 @@ func TestAgentPlannerStaySilent(t *testing.T) {
 
 	if len(plan.PlannedActions) == 0 || plan.PlannedActions[0] != policydomain.ActionSilent {
 		t.Fatalf("unexpected actions: %#v", plan.PlannedActions)
+	}
+}
+
+func TestAgentPlannerCanReplyWhenRuleBaselineWasSilent(t *testing.T) {
+	mockModel := modeladapter.NewMockChatModel(
+		schema.AssistantMessage("", []schema.ToolCall{{
+			ID: "tool-1", Type: "function",
+			Function: schema.FunctionCall{Name: "speak_text", Arguments: `{"text":"我想接这句"}`},
+		}}),
+	)
+	planner := NewAgentPlanner(
+		modeladapter.StaticFactory{MainModel: mockModel},
+		toolsvc.NewRuntime(inmemory.NewStore(), inmemory.NewStore()),
+		NewComposer(defaultPersona()), NewDeterministicPlanner(defaultPersona()),
+	)
+	decision := sampleDecision()
+	decision.Action = policydomain.ActionSilent
+	plan, err := planner.Plan(context.Background(), sampleSnapshot(), decision)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(plan.PlannedActions) == 0 || plan.PlannedActions[0] != policydomain.ActionReply {
+		t.Fatalf("model was not allowed to reply: %+v", plan)
+	}
+}
+
+func TestAgentPlannerSendMemeReturnsDirectly(t *testing.T) {
+	store := inmemory.NewStore()
+	if err := store.UpsertMeme(context.Background(), mediadomain.MemeAsset{
+		MemeID: "meme-1", GroupID: 1, ObjectKey: "meme.webp", Status: "approved",
+	}, mediadomain.MemeDescriptor{MemeID: "meme-1"}); err != nil {
+		t.Fatalf("seed meme: %v", err)
+	}
+	mockModel := modeladapter.NewMockChatModel(schema.AssistantMessage("", []schema.ToolCall{{
+		ID: "tool-1", Type: "function", Function: schema.FunctionCall{
+			Name: "send_meme", Arguments: `{"meme_id":"meme-1"}`,
+		},
+	}}))
+	planner := NewAgentPlanner(
+		modeladapter.StaticFactory{MainModel: mockModel},
+		toolsvc.NewRuntime(store, store),
+		NewComposer(defaultPersona()),
+		NewDeterministicPlanner(defaultPersona()),
+	)
+
+	plan, err := planner.Plan(context.Background(), sampleSnapshot(), sampleDecision())
+	if err != nil {
+		t.Fatalf("agent plan: %v", err)
+	}
+	if len(plan.PlannedActions) != 1 || plan.PlannedActions[0] != policydomain.ActionMemeOnly {
+		t.Fatalf("unexpected actions: %#v", plan.PlannedActions)
+	}
+	if len(mockModel.Inputs()) != 1 {
+		t.Fatalf("send_meme should terminate the tool loop, model calls=%d", len(mockModel.Inputs()))
 	}
 }
 

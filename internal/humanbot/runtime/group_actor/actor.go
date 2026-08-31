@@ -418,6 +418,7 @@ func (a *actor) enrichMedia(eventID string, descriptors []mediadomain.MediaDescr
 	defer a.mu.Unlock()
 	a.touch()
 	enrichMedia(&a.memory, eventID, descriptors)
+	releaseMediaCandidates(&a.memory, eventID, time.Now())
 	return cloneMemory(a.memory)
 }
 
@@ -543,6 +544,10 @@ func candidateFor(record humandomain.EventRecord, burst humandomain.Conversation
 	if direct {
 		delay = jitteredDelay(800*time.Millisecond, 2500*time.Millisecond)
 	}
+	status := humandomain.CandidatePending
+	if len(record.Event.Attachments) > 0 {
+		status = humandomain.CandidateDeferred
+	}
 	return humandomain.ThoughtCandidate{
 		CandidateID:    record.EventID + "-candidate",
 		SourceEventIDs: append([]string(nil), burst.EventIDs...),
@@ -558,7 +563,7 @@ func candidateFor(record humandomain.EventRecord, burst humandomain.Conversation
 		Uncertainty:    1 - urgency,
 		ReasonCode:     reason,
 		DeliveryTarget: "group",
-		Status:         humandomain.CandidatePending,
+		Status:         status,
 	}
 }
 
@@ -677,6 +682,19 @@ func enrichMedia(memory *humandomain.GroupWorkingMemory, eventID string, descrip
 	memory.MediaByEvent[eventID] = append([]mediadomain.MediaDescriptor(nil), descriptors...)
 }
 
+func releaseMediaCandidates(memory *humandomain.GroupWorkingMemory, eventID string, now time.Time) {
+	for i := range memory.Candidates {
+		candidate := &memory.Candidates[i]
+		if candidate.Status != humandomain.CandidateDeferred || !slices.Contains(candidate.SourceEventIDs, eventID) {
+			continue
+		}
+		candidate.Status = humandomain.CandidatePending
+		if candidate.DueAt.Before(now) {
+			candidate.DueAt = now
+		}
+	}
+}
+
 func pruneMedia(memory *humandomain.GroupWorkingMemory) {
 	if len(memory.MediaByEvent) == 0 {
 		return
@@ -716,7 +734,13 @@ func claimCandidate(memory *humandomain.GroupWorkingMemory, now time.Time, minSc
 	var selected *humandomain.ThoughtCandidate
 	for i := range memory.Candidates {
 		candidate := &memory.Candidates[i]
-		if candidate.Status != humandomain.CandidatePending && candidate.Status != humandomain.CandidateDeferred {
+		if candidate.Status == humandomain.CandidateDeferred {
+			if !now.Before(candidate.ExpiresAt) {
+				candidate.Status = humandomain.CandidateExpired
+			}
+			continue
+		}
+		if candidate.Status != humandomain.CandidatePending {
 			continue
 		}
 		if candidate.Score < minScore || now.Before(candidate.DueAt) {

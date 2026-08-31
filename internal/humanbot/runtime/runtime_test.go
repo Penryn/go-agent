@@ -59,7 +59,7 @@ func TestProcessRawEventUsesCandidateRuntime(t *testing.T) {
 	}
 }
 
-func TestProcessRawEventRespectsMinimumCandidateScore(t *testing.T) {
+func TestProcessRawEventSendsOrdinaryContentToPlanner(t *testing.T) {
 	ctx := context.Background()
 	cfg := config.Default()
 	cfg.QQ.SelfID = 123456
@@ -83,11 +83,11 @@ func TestProcessRawEventRespectsMinimumCandidateScore(t *testing.T) {
 	if err != nil {
 		t.Fatalf("process raw event: %v", err)
 	}
-	if outcome.Decision.Action != policydomain.ActionSilent || outcome.Decision.ReasonCodes[0] != "candidate_below_score" {
-		t.Fatalf("expected below-score silence, got %+v", outcome.Decision)
+	if outcome.Candidate.CandidateID == "" || outcome.Decision.Action != policydomain.ActionReply {
+		t.Fatalf("expected planning for ordinary content, got %+v", outcome)
 	}
-	if outcome.Receipt.Sent {
-		t.Fatalf("below-score candidate sent unexpectedly: %+v", outcome.Receipt)
+	if !outcome.Receipt.Sent {
+		t.Fatalf("ordinary content did not reach planner: %+v", outcome.Receipt)
 	}
 }
 

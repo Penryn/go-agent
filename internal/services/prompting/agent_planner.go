@@ -34,22 +34,7 @@ func NewAgentPlanner(factory ports.ChatModelFactory, tools *toolsvc.Runtime, com
 }
 
 func (p *AgentPlanner) Plan(ctx context.Context, snapshot conversationdomain.ContextSnapshot, decision policydomain.AutonomyDecision) (replydomain.ReplyPlan, error) {
-	observeOnly := decision.Action == policydomain.ActionSilent
 	maxChars, _ := replyBudget(p.fallback.persona, snapshot, decision.TriggerType)
-
-	if observeOnly {
-		// 没有实质内容时跳过 LLM，无观测价值
-		hasContent := strings.TrimSpace(snapshot.Event.Text) != "" || len(snapshot.Event.Attachments) > 0
-		if !hasContent {
-			slog.Debug("planner: action silent, no content to observe", "trace_id", snapshot.SnapshotID)
-			return p.fallback.Plan(ctx, snapshot, decision)
-		}
-	}
-
-	// ActionPokeBack 不需要 LLM，直接走 fallback（fallback 已有 ActionPokeBack 分支）
-	if decision.Action == policydomain.ActionPokeBack {
-		return p.fallback.Plan(ctx, snapshot, decision)
-	}
 	if p.tools == nil {
 		slog.Warn("planner: no tool runtime, fallback", "trace_id", snapshot.SnapshotID)
 		return p.fallback.Plan(ctx, snapshot, decision)
@@ -67,7 +52,7 @@ func (p *AgentPlanner) Plan(ctx context.Context, snapshot conversationdomain.Con
 		UserID:            snapshot.Event.UserID,
 		TriggerMessageID:  snapshot.Event.MessageID,
 		AllowedTools:      snapshot.GroupPolicy.ToolAllowlist,
-		ObserveOnly:       observeOnly,
+		ObserveOnly:       false,
 		RetrievedMemories: snapshot.RelevantMemories,
 		MediaDescriptors:  snapshot.MediaDescriptors,
 		Budget:            map[string]int{"update_affinity": 0, "update_member_profile": 0},
@@ -84,13 +69,10 @@ func (p *AgentPlanner) Plan(ctx context.Context, snapshot conversationdomain.Con
 	returnDirectly := map[string]bool{
 		"speak_text":  true,
 		"quote_reply": true,
+		"send_meme":   true,
 		"react_emoji": true,
 		"stay_silent": true,
 	}
-	if observeOnly {
-		returnDirectly = map[string]bool{"stay_silent": true}
-	}
-
 	// 只调用一次 Tools()，缓存结果供 agent 构建和日志共用
 	toolList := p.tools.Tools(toolContext)
 
@@ -99,15 +81,10 @@ func (p *AgentPlanner) Plan(ctx context.Context, snapshot conversationdomain.Con
 		"group_id", snapshot.Event.GroupID,
 		"user_id", snapshot.Event.UserID,
 		"action", decision.Action,
-		"observe_only", observeOnly,
 		"tools", len(toolList),
 	)
 
-	// observe-only 只需 query+mark 两步，不需要完整的 4 轮规划
 	maxIterations := defaultMaxIterations
-	if observeOnly {
-		maxIterations = min(maxIterations, 2)
-	}
 	guard := newToolRuntimeGuard(snapshot.SnapshotID, defaultMaxToolCalls, defaultToolResultMaxBytes)
 
 	agent, err := adk.NewChatModelAgent(ctx, &adk.ChatModelAgentConfig{
@@ -172,16 +149,6 @@ func (p *AgentPlanner) Plan(ctx context.Context, snapshot conversationdomain.Con
 			}
 			slog.Debug("planner: assistant output", "trace_id", snapshot.SnapshotID, "text", preview)
 		}
-	}
-
-	// observe-only 模式：LLM 只用于被动观测，无论输出什么都保持沉默
-	if observeOnly {
-		slog.Info("planner: observe-only complete, staying silent", "trace_id", snapshot.SnapshotID)
-		return replydomain.ReplyPlan{
-			PlanID:         decision.DecisionID + "-plan",
-			PlannedActions: []policydomain.DecisionAction{policydomain.ActionSilent},
-			SendMode:       "group",
-		}, nil
 	}
 
 	if plan, ok, err := toolsvc.ParseTerminalPlan(decision.DecisionID, toolName, toolContent, toolContext); err == nil && ok {
