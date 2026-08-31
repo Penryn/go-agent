@@ -41,7 +41,7 @@ func (s *VectorStore) embed(ctx context.Context, text string) (pgvector.Vector, 
 	}
 	vec := toFloat32(vectors[0])
 	// ark embedding-large 输出 2048 维,超出 pgvector hnsw 上限 2000,截断尾部 48 维
-	// (尾部分量对余弦相似度贡献极小);如需完整维度可换 halfvec(上限 4000)。
+	// (存储/查询两侧一致截断,余弦排序自洽);如需完整维度可换 halfvec(上限 4000)。
 	if slice := vec.Slice(); len(slice) > s.maxDim {
 		vec = pgvector.NewVector(slice[:s.maxDim])
 	}

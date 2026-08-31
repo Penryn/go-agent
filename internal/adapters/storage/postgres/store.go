@@ -668,6 +668,7 @@ func (s *Store) GetMeme(ctx context.Context, memeID string) (mediadomain.MemeAss
 	err := s.db.QueryRowContext(ctx, `
 		SELECT a.meme_id, a.group_id, a.source_event_id, a.object_key, a.file_ext, a.content_hash,
 		       a.perceptual_hash, a.width, a.height, a.animated, a.status, a.created_at, a.last_sent_at,
+		       a.send_count, a.dud_count,
 		       d.title, d.summary, d.keywords_json, d.emotion_tags_json, d.scene_tags_json,
 		       d.usage_hints_json, d.language, d.confidence, d.reviewed, d.updated_at
 		FROM meme_assets a
@@ -676,6 +677,7 @@ func (s *Store) GetMeme(ctx context.Context, memeID string) (mediadomain.MemeAss
 	`, memeID).Scan(
 		&asset.MemeID, &asset.GroupID, &asset.SourceEventID, &asset.ObjectKey, &asset.FileExt, &asset.ContentHash,
 		&asset.PerceptualHash, &asset.Width, &asset.Height, &asset.Animated, &asset.Status, &asset.CreatedAt, &lastSentAt,
+		&asset.SendCount, &asset.DudCount,
 		&descriptor.Title, &descriptor.Summary, &keywordsJSON, &emotionJSON, &sceneJSON,
 		&usageJSON, &descriptor.Language, &descriptor.Confidence, &descriptor.Reviewed, &descriptor.UpdatedAt,
 	)
@@ -748,6 +750,11 @@ func (s *Store) DeleteOldestMemes(ctx context.Context, groupID int64, deleteCoun
 	}()
 	if _, err = tx.ExecContext(ctx,
 		`DELETE FROM meme_descriptors WHERE meme_id IN (`+ph+`)`, args...); err != nil {
+		return err
+	}
+	// 同库顺带清向量,避免孤儿向量仍被检索返回(旧 Qdrant 时代无法同事务做到)。
+	if _, err = tx.ExecContext(ctx,
+		`DELETE FROM meme_vectors WHERE meme_id IN (`+ph+`)`, args...); err != nil {
 		return err
 	}
 	if _, err = tx.ExecContext(ctx,
