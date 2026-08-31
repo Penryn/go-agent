@@ -26,15 +26,15 @@ var ErrModelUnavailable = errors.New("chat model unavailable")
 type Factory struct {
 	cfg             config.ModelsConfig
 	mu              sync.Mutex
-	cached          map[string]cachedChatModel
-	cachedEmbedders map[string]cachedEmbedder
+	cached          map[string]modelcomponent.BaseChatModel
+	cachedEmbedders map[string]embedding.Embedder
 }
 
 func NewFactory(cfg config.ModelsConfig) *Factory {
 	return &Factory{
 		cfg:             cfg,
-		cached:          make(map[string]cachedChatModel, 3),
-		cachedEmbedders: make(map[string]cachedEmbedder, 1),
+		cached:          make(map[string]modelcomponent.BaseChatModel, 3),
+		cachedEmbedders: make(map[string]embedding.Embedder, 1),
 	}
 }
 
@@ -82,7 +82,7 @@ func (f *Factory) chatModel(ctx context.Context, key string, cfg config.ModelPro
 	cached, ok := f.cached[key]
 	f.mu.Unlock()
 	if ok {
-		return cached.model, cached.err
+		return cached, nil
 	}
 
 	model, err := f.newChatModel(ctx, cfg)
@@ -94,7 +94,7 @@ func (f *Factory) chatModel(ctx context.Context, key string, cfg config.ModelPro
 	}
 
 	f.mu.Lock()
-	f.cached[key] = cachedChatModel{model: model, err: nil}
+	f.cached[key] = model
 	f.mu.Unlock()
 	return model, nil
 }
@@ -129,22 +129,12 @@ func (f *Factory) newChatModel(ctx context.Context, cfg config.ModelProviderConf
 	}
 }
 
-type cachedChatModel struct {
-	model modelcomponent.BaseChatModel
-	err   error
-}
-
-type cachedEmbedder struct {
-	model embedding.Embedder
-	err   error
-}
-
 func (f *Factory) embeddingModel(ctx context.Context, key string, cfg config.ModelProviderConfig) (embedding.Embedder, error) {
 	f.mu.Lock()
 	cached, ok := f.cachedEmbedders[key]
 	f.mu.Unlock()
 	if ok {
-		return cached.model, cached.err
+		return cached, nil
 	}
 
 	model, err := f.newEmbeddingModel(ctx, cfg)
@@ -153,7 +143,7 @@ func (f *Factory) embeddingModel(ctx context.Context, key string, cfg config.Mod
 	}
 
 	f.mu.Lock()
-	f.cachedEmbedders[key] = cachedEmbedder{model: model, err: nil}
+	f.cachedEmbedders[key] = model
 	f.mu.Unlock()
 	return model, nil
 }
