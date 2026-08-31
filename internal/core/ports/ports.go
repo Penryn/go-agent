@@ -126,16 +126,6 @@ type ChatModelFactory interface {
 	VisionChatModel(ctx context.Context) (model.BaseChatModel, error)
 }
 
-type SearchResult struct {
-	Title   string `json:"title"`
-	URL     string `json:"url"`
-	Snippet string `json:"snippet"`
-}
-
-type WebSearcher interface {
-	Search(ctx context.Context, query string, topK int, freshness string) ([]SearchResult, error)
-}
-
 // VectorMemoryStore 是语义记忆检索的 port。
 // 实现方：qdrantstore.Store；未配置时可用 NoopVectorStore 代替。
 type VectorMemoryStore interface {

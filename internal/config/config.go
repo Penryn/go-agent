@@ -18,7 +18,6 @@ type Config struct {
 	DefaultPolicy policydomain.GroupPolicy    `yaml:"default_policy"`
 	GroupPolicies []policydomain.GroupPolicy  `yaml:"group_policies"`
 	Autonomy      policydomain.AutonomyPolicy `yaml:"autonomy"`
-	Tools         ToolsConfig                 `yaml:"tools"`
 	Memory        MemoryConfig                `yaml:"memory"`
 	Meme          MemeConfig                  `yaml:"meme"`
 	Multimodal    MultimodalConfig            `yaml:"multimodal"`
@@ -59,12 +58,6 @@ type ModelsConfig struct {
 	Main      ModelProviderConfig `yaml:"main"`
 	Vision    ModelProviderConfig `yaml:"vision"`
 	Embedding ModelProviderConfig `yaml:"embedding"`
-}
-
-type ToolsConfig struct {
-	Allowlist []string          `yaml:"allowlist"`
-	Timeouts  map[string]string `yaml:"timeouts"`
-	Budgets   map[string]int    `yaml:"budgets"`
 }
 
 type MemoryConfig struct {

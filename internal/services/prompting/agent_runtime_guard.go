@@ -158,7 +158,7 @@ func retryEmptyTool(name string) bool {
 	name = strings.ToLower(strings.TrimSpace(name))
 	return strings.HasPrefix(name, "query_") ||
 		strings.HasPrefix(name, "search_") ||
-		name == "web_search" || name == "recall_recent_message"
+		name == "recall_recent_message"
 }
 
 // truncateToolResult keeps the model-facing result bounded while preserving a

@@ -27,7 +27,6 @@ type Runtime struct {
 	memoryStore  ports.MemoryStore
 	memeStore    ports.MemeStore
 	profileStore ports.ProfileStore
-	searcher     ports.WebSearcher
 	personaID    string
 	memSvc       *memsvc.Service
 	memeSvc      *memesvc.Service
@@ -48,10 +47,6 @@ func NewRuntime(memoryStore ports.MemoryStore, memeStore ports.MemeStore, opts .
 
 func WithProfileStore(store ports.ProfileStore) Option {
 	return func(rt *Runtime) { rt.profileStore = store }
-}
-
-func WithWebSearcher(searcher ports.WebSearcher) Option {
-	return func(rt *Runtime) { rt.searcher = searcher }
 }
 
 func WithPersonaID(id string) Option {
@@ -108,7 +103,6 @@ func (r *Runtime) knowledgeTools(session replydomain.ToolContext) []namedTool {
 	return []namedTool{
 		newQueryMemoryTool(r.memoryStore, session),
 		newSearchMemeTool(r.memeStore, r.memeSvc, session),
-		newWebSearchTool(r.searcher),
 	}
 }
 
@@ -311,7 +305,7 @@ func (t *staySilentTool) Name() string { return "stay_silent" }
 func (t *staySilentTool) Info(_ context.Context) (*schema.ToolInfo, error) {
 	return &schema.ToolInfo{
 		Name: t.Name(),
-		Desc: "Choose silence as the final action when replying would be socially unnatural or risky. Do NOT use this merely because the topic is unfamiliar — search first with web_search, then decide.",
+		Desc: "Choose silence as the final action when replying would be socially unnatural or risky. Do NOT use this merely because the topic is unfamiliar — search first, then decide.",
 		ParamsOneOf: schema.NewParamsOneOfByParams(map[string]*schema.ParameterInfo{
 			"reason_code": {Type: schema.String, Required: true, Desc: "Short reason code for staying silent."},
 			"ttl_ms":      {Type: schema.Integer, Desc: "Optional suppression ttl in milliseconds."},
@@ -564,48 +558,6 @@ func (t *queryMemberProfileTool) InvokableRun(ctx context.Context, argumentsInJS
 		return "", err
 	}
 	return marshal(map[string]any{"profile": profile})
-}
-
-type webSearchTool struct {
-	searcher ports.WebSearcher
-}
-
-type webSearchArgs struct {
-	Query     string `json:"query"`
-	TopK      int    `json:"top_k"`
-	Freshness string `json:"freshness"`
-}
-
-func newWebSearchTool(searcher ports.WebSearcher) *webSearchTool {
-	return &webSearchTool{searcher: searcher}
-}
-func (t *webSearchTool) Name() string { return "web_search" }
-func (t *webSearchTool) Info(_ context.Context) (*schema.ToolInfo, error) {
-	return &schema.ToolInfo{
-		Name: t.Name(),
-		Desc: "当遇到不确定的专有名词、群内黑话、近期事件或需要核实的事实时，必须优先调用此工具查询，禁止直接猜测后回复。返回精简摘要。",
-		ParamsOneOf: schema.NewParamsOneOfByParams(map[string]*schema.ParameterInfo{
-			"query":     {Type: schema.String, Required: true, Desc: "Search query."},
-			"top_k":     {Type: schema.Integer, Desc: "Max number of results."},
-			"freshness": {Type: schema.String, Desc: "Optional freshness hint."},
-		}),
-	}, nil
-}
-func (t *webSearchTool) InvokableRun(ctx context.Context, argumentsInJSON string, _ ...tool.Option) (string, error) {
-	var args webSearchArgs
-	if err := json.Unmarshal([]byte(argumentsInJSON), &args); err != nil {
-		return "", err
-	}
-	slog.Debug("tool: web_search", "query", args.Query, "freshness", args.Freshness)
-	if t.searcher == nil {
-		return marshal(map[string]any{"results": []ports.SearchResult{}})
-	}
-	results, err := t.searcher.Search(ctx, args.Query, clamp(args.TopK, 1, 5), args.Freshness)
-	if err != nil {
-		return "", err
-	}
-	slog.Debug("tool: web_search result", "count", len(results))
-	return marshal(map[string]any{"results": results})
 }
 
 type recallRecentMessageTool struct{}

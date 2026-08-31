@@ -64,9 +64,6 @@ func TestDefaultToolAllowlistEmpty(t *testing.T) {
 	if cfg.DefaultPolicy.ToolAllowlist != nil {
 		t.Fatalf("expected nil tool_allowlist by default, got %v", cfg.DefaultPolicy.ToolAllowlist)
 	}
-	if cfg.Tools.Allowlist != nil {
-		t.Fatalf("expected nil global tools allowlist by default, got %v", cfg.Tools.Allowlist)
-	}
 }
 
 func TestDefaultLLMGateEnabled(t *testing.T) {

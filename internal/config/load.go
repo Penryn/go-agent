@@ -67,15 +67,6 @@ func Default() Config {
 			SuppressOnFlood:          true,
 			BotDominanceSuppressSec:  60,
 		},
-		Tools: ToolsConfig{
-			Allowlist: nil,
-			Timeouts: map[string]string{
-				"web_search": "5s",
-			},
-			Budgets: map[string]int{
-				"web_search_per_hour": 20,
-			},
-		},
 		Memory: MemoryConfig{
 			TopK:       6,
 			DefaultTTL: "720h",

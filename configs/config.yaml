@@ -206,16 +206,6 @@ autonomy:
   # 连续发言达上限后的封口时长（秒）。
   bot_dominance_suppress_sec: 60
 
-tools:
-  # 全局工具白名单。留空表示全部注册工具均可用。
-  allowlist: []
-  timeouts:
-    # web_search 单次超时。
-    web_search: 5s
-  budgets:
-    # web_search 每小时预算。
-    web_search_per_hour: 20
-
 memory:
   # 检索上下文时取回的长期记忆条数。
   top_k: 6
