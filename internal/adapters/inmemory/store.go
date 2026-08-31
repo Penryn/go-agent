@@ -376,13 +376,16 @@ func (s *Store) QueryMemories(_ context.Context, query ports.MemoryQuery) ([]mem
 	return result, nil
 }
 
-// memoryRecallScore 是记忆的召回优先级：重要性按 7 天半衰贴现。
+// memoryRecallScore 是记忆的召回优先级：重要性按时间贴现，但高重要性的
+// 旧事仍应压过低分新事——真人记得「重要旧事」，淡忘的是「无聊近事」。
+// 贴现用 age/(importance*30) 的形态：0.9 重要性 30 天龄 ≈ 减半，0.3 的 3 天就减半。
 func memoryRecallScore(record memorydomain.MemoryRecord, now time.Time) float64 {
 	ageDays := now.Sub(record.CreatedAt).Hours() / 24
 	if ageDays < 0 {
 		ageDays = 0
 	}
-	return record.Importance / (1 + ageDays/7)
+	halfLife := max(record.Importance, 0.1) * 30
+	return record.Importance / (1 + ageDays/halfLife)
 }
 
 func (s *Store) UpsertMeme(_ context.Context, asset mediadomain.MemeAsset, descriptor mediadomain.MemeDescriptor) error {

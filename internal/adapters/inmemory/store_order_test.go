@@ -5,7 +5,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/phlin/go-agent/internal/core/ports"
 	conversationdomain "github.com/phlin/go-agent/internal/domain/conversation"
+	memorydomain "github.com/phlin/go-agent/internal/domain/memory"
 )
 
 func TestRecentEventsUsesChronologicalCursorOrder(t *testing.T) {
