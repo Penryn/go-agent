@@ -37,12 +37,6 @@ type EventObserver interface {
 	ObserveEvent(context.Context, conversationdomain.ConversationEvent) error
 }
 
-type EventObserverFunc func(context.Context, conversationdomain.ConversationEvent) error
-
-func (f EventObserverFunc) ObserveEvent(ctx context.Context, event conversationdomain.ConversationEvent) error {
-	return f(ctx, event)
-}
-
 type CompletedTurnObserver interface {
 	ObserveTurn(context.Context, conversationdomain.ContextSnapshot, replydomain.ActionReceipt) error
 }

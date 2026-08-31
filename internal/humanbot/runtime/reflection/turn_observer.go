@@ -75,8 +75,3 @@ func (o *TurnObserver) AfterTurn(ctx context.Context, snapshot conversationdomai
 	}
 	return o.states.SaveRuntimeState(ctx, state)
 }
-
-var _ interface {
-	CanDeliberate(context.Context, int64, time.Time) (bool, error)
-	AfterTurn(context.Context, conversationdomain.ContextSnapshot, policydomain.AutonomyDecision, replydomain.ActionReceipt) error
-} = (*TurnObserver)(nil)

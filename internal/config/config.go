@@ -88,8 +88,6 @@ type MultimodalConfig struct {
 	DownloadTimeout string `yaml:"download_timeout"`
 	MaxVideoBytes   int64  `yaml:"max_video_bytes"`
 	MaxVideoSeconds int    `yaml:"max_video_seconds"`
-	Keyframes       int    `yaml:"keyframes"`
-	VisionBudget    int    `yaml:"vision_budget"`
 }
 
 type StorageConfig struct {

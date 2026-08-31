@@ -90,8 +90,6 @@ func Default() Config {
 			DownloadTimeout: "10s",
 			MaxVideoBytes:   50 << 20,
 			MaxVideoSeconds: 60,
-			Keyframes:       3,
-			VisionBudget:    5000,
 		},
 		Storage: StorageConfig{
 			MySQL: MySQLConfig{

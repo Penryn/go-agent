@@ -251,10 +251,6 @@ multimodal:
   download_timeout: 10s
   max_video_bytes: 52428800
   max_video_seconds: 60
-  # 视频抽帧数。
-  keyframes: 3
-  # 单次视觉理解预算的预留参数。
-  vision_budget: 5000
 
 storage:
   # 当前默认启动仍使用 in-memory store。

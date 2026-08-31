@@ -27,18 +27,12 @@ func TestStoreIntegration(t *testing.T) {
 		t.Fatalf("ensure bucket: %v", err)
 	}
 
-	if _, err := store.PutObject(ctx, "tests/hello.txt", []byte("hello world"), "text/plain"); err != nil {
+	if info, err := store.PutObject(ctx, "tests/hello.txt", []byte("hello world"), "text/plain"); err != nil {
 		if isMinIOUnavailableError(err) {
 			t.Skipf("minio unavailable for writes: %v", err)
 		}
 		t.Fatalf("put object: %v", err)
-	}
-
-	info, err := store.StatObject(ctx, "tests/hello.txt")
-	if err != nil {
-		t.Fatalf("stat object: %v", err)
-	}
-	if info.Size != int64(len("hello world")) {
+	} else if info.Size != int64(len("hello world")) {
 		t.Fatalf("unexpected object size: %d", info.Size)
 	}
 }

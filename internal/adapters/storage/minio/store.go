@@ -46,7 +46,3 @@ func (s *Store) PutObject(ctx context.Context, objectKey string, data []byte, co
 		ContentType: contentType,
 	})
 }
-
-func (s *Store) StatObject(ctx context.Context, objectKey string) (minio.ObjectInfo, error) {
-	return s.client.StatObject(ctx, s.bucket, objectKey, minio.StatObjectOptions{})
-}
