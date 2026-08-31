@@ -2,9 +2,9 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** 把 MySQL(关系数据)和 Qdrant(向量)替换为一个 PostgreSQL 17 + pgvector 实例,删除旧栈全部代码与基础设施。
+**Goal:** 把 MySQL(关系数据)、Qdrant(向量)、Redis(运行时状态)替换为一个 PostgreSQL 17 + pgvector 实例,删除旧栈全部代码与基础设施。
 
-**Architecture:** 新建 `internal/adapters/storage/postgres` 包(store.go 关系表 + vector.go 向量表 + migrate.go 迁移器),从 `mysqlstore` 改写 SQL 方言(`ON DUPLICATE KEY` → `ON CONFLICT`),从 `qdrantstore` 重写向量层(自调 embedder + `<=>` 检索,不依赖 eino-ext)。装配点 `dependencies.go`/`graphs.go` 各改一处。三阶段:阶段 A 替 MySQL、阶段 B 替 Qdrant、阶段 C 删旧栈。
+**Architecture:** 新建 `internal/adapters/storage/postgres` 包(store.go 关系表 + state.go 运行时状态 + vector.go 向量表 + migrate.go 迁移器),从 `mysqlstore` 改写 SQL 方言(`ON DUPLICATE KEY` → `ON CONFLICT`),从 `qdrantstore` 重写向量层(自调 embedder + `<=>` 检索,不依赖 eino-ext),Redis 的两类 JSON 状态并入一张 `runtime_states` 表(TTL 语义 = `expires_at` 列 + 读时过滤)。装配点 `dependencies.go`/`graphs.go` 各改一处。三阶段:阶段 A 替 MySQL+Redis、阶段 B 替 Qdrant、阶段 C 删旧栈。
 
 **Tech Stack:** Go 1.25、`github.com/jackc/pgx/v5`(database/sql 兼容层)、`github.com/pgvector/pgvector-go`、`pgvector/pgvector:pg17` Docker 镜像。
 
@@ -19,7 +19,7 @@
 
 ---
 
-## 阶段 A:PostgreSQL 替换 MySQL
+## 阶段 A:PostgreSQL 替换 MySQL 与 Redis
 
 ### Task 1: 起 PG 容器 + 依赖引入
 
@@ -248,6 +248,15 @@ CREATE TABLE IF NOT EXISTS async_outbox (
 CREATE UNIQUE INDEX IF NOT EXISTS uniq_async_outbox_idempotency ON async_outbox (kind, idempotency_key);
 CREATE INDEX IF NOT EXISTS idx_async_outbox_claim ON async_outbox (status, available_at, locked_until);
 CREATE INDEX IF NOT EXISTS idx_async_outbox_updated ON async_outbox (updated_at);
+
+-- 运行时状态(原 Redis runtime_state / persona_state 两类 key)。
+-- expires_at 取代 Redis TTL:读取时 WHERE expires_at > NOW(),过期即视为不存在。
+CREATE TABLE IF NOT EXISTS runtime_states (
+  key VARCHAR(255) PRIMARY KEY,
+  state_json JSONB NOT NULL,
+  expires_at TIMESTAMPTZ NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_runtime_states_expires ON runtime_states (expires_at);
 ```
 
 注意:`uniq_async_outbox_idempotency` 直接建为 `(kind, idempotency_key)` 复合唯一索引——旧 MySQL 002 迁移的最终形态。
@@ -1642,22 +1651,240 @@ git add internal/adapters/storage/postgres/
 git commit -m "feat(postgres): memes/working-memory/thoughts/watermarks methods"
 ```
 
-### Task 6: 配置层切换(MySQL → Postgres)
+### Task 6: 运行时状态存储(替换 Redis)
 
 **Files:**
-- Modify: `internal/config/config.go`(MySQLConfig → PostgresConfig,新增 VectorDim)
+- Create: `internal/adapters/storage/postgres/state.go`
+- Modify: `internal/adapters/storage/postgres/store_test.go`(追加状态测试)
+
+背景:Redis 在本项目里只当 JSON KV 用(`redis/state_store.go`,4 个方法,无 pubsub/锁/计数器)。两类状态(runtime_state 24h 固定 TTL、persona_state 按 ExpiresAt)并入 `runtime_states` 表,TTL 语义 = `expires_at` 列 + 读时过滤。
+
+- [ ] **Step 1: 追加测试到 store_test.go**
+
+```go
+func TestRuntimeStates(t *testing.T) {
+	ctx := context.Background()
+	db := setupPostgres(t)
+	store := NewStateStore(db)
+
+	// runtime state:保存后可读回
+	rs := policydomain.RuntimeState{GroupID: 1, State: policydomain.StateObserving}
+	if err := store.SaveRuntimeState(ctx, rs); err != nil {
+		t.Fatalf("save runtime state: %v", err)
+	}
+	got, err := store.GetRuntimeState(ctx, 1)
+	if err != nil {
+		t.Fatalf("get runtime state: %v", err)
+	}
+	if got.State != policydomain.StateObserving {
+		t.Fatalf("unexpected runtime state: %+v", got)
+	}
+
+	// persona state:未保存时返回默认值(mood=steady)
+	pDefault, err := store.GetPersonaState(ctx, "main", 1)
+	if err != nil {
+		t.Fatalf("get default persona state: %v", err)
+	}
+	if pDefault.Mood != "steady" || pDefault.PersonaID != "main" {
+		t.Fatalf("unexpected default persona state: %+v", pDefault)
+	}
+
+	// persona state:保存后可读回
+	ps := personadomain.PersonaState{
+		PersonaID: "main", GroupID: 1,
+		Mood: "excited", Energy: "high",
+		ExpiresAt: time.Now().Add(2 * time.Hour),
+	}
+	if err := store.SavePersonaState(ctx, ps); err != nil {
+		t.Fatalf("save persona state: %v", err)
+	}
+	gotPs, err := store.GetPersonaState(ctx, "main", 1)
+	if err != nil {
+		t.Fatalf("get persona state: %v", err)
+	}
+	if gotPs.Mood != "excited" {
+		t.Fatalf("unexpected persona state: %+v", gotPs)
+	}
+
+	// TTL 语义:expires_at 已过期的状态视为不存在,返回默认值
+	expired := personadomain.PersonaState{
+		PersonaID: "main", GroupID: 2,
+		Mood: "angry", Energy: "low",
+		ExpiresAt: time.Now().Add(-time.Minute),
+	}
+	if err := store.SavePersonaState(ctx, expired); err != nil {
+		t.Fatalf("save expired persona state: %v", err)
+	}
+	gotExpired, err := store.GetPersonaState(ctx, "main", 2)
+	if err != nil {
+		t.Fatalf("get expired persona state: %v", err)
+	}
+	if gotExpired.Mood != "steady" {
+		t.Fatalf("expired state should fall back to default, got %+v", gotExpired)
+	}
+}
+```
+
+import 块追加:
+
+```go
+	personadomain "github.com/phlin/go-agent/internal/domain/persona"
+	policydomain "github.com/phlin/go-agent/internal/domain/policy"
+```
+
+- [ ] **Step 2: 跑测试确认失败**
+
+```bash
+go test ./internal/adapters/storage/postgres/ -count=1 -run TestRuntimeStates
+```
+Expected: 编译失败(NewStateStore 未定义)。
+
+- [ ] **Step 3: 实现 state.go**
+
+```go
+package postgresstore
+
+import (
+	"context"
+	"database/sql"
+	"encoding/json"
+	"errors"
+	"strconv"
+	"time"
+
+	"github.com/phlin/go-agent/internal/core/ports"
+	personadomain "github.com/phlin/go-agent/internal/domain/persona"
+	policydomain "github.com/phlin/go-agent/internal/domain/policy"
+)
+
+var _ ports.RuntimeStateStore = (*StateStore)(nil)
+
+// StateStore 实现 ports.RuntimeStateStore,原 Redis JSON KV 的 PG 版。
+// TTL 语义由 expires_at 列承载:读取时 WHERE expires_at > NOW(),过期即视为不存在。
+// 过期行不主动删除,靠同 key 覆盖写自然回收;数据量为每群两行,无需清理任务。
+type StateStore struct {
+	db *sql.DB
+}
+
+func NewStateStore(db *sql.DB) *StateStore {
+	return &StateStore{db: db}
+}
+
+func (s *StateStore) GetRuntimeState(ctx context.Context, groupID int64) (policydomain.RuntimeState, error) {
+	var state policydomain.RuntimeState
+	data, err := s.get(ctx, runtimeKey(groupID))
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return policydomain.RuntimeState{GroupID: groupID, State: policydomain.StateObserving}, nil
+		}
+		return policydomain.RuntimeState{}, err
+	}
+	if err := json.Unmarshal(data, &state); err != nil {
+		return policydomain.RuntimeState{}, err
+	}
+	return state, nil
+}
+
+func (s *StateStore) SaveRuntimeState(ctx context.Context, state policydomain.RuntimeState) error {
+	data, err := json.Marshal(state)
+	if err != nil {
+		return err
+	}
+	return s.set(ctx, runtimeKey(state.GroupID), data, 24*time.Hour)
+}
+
+func (s *StateStore) GetPersonaState(ctx context.Context, personaID string, groupID int64) (personadomain.PersonaState, error) {
+	var state personadomain.PersonaState
+	data, err := s.get(ctx, personaKey(personaID, groupID))
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			now := time.Now()
+			return personadomain.PersonaState{
+				PersonaID: personaID,
+				GroupID:   groupID,
+				Mood:      "steady",
+				Energy:    "normal",
+				ExpiresAt: now.Add(2 * time.Hour),
+			}, nil
+		}
+		return personadomain.PersonaState{}, err
+	}
+	if err := json.Unmarshal(data, &state); err != nil {
+		return personadomain.PersonaState{}, err
+	}
+	return state, nil
+}
+
+func (s *StateStore) SavePersonaState(ctx context.Context, state personadomain.PersonaState) error {
+	data, err := json.Marshal(state)
+	if err != nil {
+		return err
+	}
+	ttl := time.Until(state.ExpiresAt)
+	if ttl <= 0 {
+		ttl = 2 * time.Hour
+	}
+	return s.set(ctx, personaKey(state.PersonaID, state.GroupID), data, ttl)
+}
+
+// get 读取未过期的状态;过期或缺失都返回 sql.ErrNoRows。
+func (s *StateStore) get(ctx context.Context, key string) ([]byte, error) {
+	var data []byte
+	err := s.db.QueryRowContext(ctx,
+		`SELECT state_json FROM runtime_states WHERE key = $1 AND expires_at > NOW()`, key,
+	).Scan(&data)
+	return data, err
+}
+
+// set 以 key 为主键覆盖写,expires_at = NOW() + ttl 秒。
+// 注意:传秒数给 make_interval,不能传 Go duration 字符串(PG interval 解析不了 "24h0m0s")。
+func (s *StateStore) set(ctx context.Context, key string, data []byte, ttl time.Duration) error {
+	_, err := s.db.ExecContext(ctx, `
+		INSERT INTO runtime_states (key, state_json, expires_at)
+		VALUES ($1, $2, NOW() + make_interval(secs => $3))
+		ON CONFLICT (key) DO UPDATE SET state_json = EXCLUDED.state_json, expires_at = EXCLUDED.expires_at
+	`, key, data, ttl.Seconds())
+	return err
+}
+
+func runtimeKey(groupID int64) string {
+	return "runtime_state:" + strconv.FormatInt(groupID, 10)
+}
+
+func personaKey(personaID string, groupID int64) string {
+	return "persona_state:" + personaID + ":" + strconv.FormatInt(groupID, 10)
+}
+```
+
+- [ ] **Step 4: 跑测试确认通过**
+
+```bash
+go test ./internal/adapters/storage/postgres/ -count=1 -run TestRuntimeStates -v
+```
+Expected: PASS。
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add internal/adapters/storage/postgres/
+git commit -m "feat(postgres): runtime state store replaces redis"
+```
+
+### Task 7: 配置层切换(MySQL/Redis → Postgres)
+
+**Files:**
+- Modify: `internal/config/config.go`(MySQLConfig/RedisConfig 删除,新增 PostgresConfig)
 - Modify: `internal/config/load.go`(Default、overrideWithEnvSecrets)
 - Modify: `internal/config/load_test.go`(env 变量名更新)
 - Modify: `configs/config.yaml`
 
 - [ ] **Step 1: config.go 替换配置类型**
 
-删除 `MySQLConfig` 与其 `DSN()` 方法、删除 `QdrantConfig`;`StorageConfig` 改为:
+删除 `MySQLConfig` 与其 `DSN()` 方法、删除 `QdrantConfig`、删除 `RedisConfig`;`StorageConfig` 改为:
 
 ```go
 type StorageConfig struct {
 	Postgres PostgresConfig `yaml:"postgres"`
-	Redis    RedisConfig    `yaml:"redis"`
 	MinIO    MinIOConfig    `yaml:"minio"`
 }
 
@@ -1701,8 +1928,7 @@ import 块删掉 `mysqlcfg "github.com/go-sql-driver/mysql"`,保留 `net`/`strco
 				SSLMode:   "disable",
 				VectorDim: 2048,
 			},
-			Redis:  RedisConfig{Addr: "127.0.0.1:6379"},
-			MinIO:  MinIOConfig{Endpoint: "127.0.0.1:9000", Bucket: "qqbot-media", UseSSL: false},
+			MinIO: MinIOConfig{Endpoint: "127.0.0.1:9000", Bucket: "qqbot-media", UseSSL: false},
 		},
 ```
 
@@ -1712,7 +1938,7 @@ import 块删掉 `mysqlcfg "github.com/go-sql-driver/mysql"`,保留 `net`/`strco
 	stringOverride("QQBOT_STORAGE_POSTGRES_PASSWORD", &cfg.Storage.Postgres.Password)
 ```
 
-替换原来的 `QQBOT_STORAGE_MYSQL_PASSWORD` 与 `QQBOT_STORAGE_QDRANT_API_KEY` 两行。
+替换原来的 `QQBOT_STORAGE_MYSQL_PASSWORD`、`QQBOT_STORAGE_QDRANT_API_KEY`、`QQBOT_STORAGE_REDIS_PASSWORD` 三行。
 
 - [ ] **Step 3: load_test.go 更新**
 
@@ -1743,10 +1969,6 @@ storage:
     # 向量维度,须与 embedding 模型输出维度一致。Doubao embedding-large 为 2048,lite 为 1024。
     vector_dim: 2048
     # 私密项 password 从 .env 的 QQBOT_STORAGE_POSTGRES_PASSWORD 读取。
-  redis:
-    addr: 127.0.0.1:6379
-    db: 0
-    # 私密项 password 从 .env 的 QQBOT_STORAGE_REDIS_PASSWORD 读取。
   minio:
     endpoint: 127.0.0.1:9000
     bucket: qqbot-media
@@ -1762,16 +1984,16 @@ storage:
 ```bash
 go build ./internal/config/ && go test ./internal/config/ -count=1
 ```
-Expected: 编译失败——`graphs.go`/`dependencies.go` 还在引用 `cfg.Storage.MySQL`/`cfg.Storage.Qdrant`。这是预期的(下一步切换装配点)。若只想先验证 config 包本身,可临时 `go vet ./internal/config/`。
+Expected: 编译失败——`graphs.go`/`dependencies.go` 还在引用 `cfg.Storage.MySQL`/`cfg.Storage.Qdrant`/`cfg.Storage.Redis`。这是预期的(下一步切换装配点)。若只想先验证 config 包本身,可临时 `go vet ./internal/config/`。
 
 - [ ] **Step 6: Commit**
 
 ```bash
 git add internal/config/ configs/config.yaml
-git commit -m "feat(config): postgres config replaces mysql/qdrant"
+git commit -m "feat(config): postgres config replaces mysql/qdrant/redis"
 ```
 
-### Task 7: 装配切换(阶段 A 收尾)
+### Task 8: 装配切换(阶段 A 收尾)
 
 **Files:**
 - Modify: `internal/runtime/bootstrap/dependencies.go`
@@ -1788,6 +2010,20 @@ import 块:`mysqlstore "github.com/phlin/go-agent/internal/adapters/storage/mysq
 		return nil, fmt.Errorf("open postgres: %w", err)
 	}
 ```
+
+**Redis 状态存储切换**(替换 `redisstore.New(...)` 段):
+
+```go
+	bundle.state = postgresstore.NewStateStore(db)
+	bundle.probeFn = append(bundle.probeFn, func(ctx context.Context) error {
+		if err := db.PingContext(ctx); err != nil {
+			return fmt.Errorf("postgres state store: %w", err)
+		}
+		return nil
+	})
+```
+
+原来的 `stateStore := redisstore.New(...)`、`stateStore.Ping`、`bundle.closeFn = append(bundle.closeFn, stateStore.Close)` 段整个删除;import 里的 `redisstore` 一并删掉。
 
 `applyMySQLMigrations` 改名 `applyPostgresMigrations`,函数体:
 
@@ -1836,7 +2072,7 @@ Expected: 全部通过(mysql/qdrant 旧包还在但已不被引用;postgres 集�
 - [ ] **Step 5: 手动冒烟:app 连 PG 启动**
 
 ```bash
-docker compose up -d postgres redis minio
+docker compose up -d postgres minio
 go run ./cmd/qqbotd 2>&1 | head -30
 ```
 Expected: 日志显示迁移应用成功、无 `open postgres`/`apply postgres migrations` 错误(Ctrl-C 退出)。
@@ -1852,7 +2088,7 @@ git commit -m "feat(bootstrap): wire postgres store, stage A complete"
 
 ## 阶段 B:pgvector 替换 Qdrant
 
-### Task 8: 向量表迁移 + vector.go
+### Task 9: 向量表迁移 + vector.go
 
 **Files:**
 - Create: `migrations/003_vectors.sql`
@@ -1878,7 +2114,7 @@ CREATE INDEX IF NOT EXISTS idx_meme_vectors_group ON meme_vectors (group_id);
 CREATE INDEX IF NOT EXISTS idx_meme_vectors_embedding ON meme_vectors USING hnsw (embedding vector_cosine_ops);
 ```
 
-注意:`vector(2048)` 维度写死。若未来换 embedding 模型,需新迁移重建表(启动校验见 Task 9)。
+注意:`vector(2048)` 维度写死。若未来换 embedding 模型,需新迁移重建表(启动校验见 Task 10)。
 
 - [ ] **Step 2: 写 vector_test.go(先写测试)**
 
@@ -2185,7 +2421,7 @@ git add migrations/003_vectors.sql internal/adapters/storage/postgres/
 git commit -m "feat(postgres): pgvector memory/meme vector store"
 ```
 
-### Task 9: 向量装配切换(阶段 B 收尾)
+### Task 10: 向量装配切换(阶段 B 收尾)
 
 **Files:**
 - Modify: `internal/runtime/bootstrap/graphs.go`
@@ -2251,7 +2487,7 @@ Expected: 全部通过。
 - [ ] **Step 5: 手动冒烟**
 
 ```bash
-docker compose up -d postgres redis minio
+docker compose up -d postgres minio
 go run ./cmd/qqbotd 2>&1 | head -30
 ```
 Expected: 启动无错,日志无 `vector`/`embedding` 相关 fatal。
@@ -2267,17 +2503,18 @@ git commit -m "feat(bootstrap): wire pgvector store, stage B complete"
 
 ## 阶段 C:删除旧栈
 
-### Task 10: 删代码 + 删依赖
+### Task 11: 删代码 + 删依赖
 
 **Files:**
 - Delete: `internal/adapters/storage/mysql/`(整目录)
 - Delete: `internal/adapters/storage/qdrant/`(整目录)
+- Delete: `internal/adapters/storage/redis/`(整目录)
 - Modify: `go.mod`/`go.sum`
 
 - [ ] **Step 1: 删除旧 adapter 目录**
 
 ```bash
-rm -rf internal/adapters/storage/mysql internal/adapters/storage/qdrant
+rm -rf internal/adapters/storage/mysql internal/adapters/storage/qdrant internal/adapters/storage/redis
 ```
 
 - [ ] **Step 2: 清理 go.mod**
@@ -2285,7 +2522,7 @@ rm -rf internal/adapters/storage/mysql internal/adapters/storage/qdrant
 ```bash
 go mod tidy
 ```
-Expected: `go-sql-driver/mysql`、`qdrant/go-client`、`eino-ext` 的 qdrant/embedding 组件依赖消失(`eino-ext/components/model/*` 保留)。
+Expected: `go-sql-driver/mysql`、`qdrant/go-client`、`redis/go-redis`、`eino-ext` 的 qdrant 组件依赖消失(`eino-ext/components/model/*` 与 `embedding/*` 保留)。
 
 - [ ] **Step 3: 编译验证**
 
@@ -2298,20 +2535,20 @@ Expected: 成功。若报错,说明有遗漏的引用(如 `factory.go` 里 `embe
 
 ```bash
 git add -A
-git commit -m "refactor(storage): remove mysql and qdrant adapters"
+git commit -m "refactor(storage): remove mysql/qdrant/redis adapters"
 ```
 
-### Task 11: 删基础设施 + 文档更新
+### Task 12: 删基础设施 + 文档更新
 
 **Files:**
-- Modify: `docker-compose.yml`(删 mysql/qdrant 服务)
-- Modify: `.env.example`、`.env`(改 PG 密码变量名)
+- Modify: `docker-compose.yml`(删 mysql/qdrant/redis 服务)
+- Modify: `.env.example`、`.env`(改 PG 密码变量名,删 Redis 变量)
 - Modify: `README.md`
 - Modify: 注释提及旧栈的服务层文件
 
-- [ ] **Step 1: docker-compose.yml 删除 mysql 和 qdrant 服务块**
+- [ ] **Step 1: docker-compose.yml 删除 mysql、qdrant、redis 服务块**
 
-整个 `mysql:` 服务块(约 31 行)和 `qdrant:` 服务块(约 18 行)删除。保留 postgres/redis/minio/napcat。
+整个 `mysql:` 服务块(约 31 行)、`qdrant:` 服务块(约 18 行)、`redis:` 服务块(约 24 行)删除。保留 postgres/minio/napcat。
 
 - [ ] **Step 2: .env / .env.example 更新**
 
@@ -2320,7 +2557,6 @@ git commit -m "refactor(storage): remove mysql and qdrant adapters"
 ```bash
 # 基础设施密钥。示例值与 docker-compose.yml 的本地默认值保持一致。
 QQBOT_STORAGE_POSTGRES_PASSWORD=qqbotpass
-QQBOT_STORAGE_REDIS_PASSWORD=
 QQBOT_STORAGE_MINIO_ACCESS_KEY=minioadmin
 QQBOT_STORAGE_MINIO_SECRET_KEY=minioadmin123
 ```
@@ -2330,11 +2566,11 @@ QQBOT_STORAGE_MINIO_SECRET_KEY=minioadmin123
 - [ ] **Step 3: README.md 更新**
 
 - L13: `Qdrant 向量检索 + MySQL 结构化存储` → `PostgreSQL + pgvector 向量检索与结构化存储`
-- L81: `启动 MySQL、Redis、Qdrant、MinIO、NapCat 五个服务。` → `启动 PostgreSQL、Redis、MinIO、NapCat 四个服务。`
-- L169 环境变量表:`QQBOT_STORAGE_MYSQL_PASSWORD | MySQL 密码` → `QQBOT_STORAGE_POSTGRES_PASSWORD | PostgreSQL 密码`
-- L193: `storage | MySQL、Redis、Qdrant、MinIO 连接信息` → `storage | PostgreSQL、Redis、MinIO 连接信息`
+- L81: `启动 MySQL、Redis、Qdrant、MinIO、NapCat 五个服务。` → `启动 PostgreSQL、MinIO、NapCat 三个服务。`
+- L169 环境变量表:`QQBOT_STORAGE_MYSQL_PASSWORD | MySQL 密码` → `QQBOT_STORAGE_POSTGRES_PASSWORD | PostgreSQL 密码`;删除 `QQBOT_STORAGE_REDIS_PASSWORD` 行(若表中有)
+- L193: `storage | MySQL、Redis、Qdrant、MinIO 连接信息` → `storage | PostgreSQL、MinIO 连接信息`
 - L215: `migrations/ | MySQL 初始化脚本` → `migrations/ | PostgreSQL 迁移脚本`
-- L250: `MySQL / Redis / Qdrant / MinIO` → `PostgreSQL / Redis / MinIO`
+- L250: `MySQL / Redis / Qdrant / MinIO` → `PostgreSQL / MinIO`
 - L261-266 数据库迁移段替换为:
 
 ```markdown
@@ -2350,6 +2586,7 @@ PostgreSQL 迁移脚本在 [`migrations/`](migrations/),由应用启动时自动
 - `internal/services/context/service.go:216-219` 附近:`MySQL 关键词检索` → `结构化关键词检索`,`Qdrant 语义检索` → `语义向量检索`;局部变量 `mysqlRecords`/`qdrantRecords`/`mysqlTopK` 相应改名 `structuredRecords`/`vectorRecords`/`structuredTopK`(纯重命名)
 - `internal/services/memory/service.go:31,99,104,120,128`:`Qdrant` → `向量库`,`MySQL` → `主存储`,job 名 `qdrant_store_memory` → `vector_store_memory`
 - `internal/services/meme/service.go:168,186`:`回查 MySQL` → `回查关系表`
+- `internal/services/persona/service.go:63`:`写入 Redis` → `写入运行时状态存储`
 - `internal/core/ports/ports.go:130,138,150,151,161` 注释:`qdrantstore.Store` → `postgresstore.VectorStore`,`Qdrant 未配置` → `向量检索未配置`,`回查 MySQL` → `回查关系表`
 
 注意:`memory/service.go` 里 outbox kind 字符串 `"memory_vector_index"`/`"meme_vector_index"` 不改——它们是任务类型名,与存储实现无关(历史任务名保留,幂等 key 不受影响;反正数据从零开始)。
@@ -2357,9 +2594,9 @@ PostgreSQL 迁移脚本在 [`migrations/`](migrations/),由应用启动时自动
 - [ ] **Step 5: 停旧容器 + 删旧数据卷**
 
 ```bash
-docker compose stop mysql qdrant
-docker compose rm -f mysql qdrant
-rm -rf data/mysql data/qdrant
+docker compose stop mysql qdrant redis
+docker compose rm -f mysql qdrant redis
+rm -rf data/mysql data/qdrant data/redis
 ```
 
 **执行前需向用户确认**——这是不可逆删除(191MB MySQL + 35MB Qdrant 数据)。用户已确认从零开始,但删除动作仍要在执行时口头再确认一次。
@@ -2369,7 +2606,7 @@ rm -rf data/mysql data/qdrant
 ```bash
 docker compose config
 ```
-Expected: 无错误,服务列表只有 postgres/redis/minio/napcat。
+Expected: 无错误,服务列表只有 postgres/minio/napcat。
 
 - [ ] **Step 7: 全量最终验证**
 
@@ -2382,17 +2619,18 @@ Expected: 全部通过。
 
 ```bash
 git add -A
-git commit -m "chore(infra): remove mysql/qdrant services and docs, migration complete"
+git commit -m "chore(infra): remove mysql/qdrant/redis services and docs, migration complete"
 ```
 
 ---
 
 ## 验收清单(对照 spec)
 
-- [ ] `docker compose config` 只含 postgres/redis/minio/napcat
+- [ ] `docker compose config` 只含 postgres/minio/napcat
 - [ ] `go run ./cmd/qqbotd` 连 PG 启动,迁移自动应用(含 vector 扩展)
 - [ ] 全量测试通过,postgres 集成测试在本地 PG 可达时执行
-- [ ] `go.mod` 无 go-sql-driver/mysql、qdrant/go-client、eino-ext qdrant 组件;保留 eino-ext model/embedding 组件
-- [ ] `grep -ri "mysql\|qdrant" --include="*.go" internal/ cmd/` 无结果(注释也已清理)
+- [ ] `go.mod` 无 go-sql-driver/mysql、qdrant/go-client、redis/go-redis、eino-ext qdrant 组件;保留 eino-ext model/embedding 组件
+- [ ] `grep -ri "mysql\|qdrant\|redis" --include="*.go" internal/ cmd/` 无结果(注释也已清理)
 - [ ] meme 向量检索按 group_id 在 SQL 层过滤(topK 不被稀释)
 - [ ] threshold 语义:相似度 = 1 - 余弦距离,低于 threshold 丢弃
+- [ ] runtime/persona 状态 TTL 语义:expires_at 过期后读回默认值
