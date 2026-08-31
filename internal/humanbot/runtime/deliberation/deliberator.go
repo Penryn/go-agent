@@ -99,7 +99,7 @@ var intentBaseline = map[string]policydomain.DecisionAction{
 var intentAllowed = map[string][]policydomain.DecisionAction{
 	"react":        {policydomain.ActionReact, policydomain.ActionReply, policydomain.ActionMemeOnly, policydomain.ActionSilent},
 	"send_meme":    {policydomain.ActionMemeOnly, policydomain.ActionSilent},
-	"poke_reply":   {policydomain.ActionPokeReply, policydomain.ActionReply, policydomain.ActionMemeOnly, policydomain.ActionSilent},
+	"poke_reply":   {policydomain.ActionPokeReply, policydomain.ActionPokeBack, policydomain.ActionReply, policydomain.ActionMemeOnly, policydomain.ActionSilent},
 	"observe_only": {policydomain.ActionSilent},
 }
 

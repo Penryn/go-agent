@@ -146,6 +146,7 @@ func (c *Composer) instruction(snapshot conversationdomain.ContextSnapshot, deci
 	if decision.TriggerType == "poke_reply" {
 		taskLines = append(taskLines,
 			"触发事件：对方戳了你一下（无文字内容）。请根据当前心情和与对方的关系自然回应这个小互动，可以是调侃、疑问、搭腔、或简短敷衍。不要说「你戳我做什么」这类机械问句，也不要解释「你戳了我一下」，直接自然发挥。",
+			"关系好且心情好时，用 poke_member 戳回去也是自然选择；被戳烦了就敷衍一句或不理（stay_silent）。",
 		)
 	}
 	// 被 @ / 被点名 / 被引用时同样保留沉默权——真人被 cue 也可能选择不接，

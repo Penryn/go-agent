@@ -45,6 +45,7 @@ func TestResolveActionUsesAllowedPlannerProposal(t *testing.T) {
 		{name: "planner can stay silent", intent: "answer", proposed: policydomain.ActionSilent, want: policydomain.ActionSilent},
 		{name: "reply cannot recall", intent: "answer", proposed: policydomain.ActionRecall, want: policydomain.ActionReply},
 		{name: "poke can answer in text", intent: "poke_reply", proposed: policydomain.ActionReply, want: policydomain.ActionReply},
+		{name: "poke can poke back", intent: "poke_reply", proposed: policydomain.ActionPokeBack, want: policydomain.ActionPokeBack},
 		{name: "meme intent cannot text", intent: "send_meme", proposed: policydomain.ActionReply, want: policydomain.ActionMemeOnly},
 		{name: "unknown intent stays silent", intent: "", proposed: policydomain.ActionReply, want: policydomain.ActionSilent},
 	}
