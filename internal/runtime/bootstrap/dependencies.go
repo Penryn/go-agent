@@ -11,13 +11,13 @@ import (
 
 	"github.com/phlin/go-agent/internal/adapters/inmemory"
 	miniostore "github.com/phlin/go-agent/internal/adapters/storage/minio"
-	mysqlstore "github.com/phlin/go-agent/internal/adapters/storage/mysql"
-	redisstore "github.com/phlin/go-agent/internal/adapters/storage/redis"
+	postgresstore "github.com/phlin/go-agent/internal/adapters/storage/postgres"
 	"github.com/phlin/go-agent/internal/config"
 	"github.com/phlin/go-agent/internal/core/ports"
 )
 
 type storeBundle struct {
+	db       *sql.DB
 	memory   ports.MemoryStore
 	meme     ports.MemeStore
 	profile  ports.ProfileStore
@@ -39,45 +39,35 @@ func newStoreBundle(ctx context.Context, cfg config.Config) (*storeBundle, error
 		}, nil
 	}
 
-	db, err := mysqlstore.Open(ctx, cfg.Storage.MySQL.DSN())
+	db, err := postgresstore.Open(ctx, cfg.Storage.Postgres.DSN())
 	if err != nil {
-		return nil, fmt.Errorf("open mysql: %w", err)
+		return nil, fmt.Errorf("open postgres: %w", err)
 	}
 
 	bundle := &storeBundle{
+		db:      db,
 		closeFn: []func() error{db.Close},
 	}
 
-	if err := applyMySQLMigrations(ctx, db); err != nil {
+	if err := applyPostgresMigrations(ctx, db); err != nil {
 		_ = bundle.Close()
 		return nil, err
 	}
 
-	mysqlPersistentStore := mysqlstore.NewStore(db)
-	bundle.memory = mysqlPersistentStore
-	bundle.learning = mysqlPersistentStore
-	bundle.meme = mysqlPersistentStore
-	bundle.profile = mysqlPersistentStore
+	persistentStore := postgresstore.NewStore(db)
+	bundle.memory = persistentStore
+	bundle.learning = persistentStore
+	bundle.meme = persistentStore
+	bundle.profile = persistentStore
 	bundle.probeFn = append(bundle.probeFn, func(ctx context.Context) error {
 		if err := db.PingContext(ctx); err != nil {
-			return fmt.Errorf("mysql: %w", err)
+			return fmt.Errorf("postgres: %w", err)
 		}
 		return nil
 	})
 
-	stateStore := redisstore.New(cfg.Storage.Redis.Addr, cfg.Storage.Redis.Password, cfg.Storage.Redis.DB)
-	bundle.closeFn = append(bundle.closeFn, stateStore.Close)
-	if err := stateStore.Ping(ctx); err != nil {
-		_ = bundle.Close()
-		return nil, fmt.Errorf("ping redis runtime store: %w", err)
-	}
-	bundle.state = stateStore
-	bundle.probeFn = append(bundle.probeFn, func(ctx context.Context) error {
-		if err := stateStore.Ping(ctx); err != nil {
-			return fmt.Errorf("redis: %w", err)
-		}
-		return nil
-	})
+	// 状态库与关系库共用同一 PG 连接池（阶段 A：替代 Redis StateStore）
+	bundle.state = postgresstore.NewStateStore(db)
 
 	if err := ensureMinIO(ctx, cfg.Storage.MinIO); err != nil {
 		_ = bundle.Close()
@@ -107,13 +97,13 @@ func (b *storeBundle) HealthCheck(ctx context.Context) error {
 	return joined
 }
 
-func applyMySQLMigrations(ctx context.Context, db *sql.DB) error {
+func applyPostgresMigrations(ctx context.Context, db *sql.DB) error {
 	migrationsDir, err := locateMigrationsDir()
 	if err != nil {
 		return err
 	}
-	if err := mysqlstore.ApplyMigrations(ctx, db, migrationsDir); err != nil {
-		return fmt.Errorf("apply mysql migrations: %w", err)
+	if err := postgresstore.ApplyMigrations(ctx, db, migrationsDir); err != nil {
+		return fmt.Errorf("apply postgres migrations: %w", err)
 	}
 	return nil
 }
