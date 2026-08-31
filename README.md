@@ -10,7 +10,7 @@ Bot 会自动判断何时该说话、何时沉默，用短句和表情包自然�
 - 🎭 **人格系统** — 可配置说话风格、心情、精力，按群独立覆写策略
 - 👀 **多模态理解** — 图片 / 视频 / 梗图自动识别，Vision Agent 提取摘要
 - 🃏 **表情包库** — 自动收藏群内表情包，语义检索精准复用，去重 + 冷却
-- 📝 **长期记忆** — 记住群友偏好与关系，Qdrant 向量检索 + MySQL 结构化存储
+- 📝 **长期记忆** — 记住群友偏好与关系，PostgreSQL + pgvector 向量检索与结构化存储
 - 👤 **群友画像** — 跟踪活跃度、常用短语、亲密度，动态调整互动方式
 - 🔄 **后台学习** — 从持久化事件归档中异步提炼群聊黑话和高频表达
 - 🔌 **类型安全的 NapCat 接入** — 使用 [`zjutjh/napcat-sdk`](https://github.com/zjutjh/napcat-sdk) 统一处理 WebSocket 事件、HTTP action 与协议错误
@@ -52,7 +52,7 @@ Runtime 的核心原则是：所有消息都被感知，但不是所有消息都
 
 1. NapCat 通过 WebSocket 或 HTTP 将 OneBot 事件交给 Bot。
 2. Normalizer 生成统一的 `EventEnvelope`，并按事件 ID 去重。
-3. Group Actor 写入 Event Log 和 MySQL 消息归档，再更新群的 working memory。
+3. Group Actor 写入 Event Log 和 PostgreSQL 消息归档，再更新群的 working memory。
 4. Actor 将消息转成可延迟、可取消、可过期的 `ThoughtCandidate`。
 5. Presence Scheduler 在合适的时间 claim 候选，避免每条消息都立即触发模型。
 6. Deliberator 读取窄上下文，选择回复、表情回应、表情包或保持沉默。
@@ -78,7 +78,7 @@ cd go-agent
 docker compose up -d
 ```
 
-启动 MySQL、Redis、Qdrant、MinIO、NapCat 五个服务。
+启动 PostgreSQL、MinIO、NapCat 三个服务。
 
 ### 2. 登录 QQ
 
@@ -166,9 +166,7 @@ go run ./cmd/qqbotd -config configs/config.yaml
 | `QQBOT_MAIN_MODEL_API_KEY` | 主模型 API Key |
 | `QQBOT_VISION_MODEL_API_KEY` | Vision 模型 Key（可选） |
 | `QQBOT_EMBEDDING_MODEL_API_KEY` | Embedding 模型 Key（预留） |
-| `QQBOT_STORAGE_MYSQL_PASSWORD` | MySQL 密码 |
-| `QQBOT_STORAGE_REDIS_PASSWORD` | Redis 密码（本地无密码可留空） |
-| `QQBOT_STORAGE_QDRANT_API_KEY` | Qdrant API Key（本地可留空） |
+| `QQBOT_STORAGE_POSTGRES_PASSWORD` | PostgreSQL 密码 |
 | `QQBOT_STORAGE_MINIO_ACCESS_KEY` | MinIO Access Key |
 | `QQBOT_STORAGE_MINIO_SECRET_KEY` | MinIO Secret Key |
 
@@ -190,7 +188,7 @@ go run ./cmd/qqbotd -config configs/config.yaml
 | `memory` | 长期记忆 top_k、TTL、写入阈值 |
 | `meme` | 表情包收藏、去重阈值、发送冷却 |
 | `multimodal` | 图片 / 视频下载超时、抽帧数、视觉预算 |
-| `storage` | MySQL、Redis、Qdrant、MinIO 连接信息 |
+| `storage` | PostgreSQL、MinIO 连接信息 |
 | `qq` | QQ 开关、自身 ID、出入站地址、群白名单 |
 
 </details>
@@ -212,7 +210,7 @@ go run ./cmd/qqbotd -config configs/config.yaml
 go-agent/
 ├── cmd/qqbotd/              # 启动入口
 ├── configs/config.yaml      # 公开配置
-├── migrations/              # MySQL 初始化脚本
+├── migrations/              # PostgreSQL 迁移脚本
 ├── tests/testdata/          # 测试用事件数据
 ├── internal/
 │   ├── domain/              # 核心领域模型
@@ -247,7 +245,7 @@ go-agent/
 │   │   ├── outbound/napcat/ #   HTTP 出站动作
 │   │   ├── model/           #   LLM 工厂（Ark / OpenAI）
 │   │   ├── inmemory/        #   内存存储（开发用）
-│   │   └── storage/         #   MySQL / Redis / Qdrant / MinIO
+│   │   └── storage/         #   PostgreSQL / MinIO
 │   ├── runtime/
 │   │   ├── bootstrap/       #   应用初始化与依赖组装
 │   │   └── scheduler/       #   后台任务调度
@@ -258,13 +256,7 @@ go-agent/
 
 ## 数据库迁移
 
-MySQL 初始化脚本 [`migrations/001_init.sql`](migrations/001_init.sql)，包含消息归档、长期记忆、画像与关系、表情包资产与描述、学习候选表。
-
-docker-compose 启动后手动执行：
-
-```bash
-mysql -h 127.0.0.1 -u qqbot -p qqbot < migrations/001_init.sql
-```
+PostgreSQL 迁移脚本在 [`migrations/`](migrations/)，由应用启动时自动执行（含 pgvector 扩展、关系表与向量表），无需手动导入。
 
 ## 开发
 
