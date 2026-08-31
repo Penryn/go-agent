@@ -114,7 +114,7 @@ func TestFallbackExpressionAndReplyBudgetFollowDialogueAct(t *testing.T) {
 
 func TestMessagesTruncateOldContextButKeepCurrentEvent(t *testing.T) {
 	c := NewComposer(defaultPersona())
-	c.SetContextBudgets(80, 100)
+	c.recentMaxChar, c.memoryMaxChar = 80, 100
 	snapshot := conversationdomain.ContextSnapshot{
 		Event: conversationdomain.ConversationEvent{EventID: "current", MessageID: "m-current", UserID: 7, TimestampUnix: 100},
 		RecentTurns: []conversationdomain.ConversationEvent{

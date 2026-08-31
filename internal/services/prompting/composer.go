@@ -21,17 +21,6 @@ func NewComposer(persona personadomain.PersonaConfig) *Composer {
 	return &Composer{persona: persona, recentMaxChar: 6000, memoryMaxChar: 3000}
 }
 
-// SetContextBudgets bounds model-facing context while keeping the current
-// event intact. A value <= 0 leaves the existing budget unchanged.
-func (c *Composer) SetContextBudgets(recentChars, memoryChars int) {
-	if recentChars > 0 {
-		c.recentMaxChar = recentChars
-	}
-	if memoryChars > 0 {
-		c.memoryMaxChar = memoryChars
-	}
-}
-
 // Instruction resolves group-specific persona configuration for this turn,
 // while keeping the mutable PersonaState in the conversation snapshot.
 func (c *Composer) Instruction(snapshot conversationdomain.ContextSnapshot, decision policydomain.AutonomyDecision) string {
