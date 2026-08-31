@@ -17,36 +17,15 @@ type Result struct {
 	Reasons    []string // 触发的规则名，用于日志审计
 }
 
-// Guard 是输出清洗层的核心接口，在内容发出前应用所有规则。
-type Guard interface {
-	Clean(bubbles []string) Result
-}
-
-type defaultGuard struct {
+// Guard 在内容发出前应用全部输出清洗规则。
+type Guard struct {
 	maxChars     int // 0 = 不限制
 	maxSentences int // 0 = 不限制
 }
 
-// Option 是 Guard 的函数式配置项。
-type Option func(*defaultGuard)
-
-// WithMaxChars 设置单条气泡的最大字符数（Unicode rune），超出则截断。
-func WithMaxChars(n int) Option {
-	return func(g *defaultGuard) { g.maxChars = n }
-}
-
-// WithMaxSentences 设置单条气泡的最大句子数，超出则截断。
-func WithMaxSentences(n int) Option {
-	return func(g *defaultGuard) { g.maxSentences = n }
-}
-
-// New 创建默认 Guard 实例。
-func New(opts ...Option) Guard {
-	g := &defaultGuard{}
-	for _, o := range opts {
-		o(g)
-	}
-	return g
+// New 创建 Guard 实例；maxChars/maxSentences 为 0 时对应规则不限制。
+func New(maxChars, maxSentences int) *Guard {
+	return &Guard{maxChars: maxChars, maxSentences: maxSentences}
 }
 
 // ---- 规则实现 ----
@@ -118,7 +97,7 @@ func removeEmptyBubbles(bubbles []string) []string {
 
 // ---- Clean 主流程 ----
 
-func (g *defaultGuard) Clean(bubbles []string) Result {
+func (g *Guard) Clean(bubbles []string) Result {
 	result := Result{Bubbles: make([]string, 0, len(bubbles))}
 
 	for _, bubble := range bubbles {

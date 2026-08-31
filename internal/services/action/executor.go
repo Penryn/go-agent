@@ -26,7 +26,7 @@ var errGuardSilenced = errors.New("drop send: guard silenced")
 type Service struct {
 	sender     ports.OutboundSender
 	memes      *memesvc.Service
-	guard      outputguardsvc.Guard // 可为 nil，nil 时跳过清洗
+	guard      *outputguardsvc.Guard // 可为 nil，nil 时跳过清洗
 	background backgroundSubmitter
 	outbox     interface {
 		Enqueue(context.Context, string, string, []byte) error
@@ -86,7 +86,7 @@ func WithBubbleDelay(delay time.Duration) Option {
 	}
 }
 
-func New(sender ports.OutboundSender, memes *memesvc.Service, guard outputguardsvc.Guard, opts ...Option) *Service {
+func New(sender ports.OutboundSender, memes *memesvc.Service, guard *outputguardsvc.Guard, opts ...Option) *Service {
 	service := &Service{sender: sender, memes: memes, guard: guard, rhythm: make(map[int64]rhythmEntry), bubbleDelay: 350 * time.Millisecond}
 	for _, opt := range opts {
 		opt(service)
