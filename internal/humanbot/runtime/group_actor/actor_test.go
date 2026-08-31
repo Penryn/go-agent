@@ -269,8 +269,8 @@ func TestPokeEventProducesHighUrgencyCandidate(t *testing.T) {
 	if len(memory.CurrentBurst.EventIDs) != 0 {
 		t.Fatalf("poke should not join the conversation burst: %+v", memory.CurrentBurst)
 	}
-	// 到期后可被 claim（DueAt = poke 时刻 + 1.2s）
-	claimed, ok, err := manager.ClaimDue(context.Background(), 1, time.Unix(102, 0), 0.5)
+	// 到期后可被 claim（DueAt = poke 时刻 + 1.2~3s 抖动）
+	claimed, ok, err := manager.ClaimDue(context.Background(), 1, time.Unix(105, 0), 0.5)
 	if err != nil || !ok || claimed.Intent != "poke_reply" {
 		t.Fatalf("poke candidate should be claimable: ok=%v err=%v intent=%s", ok, err, claimed.Intent)
 	}

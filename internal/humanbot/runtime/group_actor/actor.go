@@ -3,6 +3,7 @@ package group_actor
 import (
 	"context"
 	"errors"
+	"math/rand/v2"
 	"slices"
 	"strings"
 	"sync"
@@ -530,9 +531,11 @@ func overlaps(left, right []string) bool {
 func candidateFor(record humandomain.EventRecord, burst humandomain.ConversationBurst) humandomain.ThoughtCandidate {
 	direct := record.Event.MentionedBot || record.Event.NamedBot || record.Event.IsReplyToBot
 	intent, urgency, reason := classifyDialogueAct(record.Event.Text, direct, len(record.Event.Attachments) > 0)
-	delay := 2 * time.Second
+	// 回复延迟带方差：被直接 cue 时 0.8~2.5s（像顺手回一句），主动接话
+	// 3~12s（像犹豫了一下才决定插嘴）。固定延迟是自动回复最明显的破绽。
+	delay := jitteredDelay(3*time.Second, 12*time.Second)
 	if direct {
-		delay = 700 * time.Millisecond
+		delay = jitteredDelay(800*time.Millisecond, 2500*time.Millisecond)
 	}
 	return humandomain.ThoughtCandidate{
 		CandidateID:    record.EventID + "-candidate",
@@ -543,12 +546,22 @@ func candidateFor(record humandomain.EventRecord, burst humandomain.Conversation
 		Urgency:        urgency,
 		Score:          urgency,
 		DueAt:          record.Timestamp.Add(delay),
-		ExpiresAt:      record.Timestamp.Add(10 * time.Second),
+		// 过期窗口放宽到分钟级：真人不会因为隔了 11 秒就不回，
+		// 10s 的旧值会让 worker 忙时错过的消息永久静默。
+		ExpiresAt:      record.Timestamp.Add(2 * time.Minute),
 		Uncertainty:    1 - urgency,
 		ReasonCode:     reason,
 		DeliveryTarget: "group",
 		Status:         humandomain.CandidatePending,
 	}
+}
+
+// jitteredDelay 在 [lo, hi] 内取均匀随机延迟，让回复节奏有真人式的方差。
+func jitteredDelay(lo, hi time.Duration) time.Duration {
+	if hi <= lo {
+		return lo
+	}
+	return lo + time.Duration(rand.Int64N(int64(hi-lo)))
 }
 
 // pokeCandidate 为被戳事件生成高优先级回应机会。延迟略长于被 @，
@@ -562,7 +575,7 @@ func pokeCandidate(record humandomain.EventRecord) humandomain.ThoughtCandidate 
 		Intent:         "poke_reply",
 		Urgency:        0.8,
 		Score:          0.8,
-		DueAt:          record.Timestamp.Add(1200 * time.Millisecond),
+		DueAt:          record.Timestamp.Add(jitteredDelay(1200*time.Millisecond, 3*time.Second)),
 		ExpiresAt:      record.Timestamp.Add(time.Minute),
 		Uncertainty:    0.2,
 		ReasonCode:     "poked",
