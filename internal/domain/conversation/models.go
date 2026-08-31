@@ -58,12 +58,24 @@ type ConversationContext struct {
 	LastSnapshotID string                        `json:"last_snapshot_id" yaml:"last_snapshot_id"`
 }
 
+// ThoughtDigest 是 ThoughtRecord 的窄投影：只保留模型回看上次判断
+// 需要的字段，避免 conversation 反向依赖 reply 包。
+type ThoughtDigest struct {
+	Interpretation string    `json:"interpretation" yaml:"interpretation"`
+	ChosenAction   string    `json:"chosen_action" yaml:"chosen_action"`
+	Outcome        string    `json:"outcome" yaml:"outcome"`
+	CreatedAt      time.Time `json:"created_at" yaml:"created_at"`
+}
+
 type ContextSnapshot struct {
-	SnapshotID        string                          `json:"snapshot_id" yaml:"snapshot_id"`
-	Projection        ProjectionMetadata              `json:"projection" yaml:"projection"`
-	Event             ConversationEvent               `json:"event" yaml:"event"`
-	RecentTurns       []ConversationEvent             `json:"recent_turns" yaml:"recent_turns"`
-	RelevantMemories  []memorydomain.MemoryRecord     `json:"relevant_memories" yaml:"relevant_memories"`
+	SnapshotID       string                      `json:"snapshot_id" yaml:"snapshot_id"`
+	Projection       ProjectionMetadata          `json:"projection" yaml:"projection"`
+	Event            ConversationEvent           `json:"event" yaml:"event"`
+	RecentTurns      []ConversationEvent         `json:"recent_turns" yaml:"recent_turns"`
+	RelevantMemories []memorydomain.MemoryRecord `json:"relevant_memories" yaml:"relevant_memories"`
+	// RecentThoughts 是该群最近几轮的思考摘要（新到旧），供模型回看自己
+	// 上次的判断——说错过的话别再说，收过的梗换着接。
+	RecentThoughts    []ThoughtDigest                 `json:"recent_thoughts,omitempty" yaml:"recent_thoughts,omitempty"`
 	MediaDescriptors  []mediadomain.MediaDescriptor   `json:"media_descriptors" yaml:"media_descriptors"`
 	ActiveTopic       string                          `json:"active_topic,omitempty" yaml:"active_topic,omitempty"`
 	OpenLoops         []string                        `json:"open_loops,omitempty" yaml:"open_loops,omitempty"`

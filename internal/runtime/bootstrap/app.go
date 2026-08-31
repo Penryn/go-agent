@@ -239,7 +239,9 @@ func NewApp(ctx context.Context, cfg config.Config) (*App, error) {
 	})
 	if thoughtStore, ok := stores.memory.(ports.ThoughtStore); ok {
 		humanRuntime.SetThoughtStore(thoughtStore)
+		contextService.WithThoughtStore(thoughtStore)
 	}
+	humanRuntime.SetMemoryStore(stores.memory)
 
 	// Scheduler：注册所有定时任务
 	sched := scheduler.New()

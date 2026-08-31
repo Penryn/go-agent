@@ -64,6 +64,43 @@ func (s *Store) SaveThought(ctx context.Context, thought reply.ThoughtRecord) er
 	return err
 }
 
+// RecentThoughts 返回一群最近的思考记录（新到旧），供下轮决策回看。
+func (s *Store) RecentThoughts(ctx context.Context, groupID int64, limit int) ([]reply.ThoughtRecord, error) {
+	if limit <= 0 {
+		limit = 5
+	}
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT thought_id, candidate_id, group_id, event_id, interpretation, evidence_json,
+		       uncertainty, chosen_action, outcome, created_at
+		FROM thought_records
+		WHERE group_id = ?
+		ORDER BY created_at DESC
+		LIMIT ?
+	`, groupID, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	records := []reply.ThoughtRecord{}
+	for rows.Next() {
+		var (
+			thought  reply.ThoughtRecord
+			evidence []byte
+		)
+		if err := rows.Scan(
+			&thought.ThoughtID, &thought.CandidateID, &thought.GroupID, &thought.EventID,
+			&thought.Interpretation, &evidence, &thought.Uncertainty,
+			&thought.ChosenAction, &thought.Outcome, &thought.CreatedAt,
+		); err != nil {
+			return nil, err
+		}
+		_ = json.Unmarshal(evidence, &thought.Evidence)
+		records = append(records, thought)
+	}
+	return records, rows.Err()
+}
+
 func (s *Store) GetLearningWatermark(ctx context.Context, groupID int64, kind string) (memory.LearningWatermark, error) {
 	watermark := memory.LearningWatermark{GroupID: groupID, Kind: kind}
 	err := s.db.QueryRowContext(ctx, `

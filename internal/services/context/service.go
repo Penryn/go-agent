@@ -37,7 +37,11 @@ type Service struct {
 	semanticTopK      int
 	semanticThreshold float64
 	workingMemory     WorkingMemoryReader
+	thoughts          ports.ThoughtStore
 }
+
+// WithThoughtStore 启用「回看上次判断」；不注入时快照不带 RecentThoughts。
+func (s *Service) WithThoughtStore(store ports.ThoughtStore) { s.thoughts = store }
 
 func (s *Service) WithWorkingMemory(reader WorkingMemoryReader) {
 	s.workingMemory = reader
@@ -168,6 +172,7 @@ func (s *Service) BuildSnapshot(ctx context.Context, envelope conversationdomain
 		Event:             envelope.Event,
 		RecentTurns:       recentTurns,
 		RelevantMemories:  relevantMemories,
+		RecentThoughts:    s.recentThoughts(ctx, envelope.Event.GroupID),
 		MediaDescriptors:  mediaDescriptors,
 		ActiveTopic:       working.ActiveTopic,
 		OpenLoops:         append([]string(nil), working.OpenLoops...),
@@ -179,6 +184,28 @@ func (s *Service) BuildSnapshot(ctx context.Context, envelope conversationdomain
 		RuntimeState:      runtimeState,
 		DecisionHints:     buildDecisionHints(envelope.Event),
 	}, nil
+}
+
+// recentThoughts 取该群最近几轮的判断摘要；失败静默（回看是增强不是依赖）。
+func (s *Service) recentThoughts(ctx context.Context, groupID int64) []conversationdomain.ThoughtDigest {
+	if s.thoughts == nil {
+		return nil
+	}
+	records, err := s.thoughts.RecentThoughts(ctx, groupID, 5)
+	if err != nil {
+		slog.WarnContext(ctx, "context: load recent thoughts failed", "group_id", groupID, "err", err)
+		return nil
+	}
+	digests := make([]conversationdomain.ThoughtDigest, 0, len(records))
+	for _, record := range records {
+		digests = append(digests, conversationdomain.ThoughtDigest{
+			Interpretation: record.Interpretation,
+			ChosenAction:   record.ChosenAction,
+			Outcome:        record.Outcome,
+			CreatedAt:      record.CreatedAt,
+		})
+	}
+	return digests
 }
 
 func mergeRecentTurns(archived, live []conversationdomain.ConversationEvent, limit int) []conversationdomain.ConversationEvent {

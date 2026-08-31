@@ -378,7 +378,9 @@ func (s *Store) QueryMemories(ctx context.Context, query ports.MemoryQuery) ([]m
 		like := "%" + trimmed + "%"
 		args = append(args, like, like)
 	}
-	base += " ORDER BY importance DESC, created_at DESC"
+	// 遗忘：过期记忆不再召回；重要性按 7 天半衰贴现排序（旧记忆淡出）。
+	base += " AND (expires_at IS NULL OR expires_at > NOW())"
+	base += " ORDER BY importance / (1 + TIMESTAMPDIFF(DAY, created_at, NOW()) / 7.0) DESC, created_at DESC"
 	if query.TopK > 0 {
 		base += " LIMIT ?"
 		args = append(args, query.TopK)

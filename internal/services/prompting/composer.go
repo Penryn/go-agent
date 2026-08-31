@@ -305,17 +305,29 @@ func (c *Composer) Messages(snapshot conversationdomain.ContextSnapshot) []*sche
 		workingState = append(workingState, "未解决问题: "+strings.Join(snapshot.OpenLoops, " / "))
 	}
 
+	// 你最近的判断（新到旧）：翻过车的说法别重复，收过的梗换着接
+	thoughtLines := make([]string, 0, len(snapshot.RecentThoughts))
+	for _, thought := range snapshot.RecentThoughts {
+		if interpretation := strings.TrimSpace(thought.Interpretation); interpretation != "" {
+			thoughtLines = append(thoughtLines, fmt.Sprintf("[%s]%s", thought.Outcome, interpretation))
+		}
+	}
+
 	recentContext := strings.Join(recentTurns, " | ")
 	if recentTruncated {
 		recentContext = "[较早上下文已裁剪] " + recentContext
 	}
-	content := strings.Join([]string{
+	contentParts := []string{
 		fmt.Sprintf("当前事件: user=%d msg_id=%s text=%q", snapshot.Event.UserID, snapshot.Event.MessageID, snapshot.Event.Text),
 		fmt.Sprintf("最近上下文: %s", recentContext),
 		fmt.Sprintf("工作记忆: %s", strings.Join(workingState, " | ")),
 		fmt.Sprintf("相关记忆: %s", strings.Join(memorySnippets, " | ")),
 		fmt.Sprintf("媒体摘要: %s", strings.Join(mediaSnippets, " | ")),
-	}, "\n")
+	}
+	if len(thoughtLines) > 0 {
+		contentParts = append(contentParts, fmt.Sprintf("你最近的判断: %s", strings.Join(thoughtLines, " / ")))
+	}
+	content := strings.Join(contentParts, "\n")
 
 	return []*schema.Message{schema.UserMessage(content)}
 }

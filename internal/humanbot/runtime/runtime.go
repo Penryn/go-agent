@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"math/rand/v2"
 	"slices"
+	"strings"
 	"sync"
 	"time"
 
@@ -86,13 +87,15 @@ type Outcome struct {
 }
 
 type Runtime struct {
-	normalizer             *normalizersvc.Service
-	working                *groupactor.Manager
-	deliberator            deliberation.Deliberator
-	perception             PerceptionSubmitter
-	turns                  TurnObserver
-	executor               *action.Service
-	thoughts               ports.ThoughtStore
+	normalizer  *normalizersvc.Service
+	working     *groupactor.Manager
+	deliberator deliberation.Deliberator
+	perception  PerceptionSubmitter
+	turns       TurnObserver
+	executor    *action.Service
+	thoughts    ports.ThoughtStore
+	// memories 供主动开口时从长期记忆挑旧梗；nil 时跳过。
+	memories               ports.MemoryStore
 	eventObservers         []EventObserverFunc
 	completedTurnObservers []CompletedTurnObserverFunc
 	whitelist              map[int64]struct{}
@@ -121,6 +124,10 @@ type candidateJob struct {
 // SetThoughtStore enables durable, concise deliberation records. It is
 // optional so replay and in-memory callers can keep the runtime lightweight.
 func (r *Runtime) SetThoughtStore(store ports.ThoughtStore) { r.thoughts = store }
+
+// SetMemoryStore enables proactive memory recall during idle revival. Optional;
+// nil keeps the proactive loop limited to OpenLoops / ActiveTopic.
+func (r *Runtime) SetMemoryStore(store ports.MemoryStore) { r.memories = store }
 
 func (r *Runtime) AddEventObserver(observer EventObserverFunc) {
 	if observer != nil {
@@ -340,7 +347,8 @@ func (r *Runtime) scanProactive(now time.Time) {
 }
 
 // proactiveCandidate 判断一群是否值得主动开口并生成候选。
-// 评分 = 基础分 + OpenLoops 加成；没到阈值就不开口。
+// 话题素材优先取未接话题（OpenLoops），其次从长期记忆挑一条高分旧事——
+// 「我记得你上次说过XX」的主动回忆。没到阈值就不开口。
 func (r *Runtime) proactiveCandidate(groupID int64, now time.Time) (humandomain.ThoughtCandidate, bool) {
 	if rand.Float64() >= r.proactiveProbability {
 		return humandomain.ThoughtCandidate{}, false
@@ -353,19 +361,24 @@ func (r *Runtime) proactiveCandidate(groupID int64, now time.Time) (humandomain.
 	if memory.LastUpdatedAt.IsZero() || now.Sub(memory.LastUpdatedAt) < proactiveIdleThreshold {
 		return humandomain.ThoughtCandidate{}, false
 	}
-	// 没有任何可接的话题就不硬找话说。
-	if memory.ActiveTopic == "" && len(memory.OpenLoops) == 0 {
-		return humandomain.ThoughtCandidate{}, false
-	}
 
-	// 有未接话题时提高评分，让主动候选能过 ClaimDue 的阈值。
-	score := r.proactiveThreshold
-	if len(memory.OpenLoops) > 0 {
-		score = min(score+0.1, 1)
-	}
 	topic := memory.ActiveTopic
-	if topic == "" && len(memory.OpenLoops) > 0 {
-		topic = memory.OpenLoops[len(memory.OpenLoops)-1]
+	score := r.proactiveThreshold
+	switch {
+	case len(memory.OpenLoops) > 0:
+		// 有未接话题：优先接话，评分上调让候选能过 ClaimDue 阈值
+		if topic == "" {
+			topic = memory.OpenLoops[len(memory.OpenLoops)-1]
+		}
+		score = min(score+0.1, 1)
+	default:
+		// 没有未接话题：从长期记忆挑一条值得主动提起的旧事
+		if topic == "" {
+			topic = r.recallWorthyMemory(groupID)
+		}
+		if topic == "" {
+			return humandomain.ThoughtCandidate{}, false
+		}
 	}
 
 	delay := time.Duration(rand.Int64N(int64(proactiveDelayMax-proactiveDelayMin))) + proactiveDelayMin
@@ -382,6 +395,27 @@ func (r *Runtime) proactiveCandidate(groupID int64, now time.Time) (humandomain.
 		DeliveryTarget: "group",
 		Status:         humandomain.CandidatePending,
 	}, true
+}
+
+// recallWorthyMemory 从长期记忆里挑一条适合冷场提起的旧事。
+// 只取重要性 >= 0.6 的（低分闲事硬提会显得奇怪），失败静默。
+func (r *Runtime) recallWorthyMemory(groupID int64) string {
+	if r.memories == nil {
+		return ""
+	}
+	records, err := r.memories.QueryMemories(r.ctx, ports.MemoryQuery{
+		GroupID: groupID,
+		TopK:    3,
+	})
+	if err != nil {
+		return ""
+	}
+	for _, record := range records {
+		if record.Importance >= 0.6 && strings.TrimSpace(record.Content) != "" {
+			return record.Content
+		}
+	}
+	return ""
 }
 
 func (r *Runtime) lastProactiveAt(groupID int64) time.Time {

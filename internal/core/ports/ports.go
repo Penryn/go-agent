@@ -64,6 +64,8 @@ type MemoryStore interface {
 // future learning. It deliberately does not expose raw model chain-of-thought.
 type ThoughtStore interface {
 	SaveThought(ctx context.Context, thought replydomain.ThoughtRecord) error
+	// RecentThoughts 返回一群最近的思考记录（新到旧），供下轮决策回看。
+	RecentThoughts(ctx context.Context, groupID int64, limit int) ([]replydomain.ThoughtRecord, error)
 }
 
 // OutboxTask is the durable envelope for asynchronous work. Payload is
