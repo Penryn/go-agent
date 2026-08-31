@@ -88,20 +88,23 @@ func TestQuietHoursSoftenIntoThresholdPenalty(t *testing.T) {
 func TestDeliberationThresholdReflectsPersonaState(t *testing.T) {
 	store := inmemory.NewStore()
 	ctx := context.Background()
-	if err := store.SavePersonaState(ctx, personadomain.PersonaState{PersonaID: "persona-1", GroupID: 3, Mood: "withdrawn", Energy: "tired", TalkBias: 0}); err != nil {
+	// persona 状态是全局单槽（GroupID=0）：任意群的阈值查询读同一份情绪
+	if err := store.SavePersonaState(ctx, personadomain.PersonaState{PersonaID: "persona-1", GroupID: 0, Mood: "withdrawn", Energy: "tired", TalkBias: 0}); err != nil {
 		t.Fatalf("save persona state: %v", err)
 	}
 	observer := New(store, personasvc.New(store, "persona-1"), 0, nil)
 	// withdrawn(+0.15) + tired(+0.2) => 阈值 0.5 -> 0.85
-	if got := observer.DeliberationThreshold(ctx, 3, 0.5); got < 0.84 || got > 0.86 {
-		t.Fatalf("expected raised threshold ~0.85, got %v", got)
+	for _, groupID := range []int64{3, 4} {
+		if got := observer.DeliberationThreshold(ctx, groupID, 0.5); got < 0.84 || got > 0.86 {
+			t.Fatalf("group %d expected raised threshold ~0.85, got %v", groupID, got)
+		}
 	}
 
-	// talkBias 为正（想说话）=> 阈值下降
-	if err := store.SavePersonaState(ctx, personadomain.PersonaState{PersonaID: "persona-1", GroupID: 4, Mood: "happy", Energy: "high", TalkBias: 0.4}); err != nil {
+	// talkBias 为正（想说话）=> 阈值下降；同样全局生效
+	if err := store.SavePersonaState(ctx, personadomain.PersonaState{PersonaID: "persona-1", GroupID: 0, Mood: "happy", Energy: "high", TalkBias: 0.4}); err != nil {
 		t.Fatalf("save persona state: %v", err)
 	}
-	if got := observer.DeliberationThreshold(ctx, 4, 0.5); got > 0.15 {
+	if got := observer.DeliberationThreshold(ctx, 5, 0.5); got > 0.15 {
 		t.Fatalf("expected lowered threshold <=0.15, got %v", got)
 	}
 }

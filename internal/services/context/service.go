@@ -126,7 +126,9 @@ func (s *Service) BuildSnapshot(ctx context.Context, envelope conversationdomain
 		return conversationdomain.ContextSnapshot{}, fmt.Errorf("load runtime state: %w", err)
 	}
 
-	personaState, err := s.stateStore.GetPersonaState(ctx, s.persona.ID, envelope.Event.GroupID)
+	// persona 状态全局共享（单槽 GroupID=0）：情绪是「我」的状态，
+	// 不是「我在这个群」的状态——跨群一致，避免共同好友看到人格分裂。
+	personaState, err := s.stateStore.GetPersonaState(ctx, s.persona.ID, 0)
 	if err != nil {
 		return conversationdomain.ContextSnapshot{}, fmt.Errorf("load persona state: %w", err)
 	}

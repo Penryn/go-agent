@@ -118,7 +118,8 @@ func (o *TurnObserver) AfterTurn(ctx context.Context, snapshot conversationdomai
 		state.LastDirectedAt = now
 	}
 	if o.persona != nil {
-		personaState, getErr := o.states.GetPersonaState(ctx, snapshot.PersonaProfile.PersonaID, snapshot.Event.GroupID)
+		// persona 状态全局单槽（GroupID=0），与 context/persona 服务一致
+		personaState, getErr := o.states.GetPersonaState(ctx, snapshot.PersonaProfile.PersonaID, 0)
 		if getErr != nil {
 			return getErr
 		}
