@@ -15,14 +15,18 @@ import (
 
 	"github.com/phlin/go-agent/internal/core/ports"
 	conversationdomain "github.com/phlin/go-agent/internal/domain/conversation"
+	mediadomain "github.com/phlin/go-agent/internal/domain/media"
 	memorydomain "github.com/phlin/go-agent/internal/domain/memory"
 	profiledomain "github.com/phlin/go-agent/internal/domain/profile"
 )
 
 var (
-	_ ports.MemoryStore  = (*Store)(nil)
-	_ ports.OutboxStore  = (*Store)(nil)
-	_ ports.ProfileStore = (*Store)(nil)
+	_ ports.MemoryStore        = (*Store)(nil)
+	_ ports.LearningStateStore = (*Store)(nil)
+	_ ports.ThoughtStore       = (*Store)(nil)
+	_ ports.MemeStore          = (*Store)(nil)
+	_ ports.ProfileStore       = (*Store)(nil)
+	_ ports.OutboxStore        = (*Store)(nil)
 )
 
 type Store struct {
@@ -373,7 +377,10 @@ func (s *Store) QueryMemories(ctx context.Context, query ports.MemoryQuery) ([]m
 		base += " AND (subject LIKE $" + strconv.Itoa(len(args)+1) + " OR content LIKE $" + strconv.Itoa(len(args)+2) + ")"
 		args = append(args, like, like)
 	}
-	base += " ORDER BY importance DESC, created_at DESC"
+	// 遗忘：过期记忆不再召回；重要性按时间贴现（高重要性衰减更慢，
+	// 半衰 = importance*30 天）——重要旧事压过无聊近事，无聊近事先淡出。
+	base += " AND (expires_at IS NULL OR expires_at > NOW())"
+	base += " ORDER BY importance / (1 + EXTRACT(EPOCH FROM (NOW() - created_at)) / 86400.0 / (GREATEST(importance, 0.1) * 30.0)) DESC, created_at DESC"
 	if query.TopK > 0 {
 		base += " LIMIT $" + strconv.Itoa(len(args)+1)
 		args = append(args, query.TopK)
@@ -519,6 +526,243 @@ func (s *Store) SaveRelationship(ctx context.Context, state profiledomain.Relati
 			grudge_score = EXCLUDED.grudge_score,
 			last_interact_at = EXCLUDED.last_interact_at
 	`, state.PersonaID, state.GroupID, state.UserID, state.Familiarity, state.Affinity, state.TeaseTolerance, state.GrudgeScore, coalesceTime(state.LastInteractAt))
+	return err
+}
+
+func (s *Store) UpsertMeme(ctx context.Context, asset mediadomain.MemeAsset, descriptor mediadomain.MemeDescriptor) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		if err != nil {
+			_ = tx.Rollback()
+		}
+	}()
+
+	_, err = tx.ExecContext(ctx, `
+		INSERT INTO meme_assets (
+			meme_id, group_id, source_event_id, object_key, file_ext, content_hash, perceptual_hash,
+			width, height, animated, status, created_at
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+		ON CONFLICT (meme_id) DO UPDATE SET
+			group_id = EXCLUDED.group_id,
+			source_event_id = EXCLUDED.source_event_id,
+			object_key = EXCLUDED.object_key,
+			file_ext = EXCLUDED.file_ext,
+			content_hash = EXCLUDED.content_hash,
+			perceptual_hash = EXCLUDED.perceptual_hash,
+			width = EXCLUDED.width,
+			height = EXCLUDED.height,
+			animated = EXCLUDED.animated,
+			status = EXCLUDED.status
+	`, asset.MemeID, asset.GroupID, asset.SourceEventID, asset.ObjectKey, asset.FileExt, asset.ContentHash, asset.PerceptualHash,
+		asset.Width, asset.Height, asset.Animated, asset.Status, coalesceTime(asset.CreatedAt))
+	if err != nil {
+		return err
+	}
+
+	keywordsJSON, _ := json.Marshal(descriptor.Keywords)
+	emotionJSON, _ := json.Marshal(descriptor.EmotionTags)
+	sceneJSON, _ := json.Marshal(descriptor.SceneTags)
+	usageJSON, _ := json.Marshal(descriptor.UsageHints)
+	_, err = tx.ExecContext(ctx, `
+		INSERT INTO meme_descriptors (
+			meme_id, title, summary, keywords_json, emotion_tags_json, scene_tags_json,
+			usage_hints_json, language, confidence, reviewed, updated_at
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+		ON CONFLICT (meme_id) DO UPDATE SET
+			title = EXCLUDED.title,
+			summary = EXCLUDED.summary,
+			keywords_json = EXCLUDED.keywords_json,
+			emotion_tags_json = EXCLUDED.emotion_tags_json,
+			scene_tags_json = EXCLUDED.scene_tags_json,
+			usage_hints_json = EXCLUDED.usage_hints_json,
+			language = EXCLUDED.language,
+			confidence = EXCLUDED.confidence,
+			reviewed = EXCLUDED.reviewed,
+			updated_at = EXCLUDED.updated_at
+	`, descriptor.MemeID, descriptor.Title, descriptor.Summary, keywordsJSON, emotionJSON, sceneJSON,
+		usageJSON, descriptor.Language, descriptor.Confidence, descriptor.Reviewed, coalesceTime(descriptor.UpdatedAt))
+	if err != nil {
+		return err
+	}
+
+	return tx.Commit()
+}
+
+func (s *Store) SearchMemes(ctx context.Context, query ports.MemeQuery) ([]mediadomain.MemeSearchResult, error) {
+	like := "%" + strings.TrimSpace(query.Query) + "%"
+	if like == "%%" {
+		like = "%"
+	}
+	limit := query.TopK
+	if limit <= 0 {
+		limit = 5
+	}
+
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT a.meme_id, d.title, d.summary, d.keywords_json, d.emotion_tags_json, d.scene_tags_json,
+		       d.usage_hints_json, d.language, d.confidence, d.reviewed
+		FROM meme_assets a
+		JOIN meme_descriptors d ON d.meme_id = a.meme_id
+		WHERE (a.group_id = $1 OR a.group_id = 0)
+		  AND (d.title LIKE $2 OR d.summary LIKE $3 OR d.keywords_json::text LIKE $4)
+		ORDER BY a.send_count DESC, d.updated_at DESC
+		LIMIT $5
+	`, query.GroupID, like, like, like, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	results := []mediadomain.MemeSearchResult{}
+	for rows.Next() {
+		var (
+			result       mediadomain.MemeSearchResult
+			keywordsJSON []byte
+			emotionJSON  []byte
+			sceneJSON    []byte
+			usageJSON    []byte
+			descriptor   mediadomain.MemeDescriptor
+		)
+		if err := rows.Scan(
+			&result.MemeID,
+			&descriptor.Title,
+			&descriptor.Summary,
+			&keywordsJSON,
+			&emotionJSON,
+			&sceneJSON,
+			&usageJSON,
+			&descriptor.Language,
+			&descriptor.Confidence,
+			&descriptor.Reviewed,
+		); err != nil {
+			return nil, err
+		}
+		_ = json.Unmarshal(keywordsJSON, &descriptor.Keywords)
+		_ = json.Unmarshal(emotionJSON, &descriptor.EmotionTags)
+		_ = json.Unmarshal(sceneJSON, &descriptor.SceneTags)
+		_ = json.Unmarshal(usageJSON, &descriptor.UsageHints)
+		descriptor.MemeID = result.MemeID
+		result.Score = descriptor.Confidence
+		result.MatchType = "keyword"
+		result.MatchedTerms = descriptor.Keywords
+		result.Descriptor = descriptor
+		results = append(results, result)
+	}
+	return results, rows.Err()
+}
+
+func (s *Store) GetMeme(ctx context.Context, memeID string) (mediadomain.MemeAsset, mediadomain.MemeDescriptor, error) {
+	var (
+		asset        mediadomain.MemeAsset
+		descriptor   mediadomain.MemeDescriptor
+		keywordsJSON []byte
+		emotionJSON  []byte
+		sceneJSON    []byte
+		usageJSON    []byte
+		lastSentAt   sql.NullTime
+	)
+
+	err := s.db.QueryRowContext(ctx, `
+		SELECT a.meme_id, a.group_id, a.source_event_id, a.object_key, a.file_ext, a.content_hash,
+		       a.perceptual_hash, a.width, a.height, a.animated, a.status, a.created_at, a.last_sent_at,
+		       d.title, d.summary, d.keywords_json, d.emotion_tags_json, d.scene_tags_json,
+		       d.usage_hints_json, d.language, d.confidence, d.reviewed, d.updated_at
+		FROM meme_assets a
+		JOIN meme_descriptors d ON d.meme_id = a.meme_id
+		WHERE a.meme_id = $1
+	`, memeID).Scan(
+		&asset.MemeID, &asset.GroupID, &asset.SourceEventID, &asset.ObjectKey, &asset.FileExt, &asset.ContentHash,
+		&asset.PerceptualHash, &asset.Width, &asset.Height, &asset.Animated, &asset.Status, &asset.CreatedAt, &lastSentAt,
+		&descriptor.Title, &descriptor.Summary, &keywordsJSON, &emotionJSON, &sceneJSON,
+		&usageJSON, &descriptor.Language, &descriptor.Confidence, &descriptor.Reviewed, &descriptor.UpdatedAt,
+	)
+	if err != nil {
+		return mediadomain.MemeAsset{}, mediadomain.MemeDescriptor{}, err
+	}
+
+	descriptor.MemeID = memeID
+	_ = json.Unmarshal(keywordsJSON, &descriptor.Keywords)
+	_ = json.Unmarshal(emotionJSON, &descriptor.EmotionTags)
+	_ = json.Unmarshal(sceneJSON, &descriptor.SceneTags)
+	_ = json.Unmarshal(usageJSON, &descriptor.UsageHints)
+	if lastSentAt.Valid {
+		asset.LastSentAt = &lastSentAt.Time
+	}
+	return asset, descriptor, nil
+}
+
+func (s *Store) CountMemesByGroup(ctx context.Context, groupID int64) (int, error) {
+	var count int
+	err := s.db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM meme_assets WHERE group_id = $1`,
+		groupID,
+	).Scan(&count)
+	return count, err
+}
+
+func (s *Store) DeleteOldestMemes(ctx context.Context, groupID int64, deleteCount int) error {
+	if deleteCount <= 0 {
+		return nil
+	}
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT meme_id FROM meme_assets WHERE group_id = $1 ORDER BY created_at ASC LIMIT $2`,
+		groupID, deleteCount,
+	)
+	if err != nil {
+		return err
+	}
+	var ids []string
+	for rows.Next() {
+		var id string
+		if scanErr := rows.Scan(&id); scanErr != nil {
+			_ = rows.Close()
+			return scanErr
+		}
+		ids = append(ids, id)
+	}
+	_ = rows.Close()
+	if err = rows.Err(); err != nil {
+		return err
+	}
+	if len(ids) == 0 {
+		return nil
+	}
+	args := make([]any, len(ids))
+	phs := make([]string, len(ids))
+	for i, id := range ids {
+		args[i] = id
+		phs[i] = "$" + strconv.Itoa(i+1)
+	}
+	ph := strings.Join(phs, ",")
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		if err != nil {
+			_ = tx.Rollback()
+		}
+	}()
+	if _, err = tx.ExecContext(ctx,
+		`DELETE FROM meme_descriptors WHERE meme_id IN (`+ph+`)`, args...); err != nil {
+		return err
+	}
+	if _, err = tx.ExecContext(ctx,
+		`DELETE FROM meme_assets WHERE meme_id IN (`+ph+`)`, args...); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+func (s *Store) MarkMemeSent(ctx context.Context, memeID string) error {
+	_, err := s.db.ExecContext(ctx, `
+		UPDATE meme_assets
+		SET send_count = send_count + 1, last_sent_at = $1
+		WHERE meme_id = $2
+	`, time.Now(), memeID)
 	return err
 }
 

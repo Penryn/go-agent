@@ -10,8 +10,11 @@ import (
 
 	"github.com/phlin/go-agent/internal/core/ports"
 	conversationdomain "github.com/phlin/go-agent/internal/domain/conversation"
+	mediadomain "github.com/phlin/go-agent/internal/domain/media"
 	memorydomain "github.com/phlin/go-agent/internal/domain/memory"
 	profiledomain "github.com/phlin/go-agent/internal/domain/profile"
+	replydomain "github.com/phlin/go-agent/internal/domain/reply"
+	humandomain "github.com/phlin/go-agent/internal/humanbot/domain"
 )
 
 func setupPostgres(t *testing.T) *sql.DB {
@@ -189,5 +192,160 @@ func TestProfiles(t *testing.T) {
 	}
 	if got.Affinity != 0.25 {
 		t.Fatalf("unexpected affinity: %f", got.Affinity)
+	}
+}
+
+func TestMemes(t *testing.T) {
+	ctx := context.Background()
+	db := setupPostgres(t)
+	store := NewStore(db)
+
+	memeID := fmt.Sprintf("meme-%d", time.Now().UnixNano())
+	if err := store.UpsertMeme(ctx, mediadomain.MemeAsset{
+		MemeID:        memeID,
+		GroupID:       1,
+		SourceEventID: "event-x",
+		ObjectKey:     "memes/test.jpg",
+		FileExt:       ".jpg",
+		ContentHash:   memeID,
+		Status:        "approved",
+		CreatedAt:     time.Now(),
+	}, mediadomain.MemeDescriptor{
+		MemeID:     memeID,
+		Title:      "离谱图",
+		Summary:    "适合接离谱发言",
+		Keywords:   []string{"离谱", "吐槽"},
+		Confidence: 0.9,
+		Reviewed:   true,
+		UpdatedAt:  time.Now(),
+	}); err != nil {
+		t.Fatalf("upsert meme: %v", err)
+	}
+	memes, err := store.SearchMemes(ctx, ports.MemeQuery{GroupID: 1, Query: "离谱", TopK: 3})
+	if err != nil {
+		t.Fatalf("search memes: %v", err)
+	}
+	if len(memes) != 1 {
+		t.Fatalf("expected 1 meme, got %d", len(memes))
+	}
+	asset, descriptor, err := store.GetMeme(ctx, memeID)
+	if err != nil {
+		t.Fatalf("get meme: %v", err)
+	}
+	if asset.ObjectKey != "memes/test.jpg" || len(descriptor.Keywords) != 2 {
+		t.Fatalf("unexpected meme: %+v %+v", asset, descriptor)
+	}
+	count, err := store.CountMemesByGroup(ctx, 1)
+	if err != nil {
+		t.Fatalf("count memes: %v", err)
+	}
+	if count != 1 {
+		t.Fatalf("expected count 1, got %d", count)
+	}
+	if err := store.MarkMemeSent(ctx, memeID); err != nil {
+		t.Fatalf("mark sent: %v", err)
+	}
+	if err := store.DeleteOldestMemes(ctx, 1, 5); err != nil {
+		t.Fatalf("delete oldest: %v", err)
+	}
+	if count, _ := store.CountMemesByGroup(ctx, 1); count != 0 {
+		t.Fatalf("expected 0 after delete, got %d", count)
+	}
+}
+
+func TestWatermarksAndThoughts(t *testing.T) {
+	ctx := context.Background()
+	db := setupPostgres(t)
+	store := NewStore(db)
+
+	wm := memorydomain.LearningWatermark{
+		GroupID: 1, Kind: "learning_extract",
+		OccurredAt: time.Now(), EventID: "event-1", UpdatedAt: time.Now(),
+	}
+	if err := store.SaveLearningWatermark(ctx, wm); err != nil {
+		t.Fatalf("save watermark: %v", err)
+	}
+	got, err := store.GetLearningWatermark(ctx, 1, "learning_extract")
+	if err != nil {
+		t.Fatalf("get watermark: %v", err)
+	}
+	if got.EventID != "event-1" {
+		t.Fatalf("unexpected watermark: %+v", got)
+	}
+
+	thought := replydomain.ThoughtRecord{
+		ThoughtID: "thought-1", CandidateID: "cand-1", GroupID: 1, EventID: "event-1",
+		Interpretation: "test", Uncertainty: 0.2, ChosenAction: "reply", Outcome: "ok",
+		CreatedAt: time.Now(),
+	}
+	if err := store.SaveThought(ctx, thought); err != nil {
+		t.Fatalf("save thought: %v", err)
+	}
+	// RecentThoughts:保存后可按群读回(新到旧)
+	thoughts, err := store.RecentThoughts(ctx, 1, 5)
+	if err != nil {
+		t.Fatalf("recent thoughts: %v", err)
+	}
+	if len(thoughts) != 1 || thoughts[0].ThoughtID != "thought-1" {
+		t.Fatalf("unexpected thoughts: %+v", thoughts)
+	}
+
+	mem := humandomain.GroupWorkingMemory{GroupID: 1}
+	if err := store.SaveWorkingMemory(ctx, mem); err != nil {
+		t.Fatalf("save working memory: %v", err)
+	}
+	loaded, err := store.LoadWorkingMemory(ctx, 1)
+	if err != nil {
+		t.Fatalf("load working memory: %v", err)
+	}
+	if loaded.GroupID != 1 {
+		t.Fatalf("unexpected working memory: %+v", loaded)
+	}
+}
+
+func TestMemoryForgetting(t *testing.T) {
+	ctx := context.Background()
+	db := setupPostgres(t)
+	store := NewStore(db)
+
+	fresh := memorydomain.MemoryRecord{
+		MemoryID: fmt.Sprintf("fresh-%d", time.Now().UnixNano()),
+		Scope:    "group:1", Type: "preference",
+		Subject: "新梗", Content: "最近在聊的新梗",
+		Importance: 0.5, CreatedAt: time.Now().Add(-time.Hour),
+	}
+	stale := memorydomain.MemoryRecord{
+		MemoryID: fmt.Sprintf("stale-%d", time.Now().UnixNano()),
+		Scope:    "group:1", Type: "preference",
+		Subject: "旧事", Content: "很久以前的旧事",
+		Importance: 0.9, CreatedAt: time.Now().AddDate(0, 0, -30),
+	}
+	expired := memorydomain.MemoryRecord{
+		MemoryID:  fmt.Sprintf("exp-%d", time.Now().UnixNano()),
+		Scope:     "group:1", Type: "preference",
+		Subject:   "过期", Content: "已过期的记忆",
+		Importance: 0.95, CreatedAt: time.Now().Add(-time.Hour),
+		ExpiresAt: &[]time.Time{time.Now().Add(-time.Minute)}[0],
+	}
+	for _, r := range []memorydomain.MemoryRecord{fresh, stale, expired} {
+		if err := store.UpsertMemory(ctx, r); err != nil {
+			t.Fatalf("upsert %s: %v", r.MemoryID, err)
+		}
+	}
+	records, err := store.QueryMemories(ctx, ports.MemoryQuery{Scope: "group:1", TopK: 10})
+	if err != nil {
+		t.Fatalf("query memories: %v", err)
+	}
+	// 过期的不返回
+	for _, r := range records {
+		if r.MemoryID == expired.MemoryID {
+			t.Fatalf("expired memory should not be recalled")
+		}
+	}
+	// 半衰贴现:importance 0.5 的 1 小时新记忆应排在 importance 0.9 的 30 天旧记忆前面
+	if len(records) >= 2 {
+		if records[0].MemoryID != fresh.MemoryID {
+			t.Fatalf("expected fresh memory ranked first (half-life discount), got %s", records[0].MemoryID)
+		}
 	}
 }
