@@ -3,7 +3,7 @@ module github.com/phlin/go-agent
 go 1.25.8
 
 require (
-	github.com/cloudwego/eino v0.8.0
+	github.com/cloudwego/eino v0.9.18
 	github.com/cloudwego/eino-ext/components/embedding/ark v0.1.1
 	github.com/cloudwego/eino-ext/components/embedding/openai v0.0.0-20260311121809-88ebb0eecbdb
 	github.com/cloudwego/eino-ext/components/indexer/qdrant v0.0.0-20260311121809-88ebb0eecbdb
