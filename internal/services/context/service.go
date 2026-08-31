@@ -93,7 +93,7 @@ func (s *Service) BuildSnapshot(ctx context.Context, envelope conversationdomain
 		if err != nil {
 			return conversationdomain.ContextSnapshot{}, fmt.Errorf("load archived events: %w", err)
 		}
-		recentTurns = mergeRecentTurns(archived, recentTurns)
+		recentTurns = mergeRecentTurns(archived, recentTurns, s.policy.AutonomyPolicy().ObserveWindowSize)
 	} else {
 		var err error
 		recentTurns, err = s.memoryStore.RecentEvents(ctx, envelope.Event.GroupID, s.policy.AutonomyPolicy().ObserveWindowSize)
@@ -181,7 +181,7 @@ func (s *Service) BuildSnapshot(ctx context.Context, envelope conversationdomain
 	}, nil
 }
 
-func mergeRecentTurns(archived, live []conversationdomain.ConversationEvent) []conversationdomain.ConversationEvent {
+func mergeRecentTurns(archived, live []conversationdomain.ConversationEvent, limit int) []conversationdomain.ConversationEvent {
 	merged := make([]conversationdomain.ConversationEvent, 0, len(archived)+len(live))
 	seen := make(map[string]struct{}, len(archived)+len(live))
 	appendUnique := func(events []conversationdomain.ConversationEvent) {
@@ -201,6 +201,15 @@ func mergeRecentTurns(archived, live []conversationdomain.ConversationEvent) []c
 	}
 	appendUnique(archived)
 	appendUnique(live)
+	sort.SliceStable(merged, func(i, j int) bool {
+		if merged[i].TimestampUnix == merged[j].TimestampUnix {
+			return merged[i].EventID < merged[j].EventID
+		}
+		return merged[i].TimestampUnix < merged[j].TimestampUnix
+	})
+	if limit > 0 && len(merged) > limit {
+		merged = merged[len(merged)-limit:]
+	}
 	return merged
 }
 

@@ -98,7 +98,7 @@ func (s *Store) EnqueueOutbox(_ context.Context, task ports.OutboxTask) error {
 	if task.Kind == "" || task.IdempotencyKey == "" {
 		return errors.New("outbox: kind and idempotency key are required")
 	}
-	if _, exists := s.outboxByKey[task.IdempotencyKey]; exists {
+	if _, exists := s.outboxByKey[outboxKey(task.Kind, task.IdempotencyKey)]; exists {
 		return nil
 	}
 	now := time.Now()
@@ -121,7 +121,7 @@ func (s *Store) EnqueueOutbox(_ context.Context, task ports.OutboxTask) error {
 	task.UpdatedAt = now
 	task.Payload = append([]byte(nil), task.Payload...)
 	s.outbox[task.ID] = task
-	s.outboxByKey[task.IdempotencyKey] = task.ID
+	s.outboxByKey[outboxKey(task.Kind, task.IdempotencyKey)] = task.ID
 	return nil
 }
 
@@ -221,6 +221,10 @@ func minInt(a, b int) int {
 	return b
 }
 
+func outboxKey(kind, idempotencyKey string) string {
+	return kind + "\x00" + idempotencyKey
+}
+
 func cloneWorkingMemory(memory humandomain.GroupWorkingMemory) humandomain.GroupWorkingMemory {
 	memory.RecentTail = append([]humandomain.EventRecord(nil), memory.RecentTail...)
 	memory.OpenLoops = append([]string(nil), memory.OpenLoops...)
@@ -245,9 +249,16 @@ func (s *Store) EventsAfter(_ context.Context, groupID int64, after time.Time, a
 			continue
 		}
 		result = append(result, event)
-		if limit > 0 && len(result) >= limit {
-			break
+	}
+	sort.SliceStable(result, func(i, j int) bool {
+		left, right := time.Unix(result[i].TimestampUnix, 0), time.Unix(result[j].TimestampUnix, 0)
+		if left.Equal(right) {
+			return result[i].EventID < result[j].EventID
 		}
+		return left.Before(right)
+	})
+	if limit > 0 && len(result) > limit {
+		result = result[:limit]
 	}
 	return result, nil
 }
@@ -272,6 +283,9 @@ func learningMarkKey(groupID int64, kind string) string {
 func (s *Store) ArchiveEvent(_ context.Context, event conversationdomain.ConversationEvent) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if event.TimestampUnix == 0 {
+		event.TimestampUnix = time.Now().Unix()
+	}
 
 	events := s.eventsByGroup[event.GroupID]
 	for i := range events {
@@ -289,13 +303,18 @@ func (s *Store) RecentEvents(_ context.Context, groupID int64, limit int) ([]con
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	events := s.eventsByGroup[groupID]
-	if limit <= 0 || len(events) <= limit {
-		return append([]conversationdomain.ConversationEvent(nil), events...), nil
+	events := append([]conversationdomain.ConversationEvent(nil), s.eventsByGroup[groupID]...)
+	sort.SliceStable(events, func(i, j int) bool {
+		left, right := time.Unix(events[i].TimestampUnix, 0), time.Unix(events[j].TimestampUnix, 0)
+		if left.Equal(right) {
+			return events[i].EventID < events[j].EventID
+		}
+		return left.Before(right)
+	})
+	if limit > 0 && len(events) > limit {
+		events = events[len(events)-limit:]
 	}
-
-	start := len(events) - limit
-	return append([]conversationdomain.ConversationEvent(nil), events[start:]...), nil
+	return events, nil
 }
 
 func (s *Store) UpsertMemory(_ context.Context, record memorydomain.MemoryRecord) error {

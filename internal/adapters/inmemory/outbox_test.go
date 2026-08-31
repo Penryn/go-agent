@@ -40,3 +40,20 @@ func TestOutboxIsIdempotentAndRetriesBeforeDeadLetter(t *testing.T) {
 		t.Fatalf("dead letter should not be claimable: tasks=%+v err=%v", claimed, err)
 	}
 }
+
+func TestOutboxIdempotencyIsScopedByKind(t *testing.T) {
+	store := NewStore()
+	ctx := context.Background()
+	for _, kind := range []string{"media", "profile"} {
+		if err := store.EnqueueOutbox(ctx, ports.OutboxTask{ID: kind, Kind: kind, IdempotencyKey: "event-1"}); err != nil {
+			t.Fatalf("enqueue %s: %v", kind, err)
+		}
+	}
+	claimed, err := store.ClaimOutbox(ctx, "worker", time.Now(), time.Minute, 2)
+	if err != nil {
+		t.Fatalf("claim: %v", err)
+	}
+	if len(claimed) != 2 {
+		t.Fatalf("same key in different task kinds must not collide: %+v", claimed)
+	}
+}
