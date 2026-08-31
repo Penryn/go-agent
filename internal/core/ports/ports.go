@@ -143,7 +143,7 @@ type ChatModelFactory interface {
 }
 
 // VectorMemoryStore 是语义记忆检索的 port。
-// 实现方：qdrantstore.Store；未配置时可用 NoopVectorStore 代替。
+// 实现方：postgresstore.VectorStore；未配置时可用 NoopVectorStore 代替。
 type VectorMemoryStore interface {
 	// StoreMemory 将一条记忆向量化后存入向量库。
 	StoreMemory(ctx context.Context, record memorydomain.MemoryRecord) error
@@ -151,7 +151,7 @@ type VectorMemoryStore interface {
 	SearchMemories(ctx context.Context, query string, topK int, threshold float64) ([]memorydomain.MemoryRecord, error)
 }
 
-// NoopVectorStore 是 VectorMemoryStore 的空实现，用于 Qdrant 未配置时。
+// NoopVectorStore 是 VectorMemoryStore 的空实现，用于向量检索未配置时。
 type NoopVectorStore struct{}
 
 func (NoopVectorStore) StoreMemory(_ context.Context, _ memorydomain.MemoryRecord) error {
@@ -163,8 +163,8 @@ func (NoopVectorStore) SearchMemories(_ context.Context, _ string, _ int, _ floa
 }
 
 // VectorMemeStore 是表情包语义向量检索的 port。
-// 实现方：qdrantstore.MemeVectorStore；未配置时可用 NoopVectorMemeStore 代替。
-// SearchMemes 返回的 MemeSearchResult 中 Descriptor 字段为零值，由上层 MemeService 回查 MySQL 补全。
+// 实现方：postgresstore.VectorStore；未配置时可用 NoopVectorMemeStore 代替。
+// SearchMemes 返回的 MemeSearchResult 中 Descriptor 字段为零值，由上层 MemeService 回查关系表补全。
 type VectorMemeStore interface {
 	// IndexMeme 将表情包描述文本向量化后存入向量库。
 	IndexMeme(ctx context.Context, memeID string, text string, groupID int64) error
@@ -174,7 +174,7 @@ type VectorMemeStore interface {
 	DeleteMeme(ctx context.Context, memeID string) error
 }
 
-// NoopVectorMemeStore 是 VectorMemeStore 的空实现，用于 Qdrant 未配置时。
+// NoopVectorMemeStore 是 VectorMemeStore 的空实现，用于向量检索未配置时。
 type NoopVectorMemeStore struct{}
 
 func (NoopVectorMemeStore) IndexMeme(_ context.Context, _ string, _ string, _ int64) error {

@@ -228,7 +228,7 @@ func (s *Service) Search(ctx context.Context, query ports.MemeQuery) ([]mediadom
 		if err != nil {
 			slog.Warn("meme.Search: vector search failed, fallback to keyword", "group_id", query.GroupID, "err", err)
 		} else if len(vectorResults) > 0 {
-			// 用 memeID 回查 MySQL 补全 Descriptor，并走 RepeatCooldown 过滤
+			// 用 memeID 回查关系表补全 Descriptor，并走 RepeatCooldown 过滤
 			return s.enrichAndFilter(ctx, vectorResults, query)
 		}
 	}
@@ -246,7 +246,7 @@ func (s *Service) keywordSearch(ctx context.Context, query ports.MemeQuery) ([]m
 	return s.applyCooldown(ctx, results, query)
 }
 
-// enrichAndFilter 根据向量搜索返回的 memeID 回查 MySQL 补全 Descriptor，然后应用冷却过滤。
+// enrichAndFilter 根据向量搜索返回的 memeID 回查关系表补全 Descriptor，然后应用冷却过滤。
 func (s *Service) enrichAndFilter(ctx context.Context, vectorResults []mediadomain.MemeSearchResult, query ports.MemeQuery) ([]mediadomain.MemeSearchResult, error) {
 	enriched := make([]mediadomain.MemeSearchResult, 0, len(vectorResults))
 	for _, r := range vectorResults {

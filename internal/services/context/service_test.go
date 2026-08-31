@@ -8,7 +8,7 @@ import (
 )
 
 func TestMergeMemoryResultsUsesRRFAndKeepsAuthoritativeFields(t *testing.T) {
-	mysql := []memorydomain.MemoryRecord{
+	structured := []memorydomain.MemoryRecord{
 		{MemoryID: "exact", Subject: "偏好", Content: "完整内容", Importance: 0.2},
 		{MemoryID: "lexical", Subject: "词", Content: "关键词命中"},
 	}
@@ -17,7 +17,7 @@ func TestMergeMemoryResultsUsesRRFAndKeepsAuthoritativeFields(t *testing.T) {
 		{MemoryID: "semantic", Subject: "语义", Content: "只在语义轨命中"},
 	}
 
-	merged := mergeMemoryResults(mysql, semantic, 3)
+	merged := mergeMemoryResults(structured, semantic, 3)
 	if len(merged) != 3 {
 		t.Fatalf("expected three unique memories, got %d: %+v", len(merged), merged)
 	}

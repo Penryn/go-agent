@@ -242,60 +242,60 @@ func mergeRecentTurns(archived, live []conversationdomain.ConversationEvent, lim
 	return merged
 }
 
-// queryMemoriesDualTrack 并发执行 MySQL 关键词检索 + Qdrant 语义检索，
-// 对结果去重合并后返回。Qdrant 失败时降级为纯 MySQL 结果（fail-open）。
+// queryMemoriesDualTrack 并发执行结构化关键词检索 + 语义向量检索，
+// 对结果去重合并后返回。向量检索失败时降级为纯关键词结果（fail-open）。
 func (s *Service) queryMemoriesDualTrack(ctx context.Context, groupID, userID int64, queryText string) ([]memorydomain.MemoryRecord, error) {
-	const mysqlTopK = 4
+	const structuredTopK = 4
 
 	var (
-		mysqlRecords  []memorydomain.MemoryRecord
-		qdrantRecords []memorydomain.MemoryRecord
+		structuredRecords []memorydomain.MemoryRecord
+		vectorRecords     []memorydomain.MemoryRecord
 	)
 
 	g, gCtx := errgroup.WithContext(ctx)
 
-	// Track 1: MySQL 关键词检索（主轨，失败则整体失败）
+	// Track 1: 结构化关键词检索（主轨，失败则整体失败）
 	g.Go(func() error {
 		var err error
-		mysqlRecords, err = s.memoryStore.QueryMemories(gCtx, ports.MemoryQuery{
+		structuredRecords, err = s.memoryStore.QueryMemories(gCtx, ports.MemoryQuery{
 			GroupID: groupID,
 			UserID:  userID,
 			Query:   queryText,
-			TopK:    mysqlTopK,
+			TopK:    structuredTopK,
 		})
 		return err
 	})
 
-	// Track 2: Qdrant 语义检索（副轨，失败时降级，不影响主流程）
+	// Track 2: 语义向量检索（副轨，失败时降级，不影响主流程）
 	g.Go(func() error {
 		if queryText == "" {
 			return nil
 		}
 		var err error
-		qdrantRecords, err = s.vectorStore.SearchMemories(gCtx, queryText, s.semanticTopK, s.semanticThreshold)
+		vectorRecords, err = s.vectorStore.SearchMemories(gCtx, queryText, s.semanticTopK, s.semanticThreshold)
 		if err != nil {
-			slog.WarnContext(gCtx, "dual-track memory: qdrant semantic search failed, degraded to mysql only",
+			slog.WarnContext(gCtx, "dual-track memory: vector semantic search failed, degraded to structured only",
 				"err", err,
 				"group_id", groupID,
 			)
 		}
-		return nil // 始终返回 nil，不让 errgroup 取消 MySQL 轨道
+		return nil // 始终返回 nil，不让 errgroup 取消关键词检索轨道
 	})
 
 	if err := g.Wait(); err != nil {
 		return nil, err
 	}
 
-	limit := mysqlTopK
+	limit := structuredTopK
 	if s.semanticTopK > limit {
 		limit = s.semanticTopK
 	}
-	return mergeMemoryResults(mysqlRecords, qdrantRecords, limit), nil
+	return mergeMemoryResults(structuredRecords, vectorRecords, limit), nil
 }
 
-// mergeMemoryResults 将 MySQL 和 Qdrant 的结果去重合并。
-// MySQL 结果作为主数据源（字段完整），Qdrant 补充语义相关但关键词未命中的记录。
-func mergeMemoryResults(mysqlRecords, qdrantRecords []memorydomain.MemoryRecord, limit int) []memorydomain.MemoryRecord {
+// mergeMemoryResults 将结构化检索和向量检索的结果去重合并。
+// 结构化结果作为主数据源（字段完整），向量检索补充语义相关但关键词未命中的记录。
+func mergeMemoryResults(structuredRecords, vectorRecords []memorydomain.MemoryRecord, limit int) []memorydomain.MemoryRecord {
 	// Reciprocal rank fusion keeps exact lexical hits and semantic neighbours
 	// comparable without pretending the two providers share a score scale.
 	const k = 60.0
@@ -304,7 +304,7 @@ func mergeMemoryResults(mysqlRecords, qdrantRecords []memorydomain.MemoryRecord,
 		score  float64
 		order  int
 	}
-	byID := make(map[string]*ranked, len(mysqlRecords)+len(qdrantRecords))
+	byID := make(map[string]*ranked, len(structuredRecords)+len(vectorRecords))
 	add := func(records []memorydomain.MemoryRecord) {
 		for rank, record := range records {
 			id := record.MemoryID
@@ -323,8 +323,8 @@ func mergeMemoryResults(mysqlRecords, qdrantRecords []memorydomain.MemoryRecord,
 			}
 		}
 	}
-	add(mysqlRecords)
-	add(qdrantRecords)
+	add(structuredRecords)
+	add(vectorRecords)
 	merged := make([]ranked, 0, len(byID))
 	for _, item := range byID {
 		merged = append(merged, *item)

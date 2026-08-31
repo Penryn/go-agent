@@ -66,7 +66,7 @@ func (s *Service) ThresholdAdjustment(ctx context.Context, groupID int64) float6
 const globalMoodSlot int64 = 0
 
 // UpdateAfterTurn 在 processor.go 的 fireAndForget 中调用。
-// 根据本轮 decision 和 snapshot 计算情绪变化方向，写入 Redis。
+// 根据本轮 decision 和 snapshot 计算情绪变化方向，写入运行时状态存储。
 // replied=true 表示实际发出了内容（receipt.Sent==true 或 guard_silenced 的情况不计沉默）。
 func (s *Service) UpdateAfterTurn(
 	ctx context.Context,
