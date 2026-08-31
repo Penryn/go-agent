@@ -48,9 +48,9 @@ func replyBudget(persona personadomain.PersonaConfig, snapshot conversationdomai
 	}
 	if snapshot.PersonaState.Energy == "tired" || snapshot.PersonaState.TalkBias <= -0.2 {
 		chars = chars * 3 / 4
-		sentences = minInt(sentences, 2)
+		sentences = min(sentences, 2)
 	}
-	return maxInt(chars, 40), maxInt(sentences, 1)
+	return max(chars, 40), max(sentences, 1)
 }
 
 func fallbackExpression(persona personadomain.PersonaConfig, trigger string) string {
@@ -78,11 +78,4 @@ func fallbackExpression(persona personadomain.PersonaConfig, trigger string) str
 		}
 		return "我在。你继续说。"
 	}
-}
-
-func maxInt(left, right int) int {
-	if left > right {
-		return left
-	}
-	return right
 }

@@ -709,13 +709,7 @@ func compactStrings(values []string, max int) []string {
 }
 
 func clamp(value, minValue, maxValue int) int {
-	if value < minValue {
-		return minValue
-	}
-	if value > maxValue {
-		return maxValue
-	}
-	return value
+	return min(max(value, minValue), maxValue)
 }
 
 func appendUnique(items []string, value string, max int) []string {
@@ -736,13 +730,7 @@ func appendUnique(items []string, value string, max int) []string {
 }
 
 func clampF(v, lo, hi float64) float64 {
-	if v < lo {
-		return lo
-	}
-	if v > hi {
-		return hi
-	}
-	return v
+	return min(max(v, lo), hi)
 }
 
 // update_affinity tool

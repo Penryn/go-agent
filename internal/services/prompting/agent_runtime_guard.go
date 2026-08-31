@@ -140,10 +140,3 @@ func trimUTF8Bytes(value string, maxBytes int) string {
 	}
 	return trimmed
 }
-
-func minInt(a, b int) int {
-	if a < b {
-		return a
-	}
-	return b
-}

@@ -148,7 +148,7 @@ func (s *Store) ClaimOutbox(_ context.Context, workerID string, now time.Time, l
 	sort.Slice(ids, func(i, j int) bool {
 		return s.outbox[ids[i]].CreatedAt.Before(s.outbox[ids[j]].CreatedAt)
 	})
-	claimed := make([]ports.OutboxTask, 0, minInt(limit, len(ids)))
+	claimed := make([]ports.OutboxTask, 0, min(limit, len(ids)))
 	for _, id := range ids {
 		if len(claimed) >= limit {
 			break
@@ -212,13 +212,6 @@ func (s *Store) LookupOutbox(id string) (ports.OutboxTask, bool) {
 	task, ok := s.outbox[id]
 	task.Payload = append([]byte(nil), task.Payload...)
 	return task, ok
-}
-
-func minInt(a, b int) int {
-	if a < b {
-		return a
-	}
-	return b
 }
 
 func outboxKey(kind, idempotencyKey string) string {

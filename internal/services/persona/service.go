@@ -124,17 +124,7 @@ func transitionState(current personadomain.PersonaState, snapshot conversationdo
 		energy = personadomain.EnergyNormal
 	}
 
-	return mood, energy, clamp(talkBias, -0.5, 0.5)
-}
-
-func clamp(value, minValue, maxValue float64) float64 {
-	if value < minValue {
-		return minValue
-	}
-	if value > maxValue {
-		return maxValue
-	}
-	return value
+	return mood, energy, min(max(talkBias, -0.5), 0.5)
 }
 
 // decayAllGroups 返回一个 Scheduler JobFunc，对所有已知群执行情绪衰减。

@@ -34,7 +34,7 @@ func (s *Service) ObserveEvent(ctx context.Context, event conversationdomain.Con
 	if profile.Stats.LastSpokeAt.IsZero() {
 		profile.Stats.LastSpokeAt = time.Now()
 	}
-	profile.Stats.ActiveScore = minF(profile.Stats.ActiveScore+0.1, 1)
+	profile.Stats.ActiveScore = min(profile.Stats.ActiveScore+0.1, 1)
 	profile.CommonPhrases = appendIfMissing(profile.CommonPhrases, normalizePhrase(event.Text), 5)
 
 	if err := s.store.SaveMemberProfile(ctx, profile); err != nil {
@@ -53,7 +53,7 @@ func (s *Service) ObserveEvent(ctx context.Context, event conversationdomain.Con
 		rel.UserID = event.UserID
 		rel.LastInteractAt = time.Now()
 		if increment := familiarityEvidence(event); increment > 0 && rel.Familiarity < 0.5 {
-			rel.Familiarity = minF(rel.Familiarity+increment, 0.5)
+			rel.Familiarity = min(rel.Familiarity+increment, 0.5)
 		}
 		if err := s.store.SaveRelationship(ctx, rel); err != nil {
 			slog.Warn("profile: save relationship failed", "group_id", event.GroupID, "user_id", event.UserID, "err", err)
@@ -137,11 +137,4 @@ func normalizePhrase(text string) string {
 		return ""
 	}
 	return text
-}
-
-func minF(a, b float64) float64 {
-	if a < b {
-		return a
-	}
-	return b
 }
