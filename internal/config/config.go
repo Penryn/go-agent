@@ -1,10 +1,11 @@
 package config
 
 import (
+	"fmt"
 	"net"
+	"net/url"
 	"strconv"
 
-	mysqlcfg "github.com/go-sql-driver/mysql"
 	personadomain "github.com/phlin/go-agent/internal/domain/persona"
 	policydomain "github.com/phlin/go-agent/internal/domain/policy"
 )
@@ -91,48 +92,31 @@ type MultimodalConfig struct {
 }
 
 type StorageConfig struct {
-	MySQL  MySQLConfig  `yaml:"mysql"`
-	Redis  RedisConfig  `yaml:"redis"`
-	Qdrant QdrantConfig `yaml:"qdrant"`
-	MinIO  MinIOConfig  `yaml:"minio"`
+	Postgres PostgresConfig `yaml:"postgres"`
+	MinIO    MinIOConfig    `yaml:"minio"`
 }
 
-type MySQLConfig struct {
-	Host      string `yaml:"host"`
-	Port      int    `yaml:"port"`
-	Database  string `yaml:"database"`
-	User      string `yaml:"user"`
-	Password  string `yaml:"-"`
-	ParseTime bool   `yaml:"parse_time"`
-	Charset   string `yaml:"charset"`
-}
-
-func (c MySQLConfig) DSN() string {
-	cfg := mysqlcfg.NewConfig()
-	cfg.User = c.User
-	cfg.Passwd = c.Password
-	cfg.Net = "tcp"
-	cfg.Addr = net.JoinHostPort(c.Host, strconv.Itoa(c.Port))
-	cfg.DBName = c.Database
-	cfg.ParseTime = c.ParseTime
-	if c.Charset != "" {
-		cfg.Params = map[string]string{"charset": c.Charset}
-	}
-	return cfg.FormatDSN()
-}
-
-type RedisConfig struct {
-	Addr     string `yaml:"addr"`
+type PostgresConfig struct {
+	Host     string `yaml:"host"`
+	Port     int    `yaml:"port"`
+	Database string `yaml:"database"`
+	User     string `yaml:"user"`
 	Password string `yaml:"-"`
-	DB       int    `yaml:"db"`
+	SSLMode  string `yaml:"ssl_mode"`
+	// VectorDim 是 pgvector 向量列维度，须与 embedding 模型输出一致（ark embedding-large 2048 / lite 1024）。
+	// 启动时校验与表结构一致，不一致拒绝启动。
+	VectorDim int `yaml:"vector_dim"`
 }
 
-type QdrantConfig struct {
-	URL            string `yaml:"url"`
-	APIKey         string `yaml:"-"`
-	Collection     string `yaml:"collection"`
-	VectorDim      int    `yaml:"vector_dim"`      // 嵌入向量维度，需与 embedding 模型匹配，默认 1536
-	MemeCollection string `yaml:"meme_collection"` // 表情包向量集合名，为空时禁用 meme 向量搜索
+func (c PostgresConfig) DSN() string {
+	sslMode := c.SSLMode
+	if sslMode == "" {
+		sslMode = "disable"
+	}
+	return fmt.Sprintf("postgres://%s:%s@%s/%s?sslmode=%s",
+		url.PathEscape(c.User), url.PathEscape(c.Password),
+		net.JoinHostPort(c.Host, strconv.Itoa(c.Port)),
+		url.PathEscape(c.Database), sslMode)
 }
 
 type MinIOConfig struct {
