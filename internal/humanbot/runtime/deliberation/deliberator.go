@@ -5,6 +5,7 @@ package deliberation
 
 import (
 	"context"
+	"slices"
 	"time"
 
 	conversationdomain "github.com/phlin/go-agent/internal/domain/conversation"
@@ -56,7 +57,7 @@ func (a *Adapter) Deliberate(ctx context.Context, input Input) (Result, error) {
 	if err != nil {
 		return Result{}, err
 	}
-	decision.Action = resolveAction(input.Candidate.Intent, decision.Action, plan.PlannedActions)
+	decision.Action = resolveAction(input.Candidate.Intent, plan.PlannedActions)
 	return Result{
 		Snapshot: snapshot,
 		Decision: decision,
@@ -76,66 +77,70 @@ func (a *Adapter) Deliberate(ctx context.Context, input Input) (Result, error) {
 	}, nil
 }
 
+// intentBaseline 是各 intent 在 planner 未提议时的默认动作。
+var intentBaseline = map[string]policydomain.DecisionAction{
+	"react":          policydomain.ActionReact,
+	"send_meme":      policydomain.ActionMemeOnly,
+	"poke_reply":     policydomain.ActionPokeReply,
+	"answer":         policydomain.ActionReply,
+	"acknowledge":    policydomain.ActionReply,
+	"continue_topic": policydomain.ActionReply,
+	"follow_up":      policydomain.ActionReply,
+	"question":       policydomain.ActionReply,
+	"request_help":   policydomain.ActionReply,
+	"support":        policydomain.ActionReply,
+	"gratitude":      policydomain.ActionReply,
+	"banter":         policydomain.ActionReply,
+	"observe_only":   policydomain.ActionSilent,
+}
+
+// intentAllowed 限定 planner 可在该 intent 下选择的表达模式；
+// 越权提议一律退回 baseline，保证动作权始终在运行时规则手里。
+var intentAllowed = map[string][]policydomain.DecisionAction{
+	"react":        {policydomain.ActionReact, policydomain.ActionReply, policydomain.ActionMemeOnly, policydomain.ActionSilent},
+	"send_meme":    {policydomain.ActionMemeOnly, policydomain.ActionSilent},
+	"poke_reply":   {policydomain.ActionPokeReply, policydomain.ActionReply, policydomain.ActionMemeOnly, policydomain.ActionSilent},
+	"observe_only": {policydomain.ActionSilent},
+}
+
+// allowedFor reply 类 intent 共用一条白名单。
+func allowedFor(intent string) []policydomain.DecisionAction {
+	if allowed, ok := intentAllowed[intent]; ok {
+		return allowed
+	}
+	if _, ok := intentBaseline[intent]; ok {
+		return []policydomain.DecisionAction{policydomain.ActionReply, policydomain.ActionMemeOnly, policydomain.ActionSilent}
+	}
+	return nil
+}
+
+func baselineAction(intent string) policydomain.DecisionAction {
+	if action, ok := intentBaseline[intent]; ok {
+		return action
+	}
+	return policydomain.ActionSilent
+}
+
 // resolveAction keeps policy ownership in the runtime while allowing the
 // planner to choose among the expression modes that a candidate permits.
 // The executor receives this resolved decision as its sole action authority.
-func resolveAction(intent string, fallback policydomain.DecisionAction, proposed []policydomain.DecisionAction) policydomain.DecisionAction {
+func resolveAction(intent string, proposed []policydomain.DecisionAction) policydomain.DecisionAction {
+	baseline := baselineAction(intent)
 	if len(proposed) == 0 {
-		return fallback
+		return baseline
 	}
-	action := proposed[0]
-	allowed := func(actions ...policydomain.DecisionAction) bool {
-		for _, candidate := range actions {
-			if action == candidate {
-				return true
-			}
-		}
-		return false
+	if slices.Contains(allowedFor(intent), proposed[0]) {
+		return proposed[0]
 	}
-	switch intent {
-	case "answer", "acknowledge", "continue_topic", "follow_up", "question", "request_help", "support", "gratitude", "banter":
-		if allowed(policydomain.ActionReply, policydomain.ActionMemeOnly, policydomain.ActionSilent) {
-			return action
-		}
-	case "react":
-		if allowed(policydomain.ActionReact, policydomain.ActionReply, policydomain.ActionMemeOnly, policydomain.ActionSilent) {
-			return action
-		}
-	case "send_meme":
-		if allowed(policydomain.ActionMemeOnly, policydomain.ActionSilent) {
-			return action
-		}
-	case "poke_reply":
-		if allowed(policydomain.ActionPokeReply, policydomain.ActionReply, policydomain.ActionMemeOnly, policydomain.ActionSilent) {
-			return action
-		}
-	case "observe_only":
-		return policydomain.ActionSilent
-	}
-	return fallback
+	return baseline
 }
 
 func decisionFor(envelope conversationdomain.EventEnvelope, candidate humandomain.ThoughtCandidate) policydomain.AutonomyDecision {
-	action := policydomain.ActionReply
-	switch candidate.Intent {
-	case "observe_only":
-		action = policydomain.ActionSilent
-	case "react":
-		action = policydomain.ActionReact
-	case "send_meme":
-		action = policydomain.ActionMemeOnly
-	case "answer", "acknowledge", "continue_topic", "follow_up", "question", "request_help", "support", "gratitude", "banter":
-		action = policydomain.ActionReply
-	case "poke_reply":
-		action = policydomain.ActionPokeReply
-	default:
-		action = policydomain.ActionSilent
-	}
 	return policydomain.AutonomyDecision{
 		DecisionID:  envelope.TraceID + "-decision",
 		StateBefore: policydomain.StateObserving,
 		StateAfter:  policydomain.StateCooldown,
-		Action:      action,
+		Action:      baselineAction(candidate.Intent),
 		TriggerType: candidate.Intent,
 		Score:       candidate.Score,
 		Confidence:  1 - candidate.Uncertainty,

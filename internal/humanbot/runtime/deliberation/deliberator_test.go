@@ -37,18 +37,20 @@ func TestResolveActionUsesAllowedPlannerProposal(t *testing.T) {
 	cases := []struct {
 		name     string
 		intent   string
-		fallback policydomain.DecisionAction
 		proposed policydomain.DecisionAction
 		want     policydomain.DecisionAction
 	}{
-		{name: "reply can choose meme", intent: "answer", fallback: policydomain.ActionReply, proposed: policydomain.ActionMemeOnly, want: policydomain.ActionMemeOnly},
-		{name: "image reaction can choose text", intent: "react", fallback: policydomain.ActionReact, proposed: policydomain.ActionReply, want: policydomain.ActionReply},
-		{name: "planner can stay silent", intent: "answer", fallback: policydomain.ActionReply, proposed: policydomain.ActionSilent, want: policydomain.ActionSilent},
-		{name: "reply cannot recall", intent: "answer", fallback: policydomain.ActionReply, proposed: policydomain.ActionRecall, want: policydomain.ActionReply},
+		{name: "reply can choose meme", intent: "answer", proposed: policydomain.ActionMemeOnly, want: policydomain.ActionMemeOnly},
+		{name: "image reaction can choose text", intent: "react", proposed: policydomain.ActionReply, want: policydomain.ActionReply},
+		{name: "planner can stay silent", intent: "answer", proposed: policydomain.ActionSilent, want: policydomain.ActionSilent},
+		{name: "reply cannot recall", intent: "answer", proposed: policydomain.ActionRecall, want: policydomain.ActionReply},
+		{name: "poke can answer in text", intent: "poke_reply", proposed: policydomain.ActionReply, want: policydomain.ActionReply},
+		{name: "meme intent cannot text", intent: "send_meme", proposed: policydomain.ActionReply, want: policydomain.ActionMemeOnly},
+		{name: "unknown intent stays silent", intent: "", proposed: policydomain.ActionReply, want: policydomain.ActionSilent},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := resolveAction(tc.intent, tc.fallback, []policydomain.DecisionAction{tc.proposed}); got != tc.want {
+			if got := resolveAction(tc.intent, []policydomain.DecisionAction{tc.proposed}); got != tc.want {
 				t.Fatalf("resolveAction() = %q, want %q", got, tc.want)
 			}
 		})
