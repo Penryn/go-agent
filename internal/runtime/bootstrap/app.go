@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log/slog"
 	"net/http"
 	"sync"
 	"time"
@@ -351,12 +350,6 @@ func NewApp(ctx context.Context, cfg config.Config) (*App, error) {
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", app.handleHealth)
-	mux.Handle(cfg.QQ.InboundRoute, inboundnapcat.NewHandler(cfg.QQ.AccessToken, func(ctx context.Context, payload []byte) (any, error) {
-		if err := app.humanRuntime.SubmitRaw(ctx, payload); err != nil {
-			slog.Warn("human runtime: http event rejected", "err", err)
-		}
-		return struct{}{}, nil
-	}))
 
 	app.server = &http.Server{
 		Addr:         cfg.Server.HTTPListen,

@@ -105,10 +105,9 @@ func Default() Config {
 			MinIO:  MinIOConfig{Endpoint: "127.0.0.1:9000", Bucket: "qqbot-media", UseSSL: false},
 		},
 		QQ: QQConfig{
-			Enabled:      false,
-			EventWSURL:   "ws://127.0.0.1:3001/event",
-			InboundRoute: "/onebot/events",
-			OutboundURL:  "http://127.0.0.1:3000",
+			Enabled:     false,
+			EventWSURL:  "ws://127.0.0.1:3001/event",
+			OutboundURL: "http://127.0.0.1:3000",
 		},
 	}
 }

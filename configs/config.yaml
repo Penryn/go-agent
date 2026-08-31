@@ -293,7 +293,5 @@ qq:
   outbound_url: http://127.0.0.1:3000
   # 默认使用正向 WebSocket /event 收事件。
   event_ws_url: ws://127.0.0.1:3001
-  # 保留的 HTTP 入站调试路由，可用于手工回放和兼容性测试。
-  inbound_route: /onebot/events
   # 群白名单。为空时所有群均可响应；填写后仅白名单内群号生效。
   group_whitelist: []

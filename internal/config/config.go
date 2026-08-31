@@ -149,6 +149,5 @@ type QQConfig struct {
 	AccessToken    string  `yaml:"-"`
 	OutboundURL    string  `yaml:"outbound_url"`
 	EventWSURL     string  `yaml:"event_ws_url"`
-	InboundRoute   string  `yaml:"inbound_route"`
 	GroupWhitelist []int64 `yaml:"group_whitelist"`
 }

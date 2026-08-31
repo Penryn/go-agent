@@ -147,7 +147,6 @@ go run ./cmd/qqbotd -config configs/config.yaml
 | 端点 | 用途 |
 |------|------|
 | `GET /healthz` | 健康检查 |
-| `POST /onebot/events` | 调试 / 事件回放 |
 
 ## 配置参考
 
