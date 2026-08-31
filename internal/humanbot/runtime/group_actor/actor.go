@@ -477,6 +477,12 @@ func reduce(memory humandomain.GroupWorkingMemory, record humandomain.EventRecor
 		memory.Candidates = append(memory.Candidates, pokeCandidate(record))
 		return memory
 	}
+	// notice 事件（新成员进群等）：低优先级打个招呼的时机。没有文本，
+	// 之前会掉进空文本分支被丢弃——真人对新人进群常会接一句。
+	if record.Event.Kind == conversationdomain.EventNotice && record.UserID != 0 {
+		memory.Candidates = append(memory.Candidates, memberJoinCandidate(record))
+		return memory
+	}
 
 	burst := memory.CurrentBurst
 	if burst.UserID == record.UserID && !burst.LastAt.IsZero() && record.Timestamp.Sub(burst.LastAt) <= burstWindow {
@@ -562,6 +568,26 @@ func jitteredDelay(lo, hi time.Duration) time.Duration {
 		return lo
 	}
 	return lo + time.Duration(rand.Int64N(int64(hi-lo)))
+}
+
+// memberJoinCandidate 为入群等群事件生成低优先级招呼时机：想不想欢迎
+// 由模型抉择（stay_silent 即安静地无视），所以分数压在阈值边缘。
+func memberJoinCandidate(record humandomain.EventRecord) humandomain.ThoughtCandidate {
+	return humandomain.ThoughtCandidate{
+		CandidateID:    record.EventID + "-candidate",
+		SourceEventIDs: []string{record.EventID},
+		TopicID:        "member_join",
+		Addressee:      record.UserID,
+		Intent:         "acknowledge",
+		Urgency:        0.55,
+		Score:          0.55,
+		DueAt:          record.Timestamp.Add(jitteredDelay(2*time.Second, 8*time.Second)),
+		ExpiresAt:      record.Timestamp.Add(time.Minute),
+		Uncertainty:    0.45,
+		ReasonCode:     "member_joined",
+		DeliveryTarget: "group",
+		Status:         humandomain.CandidatePending,
+	}
 }
 
 // pokeCandidate 为被戳事件生成高优先级回应机会。延迟略长于被 @，

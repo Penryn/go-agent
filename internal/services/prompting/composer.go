@@ -162,6 +162,12 @@ func (c *Composer) instruction(snapshot conversationdomain.ContextSnapshot, deci
 			"本轮没有触发消息——是群冷场后你自己决定开口接回话题。像随口一提那样自然（「话说刚才那个…」「突然想起来…」），一两句即可；如果上下文里没有真正值得接的话，用 stay_silent 收回这次开口也完全可以。",
 		)
 	}
+	// 新成员进群
+	if snapshot.Event.Kind == conversationdomain.EventNotice {
+		taskLines = append(taskLines,
+			"触发事件：有新成员进了群（user="+fmt.Sprintf("%d", snapshot.Event.UserID)+"）。像群里的老人那样自然带一句就行——欢迎、调侃、或干脆无视都可以；不要用「欢迎新成员」这种公告腔，也不必每次都打招呼。",
+		)
+	}
 	sections = append(sections, taskLines...)
 
 	// ── 输出约束层 ──────────────────────────────────────────────────────────
