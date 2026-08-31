@@ -13,7 +13,6 @@ type EventOrigin string
 const (
 	OriginInbound  EventOrigin = "inbound"
 	OriginOutbound EventOrigin = "outbound"
-	OriginSystem   EventOrigin = "system"
 )
 
 // EventRecord is an immutable observation. Response work may be dropped or
@@ -75,24 +74,4 @@ type ThoughtCandidate struct {
 	ReasonCode     string          `json:"reason_code,omitempty"`
 	DeliveryTarget string          `json:"delivery_target,omitempty"`
 	Status         CandidateStatus `json:"status"`
-}
-
-type PresenceMode string
-
-const (
-	ModeObserving  PresenceMode = "observing"
-	ModeListening  PresenceMode = "listening"
-	ModeThinking   PresenceMode = "thinking"
-	ModeScheduled  PresenceMode = "scheduled"
-	ModeExpressing PresenceMode = "expressing"
-	ModeCooldown   PresenceMode = "cooldown"
-	ModeResting    PresenceMode = "resting"
-)
-
-type PresenceState struct {
-	GroupID       int64        `json:"group_id"`
-	Mode          PresenceMode `json:"mode"`
-	LastSpokeAt   time.Time    `json:"last_spoke_at"`
-	Attention     float64      `json:"attention"`
-	CognitiveLoad float64      `json:"cognitive_load"`
 }
