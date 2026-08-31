@@ -45,6 +45,10 @@ type CompletedTurnObserverFunc func(context.Context, conversationdomain.ContextS
 // state; Runtime only invokes the narrow lifecycle hooks.
 type TurnObserver interface {
 	CanDeliberate(context.Context, int64, time.Time) (bool, error)
+	// DeliberationThreshold adjusts the claim threshold for one group based on
+	// durable persona state (mood/energy/talkBias). Implementations must be
+	// cheap and fail-open (return the base threshold on any error).
+	DeliberationThreshold(context.Context, int64, float64) float64
 	AfterTurn(context.Context, conversationdomain.ContextSnapshot, policydomain.AutonomyDecision, replydomain.ActionReceipt) error
 }
 
@@ -234,6 +238,7 @@ func (r *Runtime) loop(interval time.Duration, minScore float64, timeout time.Du
 		case now := <-ticker.C:
 			r.working.PruneIdle(r.ctx, now)
 			for _, groupID := range r.working.GroupIDs() {
+				threshold := minScore
 				if r.turns != nil {
 					allowed, err := r.turns.CanDeliberate(r.ctx, groupID, now)
 					if err != nil || !allowed {
@@ -242,8 +247,9 @@ func (r *Runtime) loop(interval time.Duration, minScore float64, timeout time.Du
 						}
 						continue
 					}
+					threshold = r.turns.DeliberationThreshold(r.ctx, groupID, minScore)
 				}
-				candidate, ok, err := r.working.ClaimDue(r.ctx, groupID, now, minScore)
+				candidate, ok, err := r.working.ClaimDue(r.ctx, groupID, now, threshold)
 				if err != nil || !ok {
 					continue
 				}

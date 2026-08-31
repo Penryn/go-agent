@@ -17,13 +17,21 @@ type TurnObserver struct {
 	states   ports.RuntimeStateStore
 	persona  *personasvc.Service
 	cooldown time.Duration
+	// policies 解析当前群的 GroupPolicy（静默时段、连续发言上限）。
+	policies PolicyResolver
 }
 
-func New(states ports.RuntimeStateStore, persona *personasvc.Service, cooldown time.Duration) *TurnObserver {
+// PolicyResolver 是 CanDeliberate 规则闸门需要的群策略视图。
+type PolicyResolver interface {
+	EffectiveGroupPolicy(groupID int64) policydomain.GroupPolicy
+	QuietHourActive(now time.Time, policy policydomain.GroupPolicy) bool
+}
+
+func New(states ports.RuntimeStateStore, persona *personasvc.Service, cooldown time.Duration, policies PolicyResolver) *TurnObserver {
 	if cooldown < 0 {
 		cooldown = 0
 	}
-	return &TurnObserver{states: states, persona: persona, cooldown: cooldown}
+	return &TurnObserver{states: states, persona: persona, cooldown: cooldown, policies: policies}
 }
 
 func (o *TurnObserver) CanDeliberate(ctx context.Context, groupID int64, now time.Time) (bool, error) {
@@ -34,7 +42,31 @@ func (o *TurnObserver) CanDeliberate(ctx context.Context, groupID int64, now tim
 	if err != nil {
 		return false, err
 	}
-	return state.CooldownUntil.IsZero() || !now.Before(state.CooldownUntil), nil
+	if state.CooldownUntil.After(now) {
+		return false, nil
+	}
+	// 防刷屏：连续发言超过群策略上限后，等待一次自然的群消息间隔。
+	if o.policies != nil {
+		policy := o.policies.EffectiveGroupPolicy(groupID)
+		if maxConsecutive := policy.MaxConsecutiveBot; maxConsecutive > 0 && state.ConsecutiveBotTurns >= maxConsecutive {
+			return false, nil
+		}
+		// 静默时段（如深夜）不主动开口；被 @ 的直接触发仍会走 processCandidate。
+		if o.policies.QuietHourActive(now, policy) {
+			return false, nil
+		}
+	}
+	return true, nil
+}
+
+// DeliberationThreshold 把持久化的人格状态折算进发言阈值：
+// tired/withdrawn 抬高（更难开口），talkBias 为正则降低（更愿意接话）。
+// 出错时 fail-open 返回 base。
+func (o *TurnObserver) DeliberationThreshold(ctx context.Context, groupID int64, base float64) float64 {
+	if o == nil || o.persona == nil {
+		return base
+	}
+	return min(max(base+o.persona.ThresholdAdjustment(ctx, groupID), 0), 1)
 }
 
 func (o *TurnObserver) AfterTurn(ctx context.Context, snapshot conversationdomain.ContextSnapshot, decision policydomain.AutonomyDecision, receipt replydomain.ActionReceipt) error {

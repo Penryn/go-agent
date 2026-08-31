@@ -221,7 +221,7 @@ func NewApp(ctx context.Context, cfg config.Config) (*App, error) {
 
 	// F2 PersonaService：情绪状态动态驱动
 	moodSvc := personasvc.New(stores.state, cfg.Persona.ID)
-	turnObserver := humanreflection.New(stores.state, moodSvc, time.Duration(cfg.Autonomy.MinReplyIntervalSec)*time.Second)
+	turnObserver := humanreflection.New(stores.state, moodSvc, time.Duration(cfg.Autonomy.MinReplyIntervalSec)*time.Second, policyService)
 
 	// Human Presence Runtime owns ingress, per-group working memory, candidate
 	// scheduling, deliberation, realization, and outbound self-observation.

@@ -35,6 +35,30 @@ func (s *Service) RegisterJobs(sched *scheduler.Scheduler, groupIDs []int64) {
 	sched.Register("persona_mood_decay", decayInterval, s.decayAllGroups(groupIDs))
 }
 
+// ThresholdAdjustment 返回当前情绪状态对发言阈值的调整量。
+// tired / withdrawn / aggro 抬高阈值（更难开口），talkBias 为正则降低（更愿意接话）。
+// 返回值直接叠加在 base 阈值上，调用方负责 clamp 到 [0,1]。
+func (s *Service) ThresholdAdjustment(ctx context.Context, groupID int64) float64 {
+	state, err := s.store.GetPersonaState(ctx, s.personaID, groupID)
+	if err != nil {
+		return 0
+	}
+	adjustment := -state.TalkBias // talkBias 正向（想说话）=> 阈值下降
+	switch personadomain.Energy(state.Energy) {
+	case personadomain.EnergyTired:
+		adjustment += 0.2
+	case personadomain.EnergyLow:
+		adjustment += 0.1
+	}
+	switch personadomain.Mood(state.Mood) {
+	case personadomain.MoodWithdrawn:
+		adjustment += 0.15
+	case personadomain.MoodAggro:
+		adjustment += 0.1
+	}
+	return adjustment
+}
+
 // UpdateAfterTurn 在 processor.go 的 fireAndForget 中调用。
 // 根据本轮 decision 和 snapshot 计算情绪变化方向，写入 Redis。
 // replied=true 表示实际发出了内容（receipt.Sent==true 或 guard_silenced 的情况不计沉默）。
