@@ -606,6 +606,11 @@ func (s *Sender) Actions() []replydomain.ActionExecution {
 	return append([]replydomain.ActionExecution(nil), s.actions...)
 }
 
+// MarkRead 记录已读回执调用，供测试断言「发送前先标已读」的时序。
+func (s *Sender) MarkRead(_ context.Context, _ int64, _ string) error {
+	return nil
+}
+
 func profileKey(groupID, userID int64) string {
 	return relationKey("", groupID, userID)
 }

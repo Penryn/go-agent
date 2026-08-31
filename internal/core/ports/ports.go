@@ -23,6 +23,18 @@ type OutboundSender interface {
 	Send(ctx context.Context, action replydomain.ActionExecution) (replydomain.ActionReceipt, error)
 }
 
+// ReadAckingSender 是可选的拟人回执能力：在回复前把触发消息标记已读。
+// 实现方：napcat sender（调 mark_msg_as_read）。不支持的平台返回 nil 即可。
+type ReadAckingSender interface {
+	MarkRead(ctx context.Context, groupID int64, messageID string) error
+}
+
+// TypingStatusSender 是可选的拟人前摇能力：在组织较长回复前设置
+// 「正在输入」状态。不支持的平台返回 nil 即可。
+type TypingStatusSender interface {
+	SetTyping(ctx context.Context, groupID, userID int64) error
+}
+
 type MemoryQuery struct {
 	GroupID int64
 	UserID  int64

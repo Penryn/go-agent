@@ -199,3 +199,43 @@ func TestExecuteSingleBubbleRemainsOneAction(t *testing.T) {
 func conversationEvent() conversationdomain.ConversationEvent {
 	return conversationdomain.ConversationEvent{GroupID: 1, MessageID: "m1"}
 }
+
+// readTrackingSender 断言 MarkRead 在 Send 之前被调用。
+type readTrackingSender struct {
+	inmemory.Sender
+	events []string
+}
+
+func (s *readTrackingSender) Send(ctx context.Context, action replydomain.ActionExecution) (replydomain.ActionReceipt, error) {
+	s.events = append(s.events, "send")
+	return s.Sender.Send(ctx, action)
+}
+
+func (s *readTrackingSender) MarkRead(ctx context.Context, groupID int64, messageID string) error {
+	s.events = append(s.events, "read")
+	return s.Sender.MarkRead(ctx, groupID, messageID)
+}
+
+func TestExecuteMarksReadBeforeSending(t *testing.T) {
+	sender := &readTrackingSender{Sender: *inmemory.NewSender()}
+	executor := New(sender, nil, nil, WithBubbleDelay(0))
+	event := conversationdomain.ConversationEvent{GroupID: 1, UserID: 2, MessageID: "m-1"}
+	plan := replydomain.ReplyPlan{Bubbles: []string{"在"}, SendMode: "single"}
+	receipt, err := executor.Execute(context.Background(), event, policydomain.AutonomyDecision{Action: policydomain.ActionReply}, plan)
+	if err != nil || !receipt.Sent {
+		t.Fatalf("execute: receipt=%+v err=%v", receipt, err)
+	}
+	if len(sender.events) != 2 || sender.events[0] != "read" || sender.events[1] != "send" {
+		t.Fatalf("expected read before send, got %v", sender.events)
+	}
+
+	// silent 不应触发已读
+	sender.events = nil
+	_, err = executor.Execute(context.Background(), event, policydomain.AutonomyDecision{Action: policydomain.ActionSilent}, plan)
+	if err != nil {
+		t.Fatalf("execute silent: %v", err)
+	}
+	if len(sender.events) != 0 {
+		t.Fatalf("silent decision must not mark read, got %v", sender.events)
+	}
+}

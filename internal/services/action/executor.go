@@ -104,7 +104,23 @@ func (s *Service) CancelQueued(groupID int64) {
 	s.rhythmMu.Unlock()
 }
 
+// markRead 在发送前调用平台的已读回执（若 sender 支持）。
+func (s *Service) markRead(ctx context.Context, event conversationdomain.ConversationEvent) {
+	acker, ok := s.sender.(ports.ReadAckingSender)
+	if !ok {
+		return
+	}
+	if err := acker.MarkRead(ctx, event.GroupID, event.MessageID); err != nil {
+		slog.Debug("executor: mark read failed", "group_id", event.GroupID, "err", err)
+	}
+}
+
 func (s *Service) Execute(ctx context.Context, event conversationdomain.ConversationEvent, decision policydomain.AutonomyDecision, plan replydomain.ReplyPlan) (replydomain.ActionReceipt, error) {
+	// 已读回执：确定要发言后先把该群标记已读，模拟「看到→才回」。
+	// 失败静默——回执是拟人增强，不构成发送前置条件。
+	if decision.Action != policydomain.ActionSilent {
+		s.markRead(ctx, event)
+	}
 	if decision.Action == policydomain.ActionReply && len(plan.Bubbles) > 1 {
 		return s.executeRhythm(ctx, event, decision, plan)
 	}

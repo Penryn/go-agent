@@ -47,6 +47,26 @@ func (s *Sender) Send(ctx context.Context, action replydomain.ActionExecution) (
 	}
 }
 
+// MarkRead 回复前把该群标记已读（mark_group_msg_as_read），
+// 模拟「看到之后才回」的真人时序。失败只记日志不阻断回复。
+func (s *Sender) MarkRead(ctx context.Context, groupID int64, messageID string) error {
+	group := strconv.FormatInt(groupID, 10)
+	req := api.MarkGroupMsgAsReadRequest{GroupID: &group}
+	if messageID != "" {
+		req.MessageID = &messageID
+	}
+	if _, err := s.client.API().MarkGroupMsgAsRead(ctx, req); err != nil {
+		return fmt.Errorf("mark_group_msg_as_read: %w", err)
+	}
+	return nil
+}
+
+// SetTyping 群聊没有「正在输入」能力（set_input_status 仅私聊生效），
+// 保留接口占位：接入私聊场景后再启用。
+func (s *Sender) SetTyping(ctx context.Context, _, _ int64) error {
+	return nil
+}
+
 func (s *Sender) sendGroupMessage(ctx context.Context, action replydomain.ActionExecution) (replydomain.ActionReceipt, error) {
 	request, err := BuildSendGroupMessageRequest(action)
 	if err != nil {
