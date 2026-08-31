@@ -25,6 +25,8 @@ func dialogueGoal(trigger string) string {
 		return "针对媒体内容做具体反应，不泛泛表示已看到"
 	case "follow_up":
 		return "延续尚未完成的话题，不重复已经说过的内容"
+	case "continue_topic":
+		return "群冷场了，你在主动接回之前的话题；像随口一提，不写成开场白"
 	default:
 		return "结合上下文自然接话"
 	}

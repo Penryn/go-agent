@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"math/rand/v2"
 	"slices"
 	"sync"
 	"time"
@@ -28,6 +29,12 @@ type Config struct {
 	WorkerCount       int
 	GroupWhitelist    []int64
 	SelfID            int64
+	// ProactiveInterval 是主动开口扫描周期；0 时禁用主动发言。
+	ProactiveInterval time.Duration
+	// ProactiveBaseProbability 是冷场开口的基础概率（0~1）。
+	ProactiveBaseProbability float64
+	// ProactiveScoreThreshold 是主动候选的评分门槛（0~1），低于此值不开口。
+	ProactiveScoreThreshold float64
 }
 
 type PerceptionSubmitter interface {
@@ -56,6 +63,19 @@ func DefaultConfig() Config {
 	return Config{PollInterval: 100 * time.Millisecond, MinCandidateScore: 0.5, JobTimeout: 120 * time.Second, WorkerCount: 4}
 }
 
+// 主动开口的触发条件：群冷场超过该时长，且群里有未接上的话题（OpenLoops）
+// 或 bot 自己感兴趣的话题残留（ActiveTopic）。
+const (
+	proactiveIdleThreshold = 3 * time.Minute
+	// 主动候选的延迟区间：冷场后不马上冒头，等一小段再自然开口。
+	proactiveDelayMin = 30 * time.Second
+	proactiveDelayMax = 3 * time.Minute
+	// 主动候选过期窗口。
+	proactiveTTL = 10 * time.Minute
+	// 同一群两次主动开口的最小间隔。
+	proactiveGroupCooldown = 20 * time.Minute
+)
+
 type Outcome struct {
 	Envelope  conversationdomain.EventEnvelope   `json:"envelope"`
 	Snapshot  conversationdomain.ContextSnapshot `json:"snapshot"`
@@ -78,6 +98,11 @@ type Runtime struct {
 	whitelist              map[int64]struct{}
 	selfID                 int64
 	minCandidateScore      float64
+	proactiveInterval      time.Duration
+	proactiveProbability   float64
+	proactiveThreshold     float64
+	lastProactive          map[int64]time.Time
+	proactiveMu            sync.Mutex
 
 	ctx       context.Context
 	cancel    context.CancelFunc
@@ -125,18 +150,22 @@ func New(parent context.Context, normalizer *normalizersvc.Service, working *gro
 	}
 	ctx, cancel := context.WithCancel(parent)
 	r := &Runtime{
-		normalizer:        normalizer,
-		working:           working,
-		deliberator:       deliberator,
-		perception:        perception,
-		turns:             turns,
-		executor:          executor,
-		whitelist:         make(map[int64]struct{}, len(cfg.GroupWhitelist)),
-		selfID:            cfg.SelfID,
-		minCandidateScore: cfg.MinCandidateScore,
-		ctx:               ctx,
-		cancel:            cancel,
-		jobs:              make(chan candidateJob, cfg.WorkerCount*2),
+		normalizer:           normalizer,
+		working:              working,
+		deliberator:          deliberator,
+		perception:           perception,
+		turns:                turns,
+		executor:             executor,
+		whitelist:            make(map[int64]struct{}, len(cfg.GroupWhitelist)),
+		selfID:               cfg.SelfID,
+		minCandidateScore:    cfg.MinCandidateScore,
+		proactiveInterval:    cfg.ProactiveInterval,
+		proactiveProbability: cfg.ProactiveBaseProbability,
+		proactiveThreshold:   cfg.ProactiveScoreThreshold,
+		lastProactive:        make(map[int64]time.Time),
+		ctx:                  ctx,
+		cancel:               cancel,
+		jobs:                 make(chan candidateJob, cfg.WorkerCount*2),
 	}
 	for _, groupID := range cfg.GroupWhitelist {
 		r.whitelist[groupID] = struct{}{}
@@ -147,6 +176,10 @@ func New(parent context.Context, normalizer *normalizersvc.Service, working *gro
 		go r.worker()
 	}
 	go r.loop(cfg.PollInterval, cfg.MinCandidateScore, cfg.JobTimeout)
+	if r.proactiveInterval > 0 && r.proactiveProbability > 0 {
+		r.wg.Add(1)
+		go r.proactiveLoop()
+	}
 	return r
 }
 
@@ -268,6 +301,99 @@ func (r *Runtime) loop(interval time.Duration, minScore float64, timeout time.Du
 			}
 		}
 	}
+}
+
+// proactiveLoop 是主动开口扫描器：群冷场且仍有未接话题时，以配置的
+// 基础概率投递一个低分长延迟的主动 candidate。是否真的说出来仍由
+// ClaimDue 阈值、情绪状态与模型抉择共同决定——这里只制造机会。
+func (r *Runtime) proactiveLoop() {
+	defer r.wg.Done()
+	ticker := time.NewTicker(r.proactiveInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-r.ctx.Done():
+			return
+		case now := <-ticker.C:
+			r.scanProactive(now)
+		}
+	}
+}
+
+func (r *Runtime) scanProactive(now time.Time) {
+	for _, groupID := range r.working.GroupIDs() {
+		if r.lastProactiveAt(groupID).After(now.Add(-proactiveGroupCooldown)) {
+			continue
+		}
+		candidate, ok := r.proactiveCandidate(groupID, now)
+		if !ok {
+			continue
+		}
+		if err := r.working.EnqueueCandidate(r.ctx, groupID, candidate); err != nil {
+			slog.Debug("human runtime: proactive enqueue failed", "group_id", groupID, "err", err)
+			continue
+		}
+		r.markProactive(groupID, now)
+		slog.Info("human runtime: proactive candidate enqueued",
+			"group_id", groupID, "topic", candidate.TopicID, "score", candidate.Score)
+	}
+}
+
+// proactiveCandidate 判断一群是否值得主动开口并生成候选。
+// 评分 = 基础分 + OpenLoops 加成；没到阈值就不开口。
+func (r *Runtime) proactiveCandidate(groupID int64, now time.Time) (humandomain.ThoughtCandidate, bool) {
+	if rand.Float64() >= r.proactiveProbability {
+		return humandomain.ThoughtCandidate{}, false
+	}
+	memory, err := r.working.Snapshot(r.ctx, groupID)
+	if err != nil {
+		return humandomain.ThoughtCandidate{}, false
+	}
+	// 冷场判定：最近一条事件距今超过阈值才考虑开口，正在聊天的群不插嘴。
+	if memory.LastUpdatedAt.IsZero() || now.Sub(memory.LastUpdatedAt) < proactiveIdleThreshold {
+		return humandomain.ThoughtCandidate{}, false
+	}
+	// 没有任何可接的话题就不硬找话说。
+	if memory.ActiveTopic == "" && len(memory.OpenLoops) == 0 {
+		return humandomain.ThoughtCandidate{}, false
+	}
+
+	// 有未接话题时提高评分，让主动候选能过 ClaimDue 的阈值。
+	score := r.proactiveThreshold
+	if len(memory.OpenLoops) > 0 {
+		score = min(score+0.1, 1)
+	}
+	topic := memory.ActiveTopic
+	if topic == "" && len(memory.OpenLoops) > 0 {
+		topic = memory.OpenLoops[len(memory.OpenLoops)-1]
+	}
+
+	delay := time.Duration(rand.Int64N(int64(proactiveDelayMax-proactiveDelayMin))) + proactiveDelayMin
+	return humandomain.ThoughtCandidate{
+		CandidateID:    fmt.Sprintf("proactive-%d-%d", groupID, now.Unix()),
+		Intent:         "continue_topic",
+		TopicID:        topic,
+		Urgency:        score,
+		Score:          score,
+		DueAt:          now.Add(delay),
+		ExpiresAt:      now.Add(proactiveTTL),
+		Uncertainty:    1 - score,
+		ReasonCode:     "proactive_idle_revive",
+		DeliveryTarget: "group",
+		Status:         humandomain.CandidatePending,
+	}, true
+}
+
+func (r *Runtime) lastProactiveAt(groupID int64) time.Time {
+	r.proactiveMu.Lock()
+	defer r.proactiveMu.Unlock()
+	return r.lastProactive[groupID]
+}
+
+func (r *Runtime) markProactive(groupID int64, now time.Time) {
+	r.proactiveMu.Lock()
+	defer r.proactiveMu.Unlock()
+	r.lastProactive[groupID] = now
 }
 
 func (r *Runtime) worker() {

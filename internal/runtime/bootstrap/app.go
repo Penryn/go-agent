@@ -228,10 +228,14 @@ func NewApp(ctx context.Context, cfg config.Config) (*App, error) {
 	// Context projection and planner compatibility remain behind this adapter.
 	deliberator := humandeliberation.NewAdapter(contextService, planner)
 	humanRuntime := humanruntime.New(ctx, normalizer, presenceManager, deliberator, perceptionPipeline, turnObserver, executor, humanruntime.Config{
-		GroupWhitelist: cfg.QQ.GroupWhitelist,
-		SelfID:         cfg.QQ.SelfID,
-		JobTimeout:     120 * time.Second,
-		WorkerCount:    cfg.Runtime.WorkerCount,
+		GroupWhitelist:    cfg.QQ.GroupWhitelist,
+		SelfID:            cfg.QQ.SelfID,
+		JobTimeout:        120 * time.Second,
+		WorkerCount:       cfg.Runtime.WorkerCount,
+		ProactiveInterval: time.Minute,
+		// 冷场主动开口：消费 autonomy 配置里的基础概率与评分阈值。
+		ProactiveBaseProbability: cfg.Autonomy.ProactiveBaseProbability,
+		ProactiveScoreThreshold:  cfg.Autonomy.ProactiveScoreThreshold,
 	})
 	if thoughtStore, ok := stores.memory.(ports.ThoughtStore); ok {
 		humanRuntime.SetThoughtStore(thoughtStore)

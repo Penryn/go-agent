@@ -156,6 +156,12 @@ func (c *Composer) instruction(snapshot conversationdomain.ContextSnapshot, deci
 			"你被对方直接 @ 或引用了。多数时候该回应，但如果这声 @ 只是随手一@、话题已经结束、或回应会很尴尬，也可以像真人一样晾着不回，用 stay_silent 结束。",
 		)
 	}
+	// 主动开口：没有触发消息，是自己在冷场后接话
+	if decision.TriggerType == "continue_topic" && snapshot.Event.EventID == "" {
+		taskLines = append(taskLines,
+			"本轮没有触发消息——是群冷场后你自己决定开口接回话题。像随口一提那样自然（「话说刚才那个…」「突然想起来…」），一两句即可；如果上下文里没有真正值得接的话，用 stay_silent 收回这次开口也完全可以。",
+		)
+	}
 	sections = append(sections, taskLines...)
 
 	// ── 输出约束层 ──────────────────────────────────────────────────────────
