@@ -6,16 +6,14 @@ require (
 	github.com/cloudwego/eino v0.9.18
 	github.com/cloudwego/eino-ext/components/embedding/ark v0.1.1
 	github.com/cloudwego/eino-ext/components/embedding/openai v0.0.0-20260311121809-88ebb0eecbdb
-	github.com/cloudwego/eino-ext/components/indexer/qdrant v0.0.0-20260311121809-88ebb0eecbdb
 	github.com/cloudwego/eino-ext/components/model/ark v0.1.65
 	github.com/cloudwego/eino-ext/components/model/openai v0.1.9
-	github.com/cloudwego/eino-ext/components/retriever/qdrant v0.0.0-20260311121809-88ebb0eecbdb
 	github.com/coder/websocket v1.8.15
 	github.com/go-sql-driver/mysql v1.9.3
 	github.com/jackc/pgx/v5 v5.10.0
 	github.com/joho/godotenv v1.5.1
 	github.com/minio/minio-go/v7 v7.0.99
-	github.com/qdrant/go-client v1.15.2
+	github.com/pgvector/pgvector-go v0.4.1
 	github.com/redis/go-redis/v9 v9.18.0
 	github.com/volcengine/volcengine-go-sdk v1.2.9
 	github.com/zjutjh/napcat-sdk v1.0.3
@@ -74,8 +72,6 @@ require (
 	golang.org/x/net v0.48.0 // indirect
 	golang.org/x/sys v0.39.0 // indirect
 	golang.org/x/text v0.32.0 // indirect
-	google.golang.org/genproto/googleapis/rpc v0.0.0-20240827150818-7e3bb234dfed // indirect
-	google.golang.org/grpc v1.66.0 // indirect
 	google.golang.org/protobuf v1.34.2 // indirect
 	gopkg.in/yaml.v2 v2.4.0 // indirect
 )
