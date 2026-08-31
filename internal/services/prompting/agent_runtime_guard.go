@@ -7,7 +7,6 @@ import (
 	"encoding/json"
 	"strings"
 	"sync"
-	"time"
 	"unicode/utf8"
 
 	"github.com/cloudwego/eino/compose"
@@ -19,45 +18,21 @@ const (
 	defaultToolResultMaxBytes = 12 * 1024
 )
 
-// ToolAuditEvent records one tool boundary decision. Arguments are represented
-// by a stable hash so audit sinks do not accidentally persist user content.
-type ToolAuditEvent struct {
-	TraceID       string
-	CallID        string
-	ToolName      string
-	ArgumentsHash string
-	Attempt       int
-	Duration      time.Duration
-	ResultBytes   int
-	Truncated     bool
-	Duplicate     bool
-	EmptyRetry    bool
-	Blocked       bool
-	Error         string
-}
-
-// ToolAuditHook receives best-effort tool execution telemetry.
-type ToolAuditHook func(ToolAuditEvent)
-
 type toolRuntimeGuard struct {
 	traceID       string
 	maxToolCalls  int
 	maxResultByte int
-	audit         ToolAuditHook
 
-	mu       sync.Mutex
-	calls    int
-	attempts map[string]int
-	seen     map[string]struct{}
+	mu    sync.Mutex
+	calls int
+	seen  map[string]struct{}
 }
 
-func newToolRuntimeGuard(traceID string, maxToolCalls, maxResultBytes int, audit ToolAuditHook) *toolRuntimeGuard {
+func newToolRuntimeGuard(traceID string, maxToolCalls, maxResultBytes int) *toolRuntimeGuard {
 	return &toolRuntimeGuard{
 		traceID:       traceID,
 		maxToolCalls:  maxToolCalls,
 		maxResultByte: maxResultBytes,
-		audit:         audit,
-		attempts:      make(map[string]int),
 		seen:          make(map[string]struct{}),
 	}
 }
@@ -74,38 +49,18 @@ func (g *toolRuntimeGuard) middleware(next compose.InvokableToolEndpoint) compos
 		g.mu.Lock()
 		if g.maxToolCalls > 0 && g.calls >= g.maxToolCalls {
 			g.mu.Unlock()
-			g.emit(ToolAuditEvent{
-				TraceID: g.traceID, CallID: input.CallID, ToolName: input.Name,
-				ArgumentsHash: hashToolArguments(input.Arguments), Blocked: true,
-				Error: "tool call budget exceeded",
-			})
 			return &compose.ToolOutput{Result: `{"error":"tool_call_budget_exceeded","retryable":false}`}, nil
 		}
 		g.calls++
-		g.attempts[key]++
-		attempt := g.attempts[key]
-		_, duplicate := g.seen[key]
+		if _, duplicate := g.seen[key]; duplicate {
+			g.mu.Unlock()
+			return &compose.ToolOutput{Result: `{"error":"duplicate_tool_call","retryable":false}`}, nil
+		}
 		g.seen[key] = struct{}{}
 		g.mu.Unlock()
 
-		base := ToolAuditEvent{
-			TraceID: g.traceID, CallID: input.CallID, ToolName: input.Name,
-			ArgumentsHash: hashToolArguments(input.Arguments), Attempt: attempt,
-			Duplicate: duplicate,
-		}
-		if duplicate {
-			base.Blocked = true
-			base.Error = "duplicate tool call"
-			g.emit(base)
-			return &compose.ToolOutput{Result: `{"error":"duplicate_tool_call","retryable":false}`}, nil
-		}
-
-		started := time.Now()
 		result, err := next(ctx, input)
-		base.Duration = time.Since(started)
 		if err != nil {
-			base.Error = err.Error()
-			g.emit(base)
 			return result, err
 		}
 
@@ -115,31 +70,16 @@ func (g *toolRuntimeGuard) middleware(next compose.InvokableToolEndpoint) compos
 			result = &compose.ToolOutput{}
 		}
 		if strings.TrimSpace(result.Result) == "" && retryEmptyTool(input.Name) {
-			base.EmptyRetry = true
-			retryStarted := time.Now()
 			retryResult, retryErr := next(ctx, input)
-			base.Duration += time.Since(retryStarted)
 			if retryErr != nil {
-				base.Error = retryErr.Error()
-				g.emit(base)
 				return retryResult, retryErr
 			}
 			result = retryResult
 		}
 
-		result.Result, base.Truncated = truncateToolResult(result.Result, g.maxResultByte)
-		base.ResultBytes = len(result.Result)
-		g.emit(base)
+		result.Result, _ = truncateToolResult(result.Result, g.maxResultByte)
 		return result, nil
 	}
-}
-
-func (g *toolRuntimeGuard) emit(event ToolAuditEvent) {
-	if g.audit == nil {
-		return
-	}
-	defer func() { _ = recover() }()
-	g.audit(event)
 }
 
 func hashToolArguments(raw string) string {

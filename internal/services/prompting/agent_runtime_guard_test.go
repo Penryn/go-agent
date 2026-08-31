@@ -10,7 +10,7 @@ import (
 )
 
 func TestToolRuntimeGuardBlocksDuplicateArgumentsRegardlessOfJSONSpacing(t *testing.T) {
-	guard := newToolRuntimeGuard("trace-1", 4, 1024, nil)
+	guard := newToolRuntimeGuard("trace-1", 4, 1024)
 	var calls atomic.Int32
 	next := guard.middleware(func(_ context.Context, _ *compose.ToolInput) (*compose.ToolOutput, error) {
 		calls.Add(1)
@@ -34,7 +34,7 @@ func TestToolRuntimeGuardBlocksDuplicateArgumentsRegardlessOfJSONSpacing(t *test
 }
 
 func TestToolRuntimeGuardRetriesEmptyReadResult(t *testing.T) {
-	guard := newToolRuntimeGuard("trace-1", 4, 1024, nil)
+	guard := newToolRuntimeGuard("trace-1", 4, 1024)
 	var calls atomic.Int32
 	next := guard.middleware(func(_ context.Context, _ *compose.ToolInput) (*compose.ToolOutput, error) {
 		if calls.Add(1) == 1 {
@@ -70,7 +70,7 @@ func TestTruncateToolResultPreservesJSONEnvelope(t *testing.T) {
 }
 
 func TestToolRuntimeGuardEnforcesCallBudget(t *testing.T) {
-	guard := newToolRuntimeGuard("trace-1", 1, 1024, nil)
+	guard := newToolRuntimeGuard("trace-1", 1, 1024)
 	var calls atomic.Int32
 	next := guard.middleware(func(_ context.Context, _ *compose.ToolInput) (*compose.ToolOutput, error) {
 		calls.Add(1)
