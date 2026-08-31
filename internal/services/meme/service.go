@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"path"
 	"strings"
 	"time"
 
@@ -351,20 +352,18 @@ func buildMemeID(attachment mediadomain.MultimodalAttachment) string {
 	return "meme-" + hex.EncodeToString(hash[:8])
 }
 
-func fileExt(path string) string {
-	if idx := strings.LastIndex(path, "."); idx >= 0 {
-		return path[idx:]
+func fileExt(key string) string {
+	if ext := path.Ext(key); ext != "" {
+		return ext
 	}
 	return ".bin"
 }
 
-func coalesce(values ...string) string {
-	for _, value := range values {
-		if strings.TrimSpace(value) != "" {
-			return value
-		}
+func coalesce(primary, fallback string) string {
+	if strings.TrimSpace(primary) != "" {
+		return primary
 	}
-	return ""
+	return fallback
 }
 
 // buildIndexText 将 MemeDescriptor 的文字字段拼接为向量索引文本。
