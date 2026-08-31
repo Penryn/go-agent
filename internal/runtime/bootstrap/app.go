@@ -269,7 +269,7 @@ func NewApp(ctx context.Context, cfg config.Config) (*App, error) {
 			return nil, fmt.Errorf("register curator outbox handler: %w", err)
 		}
 	}
-	humanRuntime.AddEventObserver(profileService)
+	humanRuntime.AddEventObserver(profileService.ObserveEvent)
 	humanRuntime.AddCompletedTurnObserver(humanruntime.CompletedTurnObserverFunc(func(turnCtx context.Context, snapshot conversationdomain.ContextSnapshot, receipt replydomain.ActionReceipt) error {
 		if durableOutbox != nil {
 			payload, err := json.Marshal(snapshot)

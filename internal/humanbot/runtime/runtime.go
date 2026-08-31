@@ -34,19 +34,11 @@ type PerceptionSubmitter interface {
 	Submit(humandomain.EventRecord)
 }
 
-type EventObserver interface {
-	ObserveEvent(context.Context, conversationdomain.ConversationEvent) error
-}
+// EventObserverFunc 在每条入站事件后收到回调；错误只记日志。
+type EventObserverFunc func(context.Context, conversationdomain.ConversationEvent) error
 
-type CompletedTurnObserver interface {
-	ObserveTurn(context.Context, conversationdomain.ContextSnapshot, replydomain.ActionReceipt) error
-}
-
+// CompletedTurnObserverFunc 在一轮回复完成后收到回调；错误只记日志。
 type CompletedTurnObserverFunc func(context.Context, conversationdomain.ContextSnapshot, replydomain.ActionReceipt) error
-
-func (f CompletedTurnObserverFunc) ObserveTurn(ctx context.Context, snapshot conversationdomain.ContextSnapshot, receipt replydomain.ActionReceipt) error {
-	return f(ctx, snapshot, receipt)
-}
 
 // TurnObserver closes the feedback loop between a realized action and future
 // scheduling. Implementations own durable cooldown, persona, and reflection
@@ -77,8 +69,8 @@ type Runtime struct {
 	turns                  TurnObserver
 	executor               *action.Service
 	thoughts               ports.ThoughtStore
-	eventObservers         []EventObserver
-	completedTurnObservers []CompletedTurnObserver
+	eventObservers         []EventObserverFunc
+	completedTurnObservers []CompletedTurnObserverFunc
 	whitelist              map[int64]struct{}
 	selfID                 int64
 	minCandidateScore      float64
@@ -101,13 +93,13 @@ type candidateJob struct {
 // optional so replay and in-memory callers can keep the runtime lightweight.
 func (r *Runtime) SetThoughtStore(store ports.ThoughtStore) { r.thoughts = store }
 
-func (r *Runtime) AddEventObserver(observer EventObserver) {
+func (r *Runtime) AddEventObserver(observer EventObserverFunc) {
 	if observer != nil {
 		r.eventObservers = append(r.eventObservers, observer)
 	}
 }
 
-func (r *Runtime) AddCompletedTurnObserver(observer CompletedTurnObserver) {
+func (r *Runtime) AddCompletedTurnObserver(observer CompletedTurnObserverFunc) {
 	if observer != nil {
 		r.completedTurnObservers = append(r.completedTurnObservers, observer)
 	}
@@ -388,7 +380,7 @@ func (r *Runtime) processWithValidation(ctx context.Context, envelope conversati
 		}
 	}
 	for _, observer := range r.completedTurnObservers {
-		if err := observer.ObserveTurn(ctx, snapshot, receipt); err != nil {
+		if err := observer(ctx, snapshot, receipt); err != nil {
 			slog.Warn("human runtime: completed turn observer failed", "group_id", envelope.Event.GroupID, "err", err)
 		}
 	}
@@ -397,7 +389,7 @@ func (r *Runtime) processWithValidation(ctx context.Context, envelope conversati
 
 func (r *Runtime) observeEvent(ctx context.Context, event conversationdomain.ConversationEvent) {
 	for _, observer := range r.eventObservers {
-		if err := observer.ObserveEvent(ctx, event); err != nil {
+		if err := observer(ctx, event); err != nil {
 			slog.Warn("human runtime: event observer failed", "group_id", event.GroupID, "user_id", event.UserID, "err", err)
 		}
 	}
