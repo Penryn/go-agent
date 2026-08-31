@@ -32,6 +32,45 @@ func (fakeEmbedder) EmbedStrings(ctx context.Context, texts []string, _ ...embed
 	return fakeEmbed(ctx, texts)
 }
 
+// longFakeEmbedder 模拟 ark embedding-large:输出 2048 维(前 4 维按 hash,其余 0),
+// 验证 VectorStore 截断到表维度 2000 后能存能查。
+type longFakeEmbedder struct{}
+
+func (longFakeEmbedder) EmbedStrings(ctx context.Context, texts []string, _ ...embedding.Option) ([][]float64, error) {
+	result := make([][]float64, 0, len(texts))
+	for _, text := range texts {
+		vector := make([]float64, 2048)
+		for i, r := range []rune(text) {
+			vector[i%4] += float64(r%17) / 17
+		}
+		result = append(result, vector)
+	}
+	return result, nil
+}
+
+// TestVectorTruncatesOversizedEmbedding:2048 维输入截断到 2000 维后往返成功。
+func TestVectorTruncatesOversizedEmbedding(t *testing.T) {
+	ctx := context.Background()
+	db := setupPostgres(t)
+	store := NewVectorStore(db, longFakeEmbedder{}, 2048)
+
+	record := memorydomain.MemoryRecord{
+		MemoryID: fmt.Sprintf("memory-long-%d", time.Now().UnixNano()),
+		Subject:  "截断",
+		Content:  "超维度向量截断后仍可检索",
+	}
+	if err := store.StoreMemory(ctx, record); err != nil {
+		t.Fatalf("store memory: %v", err)
+	}
+	results, err := store.SearchMemories(ctx, "截断", 5, 0.0)
+	if err != nil {
+		t.Fatalf("search memories: %v", err)
+	}
+	if len(results) != 1 || results[0].MemoryID != record.MemoryID {
+		t.Fatalf("unexpected results: %+v", results)
+	}
+}
+
 func TestVectorMemoryRoundtrip(t *testing.T) {
 	ctx := context.Background()
 	db := setupPostgres(t)

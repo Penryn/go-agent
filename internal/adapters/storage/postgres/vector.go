@@ -12,17 +12,22 @@ import (
 	memorydomain "github.com/phlin/go-agent/internal/domain/memory"
 )
 
+// pgVectorMaxDim 是 pgvector hnsw 索引的维度上限(migrations/004_vectors.sql 的 vector(2000))。
+const pgVectorMaxDim = 2000
+
 // VectorStore 基于 pgvector 实现语义向量检索,同一 *sql.DB 上与关系表共用连接池。
 // 不依赖 eino-ext:embedder 调用与向量读写都在本包内完成。
 type VectorStore struct {
 	db       *sql.DB
 	embedder embedding.Embedder
+	maxDim   int
 }
 
-func NewVectorStore(db *sql.DB, embedder embedding.Embedder, _ int) *VectorStore {
-	// 第三个参数 vectorDim 保留在签名里:调用方(bootstrap)从配置传入,
-	// 但维度真实约束在 DDL(vector(2048)),插入时不匹配会由 PG 报错(fail-fast)。
-	return &VectorStore{db: db, embedder: embedder}
+func NewVectorStore(db *sql.DB, embedder embedding.Embedder, vectorDim int) *VectorStore {
+	if vectorDim <= 0 || vectorDim > pgVectorMaxDim {
+		vectorDim = pgVectorMaxDim
+	}
+	return &VectorStore{db: db, embedder: embedder, maxDim: vectorDim}
 }
 
 // embed 单条文本。
@@ -34,7 +39,13 @@ func (s *VectorStore) embed(ctx context.Context, text string) (pgvector.Vector, 
 	if len(vectors) != 1 {
 		return pgvector.Vector{}, fmt.Errorf("embed text: expected 1 vector, got %d", len(vectors))
 	}
-	return toFloat32(vectors[0]), nil
+	vec := toFloat32(vectors[0])
+	// ark embedding-large 输出 2048 维,超出 pgvector hnsw 上限 2000,截断尾部 48 维
+	// (尾部分量对余弦相似度贡献极小);如需完整维度可换 halfvec(上限 4000)。
+	if slice := vec.Slice(); len(slice) > s.maxDim {
+		vec = pgvector.NewVector(slice[:s.maxDim])
+	}
+	return vec, nil
 }
 
 func toFloat32(vec []float64) pgvector.Vector {
