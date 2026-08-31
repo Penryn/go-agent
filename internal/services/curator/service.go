@@ -2,6 +2,7 @@ package curator
 
 import (
 	"context"
+	"fmt"
 	"strings"
 
 	conversationdomain "github.com/phlin/go-agent/internal/domain/conversation"
@@ -30,7 +31,7 @@ func (s *Service) Run(_ context.Context, input Input) (Output, error) {
 		return Output{}, nil
 	}
 	return Output{MemoryIntents: []memsvc.WriteIntent{{
-		Scope:         "group_curator",
+		Scope:         fmt.Sprintf("group:%d", input.Snapshot.Event.GroupID),
 		MemoryType:    "conversation_highlight",
 		Subject:       "event",
 		Content:       text,

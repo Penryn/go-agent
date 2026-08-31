@@ -3,6 +3,7 @@ package inmemory
 import (
 	"context"
 	"errors"
+	"fmt"
 	"slices"
 	"sort"
 	"strconv"
@@ -327,6 +328,9 @@ func (s *Store) RecentEvents(_ context.Context, groupID int64, limit int) ([]con
 func (s *Store) UpsertMemory(_ context.Context, record memorydomain.MemoryRecord) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if record.Revision <= 0 {
+		record.Revision = time.Now().UnixNano()
+	}
 
 	for i := range s.memories {
 		if s.memories[i].MemoryID == record.MemoryID {
@@ -347,6 +351,9 @@ func (s *Store) QueryMemories(_ context.Context, query ports.MemoryQuery) ([]mem
 	result := make([]memorydomain.MemoryRecord, 0, len(s.memories))
 	needle := strings.ToLower(strings.TrimSpace(query.Query))
 	for _, record := range s.memories {
+		if query.Scope == "" && !memoryVisible(record.Scope, query.GroupID, query.UserID) {
+			continue
+		}
 		if query.Scope != "" && record.Scope != query.Scope {
 			continue
 		}
@@ -374,6 +381,17 @@ func (s *Store) QueryMemories(_ context.Context, query ports.MemoryQuery) ([]mem
 	}
 
 	return result, nil
+}
+
+func memoryVisible(scope string, groupID, userID int64) bool {
+	if groupID == 0 {
+		return scope == "global"
+	}
+	groupScope := fmt.Sprintf("group:%d", groupID)
+	if scope == "global" || scope == groupScope {
+		return true
+	}
+	return userID != 0 && scope == fmt.Sprintf("group:%d:user:%d", groupID, userID)
 }
 
 // memoryRecallScore 是记忆的召回优先级：重要性按时间贴现，但高重要性的

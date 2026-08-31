@@ -325,17 +325,29 @@ func scanEvent(rows *sql.Rows) (conversationdomain.ConversationEvent, error) {
 }
 
 func (s *Store) UpsertMemory(ctx context.Context, record memorydomain.MemoryRecord) error {
+	return upsertMemoryExec(ctx, s.db, record)
+}
+
+type sqlExecer interface {
+	ExecContext(context.Context, string, ...any) (sql.Result, error)
+}
+
+func upsertMemoryExec(ctx context.Context, execer sqlExecer, record memorydomain.MemoryRecord) error {
 	now := time.Now()
 	createdAt := record.CreatedAt
 	if createdAt.IsZero() {
 		createdAt = now
 	}
+	revision := record.Revision
+	if revision <= 0 {
+		revision = createdAt.UnixNano()
+	}
 
-	_, err := s.db.ExecContext(ctx, `
+	_, err := execer.ExecContext(ctx, `
 		INSERT INTO memories (
 			memory_id, scope, type, subject, content, source_event_id, descriptor_ref,
-			confidence, importance, created_at, expires_at, updated_at
-		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+			confidence, importance, revision, created_at, expires_at, updated_at
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
 		ON CONFLICT (memory_id) DO UPDATE SET
 			scope = EXCLUDED.scope,
 			type = EXCLUDED.type,
@@ -345,17 +357,61 @@ func (s *Store) UpsertMemory(ctx context.Context, record memorydomain.MemoryReco
 			descriptor_ref = EXCLUDED.descriptor_ref,
 			confidence = EXCLUDED.confidence,
 			importance = EXCLUDED.importance,
+			revision = EXCLUDED.revision,
 			expires_at = EXCLUDED.expires_at,
 			updated_at = EXCLUDED.updated_at
 	`, record.MemoryID, record.Scope, record.Type, record.Subject, record.Content, record.SourceEventID, record.DescriptorRef,
-		record.Confidence, record.Importance, createdAt, nullableTime(record.ExpiresAt), now)
+		record.Confidence, record.Importance, revision, createdAt, nullableTime(record.ExpiresAt), now)
 	return err
+}
+
+// UpsertMemoryAndEnqueueVector makes the memory fact and its projection task
+// durable together. The task remains replayable if embedding is unavailable.
+func (s *Store) UpsertMemoryAndEnqueueVector(ctx context.Context, record memorydomain.MemoryRecord, task ports.OutboxTask) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if err := upsertMemoryExec(ctx, tx, record); err != nil {
+		return err
+	}
+	if task.Status == "" {
+		task.Status = ports.OutboxPending
+	}
+	if task.AvailableAt.IsZero() {
+		task.AvailableAt = time.Now()
+	}
+	if task.MaxAttempts <= 0 {
+		task.MaxAttempts = 5
+	}
+	if task.CreatedAt.IsZero() {
+		task.CreatedAt = time.Now()
+	}
+	if task.UpdatedAt.IsZero() {
+		task.UpdatedAt = task.CreatedAt
+	}
+	if _, err := tx.ExecContext(ctx, `
+		INSERT INTO async_outbox (
+			task_id, kind, idempotency_key, payload_json, status, attempts, max_attempts,
+			available_at, locked_until, locked_by, last_error, created_at, updated_at
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NULL, NULL, NULL, $9, $10)
+		ON CONFLICT (kind, idempotency_key) DO UPDATE SET
+			payload_json = EXCLUDED.payload_json,
+			status = CASE WHEN async_outbox.status = $11 THEN async_outbox.status ELSE EXCLUDED.status END,
+			available_at = CASE WHEN async_outbox.status = $11 THEN async_outbox.available_at ELSE EXCLUDED.available_at END,
+			updated_at = EXCLUDED.updated_at
+	`, task.ID, task.Kind, task.IdempotencyKey, task.Payload, task.Status, task.Attempts, task.MaxAttempts,
+		task.AvailableAt, task.CreatedAt, task.UpdatedAt, ports.OutboxRunning); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 func (s *Store) QueryMemories(ctx context.Context, query ports.MemoryQuery) ([]memorydomain.MemoryRecord, error) {
 	base := `
 		SELECT memory_id, scope, type, subject, content, source_event_id, descriptor_ref,
-		       confidence, importance, created_at, expires_at
+		       confidence, importance, revision, created_at, expires_at
 		FROM memories
 		WHERE 1=1
 	`
@@ -363,6 +419,11 @@ func (s *Store) QueryMemories(ctx context.Context, query ports.MemoryQuery) ([]m
 	if query.Scope != "" {
 		base += " AND scope = $" + strconv.Itoa(len(args)+1)
 		args = append(args, query.Scope)
+	} else if query.GroupID != 0 {
+		base += " AND (scope = $" + strconv.Itoa(len(args)+1) + " OR scope = $" + strconv.Itoa(len(args)+2) + " OR scope = 'global')"
+		args = append(args, fmt.Sprintf("group:%d", query.GroupID), fmt.Sprintf("group:%d:user:%d", query.GroupID, query.UserID))
+	} else {
+		base += " AND scope = 'global'"
 	}
 	if len(query.Types) > 0 {
 		phs := make([]string, 0, len(query.Types))
@@ -408,6 +469,7 @@ func (s *Store) QueryMemories(ctx context.Context, query ports.MemoryQuery) ([]m
 			&record.DescriptorRef,
 			&record.Confidence,
 			&record.Importance,
+			&record.Revision,
 			&record.CreatedAt,
 			&expiresAt,
 		); err != nil {

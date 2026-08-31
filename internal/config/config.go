@@ -109,13 +109,14 @@ type MCPServerConfig struct {
 }
 
 type CodexConfig struct {
-	Enabled        bool   `yaml:"enabled"`
-	Binary         string `yaml:"binary"`
-	Model          string `yaml:"model"`
-	CWD            string `yaml:"cwd"`
-	NetworkEnabled bool   `yaml:"network_enabled"`
-	Timeout        string `yaml:"timeout"`
-	MaxConcurrency int    `yaml:"max_concurrency"`
+	Enabled            bool    `yaml:"enabled"`
+	Binary             string  `yaml:"binary"`
+	Model              string  `yaml:"model"`
+	CWD                string  `yaml:"cwd"`
+	NetworkEnabled     bool    `yaml:"network_enabled"`
+	Timeout            string  `yaml:"timeout"`
+	MaxConcurrency     int     `yaml:"max_concurrency"`
+	WriteUserWhitelist []int64 `yaml:"write_user_whitelist"`
 }
 
 type StorageConfig struct {
@@ -129,7 +130,7 @@ type PostgresConfig struct {
 	User     string `yaml:"user"`
 	Password string `yaml:"-"`
 	SSLMode  string `yaml:"ssl_mode"`
-	// VectorDim 是 pgvector 向量列维度，须与 embedding 模型输出一致（ark embedding-large 2048 / lite 1024）。
+	// VectorDim 是 pgvector 向量列维度，须与 embedding 模型输出严格一致。
 	// 启动时校验与表结构一致，不一致拒绝启动。
 	VectorDim int `yaml:"vector_dim"`
 }

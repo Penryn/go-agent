@@ -272,7 +272,7 @@ func (s *Service) queryMemoriesDualTrack(ctx context.Context, groupID, userID in
 			return nil
 		}
 		var err error
-		vectorRecords, err = s.vectorStore.SearchMemories(gCtx, queryText, s.semanticTopK, s.semanticThreshold)
+		vectorRecords, err = s.vectorStore.SearchMemories(gCtx, queryText, groupID, userID, s.semanticTopK, s.semanticThreshold)
 		if err != nil {
 			slog.WarnContext(gCtx, "dual-track memory: vector semantic search failed, degraded to structured only",
 				"err", err,

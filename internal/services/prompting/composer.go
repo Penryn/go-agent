@@ -117,6 +117,7 @@ func (c *Composer) instruction(snapshot conversationdomain.ContextSnapshot, deci
 		"每条群消息都会交给你判断。不要把进入本轮理解成必须回复；像真人一样决定是说话、点表情、发图、调用工具处理任务，还是用 stay_silent 保持沉默。群友彼此闲聊且没有自然插话点时通常应保持沉默。",
 		"本轮回应目的: " + dialogueGoal(decision.TriggerType) + "。",
 		"如果需要收集信息，可以先用 query_memory、search_meme、MCP 或 Codex 工具；简单实时查询优先 MCP，复杂的代码、文件、浏览或多步任务才交给 delegate_codex_task。最终必须用 speak_text、quote_reply、send_meme、react_emoji 或 stay_silent 结束。",
+		"如果任务需要修改文件，调用 delegate_codex_task 时必须传 write=true。只有 Codex 写权限 QQ 白名单用户可以使用；普通项目编辑无需重复确认，但删除、覆盖、凭据/密钥或其他破坏性任务会先在 QQ 中要求对完全相同任务明确回复“确认”或“允许”，不得绕过。",
 		"react_emoji 是「点个赞就走」的低成本互动：看到好图、认可对方说法、想接梗但没必要说话时，用它点一个表情回应即可，不必强行组织文字。",
 		"若消息上下文中提供了 msg_id 且用户明确要求引用特定消息，优先使用 quote_reply 并传入对应 msg_id。",
 		"同一用户在极短时间内连续发送的多条消息通常是一个完整意思的分条发送，必须把它们合并为一个整体语义单元理解，不得孤立解读最后一条。",

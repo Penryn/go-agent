@@ -31,6 +31,7 @@ type Runtime struct {
 	memSvc       *memsvc.Service
 	memeSvc      *memesvc.Service
 	external     []registeredTool
+	approvals    *WriteApprovalStore
 }
 
 type Option func(*Runtime)
@@ -62,6 +63,20 @@ func WithMemeService(svc *memesvc.Service) Option {
 	return func(rt *Runtime) { rt.memeSvc = svc }
 }
 
+func WithWriteApprovalStore(store *WriteApprovalStore) Option {
+	return func(rt *Runtime) { rt.approvals = store }
+}
+
+func (r *Runtime) ObserveConfirmation(groupID, userID int64, text string, at time.Time) {
+	if r != nil && r.approvals != nil {
+		r.approvals.ObserveConfirmation(groupID, userID, text, at)
+	}
+}
+
+func (r *Runtime) ToolContext(ctx context.Context, groupID, userID int64) context.Context {
+	return withToolIdentity(ctx, groupID, userID)
+}
+
 // speakingTools 是在 observe-only 模式下需要排除的发言/行动工具。
 var speakingTools = map[string]bool{
 	"speak_text":            true,
@@ -91,9 +106,7 @@ func (r *Runtime) Tools(session replydomain.ToolContext) []tool.BaseTool {
 			(!candidate.external && len(session.AllowedTools) > 0 && !slices.Contains(session.AllowedTools, candidate.name)) {
 			continue
 		}
-		{
-			allowed = append(allowed, candidate.tool)
-		}
+		allowed = append(allowed, candidate.tool)
 	}
 	return allowed
 }

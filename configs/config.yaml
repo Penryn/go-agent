@@ -249,6 +249,7 @@ tools:
   #   timeout: 15s
 
   # 外部 MCP/Codex 工具必须显式加入相应群的 tool_allowlist，不能只开启此处配置。
+  # 例：tool_allowlist: ["mcp_web_search", "delegate_codex_task"]
   # 本机 Codex 通过 app-server stdio 协议执行复杂、多步的只读任务。
   # 默认关闭；启用前请确认运行 bot 的系统账号已登录 Codex。
   codex:
@@ -256,9 +257,11 @@ tools:
     binary: codex
     model: "" # 空表示沿用本机 Codex 默认模型
     cwd: ""   # 空表示项目启动目录
-    network_enabled: false # 浏览/联网研究时才开启
+    network_enabled: false # 读写任务均适用；开启后 Codex 可联网
     timeout: 5m
     max_concurrency: 1
+    # 只有这些 QQ 用户可发起并确认 Codex 写任务；为空时写任务全部拒绝。
+    write_user_whitelist: []
 
 storage:
   # 当前默认启动仍使用 in-memory store。
@@ -269,7 +272,7 @@ storage:
     database: qqbot
     user: qqbot
     ssl_mode: disable
-    # embedding 模型输出维度；超过 pgvector schema 的 2000 维时由 adapter 一致截断。
+    # embedding 模型输出维度；必须与 halfvec schema 一致，维度不匹配会拒绝索引。
     vector_dim: 2048
     # 私密项 password 从 .env 的 QQBOT_STORAGE_POSTGRES_PASSWORD 读取。
 

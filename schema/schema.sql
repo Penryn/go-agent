@@ -27,12 +27,14 @@ CREATE TABLE IF NOT EXISTS memories (
   descriptor_ref VARCHAR(255) NOT NULL,
   confidence DOUBLE PRECISION NOT NULL,
   importance DOUBLE PRECISION NOT NULL,
+  revision BIGINT NOT NULL DEFAULT 1,
   created_at TIMESTAMPTZ NOT NULL,
   expires_at TIMESTAMPTZ NULL,
   updated_at TIMESTAMPTZ NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_memories_scope_type ON memories (scope, type);
 CREATE INDEX IF NOT EXISTS idx_memories_created ON memories (created_at);
+ALTER TABLE memories ADD COLUMN IF NOT EXISTS revision BIGINT NOT NULL DEFAULT 1;
 
 CREATE TABLE IF NOT EXISTS member_profiles (
   group_id BIGINT NOT NULL,
@@ -167,21 +169,23 @@ CREATE TABLE IF NOT EXISTS runtime_states (
 );
 CREATE INDEX IF NOT EXISTS idx_runtime_states_expires ON runtime_states (expires_at);
 
--- 维度 2000:pgvector hnsw 索引上限(hnsw 不支持超过 2000 维)。
--- ark embedding-large 输出 2048 维,超限;上层在写入前需截断/投影到 2000 维,
--- 或换 halfvec(4000 维上限)。当前按 2000 建,超出维度由 PG 报错兜底(fail-fast)。
+-- 使用 halfvec(2048) 保留 ark embedding-large 的完整输出；halfvec HNSW 上限为 4000 维。
 CREATE TABLE IF NOT EXISTS memory_vectors (
   memory_id VARCHAR(128) PRIMARY KEY,
   content   TEXT NOT NULL,
-  embedding vector(2000) NOT NULL
+  embedding halfvec(2048) NOT NULL,
+  source_revision BIGINT NOT NULL DEFAULT 0
 );
-CREATE INDEX IF NOT EXISTS idx_memory_vectors_embedding ON memory_vectors USING hnsw (embedding vector_cosine_ops);
+ALTER TABLE memory_vectors ADD COLUMN IF NOT EXISTS source_revision BIGINT NOT NULL DEFAULT 0;
+CREATE INDEX IF NOT EXISTS idx_memory_vectors_embedding ON memory_vectors USING hnsw (embedding halfvec_cosine_ops);
 
 CREATE TABLE IF NOT EXISTS meme_vectors (
   meme_id   VARCHAR(128) PRIMARY KEY,
   group_id  BIGINT NOT NULL,
   text      TEXT NOT NULL,
-  embedding vector(2000) NOT NULL
+  embedding halfvec(2048) NOT NULL,
+  source_revision BIGINT NOT NULL DEFAULT 0
 );
+ALTER TABLE meme_vectors ADD COLUMN IF NOT EXISTS source_revision BIGINT NOT NULL DEFAULT 0;
 CREATE INDEX IF NOT EXISTS idx_meme_vectors_group ON meme_vectors (group_id);
-CREATE INDEX IF NOT EXISTS idx_meme_vectors_embedding ON meme_vectors USING hnsw (embedding vector_cosine_ops);
+CREATE INDEX IF NOT EXISTS idx_meme_vectors_embedding ON meme_vectors USING hnsw (embedding halfvec_cosine_ops);

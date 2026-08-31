@@ -76,4 +76,30 @@ func TestQueryMemoriesDecaysOldLowImportance(t *testing.T) {
 	}
 }
 
+func TestQueryMemoriesRespectsGroupAndUserVisibility(t *testing.T) {
+	store := NewStore()
+	ctx := context.Background()
+	for _, record := range []memorydomain.MemoryRecord{
+		{MemoryID: "global", Scope: "global", Subject: "shared", Content: "shared"},
+		{MemoryID: "group-1", Scope: "group:1", Subject: "group", Content: "group"},
+		{MemoryID: "user-7", Scope: "group:1:user:7", Subject: "user", Content: "user"},
+		{MemoryID: "group-2", Scope: "group:2", Subject: "other", Content: "other"},
+	} {
+		if err := store.UpsertMemory(ctx, record); err != nil {
+			t.Fatal(err)
+		}
+	}
+	records, err := store.QueryMemories(ctx, ports.MemoryQuery{GroupID: 1, UserID: 7, TopK: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	seen := map[string]bool{}
+	for _, record := range records {
+		seen[record.MemoryID] = true
+	}
+	if !seen["global"] || !seen["group-1"] || !seen["user-7"] || seen["group-2"] {
+		t.Fatalf("unexpected visible memories: %+v", records)
+	}
+}
+
 func ptrTime(t time.Time) *time.Time { return &t }

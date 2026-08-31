@@ -54,6 +54,12 @@ type MemoryStore interface {
 	QueryMemories(ctx context.Context, query MemoryQuery) ([]memorydomain.MemoryRecord, error)
 }
 
+// AtomicMemoryProjectionStore commits the authoritative memory and its durable
+// vector projection task in one database transaction.
+type AtomicMemoryProjectionStore interface {
+	UpsertMemoryAndEnqueueVector(ctx context.Context, record memorydomain.MemoryRecord, task OutboxTask) error
+}
+
 // ThoughtStore persists structured deliberation summaries for evaluation and
 // future learning. It deliberately does not expose raw model chain-of-thought.
 type ThoughtStore interface {
@@ -142,7 +148,7 @@ type VectorMemoryStore interface {
 	// StoreMemory 将一条记忆向量化后存入向量库。
 	StoreMemory(ctx context.Context, record memorydomain.MemoryRecord) error
 	// SearchMemories 执行语义检索，返回相似度 >= threshold 的记录。
-	SearchMemories(ctx context.Context, query string, topK int, threshold float64) ([]memorydomain.MemoryRecord, error)
+	SearchMemories(ctx context.Context, query string, groupID, userID int64, topK int, threshold float64) ([]memorydomain.MemoryRecord, error)
 }
 
 // VectorMemeStore 是表情包语义向量检索的 port。
@@ -155,4 +161,11 @@ type VectorMemeStore interface {
 	SearchMemes(ctx context.Context, groupID int64, queryText string, topK int, threshold float64) ([]mediadomain.MemeSearchResult, error)
 	// DeleteMeme 从向量库删除指定表情包。
 	DeleteMeme(ctx context.Context, memeID string) error
+}
+
+// VersionedVectorMemeStore is an optional extension used by durable projection
+// handlers. The legacy VectorMemeStore method remains available to keep simple
+// adapters and tests small.
+type VersionedVectorMemeStore interface {
+	IndexMemeVersioned(ctx context.Context, memeID string, text string, groupID int64, revision int64) error
 }

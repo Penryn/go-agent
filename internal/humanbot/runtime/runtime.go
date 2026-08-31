@@ -24,11 +24,11 @@ import (
 )
 
 type Config struct {
-	PollInterval      time.Duration
-	JobTimeout        time.Duration
-	WorkerCount       int
-	GroupWhitelist    []int64
-	SelfID            int64
+	PollInterval   time.Duration
+	JobTimeout     time.Duration
+	WorkerCount    int
+	GroupWhitelist []int64
+	SelfID         int64
 	// ProactiveInterval 是主动开口扫描周期；0 时禁用主动发言。
 	ProactiveInterval time.Duration
 	// ProactiveBaseProbability 是冷场开口的基础概率（0~1）。
@@ -39,6 +39,10 @@ type Config struct {
 
 type PerceptionSubmitter interface {
 	Submit(humandomain.EventRecord)
+}
+
+type ConfirmationObserver interface {
+	ObserveConfirmation(groupID, userID int64, text string, at time.Time)
 }
 
 // EventObserverFunc 在每条入站事件后收到回调；错误只记日志。
@@ -82,13 +86,14 @@ type Outcome struct {
 }
 
 type Runtime struct {
-	normalizer  *normalizersvc.Service
-	working     *groupactor.Manager
-	deliberator deliberation.Deliberator
-	perception  PerceptionSubmitter
-	turns       TurnObserver
-	executor    *action.Service
-	thoughts    ports.ThoughtStore
+	normalizer    *normalizersvc.Service
+	working       *groupactor.Manager
+	deliberator   deliberation.Deliberator
+	perception    PerceptionSubmitter
+	confirmations ConfirmationObserver
+	turns         TurnObserver
+	executor      *action.Service
+	thoughts      ports.ThoughtStore
 	// memories 供主动开口时从长期记忆挑旧梗；nil 时跳过。
 	memories               ports.MemoryStore
 	eventObservers         []EventObserverFunc
@@ -122,6 +127,8 @@ func (r *Runtime) SetThoughtStore(store ports.ThoughtStore) { r.thoughts = store
 // SetMemoryStore enables proactive memory recall during idle revival. Optional;
 // nil keeps the proactive loop limited to OpenLoops / ActiveTopic.
 func (r *Runtime) SetMemoryStore(store ports.MemoryStore) { r.memories = store }
+
+func (r *Runtime) SetConfirmationObserver(observer ConfirmationObserver) { r.confirmations = observer }
 
 func (r *Runtime) AddEventObserver(observer EventObserverFunc) {
 	if observer != nil {
@@ -193,6 +200,9 @@ func (r *Runtime) SubmitRaw(ctx context.Context, payload []byte) error {
 	if r.executor != nil {
 		r.executor.CancelQueued(envelope.Event.GroupID)
 	}
+	if r.confirmations != nil {
+		r.confirmations.ObserveConfirmation(envelope.Event.GroupID, envelope.Event.UserID, envelope.Event.Text, envelope.ReceivedAt)
+	}
 	record := toEventRecord(envelope, humandomain.OriginInbound)
 	_, err = r.working.Observe(ctx, record)
 	if err == nil && r.perception != nil {
@@ -231,6 +241,9 @@ func (r *Runtime) ProcessRawEvent(ctx context.Context, payload []byte) (Outcome,
 	}
 	if r.perception != nil {
 		r.perception.Submit(record)
+	}
+	if r.confirmations != nil {
+		r.confirmations.ObserveConfirmation(envelope.Event.GroupID, envelope.Event.UserID, envelope.Event.Text, envelope.ReceivedAt)
 	}
 	r.observeEvent(ctx, envelope.Event)
 	var candidate humandomain.ThoughtCandidate
@@ -283,7 +296,7 @@ func (r *Runtime) loop(interval, timeout time.Duration) {
 
 // proactiveLoop 是主动开口扫描器：群冷场且仍有未接话题时，以配置的
 // 基础概率投递一个低分长延迟的主动 candidate。是否真的说出来仍由
-	// 模型抉择共同决定——这里只制造机会。
+// 模型抉择共同决定——这里只制造机会。
 func (r *Runtime) proactiveLoop() {
 	defer r.wg.Done()
 	ticker := time.NewTicker(r.proactiveInterval)
@@ -484,6 +497,16 @@ func (r *Runtime) processWithValidation(ctx context.Context, envelope conversati
 		}
 		if !valid {
 			return Outcome{Envelope: envelope, Snapshot: snapshot, Candidate: candidate, Decision: silentDecision(envelope.TraceID, "candidate_stale"), Plan: plan}, nil
+		}
+	}
+	if decision.Action != policydomain.ActionSilent && r.turns != nil {
+		allowed, err := r.turns.CanDeliberate(ctx, envelope.Event.GroupID, time.Now())
+		if err != nil {
+			return Outcome{}, fmt.Errorf("check output permission: %w", err)
+		}
+		if !allowed {
+			decision.Action = policydomain.ActionSilent
+			decision.ReasonCodes = append(decision.ReasonCodes, "output_rate_limited")
 		}
 	}
 	receipt, err := r.executor.Execute(ctx, envelope.Event, decision, plan)

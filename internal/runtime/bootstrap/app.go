@@ -122,6 +122,9 @@ func NewApp(ctx context.Context, cfg config.Config) (*App, error) {
 	memOpts = append(memOpts, memsvc.WithBackgroundRuntime(backgroundRuntime))
 	if durableOutbox != nil {
 		memOpts = append(memOpts, memsvc.WithOutbox(durableOutbox))
+		if atomicStore, ok := stores.memory.(ports.AtomicMemoryProjectionStore); ok {
+			memOpts = append(memOpts, memsvc.WithAtomicProjectionStore(atomicStore))
+		}
 	}
 	memorySvc := memsvc.New(stores.memory, memOpts...)
 	if durableOutbox != nil {
@@ -193,11 +196,13 @@ func NewApp(ctx context.Context, cfg config.Config) (*App, error) {
 			_ = mcpTools.Close()
 		}
 	}()
+	writeApprovals := toolsvc.NewWriteApprovalStore(10 * time.Minute)
 	toolRuntime := toolsvc.NewRuntime(stores.memory, stores.meme,
 		toolsvc.WithProfileStore(stores.profile),
 		toolsvc.WithPersonaID(cfg.Persona.ID),
 		toolsvc.WithMemoryService(memorySvc),
 		toolsvc.WithMemeService(memeService),
+		toolsvc.WithWriteApprovalStore(writeApprovals),
 	)
 	if err := toolRuntime.RegisterTools(ctx, mcpTools.Tools...); err != nil {
 		_ = mcpTools.Close()
@@ -205,7 +210,7 @@ func NewApp(ctx context.Context, cfg config.Config) (*App, error) {
 		_ = stores.Close()
 		return nil, fmt.Errorf("register MCP tools: %w", err)
 	}
-	if codexTool := toolsvc.NewCodexTool(cfg.Tools.Codex); codexTool != nil {
+	if codexTool := toolsvc.NewCodexToolWithApproval(cfg.Tools.Codex, writeApprovals, cfg.Tools.Codex.WriteUserWhitelist); codexTool != nil {
 		if err := toolRuntime.RegisterTools(ctx, codexTool); err != nil {
 			_ = mcpTools.Close()
 			_ = backgroundRuntime.Close(context.Background())
@@ -256,16 +261,21 @@ func NewApp(ctx context.Context, cfg config.Config) (*App, error) {
 	// scheduling, deliberation, realization, and outbound self-observation.
 	// Context projection and planner compatibility remain behind this adapter.
 	deliberator := humandeliberation.NewAdapter(contextService, planner)
+	jobTimeout := 120 * time.Second
+	if cfg.Tools.Codex.Enabled {
+		jobTimeout = max(jobTimeout, mustDuration(cfg.Tools.Codex.Timeout, jobTimeout))
+	}
 	humanRuntime := humanruntime.New(ctx, normalizer, presenceManager, deliberator, perceptionPipeline, turnObserver, executor, humanruntime.Config{
 		GroupWhitelist:    cfg.QQ.GroupWhitelist,
 		SelfID:            cfg.QQ.SelfID,
-		JobTimeout:        120 * time.Second,
+		JobTimeout:        jobTimeout,
 		WorkerCount:       cfg.Runtime.WorkerCount,
 		ProactiveInterval: time.Minute,
 		// 冷场主动开口：消费 autonomy 配置里的基础概率与评分阈值。
 		ProactiveBaseProbability: cfg.Autonomy.ProactiveBaseProbability,
 		ProactiveScoreThreshold:  cfg.Autonomy.ProactiveScoreThreshold,
 	})
+	humanRuntime.SetConfirmationObserver(toolRuntime)
 	if thoughtStore, ok := stores.memory.(ports.ThoughtStore); ok {
 		humanRuntime.SetThoughtStore(thoughtStore)
 		contextService.WithThoughtStore(thoughtStore)

@@ -120,9 +120,10 @@ func WithOutbox(runtime interface {
 }
 
 type VectorIndexTask struct {
-	MemeID  string `json:"meme_id"`
-	Text    string `json:"text"`
-	GroupID int64  `json:"group_id"`
+	MemeID   string `json:"meme_id"`
+	Text     string `json:"text"`
+	GroupID  int64  `json:"group_id"`
+	Revision int64  `json:"revision"`
 }
 
 // ObserveEvent 观察群聊事件，将图片/贴纸收入表情包库。
@@ -184,9 +185,10 @@ func (s *Service) ObserveEvent(ctx context.Context, event conversationdomain.Con
 			indexText := buildIndexText(memeDescriptor)
 			groupID := event.GroupID
 			if s.outbox != nil {
-				payload, marshalErr := json.Marshal(VectorIndexTask{MemeID: memeID, Text: indexText, GroupID: groupID})
+				revision := time.Now().UnixNano()
+				payload, marshalErr := json.Marshal(VectorIndexTask{MemeID: memeID, Text: indexText, GroupID: groupID, Revision: revision})
 				if marshalErr == nil {
-					if enqueueErr := s.outbox.Enqueue(ctx, "meme_vector_index", memeID, payload); enqueueErr == nil {
+					if enqueueErr := s.outbox.Enqueue(ctx, "meme_vector_index", fmt.Sprintf("%s:%d", memeID, revision), payload); enqueueErr == nil {
 						continue
 					} else {
 						marshalErr = enqueueErr
@@ -217,6 +219,9 @@ func (s *Service) ObserveEvent(ctx context.Context, event conversationdomain.Con
 func (s *Service) ProcessVectorIndex(ctx context.Context, task VectorIndexTask) error {
 	if s == nil || s.vectorStore == nil {
 		return fmt.Errorf("meme: vector store is not configured")
+	}
+	if versioned, ok := s.vectorStore.(ports.VersionedVectorMemeStore); ok {
+		return versioned.IndexMemeVersioned(ctx, task.MemeID, task.Text, task.GroupID, task.Revision)
 	}
 	return s.vectorStore.IndexMeme(ctx, task.MemeID, task.Text, task.GroupID)
 }

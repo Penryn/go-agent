@@ -3,6 +3,7 @@ package memory
 import (
 	"context"
 	"encoding/json"
+	"strings"
 	"testing"
 
 	"github.com/phlin/go-agent/internal/adapters/inmemory"
@@ -28,7 +29,7 @@ func (s *recordingVectorStore) StoreMemory(_ context.Context, record memorydomai
 	return nil
 }
 
-func (s *recordingVectorStore) SearchMemories(context.Context, string, int, float64) ([]memorydomain.MemoryRecord, error) {
+func (s *recordingVectorStore) SearchMemories(context.Context, string, int64, int64, int, float64) ([]memorydomain.MemoryRecord, error) {
 	return nil, nil
 }
 
@@ -70,7 +71,7 @@ func TestMarkIntentEnqueuesVectorSync(t *testing.T) {
 	if err != nil {
 		t.Fatalf("mark intent: %v", err)
 	}
-	if outbox.kind != "memory_vector_index" || outbox.key != record.MemoryID {
+	if outbox.kind != "memory_vector_index" || !strings.HasPrefix(outbox.key, record.MemoryID+":") {
 		t.Fatalf("unexpected outbox envelope: kind=%q key=%q", outbox.kind, outbox.key)
 	}
 	var got memorydomain.MemoryRecord

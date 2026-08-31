@@ -178,6 +178,9 @@ func overrideWithEnvSecrets(cfg *Config) {
 }
 
 func Validate(cfg Config) error {
+	if cfg.Storage.Postgres.VectorDim > 0 && cfg.Storage.Postgres.VectorDim != 2048 {
+		return errors.New("storage.postgres.vector_dim must be 2048 for the configured halfvec schema")
+	}
 	if strings.TrimSpace(cfg.Persona.ID) == "" {
 		return errors.New("persona.id is required")
 	}

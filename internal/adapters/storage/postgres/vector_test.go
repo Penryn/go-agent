@@ -12,12 +12,13 @@ import (
 	memorydomain "github.com/phlin/go-agent/internal/domain/memory"
 )
 
+func ptrTime(value time.Time) *time.Time { return &value }
+
 // fakeEmbedder 对相同文本永远返回相同向量,不消耗真实 embedding API。
-// 维度必须是 2000:表 DDL 是 vector(2000)(pgvector hnsw 索引上限),维度不匹配 PG 会直接拒绝插入。
 func fakeEmbed(ctx context.Context, texts []string) ([][]float64, error) {
 	result := make([][]float64, 0, len(texts))
 	for _, text := range texts {
-		vector := make([]float64, 2000)
+		vector := make([]float64, 2048)
 		for i, r := range []rune(text) {
 			vector[i%4] += float64(r%17) / 17
 		}
@@ -32,8 +33,7 @@ func (fakeEmbedder) EmbedStrings(ctx context.Context, texts []string, _ ...embed
 	return fakeEmbed(ctx, texts)
 }
 
-// longFakeEmbedder 模拟 ark embedding-large:输出 2048 维(前 4 维按 hash,其余 0),
-// 验证 VectorStore 截断到表维度 2000 后能存能查。
+// longFakeEmbedder 模拟 ark embedding-large:输出 2048 维(前 4 维按 hash,其余 0)。
 type longFakeEmbedder struct{}
 
 func (longFakeEmbedder) EmbedStrings(ctx context.Context, texts []string, _ ...embedding.Option) ([][]float64, error) {
@@ -48,21 +48,37 @@ func (longFakeEmbedder) EmbedStrings(ctx context.Context, texts []string, _ ...e
 	return result, nil
 }
 
-// TestVectorTruncatesOversizedEmbedding:2048 维输入截断到 2000 维后往返成功。
-func TestVectorTruncatesOversizedEmbedding(t *testing.T) {
+type shortFakeEmbedder struct{}
+
+func (shortFakeEmbedder) EmbedStrings(context.Context, []string, ...embedding.Option) ([][]float64, error) {
+	return [][]float64{make([]float64, 1024)}, nil
+}
+
+func TestEmbedRejectsDimensionMismatch(t *testing.T) {
+	store := NewVectorStore(nil, shortFakeEmbedder{}, 2048)
+	if _, err := store.embed(context.Background(), "dimension"); err == nil {
+		t.Fatal("expected embedding dimension mismatch")
+	}
+}
+
+func TestVectorMemoryAcceptsConfiguredEmbeddingDimension(t *testing.T) {
 	ctx := context.Background()
 	db := setupPostgres(t)
 	store := NewVectorStore(db, longFakeEmbedder{}, 2048)
 
 	record := memorydomain.MemoryRecord{
 		MemoryID: fmt.Sprintf("memory-long-%d", time.Now().UnixNano()),
+		Scope:    "global",
 		Subject:  "截断",
 		Content:  "超维度向量截断后仍可检索",
+	}
+	if err := NewStore(db).UpsertMemory(ctx, record); err != nil {
+		t.Fatalf("store source memory: %v", err)
 	}
 	if err := store.StoreMemory(ctx, record); err != nil {
 		t.Fatalf("store memory: %v", err)
 	}
-	results, err := store.SearchMemories(ctx, "截断", 5, 0.0)
+	results, err := store.SearchMemories(ctx, "截断", 0, 0, 5, 0.0)
 	if err != nil {
 		t.Fatalf("search memories: %v", err)
 	}
@@ -74,12 +90,16 @@ func TestVectorTruncatesOversizedEmbedding(t *testing.T) {
 func TestVectorMemoryRoundtrip(t *testing.T) {
 	ctx := context.Background()
 	db := setupPostgres(t)
-	store := NewVectorStore(db, fakeEmbedder{}, 2000)
+	store := NewVectorStore(db, fakeEmbedder{}, 2048)
 
 	record := memorydomain.MemoryRecord{
 		MemoryID: fmt.Sprintf("memory-%d", time.Now().UnixNano()),
+		Scope:    "global",
 		Subject:  "梗",
 		Content:  "这个群爱聊旧梗",
+	}
+	if err := NewStore(db).UpsertMemory(ctx, record); err != nil {
+		t.Fatalf("store source memory: %v", err)
 	}
 	if err := store.StoreMemory(ctx, record); err != nil {
 		t.Fatalf("store memory: %v", err)
@@ -89,7 +109,7 @@ func TestVectorMemoryRoundtrip(t *testing.T) {
 		t.Fatalf("idempotent store: %v", err)
 	}
 
-	results, err := store.SearchMemories(ctx, "旧梗", 5, 0.0)
+	results, err := store.SearchMemories(ctx, "旧梗", 0, 0, 5, 0.0)
 	if err != nil {
 		t.Fatalf("search memories: %v", err)
 	}
@@ -101,7 +121,7 @@ func TestVectorMemoryRoundtrip(t *testing.T) {
 	}
 
 	// threshold=2.0(不可能达到的相似度)应过滤掉全部结果
-	none, err := store.SearchMemories(ctx, "旧梗", 5, 2.0)
+	none, err := store.SearchMemories(ctx, "旧梗", 0, 0, 5, 2.0)
 	if err != nil {
 		t.Fatalf("search with high threshold: %v", err)
 	}
@@ -113,7 +133,7 @@ func TestVectorMemoryRoundtrip(t *testing.T) {
 func TestVectorMemeRoundtrip(t *testing.T) {
 	ctx := context.Background()
 	db := setupPostgres(t)
-	store := NewVectorStore(db, fakeEmbedder{}, 2000)
+	store := NewVectorStore(db, fakeEmbedder{}, 2048)
 
 	memeID := fmt.Sprintf("meme-%d", time.Now().UnixNano())
 	if err := store.IndexMeme(ctx, memeID, "离谱文学配图", 1); err != nil {
@@ -144,6 +164,40 @@ func TestVectorMemeRoundtrip(t *testing.T) {
 	}
 	if len(after) != 0 {
 		t.Fatalf("expected 0 results after delete, got %d", len(after))
+	}
+}
+
+func TestVectorMemoryFiltersScopeAndExpiry(t *testing.T) {
+	ctx := context.Background()
+	db := setupPostgres(t)
+	source := NewStore(db)
+	store := NewVectorStore(db, fakeEmbedder{}, 2048)
+	now := time.Now()
+	records := []memorydomain.MemoryRecord{
+		{MemoryID: "vector-global", Scope: "global", Subject: "scope", Content: "shared", CreatedAt: now},
+		{MemoryID: "vector-group-1", Scope: "group:1", Subject: "scope", Content: "group one", CreatedAt: now},
+		{MemoryID: "vector-user-7", Scope: "group:1:user:7", Subject: "scope", Content: "user seven", CreatedAt: now},
+		{MemoryID: "vector-group-2", Scope: "group:2", Subject: "scope", Content: "group two", CreatedAt: now},
+		{MemoryID: "vector-expired", Scope: "group:1", Subject: "scope", Content: "expired", CreatedAt: now, ExpiresAt: ptrTime(now.Add(-time.Minute))},
+	}
+	for _, record := range records {
+		if err := source.UpsertMemory(ctx, record); err != nil {
+			t.Fatal(err)
+		}
+		if err := store.StoreMemory(ctx, record); err != nil {
+			t.Fatal(err)
+		}
+	}
+	results, err := store.SearchMemories(ctx, "scope", 1, 7, 10, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	seen := map[string]bool{}
+	for _, record := range results {
+		seen[record.MemoryID] = true
+	}
+	if !seen["vector-global"] || !seen["vector-group-1"] || !seen["vector-user-7"] || seen["vector-group-2"] || seen["vector-expired"] {
+		t.Fatalf("unexpected scoped vector results: %+v", results)
 	}
 }
 

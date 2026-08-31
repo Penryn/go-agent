@@ -65,6 +65,7 @@ func (p *AgentPlanner) Plan(ctx context.Context, snapshot conversationdomain.Con
 			MaxChars:        maxChars,
 		},
 	}
+	ctx = p.tools.ToolContext(ctx, toolContext.GroupID, toolContext.UserID)
 
 	returnDirectly := map[string]bool{
 		"speak_text":  true,

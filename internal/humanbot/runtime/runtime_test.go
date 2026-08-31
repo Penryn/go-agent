@@ -10,6 +10,7 @@ import (
 	"github.com/phlin/go-agent/internal/config"
 	conversationdomain "github.com/phlin/go-agent/internal/domain/conversation"
 	policydomain "github.com/phlin/go-agent/internal/domain/policy"
+	replydomain "github.com/phlin/go-agent/internal/domain/reply"
 	humandomain "github.com/phlin/go-agent/internal/humanbot/domain"
 	"github.com/phlin/go-agent/internal/humanbot/runtime/deliberation"
 	"github.com/phlin/go-agent/internal/humanbot/runtime/group_actor"
@@ -25,6 +26,28 @@ type failingDeliberator struct{}
 
 func (failingDeliberator) Deliberate(context.Context, deliberation.Input) (deliberation.Result, error) {
 	return deliberation.Result{}, errors.New("deliberation failed")
+}
+
+type recordingDeliberator struct{ calls int }
+
+func (d *recordingDeliberator) Deliberate(_ context.Context, input deliberation.Input) (deliberation.Result, error) {
+	d.calls++
+	return deliberation.Result{
+		Snapshot: conversationdomain.ContextSnapshot{Event: input.Envelope.Event},
+		Decision: policydomain.AutonomyDecision{DecisionID: "model-decision", Action: policydomain.ActionReply},
+		Plan:     replydomain.ReplyPlan{Bubbles: []string{"model considered this"}, PlannedActions: []policydomain.DecisionAction{policydomain.ActionReply}, SendMode: "group"},
+	}, nil
+}
+
+type blockingTurnObserver struct{ checks int }
+
+func (o *blockingTurnObserver) CanDeliberate(context.Context, int64, time.Time) (bool, error) {
+	o.checks++
+	return false, nil
+}
+
+func (*blockingTurnObserver) AfterTurn(context.Context, conversationdomain.ContextSnapshot, policydomain.AutonomyDecision, replydomain.ActionReceipt) error {
+	return nil
 }
 
 func TestProcessRawEventUsesCandidateRuntime(t *testing.T) {
@@ -88,6 +111,31 @@ func TestProcessRawEventSendsOrdinaryContentToPlanner(t *testing.T) {
 	}
 	if !outcome.Receipt.Sent {
 		t.Fatalf("ordinary content did not reach planner: %+v", outcome.Receipt)
+	}
+}
+
+func TestRateLimitAppliesAfterModelDeliberation(t *testing.T) {
+	ctx := context.Background()
+	cfg := config.Default()
+	cfg.QQ.SelfID = 123456
+	working := group_actor.NewManager(ingress.NewMemoryEventLog())
+	defer working.Close()
+	planner := &recordingDeliberator{}
+	turns := &blockingTurnObserver{}
+	runtime := New(ctx, normalizer.New("onebot", cfg.QQ.SelfID, cfg.Persona.Aliases), working, planner, nil, turns,
+		action.New(inmemory.NewSender(), nil, nil), Config{SelfID: cfg.QQ.SelfID})
+	defer runtime.Close()
+
+	payload := []byte(`{"post_type":"message","message_type":"group","time":1710000000,"self_id":123456,"group_id":100,"user_id":200,"message_id":"m-rate","message":[{"type":"text","data":{"text":"普通闲聊"}}]}`)
+	outcome, err := runtime.ProcessRawEvent(ctx, payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if planner.calls != 1 || turns.checks != 1 {
+		t.Fatalf("expected one model decision before rate check, model=%d checks=%d", planner.calls, turns.checks)
+	}
+	if outcome.Decision.Action != policydomain.ActionSilent || outcome.Receipt.Sent {
+		t.Fatalf("rate limit did not suppress only output: %+v", outcome)
 	}
 }
 

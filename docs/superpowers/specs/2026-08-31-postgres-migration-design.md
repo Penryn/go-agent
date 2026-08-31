@@ -70,7 +70,7 @@ CREATE INDEX ON memory_vectors USING hnsw (embedding vector_cosine_ops);
 CREATE INDEX ON meme_vectors USING hnsw (embedding vector_cosine_ops);
 ```
 
-`vector(2048)` 维度写死在 DDL。启动时校验配置的 `vector_dim` 与表结构一致,不一致拒绝启动(fail-fast,优于 Qdrant 时代的静默行为)。embedding 模型换维度时插入直接报错,同样 fail-fast。
+`halfvec(2048)` 维度写死在 DDL。启动时校验配置的 `vector_dim` 与表结构一致,不一致拒绝启动(fail-fast,优于 Qdrant 时代的静默行为)。embedding 模型换维度时必须创建新 profile 并重嵌入，不能与旧 profile 混用。
 
 ### 检索语义
 

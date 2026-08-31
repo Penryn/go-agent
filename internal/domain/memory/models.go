@@ -12,6 +12,7 @@ type MemoryRecord struct {
 	DescriptorRef string     `json:"descriptor_ref" yaml:"descriptor_ref"`
 	Confidence    float64    `json:"confidence" yaml:"confidence"`
 	Importance    float64    `json:"importance" yaml:"importance"`
+	Revision      int64      `json:"revision" yaml:"revision"`
 	CreatedAt     time.Time  `json:"created_at" yaml:"created_at"`
 	ExpiresAt     *time.Time `json:"expires_at,omitempty" yaml:"expires_at,omitempty"`
 }

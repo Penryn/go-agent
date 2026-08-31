@@ -10,6 +10,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -20,15 +21,30 @@ import (
 )
 
 type codexTool struct {
-	cfg   config.CodexConfig
-	slots chan struct{}
+	cfg        config.CodexConfig
+	slots      chan struct{}
+	approvals  *WriteApprovalStore
+	writeUsers map[int64]struct{}
 }
 
 type codexArgs struct {
-	Task string `json:"task"`
+	Task  string `json:"task"`
+	Write bool   `json:"write"`
 }
 
 func NewCodexTool(cfg config.CodexConfig) tool.BaseTool {
+	return newCodexTool(cfg, nil, nil)
+}
+
+func NewCodexToolWithApproval(cfg config.CodexConfig, approvals *WriteApprovalStore, writeUsers ...[]int64) tool.BaseTool {
+	var allowed []int64
+	if len(writeUsers) > 0 {
+		allowed = writeUsers[0]
+	}
+	return newCodexTool(cfg, approvals, allowed)
+}
+
+func newCodexTool(cfg config.CodexConfig, approvals *WriteApprovalStore, writeUsers []int64) tool.BaseTool {
 	if !cfg.Enabled {
 		return nil
 	}
@@ -38,18 +54,28 @@ func NewCodexTool(cfg config.CodexConfig) tool.BaseTool {
 	if cfg.CWD == "" {
 		cfg.CWD, _ = os.Getwd()
 	}
+	if absolute, err := filepath.Abs(cfg.CWD); err == nil {
+		cfg.CWD = absolute
+	}
 	if cfg.MaxConcurrency <= 0 {
 		cfg.MaxConcurrency = 1
 	}
-	return &codexTool{cfg: cfg, slots: make(chan struct{}, cfg.MaxConcurrency)}
+	allowed := make(map[int64]struct{}, len(writeUsers))
+	for _, userID := range writeUsers {
+		if userID != 0 {
+			allowed[userID] = struct{}{}
+		}
+	}
+	return &codexTool{cfg: cfg, slots: make(chan struct{}, cfg.MaxConcurrency), approvals: approvals, writeUsers: allowed}
 }
 
 func (t *codexTool) Info(context.Context) (*schema.ToolInfo, error) {
 	return &schema.ToolInfo{
 		Name: "delegate_codex_task",
-		Desc: "Delegate a complex local read-only task to Codex app-server. Use for multi-step code, repository, file, shell, browser, or research work; use a direct MCP tool for simple lookups.",
+		Desc: "Delegate a complex local task to Codex app-server. Defaults to read-only. Set write=true for a project edit; only QQ users in the write whitelist may use it. Destructive edits still require explicit QQ confirmation, and all writes are limited to the configured project cwd.",
 		ParamsOneOf: schema.NewParamsOneOfByParams(map[string]*schema.ParameterInfo{
-			"task": {Type: schema.String, Required: true, Desc: "A self-contained task with the desired outcome and relevant constraints."},
+			"task":  {Type: schema.String, Required: true, Desc: "A self-contained task with the desired outcome and relevant constraints."},
+			"write": {Type: schema.Boolean, Desc: "Request file writes. Requires the caller to be in the configured QQ whitelist; destructive tasks also require explicit confirmation."},
 		}),
 	}, nil
 }
@@ -62,6 +88,23 @@ func (t *codexTool) InvokableRun(ctx context.Context, argumentsInJSON string, _ 
 	if strings.TrimSpace(args.Task) == "" {
 		return "", errors.New("Codex task is required")
 	}
+	groupID, userID, hasIdentity := toolIdentity(ctx)
+	if args.Write {
+		if _, ok := t.writeUsers[userID]; !ok {
+			return marshal(map[string]string{"status": "write_forbidden", "message": "只有 Codex 写权限 QQ 白名单内的用户可以修改项目文件。"})
+		}
+		// Trusted users can run ordinary workspace edits directly. Destructive
+		// requests still require an explicit QQ confirmation for the exact task.
+		if dangerousWriteTask(args.Task) {
+			if !hasIdentity || t.approvals == nil || !t.approvals.Consume(groupID, userID, args.Task, time.Now()) {
+				if !hasIdentity || t.approvals == nil {
+					return marshal(map[string]string{"status": "confirmation_required", "message": "该写入任务可能有破坏性影响，请先在 QQ 中明确回复“确认”或“允许”。"})
+				}
+				message := t.approvals.Request(groupID, userID, args.Task, time.Now())
+				return marshal(map[string]string{"status": "confirmation_required", "message": message})
+			}
+		}
+	}
 	select {
 	case t.slots <- struct{}{}:
 		defer func() { <-t.slots }()
@@ -72,11 +115,27 @@ func (t *codexTool) InvokableRun(ctx context.Context, argumentsInJSON string, _ 
 	timeout := parseToolDuration(t.cfg.Timeout, 5*time.Minute)
 	runCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
-	answer, err := runCodexAppServer(runCtx, t.cfg, args.Task)
+	answer, err := runCodexAppServer(runCtx, t.cfg, args.Task, args.Write)
 	if err != nil {
 		return "", err
 	}
 	return marshal(map[string]string{"answer": answer})
+}
+
+func dangerousWriteTask(task string) bool {
+	task = strings.ToLower(strings.TrimSpace(task))
+	for _, marker := range []string{
+		"rm -", "rmdir", "remove", "delete", "删", "删除", "覆盖", "overwrite",
+		"format", "chmod", "chown", "kill", "secret", "credential", "token",
+		"password", ".env", "密钥", "密码", "批量重命名", "execute", "exec ",
+		"shell", "command", "script", "脚本", "命令", "联网", "network",
+		"download", "install", "安装",
+	} {
+		if strings.Contains(task, marker) {
+			return true
+		}
+	}
+	return false
 }
 
 type appServerMessage struct {
@@ -90,7 +149,8 @@ type appServerMessage struct {
 	} `json:"error,omitempty"`
 }
 
-func runCodexAppServer(ctx context.Context, cfg config.CodexConfig, task string) (string, error) {
+func runCodexAppServer(ctx context.Context, cfg config.CodexConfig, task string, writeRequest ...bool) (string, error) {
+	write := len(writeRequest) > 0 && writeRequest[0]
 	cmd := exec.CommandContext(ctx, cfg.Binary, "app-server")
 	cmd.Dir = cfg.CWD
 	stdin, err := cmd.StdinPipe()
@@ -148,8 +208,12 @@ func runCodexAppServer(ctx context.Context, cfg config.CodexConfig, task string)
 		return "", err
 	}
 
+	sandbox := "readOnly"
+	if write {
+		sandbox = "workspaceWrite"
+	}
 	threadParams := map[string]any{
-		"cwd": cfg.CWD, "approvalPolicy": "never", "sandbox": "readOnly",
+		"cwd": cfg.CWD, "approvalPolicy": "never", "sandbox": sandbox,
 		"serviceName": "qq_group_bot", "ephemeral": true,
 	}
 	if cfg.Model != "" {
@@ -173,11 +237,17 @@ func runCodexAppServer(ctx context.Context, cfg config.CodexConfig, task string)
 	}
 
 	id++
+	// Network access remains an explicit operator configuration for both
+	// read-only and write-capable turns.
+	sandboxPolicy := map[string]any{"type": sandbox, "networkAccess": cfg.NetworkEnabled}
+	if write {
+		sandboxPolicy["writableRoots"] = []string{cfg.CWD}
+	}
 	if err := send("turn/start", &id, map[string]any{
 		"threadId":       started.Thread.ID,
 		"input":          []map[string]string{{"type": "text", "text": task}},
 		"approvalPolicy": "never",
-		"sandboxPolicy":  map[string]any{"type": "readOnly", "networkAccess": cfg.NetworkEnabled},
+		"sandboxPolicy":  sandboxPolicy,
 	}); err != nil {
 		return "", err
 	}
