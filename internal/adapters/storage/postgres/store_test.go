@@ -12,6 +12,8 @@ import (
 	conversationdomain "github.com/phlin/go-agent/internal/domain/conversation"
 	mediadomain "github.com/phlin/go-agent/internal/domain/media"
 	memorydomain "github.com/phlin/go-agent/internal/domain/memory"
+	personadomain "github.com/phlin/go-agent/internal/domain/persona"
+	policydomain "github.com/phlin/go-agent/internal/domain/policy"
 	profiledomain "github.com/phlin/go-agent/internal/domain/profile"
 	replydomain "github.com/phlin/go-agent/internal/domain/reply"
 	humandomain "github.com/phlin/go-agent/internal/humanbot/domain"
@@ -300,6 +302,68 @@ func TestWatermarksAndThoughts(t *testing.T) {
 	}
 	if loaded.GroupID != 1 {
 		t.Fatalf("unexpected working memory: %+v", loaded)
+	}
+}
+
+func TestRuntimeStates(t *testing.T) {
+	ctx := context.Background()
+	db := setupPostgres(t)
+	store := NewStateStore(db)
+
+	// runtime state:保存后可读回
+	rs := policydomain.RuntimeState{GroupID: 1, State: policydomain.StateObserving}
+	if err := store.SaveRuntimeState(ctx, rs); err != nil {
+		t.Fatalf("save runtime state: %v", err)
+	}
+	got, err := store.GetRuntimeState(ctx, 1)
+	if err != nil {
+		t.Fatalf("get runtime state: %v", err)
+	}
+	if got.State != policydomain.StateObserving {
+		t.Fatalf("unexpected runtime state: %+v", got)
+	}
+
+	// persona state:未保存时返回默认值(mood=steady)
+	pDefault, err := store.GetPersonaState(ctx, "main", 1)
+	if err != nil {
+		t.Fatalf("get default persona state: %v", err)
+	}
+	if pDefault.Mood != "steady" || pDefault.PersonaID != "main" {
+		t.Fatalf("unexpected default persona state: %+v", pDefault)
+	}
+
+	// persona state:保存后可读回
+	ps := personadomain.PersonaState{
+		PersonaID: "main", GroupID: 1,
+		Mood: "excited", Energy: "high",
+		ExpiresAt: time.Now().Add(2 * time.Hour),
+	}
+	if err := store.SavePersonaState(ctx, ps); err != nil {
+		t.Fatalf("save persona state: %v", err)
+	}
+	gotPs, err := store.GetPersonaState(ctx, "main", 1)
+	if err != nil {
+		t.Fatalf("get persona state: %v", err)
+	}
+	if gotPs.Mood != "excited" {
+		t.Fatalf("unexpected persona state: %+v", gotPs)
+	}
+
+	// TTL 语义:expires_at 已过期的状态视为不存在,返回默认值
+	expired := personadomain.PersonaState{
+		PersonaID: "main", GroupID: 2,
+		Mood: "angry", Energy: "low",
+		ExpiresAt: time.Now().Add(-time.Minute),
+	}
+	if err := store.SavePersonaState(ctx, expired); err != nil {
+		t.Fatalf("save expired persona state: %v", err)
+	}
+	gotExpired, err := store.GetPersonaState(ctx, "main", 2)
+	if err != nil {
+		t.Fatalf("get expired persona state: %v", err)
+	}
+	if gotExpired.Mood != "steady" {
+		t.Fatalf("expired state should fall back to default, got %+v", gotExpired)
 	}
 }
 
