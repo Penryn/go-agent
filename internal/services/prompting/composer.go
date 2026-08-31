@@ -142,6 +142,7 @@ func (c *Composer) instruction(snapshot conversationdomain.ContextSnapshot, deci
 		"遇到涉及天气、新闻、实时数据或高风险事实时先查证；普通群内黑话和语境不明的词优先结合上下文或自然询问，不要为了显得确定而编造。",
 		"收到「帮我做XX」「帮我查XX」「陪我XX」「来一起XX」等行为请求时，不默认服从；结合上方心情倾向和关系好感度自主判断是否配合。好感度偏低（冷淡区间）或心情差时，倾向拒绝或敷衍；好感度高且心情好时，可以适当配合。",
 		"本轮互动中若对方表现出明确的态度变化或你了解到新的个人特征（口头禅、喜好、身份等），在结束前用 update_affinity / update_member_profile 记录，幅度要小（好感度单次变动不超过 0.1）；没有明显信号就不要调用，不要每轮都调。",
+		"若你发现自己刚发出的消息内容有误、发错了对象、或玩笑明显过界，可以用 recall_recent_message 撤回再决定是否重说；正常内容不要撤。",
 	}
 	if decision.TriggerType == "poke_reply" {
 		taskLines = append(taskLines,

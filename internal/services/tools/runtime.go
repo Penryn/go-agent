@@ -634,9 +634,9 @@ func (t *recallRecentMessageTool) Name() string            { return "recall_rece
 func (t *recallRecentMessageTool) Info(_ context.Context) (*schema.ToolInfo, error) {
 	return &schema.ToolInfo{
 		Name: t.Name(),
-		Desc: "Recall a recent bot message through the runtime executor.",
+		Desc: "撤回自己最近发出的一条消息。用于社交修复：发现刚说的话内容错了、发错对象、玩笑过了会冒犯人时，撤回比留着更得体。不要撤回正常内容。",
 		ParamsOneOf: schema.NewParamsOneOfByParams(map[string]*schema.ParameterInfo{
-			"message_id":  {Type: schema.String, Required: true, Desc: "Target bot message ID."},
+			"message_id":  {Type: schema.String, Required: true, Desc: "要撤回的 bot 消息 ID。"},
 			"reason_code": {Type: schema.String, Desc: "Optional reason."},
 		}),
 	}, nil
