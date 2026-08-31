@@ -246,3 +246,32 @@ func eventRecord(id string, groupID, userID int64, text string, at time.Time) hu
 		},
 	}
 }
+
+func TestPokeEventProducesHighUrgencyCandidate(t *testing.T) {
+	log := ingress.NewMemoryEventLog()
+	manager := NewManager(log)
+	defer manager.Close()
+
+	poke := eventRecord("poke-1", 1, 7, "", time.Unix(100, 0))
+	poke.Event.Kind = conversationdomain.EventPoke
+	memory, err := manager.Observe(context.Background(), poke)
+	if err != nil {
+		t.Fatalf("observe poke: %v", err)
+	}
+	if len(memory.Candidates) != 1 {
+		t.Fatalf("expected one poke candidate, got %d", len(memory.Candidates))
+	}
+	candidate := memory.Candidates[0]
+	if candidate.Intent != "poke_reply" || candidate.Score < 0.7 {
+		t.Fatalf("unexpected poke candidate: %+v", candidate)
+	}
+	// poke 不进 burst 合并
+	if len(memory.CurrentBurst.EventIDs) != 0 {
+		t.Fatalf("poke should not join the conversation burst: %+v", memory.CurrentBurst)
+	}
+	// 到期后可被 claim（DueAt = poke 时刻 + 1.2s）
+	claimed, ok, err := manager.ClaimDue(context.Background(), 1, time.Unix(102, 0), 0.5)
+	if err != nil || !ok || claimed.Intent != "poke_reply" {
+		t.Fatalf("poke candidate should be claimable: ok=%v err=%v intent=%s", ok, err, claimed.Intent)
+	}
+}

@@ -105,6 +105,10 @@ func resolveAction(intent string, fallback policydomain.DecisionAction, proposed
 		if allowed(policydomain.ActionMemeOnly, policydomain.ActionSilent) {
 			return action
 		}
+	case "poke_reply":
+		if allowed(policydomain.ActionPokeReply, policydomain.ActionReply, policydomain.ActionMemeOnly, policydomain.ActionSilent) {
+			return action
+		}
 	case "observe_only":
 		return policydomain.ActionSilent
 	}
@@ -122,6 +126,8 @@ func decisionFor(envelope conversationdomain.EventEnvelope, candidate humandomai
 		action = policydomain.ActionMemeOnly
 	case "answer", "acknowledge", "continue_topic", "follow_up", "question", "request_help", "support", "gratitude", "banter":
 		action = policydomain.ActionReply
+	case "poke_reply":
+		action = policydomain.ActionPokeReply
 	default:
 		action = policydomain.ActionSilent
 	}

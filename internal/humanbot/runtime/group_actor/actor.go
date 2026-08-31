@@ -470,6 +470,12 @@ func reduce(memory humandomain.GroupWorkingMemory, record humandomain.EventRecor
 	if record.Event.Kind == conversationdomain.EventMeta {
 		return memory
 	}
+	// 被戳是强互动信号：真人几乎必回（哪怕只是一句抱怨），单独生成
+	// 高优先级 candidate，不进 burst 合并。
+	if record.Event.Kind == conversationdomain.EventPoke {
+		memory.Candidates = append(memory.Candidates, pokeCandidate(record))
+		return memory
+	}
 
 	burst := memory.CurrentBurst
 	if burst.UserID == record.UserID && !burst.LastAt.IsZero() && record.Timestamp.Sub(burst.LastAt) <= burstWindow {
@@ -545,8 +551,27 @@ func candidateFor(record humandomain.EventRecord, burst humandomain.Conversation
 	}
 }
 
-// classifyDialogueAct keeps the candidate seam cheap and deterministic while
-// preserving the user's likely conversational purpose for the planner.
+// pokeCandidate 为被戳事件生成高优先级回应机会。延迟略长于被 @，
+// 留出「愣了一下才反应过来」的自然间隔。
+func pokeCandidate(record humandomain.EventRecord) humandomain.ThoughtCandidate {
+	return humandomain.ThoughtCandidate{
+		CandidateID:    record.EventID + "-candidate",
+		SourceEventIDs: []string{record.EventID},
+		TopicID:        "poke",
+		Addressee:      record.UserID,
+		Intent:         "poke_reply",
+		Urgency:        0.8,
+		Score:          0.8,
+		DueAt:          record.Timestamp.Add(1200 * time.Millisecond),
+		ExpiresAt:      record.Timestamp.Add(time.Minute),
+		Uncertainty:    0.2,
+		ReasonCode:     "poked",
+		DeliveryTarget: "group",
+		Status:         humandomain.CandidatePending,
+	}
+}
+
+// classifyDialogueAct keeps the candidate seam cheap and deterministic while// preserving the user's likely conversational purpose for the planner.
 func classifyDialogueAct(text string, direct, hasAttachment bool) (string, float64, string) {
 	text = strings.TrimSpace(text)
 	if hasAttachment && !direct {
