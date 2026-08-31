@@ -29,7 +29,7 @@ type WorkingMemoryReader interface {
 
 type Service struct {
 	memoryStore       ports.MemoryStore
-	vectorStore       ports.VectorMemoryStore // 可为 NoopVectorStore，不影响主流程
+	vectorStore       ports.VectorMemoryStore // 可为 nil，nil 时跳过语义检索副轨
 	profileStore      ports.ProfileStore
 	stateStore        ports.RuntimeStateStore
 	policy            *policysvc.Service
@@ -268,7 +268,7 @@ func (s *Service) queryMemoriesDualTrack(ctx context.Context, groupID, userID in
 
 	// Track 2: 语义向量检索（副轨，失败时降级，不影响主流程）
 	g.Go(func() error {
-		if queryText == "" {
+		if queryText == "" || s.vectorStore == nil {
 			return nil
 		}
 		var err error

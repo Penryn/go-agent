@@ -78,7 +78,7 @@ cd go-agent
 docker compose up -d
 ```
 
-启动 PostgreSQL、MinIO、NapCat 三个服务。
+启动 PostgreSQL、NapCat 两个服务。
 
 ### 2. 登录 QQ
 
@@ -167,8 +167,6 @@ go run ./cmd/qqbotd -config configs/config.yaml
 | `QQBOT_VISION_MODEL_API_KEY` | Vision 模型 Key（可选） |
 | `QQBOT_EMBEDDING_MODEL_API_KEY` | Embedding 模型 Key（预留） |
 | `QQBOT_STORAGE_POSTGRES_PASSWORD` | PostgreSQL 密码 |
-| `QQBOT_STORAGE_MINIO_ACCESS_KEY` | MinIO Access Key |
-| `QQBOT_STORAGE_MINIO_SECRET_KEY` | MinIO Secret Key |
 
 </details>
 
@@ -188,7 +186,7 @@ go run ./cmd/qqbotd -config configs/config.yaml
 | `memory` | 长期记忆 top_k、TTL、写入阈值 |
 | `meme` | 表情包收藏、去重阈值、发送冷却 |
 | `multimodal` | 图片 / 视频下载超时、抽帧数、视觉预算 |
-| `storage` | PostgreSQL、MinIO 连接信息 |
+| `storage` | PostgreSQL 连接信息 |
 | `qq` | QQ 开关、自身 ID、出入站地址、群白名单 |
 
 </details>
@@ -245,7 +243,7 @@ go-agent/
 │   │   ├── outbound/napcat/ #   HTTP 出站动作
 │   │   ├── model/           #   LLM 工厂（Ark / OpenAI）
 │   │   ├── inmemory/        #   内存存储（开发用）
-│   │   └── storage/         #   PostgreSQL / MinIO
+│   │   └── storage/         #   PostgreSQL
 │   ├── runtime/
 │   │   ├── bootstrap/       #   应用初始化与依赖组装
 │   │   └── scheduler/       #   后台任务调度

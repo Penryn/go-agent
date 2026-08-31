@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/phlin/go-agent/internal/core/ports"
+	"github.com/phlin/go-agent/internal/services/textutil"
 )
 
 type Handler func(context.Context, []byte) error
@@ -150,21 +151,11 @@ func (r *Runtime) processBatch(workerID string, now time.Time) {
 			}
 			continue
 		}
-		retryAt := time.Now().Add(backoff(task.Attempts))
+		retryAt := time.Now().Add(textutil.Backoff(task.Attempts, 2*time.Second, 256*time.Second))
 		if failErr := r.store.FailOutbox(context.Background(), task.ID, err, retryAt); failErr != nil {
 			slog.Warn("outbox: fail update failed", "task_id", task.ID, "error", failErr)
 		}
 	}
-}
-
-func backoff(attempt int) time.Duration {
-	if attempt < 1 {
-		attempt = 1
-	}
-	if attempt > 8 {
-		attempt = 8
-	}
-	return time.Duration(1<<attempt) * time.Second
 }
 
 func (r *Runtime) Close() error {

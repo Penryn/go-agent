@@ -13,10 +13,6 @@ app:
 server:
   # HTTP 服务监听地址。
   http_listen: ":8088"
-  # 入站事件接口读超时。
-  read_timeout: 5s
-  # 入站事件接口写超时。
-  write_timeout: 10s
 
 runtime:
   # 预留的运行时 worker 数。
@@ -214,14 +210,6 @@ memory:
     reaction_pattern: 360h      # 互动套路 15 天
     group_slang: 720h           # 群流行词 30 天
     user_catchphrase: 2160h     # 个人口癖 90 天
-  type_enabled:
-    preference: true
-    relationship: true
-    meme_usage: true
-    group_slang: true
-    topic_keyword: true
-    reaction_pattern: true
-    user_catchphrase: true
   # 达到该阈值后才写入长期记忆。
   write_threshold: 0.65
   # 语义检索配置（F3 双轨记忆），向量检索由 storage.postgres 提供。
@@ -261,12 +249,6 @@ storage:
     # 向量维度，须与 embedding 模型输出维度一致。Doubao embedding-large 为 2048，lite 为 1024。
     vector_dim: 2048
     # 私密项 password 从 .env 的 QQBOT_STORAGE_POSTGRES_PASSWORD 读取。
-  minio:
-    endpoint: 127.0.0.1:9000
-    bucket: qqbot-media
-    use_ssl: false
-    # 私密项 access/secret key 从 .env 的
-    # QQBOT_STORAGE_MINIO_ACCESS_KEY / QQBOT_STORAGE_MINIO_SECRET_KEY 读取。
 
 qq:
   # 为 false 时，不连接 NapCat，也不发真实 OneBot 动作，适合本地最小链路验证。

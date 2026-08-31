@@ -33,9 +33,7 @@ type AppConfig struct {
 }
 
 type ServerConfig struct {
-	HTTPListen   string `yaml:"http_listen"`
-	ReadTimeout  string `yaml:"read_timeout"`
-	WriteTimeout string `yaml:"write_timeout"`
+	HTTPListen string `yaml:"http_listen"`
 }
 
 type RuntimeConfig struct {
@@ -67,7 +65,6 @@ type MemoryConfig struct {
 	// TypeTTL 按记忆类型指定差异化 TTL，覆盖 DefaultTTL。
 	// 例：topic_keyword: 168h, reaction_pattern: 360h, group_slang: 720h, user_catchphrase: 2160h
 	TypeTTL           map[string]string `yaml:"type_ttl"`
-	TypeEnabled       map[string]bool   `yaml:"type_enabled"`
 	WriteThreshold    float64           `yaml:"write_threshold"`
 	SemanticTopK      int               `yaml:"semantic_top_k"`     // 语义检索返回数量，0 时使用 TopK 值
 	SemanticThreshold float64           `yaml:"semantic_threshold"` // 向量相似度过滤阈值，低于此值的结果被丢弃
@@ -93,7 +90,6 @@ type MultimodalConfig struct {
 
 type StorageConfig struct {
 	Postgres PostgresConfig `yaml:"postgres"`
-	MinIO    MinIOConfig    `yaml:"minio"`
 }
 
 type PostgresConfig struct {
@@ -117,14 +113,6 @@ func (c PostgresConfig) DSN() string {
 		url.PathEscape(c.User), url.PathEscape(c.Password),
 		net.JoinHostPort(c.Host, strconv.Itoa(c.Port)),
 		url.PathEscape(c.Database), sslMode)
-}
-
-type MinIOConfig struct {
-	Endpoint  string `yaml:"endpoint"`
-	AccessKey string `yaml:"-"`
-	SecretKey string `yaml:"-"`
-	Bucket    string `yaml:"bucket"`
-	UseSSL    bool   `yaml:"use_ssl"`
 }
 
 type QQConfig struct {

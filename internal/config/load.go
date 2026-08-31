@@ -20,9 +20,7 @@ func Default() Config {
 			Mode: "dev",
 		},
 		Server: ServerConfig{
-			HTTPListen:   ":8088",
-			ReadTimeout:  "5s",
-			WriteTimeout: "10s",
+			HTTPListen: ":8088",
 		},
 		Runtime: RuntimeConfig{
 			WorkerCount:  2,
@@ -66,13 +64,8 @@ func Default() Config {
 			BotDominanceSuppressSec:  60,
 		},
 		Memory: MemoryConfig{
-			TopK:       6,
-			DefaultTTL: "720h",
-			TypeEnabled: map[string]bool{
-				"preference":   true,
-				"relationship": true,
-				"meme_usage":   true,
-			},
+			TopK:           6,
+			DefaultTTL:     "720h",
 			WriteThreshold: 0.65,
 		},
 		Meme: MemeConfig{
@@ -98,7 +91,6 @@ func Default() Config {
 				SSLMode:   "disable",
 				VectorDim: 2048,
 			},
-			MinIO: MinIOConfig{Endpoint: "127.0.0.1:9000", Bucket: "qqbot-media", UseSSL: false},
 		},
 		QQ: QQConfig{
 			Enabled:     false,
@@ -178,8 +170,6 @@ func overrideWithEnvSecrets(cfg *Config) {
 	stringOverride("QQBOT_VISION_MODEL_API_KEY", &cfg.Models.Vision.APIKey)
 	stringOverride("QQBOT_EMBEDDING_MODEL_API_KEY", &cfg.Models.Embedding.APIKey)
 	stringOverride("QQBOT_STORAGE_POSTGRES_PASSWORD", &cfg.Storage.Postgres.Password)
-	stringOverride("QQBOT_STORAGE_MINIO_ACCESS_KEY", &cfg.Storage.MinIO.AccessKey)
-	stringOverride("QQBOT_STORAGE_MINIO_SECRET_KEY", &cfg.Storage.MinIO.SecretKey)
 	stringOverride("QQBOT_QQ_ACCESS_TOKEN", &cfg.QQ.AccessToken)
 }
 

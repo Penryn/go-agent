@@ -41,7 +41,6 @@ import (
 	policysvc "github.com/phlin/go-agent/internal/services/policy"
 	profilesvc "github.com/phlin/go-agent/internal/services/profile"
 	promptingsvc "github.com/phlin/go-agent/internal/services/prompting"
-	reviewsvc "github.com/phlin/go-agent/internal/services/review"
 	toolsvc "github.com/phlin/go-agent/internal/services/tools"
 )
 
@@ -81,8 +80,8 @@ func NewApp(ctx context.Context, cfg config.Config) (*App, error) {
 	vectorMemoryStore := vectorGraph.memory
 	memeVectorStore := vectorGraph.meme
 
-	// contextService 需要 VectorMemoryStore（无向量存储时降级为 NoopVectorStore）
-	var vectorStore ports.VectorMemoryStore = ports.NoopVectorStore{}
+	// contextService 需要 VectorMemoryStore（无向量存储时为 nil，调用方跳过语义检索）
+	var vectorStore ports.VectorMemoryStore
 	if vectorMemoryStore != nil {
 		vectorStore = vectorMemoryStore
 	}
@@ -248,13 +247,24 @@ func NewApp(ctx context.Context, cfg config.Config) (*App, error) {
 	moodSvc.RegisterJobs(sched, cfg.QQ.GroupWhitelist)
 
 	// learning service：接入运行时，每 6 小时对白名单群跑一次增量学习
-	reviewService := reviewsvc.New(memorySvc)
 	profileService := profilesvc.New(stores.profile, cfg.Persona.ID)
 	curatorService, curatorErr := curatorsvc.New(ctx)
 	if curatorErr != nil {
 		_ = backgroundRuntime.Close(context.Background())
 		_ = stores.Close()
 		return nil, fmt.Errorf("curator service init: %w", curatorErr)
+	}
+	// applyCurator 把 curator 提取的亮点写入长期记忆（置信度阈值过滤）。
+	applyCurator := func(jobCtx context.Context, intents []memsvc.WriteIntent) error {
+		for _, intent := range intents {
+			if intent.Confidence < 0.7 {
+				continue
+			}
+			if _, err := memorySvc.MarkIntent(jobCtx, intent); err != nil {
+				return err
+			}
+		}
+		return nil
 	}
 	if durableOutbox != nil {
 		if err := durableOutbox.Register("curator_turn", func(jobCtx context.Context, payload []byte) error {
@@ -266,7 +276,7 @@ func NewApp(ctx context.Context, cfg config.Config) (*App, error) {
 			if err != nil {
 				return err
 			}
-			return reviewService.ApplyCurator(jobCtx, out.MemoryIntents)
+			return applyCurator(jobCtx, out.MemoryIntents)
 		}); err != nil {
 			_ = durableOutbox.Close()
 			_ = backgroundRuntime.Close(context.Background())
@@ -295,7 +305,7 @@ func NewApp(ctx context.Context, cfg config.Config) (*App, error) {
 				if err != nil {
 					return err
 				}
-				if err := reviewService.ApplyCurator(jobCtx, out.MemoryIntents); err != nil {
+				if err := applyCurator(jobCtx, out.MemoryIntents); err != nil {
 					return err
 				}
 				_ = receipt
@@ -311,7 +321,7 @@ func NewApp(ctx context.Context, cfg config.Config) (*App, error) {
 	if durableOutbox != nil {
 		learningOpts = append(learningOpts, learningsvc.WithOutbox(durableOutbox))
 	}
-	learningSvc, learnErr := learningsvc.New(ctx, stores.memory, stores.learning, reviewService, learningOpts...)
+	learningSvc, learnErr := learningsvc.New(ctx, stores.memory, stores.learning, memorySvc, learningOpts...)
 	if learnErr != nil {
 		_ = backgroundRuntime.Close(context.Background())
 		_ = stores.Close()
@@ -360,8 +370,8 @@ func NewApp(ctx context.Context, cfg config.Config) (*App, error) {
 	app.server = &http.Server{
 		Addr:         cfg.Server.HTTPListen,
 		Handler:      mux,
-		ReadTimeout:  mustDuration(cfg.Server.ReadTimeout, 5*time.Second),
-		WriteTimeout: mustDuration(cfg.Server.WriteTimeout, 10*time.Second),
+		ReadTimeout:  5 * time.Second,
+		WriteTimeout: 10 * time.Second,
 	}
 
 	return app, nil

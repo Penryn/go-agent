@@ -10,7 +10,6 @@ import (
 	"strings"
 
 	"github.com/phlin/go-agent/internal/adapters/inmemory"
-	miniostore "github.com/phlin/go-agent/internal/adapters/storage/minio"
 	postgresstore "github.com/phlin/go-agent/internal/adapters/storage/postgres"
 	"github.com/phlin/go-agent/internal/config"
 	"github.com/phlin/go-agent/internal/core/ports"
@@ -69,11 +68,6 @@ func newStoreBundle(ctx context.Context, cfg config.Config) (*storeBundle, error
 	// 状态库与关系库共用同一 PG 连接池（阶段 A：替代 Redis StateStore）
 	bundle.state = postgresstore.NewStateStore(db)
 
-	if err := ensureMinIO(ctx, cfg.Storage.MinIO); err != nil {
-		_ = bundle.Close()
-		return nil, err
-	}
-
 	return bundle, nil
 }
 
@@ -104,24 +98,6 @@ func applyPostgresMigrations(ctx context.Context, db *sql.DB) error {
 	}
 	if err := postgresstore.ApplyMigrations(ctx, db, migrationsDir); err != nil {
 		return fmt.Errorf("apply postgres migrations: %w", err)
-	}
-	return nil
-}
-
-func ensureMinIO(ctx context.Context, cfg config.MinIOConfig) error {
-	if strings.TrimSpace(cfg.Endpoint) == "" ||
-		strings.TrimSpace(cfg.Bucket) == "" ||
-		strings.TrimSpace(cfg.AccessKey) == "" ||
-		strings.TrimSpace(cfg.SecretKey) == "" {
-		return nil
-	}
-
-	store, err := miniostore.New(cfg)
-	if err != nil {
-		return fmt.Errorf("init minio object store: %w", err)
-	}
-	if err := store.EnsureBucket(ctx); err != nil {
-		return fmt.Errorf("ensure minio bucket: %w", err)
 	}
 	return nil
 }

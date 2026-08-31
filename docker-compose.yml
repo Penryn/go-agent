@@ -21,28 +21,6 @@ services:
     networks:
       - qqbot-net
 
-  minio:
-    image: minio/minio:RELEASE.2025-09-07T16-13-09Z
-    container_name: qqbot-minio
-    restart: unless-stopped
-    command: server /data --address ":9000" --console-address ":9001"
-    environment:
-      TZ: ${TZ:-Asia/Shanghai}
-      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minioadmin}
-      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-minioadmin123}
-    ports:
-      - "127.0.0.1:9000:9000"
-      - "127.0.0.1:9001:9001"
-    volumes:
-      - ./data/minio:/data
-    healthcheck:
-      test: ["CMD-SHELL", "curl -sf http://localhost:9000/minio/health/live || exit 1"]
-      interval: 10s
-      timeout: 5s
-      retries: 10
-    networks:
-      - qqbot-net
-
   napcat:
     image: mlikiowa/napcat-docker@sha256:85825671fd536e7a46ccf5472fd7efae7053150ec1042ae4c4f1e0fb62f815fd
     container_name: qqbot-napcat

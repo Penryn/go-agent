@@ -2,6 +2,7 @@ package learning
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -9,14 +10,12 @@ import (
 	"strings"
 	"time"
 
-	"github.com/cloudwego/eino/compose"
-
 	"github.com/phlin/go-agent/internal/core/ports"
 	conversationdomain "github.com/phlin/go-agent/internal/domain/conversation"
 	mediadomain "github.com/phlin/go-agent/internal/domain/media"
 	memorydomain "github.com/phlin/go-agent/internal/domain/memory"
 	"github.com/phlin/go-agent/internal/runtime/scheduler"
-	reviewsvc "github.com/phlin/go-agent/internal/services/review"
+	memsvc "github.com/phlin/go-agent/internal/services/memory"
 )
 
 // stopWords 是停用词集合，gram 首 rune 或末 rune 在此集合中时跳过该子串。
@@ -47,11 +46,10 @@ type Output struct {
 }
 
 type Service struct {
-	runnable  compose.Runnable[Input, Output]
-	store     ports.MemoryStore
-	state     ports.LearningStateStore
-	reviewSvc *reviewsvc.Service
-	outbox    interface {
+	store  ports.MemoryStore
+	state  ports.LearningStateStore
+	mem    *memsvc.Service
+	outbox interface {
 		Enqueue(context.Context, string, string, []byte) error
 	}
 }
@@ -64,17 +62,8 @@ func WithOutbox(runtime interface {
 	return func(s *Service) { s.outbox = runtime }
 }
 
-func New(ctx context.Context, store ports.MemoryStore, state ports.LearningStateStore, reviewSvc *reviewsvc.Service, opts ...Option) (*Service, error) {
-	workflow := compose.NewWorkflow[Input, Output]()
-	workflow.AddLambdaNode("extract", compose.InvokableLambda(extractCandidates)).AddInput(compose.START)
-	workflow.AddLambdaNode("review", compose.InvokableLambda(reviewCandidates)).AddInput("extract")
-	workflow.End().AddInput("review")
-
-	runnable, err := workflow.Compile(ctx)
-	if err != nil {
-		return nil, err
-	}
-	service := &Service{runnable: runnable, store: store, state: state, reviewSvc: reviewSvc}
+func New(_ context.Context, store ports.MemoryStore, state ports.LearningStateStore, mem *memsvc.Service, opts ...Option) (*Service, error) {
+	service := &Service{store: store, state: state, mem: mem}
 	for _, opt := range opts {
 		opt(service)
 	}
@@ -82,7 +71,11 @@ func New(ctx context.Context, store ports.MemoryStore, state ports.LearningState
 }
 
 func (s *Service) Run(ctx context.Context, input Input) (Output, error) {
-	return s.runnable.Invoke(ctx, input)
+	out, err := extractCandidates(ctx, input)
+	if err != nil {
+		return Output{}, err
+	}
+	return filterCandidates(out), nil
 }
 
 // RegisterJobs 向调度器注册学习相关定时任务，模式与 persona.Service.RegisterJobs 一致。
@@ -144,7 +137,7 @@ func (s *Service) learnGroup(ctx context.Context, groupID int64) error {
 		return err
 	}
 	if len(out.Candidates) > 0 {
-		if err := s.reviewSvc.ApplyLearning(ctx, out.Candidates); err != nil {
+		if err := s.applyLearning(ctx, out.Candidates); err != nil {
 			return err
 		}
 	}
@@ -156,6 +149,40 @@ func (s *Service) learnGroup(ctx context.Context, groupID int64) error {
 		EventID:    last.EventID,
 		UpdatedAt:  time.Now(),
 	})
+}
+
+// applyLearning 把置信度达标的学习候选写入长期记忆。MemoryID 由
+// 「群+类型+值」三元组哈希而来，同一事实重复学习时覆盖而非新增；
+// TargetUserID 为 0 记群级 scope，非零记用户级 scope。
+func (s *Service) applyLearning(ctx context.Context, candidates []memorydomain.LearningCandidate) error {
+	for _, candidate := range candidates {
+		if candidate.Confidence < 0.7 {
+			continue
+		}
+		raw := fmt.Sprintf("learning-%d-%s-%s", candidate.GroupID, candidate.Kind, candidate.Value)
+		sum := sha256.Sum256([]byte(raw))
+		scope := fmt.Sprintf("group:%d", candidate.GroupID)
+		if candidate.TargetUserID != 0 {
+			scope = fmt.Sprintf("group:%d:user:%d", candidate.GroupID, candidate.TargetUserID)
+		}
+		evidenceEventID := ""
+		if len(candidate.ExampleEventIDs) > 0 {
+			evidenceEventID = candidate.ExampleEventIDs[0]
+		}
+		if _, err := s.mem.MarkIntent(ctx, memsvc.WriteIntent{
+			MemoryID:      fmt.Sprintf("memory-%x", sum[:8]),
+			Scope:         scope,
+			MemoryType:    candidate.Kind,
+			Subject:       candidate.Value,
+			Content:       candidate.Meaning,
+			SourceEventID: evidenceEventID,
+			Importance:    float64(candidate.EvidenceCount) / 20,
+			Confidence:    candidate.Confidence,
+		}); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func extractCandidates(_ context.Context, input Input) (Output, error) {
@@ -336,7 +363,8 @@ func hasTopicSuffix(phrase string) bool {
 	return false
 }
 
-func reviewCandidates(_ context.Context, input Output) (Output, error) {
+// filterCandidates 丢弃置信度不足的候选（与 applyLearning 的阈值一致）。
+func filterCandidates(input Output) Output {
 	filtered := input.Candidates[:0]
 	for _, candidate := range input.Candidates {
 		if candidate.Confidence >= 0.7 {
@@ -344,5 +372,5 @@ func reviewCandidates(_ context.Context, input Output) (Output, error) {
 		}
 	}
 	input.Candidates = filtered
-	return input, nil
+	return input
 }

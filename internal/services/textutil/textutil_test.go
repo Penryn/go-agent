@@ -1,6 +1,9 @@
 package textutil
 
-import "testing"
+import (
+	"testing"
+	"time"
+)
 
 func TestStripThinkBlocks(t *testing.T) {
 	tests := []struct {
@@ -19,5 +22,24 @@ func TestStripThinkBlocks(t *testing.T) {
 				t.Fatalf("StripThinkBlocks(%q) = %q, want %q", tt.input, got, tt.want)
 			}
 		})
+	}
+}
+
+func TestBackoff(t *testing.T) {
+	min, max := time.Second, 30*time.Second
+	tests := []struct {
+		attempt int
+		want    time.Duration
+	}{
+		{attempt: 0, want: time.Second}, // 钳到 min（等价原 minBackoff）
+		{attempt: 1, want: 2 * time.Second},
+		{attempt: 4, want: 16 * time.Second},
+		{attempt: 5, want: 30 * time.Second}, // 32s 超上限，钳到 max
+		{attempt: 99, want: 30 * time.Second},
+	}
+	for _, tt := range tests {
+		if got := Backoff(tt.attempt, min, max); got != tt.want {
+			t.Fatalf("Backoff(%d) = %v, want %v", tt.attempt, got, tt.want)
+		}
 	}
 }

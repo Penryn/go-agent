@@ -6,6 +6,8 @@ import (
 	"time"
 
 	napcatsdk "github.com/zjutjh/napcat-sdk"
+
+	"github.com/phlin/go-agent/internal/services/textutil"
 )
 
 type WSReceiver struct {
@@ -23,33 +25,24 @@ func NewWSReceiver(url, accessToken string, options ...napcatsdk.Option) *WSRece
 }
 
 func (r *WSReceiver) Receive(ctx context.Context, handler func(context.Context, []byte) error) error {
-	const (
-		minBackoff = time.Second
-		maxBackoff = 30 * time.Second
-	)
-
-	backoff := minBackoff
-	for {
+	for attempt := 0; ; attempt++ {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
 
+		wait := textutil.Backoff(attempt, time.Second, 30*time.Second)
 		connected, err := r.receiveOnce(ctx, handler)
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
 		if connected {
-			backoff = minBackoff
-			slog.Warn("ws: connection lost", "url", r.url, "error", err, "reconnect_in", backoff)
+			attempt = 0 // 连上过就重置退避
+			slog.Warn("ws: connection lost", "url", r.url, "error", err, "reconnect_in", wait)
 		} else {
-			slog.Warn("ws: dial failed", "url", r.url, "error", err, "retry_in", backoff)
+			slog.Warn("ws: dial failed", "url", r.url, "error", err, "retry_in", wait)
 		}
-		if err := waitContext(ctx, backoff); err != nil {
+		if err := waitContext(ctx, wait); err != nil {
 			return err
-		}
-		backoff *= 2
-		if backoff > maxBackoff {
-			backoff = maxBackoff
 		}
 	}
 }

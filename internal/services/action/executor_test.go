@@ -130,7 +130,8 @@ func TestExecuteReactFallsBackToEventMessageID(t *testing.T) {
 
 func TestExecuteRhythmSendsBubblesSeparately(t *testing.T) {
 	sender := inmemory.NewSender()
-	executor := New(sender, nil, nil, WithBubbleDelay(0))
+	bubbleDelay = 0
+	executor := New(sender, nil, nil)
 	_, err := executor.Execute(context.Background(), conversationEvent(), policydomain.AutonomyDecision{
 		DecisionID: "d-rhythm",
 		Action:     policydomain.ActionReply,
@@ -149,7 +150,8 @@ func TestExecuteRhythmSendsBubblesSeparately(t *testing.T) {
 
 func TestExecuteRhythmDropsQueuedBubblesAfterCancellation(t *testing.T) {
 	sender := inmemory.NewSender()
-	executor := New(sender, nil, nil, WithBubbleDelay(100*time.Millisecond))
+	bubbleDelay = 100 * time.Millisecond
+	executor := New(sender, nil, nil)
 	finished := make(chan error, 1)
 	go func() {
 		_, err := executor.Execute(context.Background(), conversationEvent(), policydomain.AutonomyDecision{
@@ -183,7 +185,8 @@ func TestExecuteRhythmDropsQueuedBubblesAfterCancellation(t *testing.T) {
 
 func TestExecuteSingleBubbleRemainsOneAction(t *testing.T) {
 	sender := inmemory.NewSender()
-	executor := New(sender, nil, nil, WithBubbleDelay(time.Second))
+	bubbleDelay = time.Second
+	executor := New(sender, nil, nil)
 
 	if _, err := executor.Execute(context.Background(), conversationEvent(), policydomain.AutonomyDecision{
 		DecisionID: "d-single",
@@ -218,7 +221,8 @@ func (s *readTrackingSender) MarkRead(ctx context.Context, groupID int64, messag
 
 func TestExecuteMarksReadBeforeSending(t *testing.T) {
 	sender := &readTrackingSender{Sender: *inmemory.NewSender()}
-	executor := New(sender, nil, nil, WithBubbleDelay(0))
+	bubbleDelay = 0
+	executor := New(sender, nil, nil)
 	event := conversationdomain.ConversationEvent{GroupID: 1, UserID: 2, MessageID: "m-1"}
 	plan := replydomain.ReplyPlan{Bubbles: []string{"在"}, SendMode: "single"}
 	receipt, err := executor.Execute(context.Background(), event, policydomain.AutonomyDecision{Action: policydomain.ActionReply}, plan)

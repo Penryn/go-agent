@@ -8,7 +8,6 @@ import (
 
 	"github.com/phlin/go-agent/internal/adapters/inmemory"
 	"github.com/phlin/go-agent/internal/config"
-	"github.com/phlin/go-agent/internal/core/ports"
 	conversationdomain "github.com/phlin/go-agent/internal/domain/conversation"
 	policydomain "github.com/phlin/go-agent/internal/domain/policy"
 	humandomain "github.com/phlin/go-agent/internal/humanbot/domain"
@@ -39,7 +38,7 @@ func TestProcessRawEventUsesCandidateRuntime(t *testing.T) {
 	eventLog := ingress.NewMemoryEventLog()
 	working := group_actor.NewManager(eventLog)
 	defer working.Close()
-	contextService := contextsvc.New(store, ports.NoopVectorStore{}, store, store, policy, cfg.Persona)
+	contextService := contextsvc.New(store, nil, store, store, policy, cfg.Persona)
 	contextService.WithWorkingMemory(working)
 	planner := promptingsvc.NewDeterministicPlanner(cfg.Persona)
 	sender := inmemory.NewSender()
@@ -71,7 +70,7 @@ func TestProcessRawEventRespectsMinimumCandidateScore(t *testing.T) {
 	eventLog := ingress.NewMemoryEventLog()
 	working := group_actor.NewManager(eventLog)
 	defer working.Close()
-	contextService := contextsvc.New(store, ports.NoopVectorStore{}, store, store, policy, cfg.Persona)
+	contextService := contextsvc.New(store, nil, store, store, policy, cfg.Persona)
 	contextService.WithWorkingMemory(working)
 	planner := promptingsvc.NewDeterministicPlanner(cfg.Persona)
 	sender := inmemory.NewSender()

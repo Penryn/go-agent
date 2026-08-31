@@ -19,7 +19,7 @@ type vectorGraph struct {
 // registration. The business graph can depend on the returned ports without
 // knowing whether vector search is configured or available.
 func buildVectorGraph(ctx context.Context, cfg config.Config, factory *modeladapter.Factory, stores *storeBundle) vectorGraph {
-	graph := vectorGraph{meme: ports.NoopVectorMemeStore{}}
+	graph := vectorGraph{}
 	dim := cfg.Storage.Postgres.VectorDim
 	if dim <= 0 {
 		return graph

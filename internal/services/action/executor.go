@@ -31,12 +31,11 @@ type Service struct {
 	outbox     interface {
 		Enqueue(context.Context, string, string, []byte) error
 	}
-	presence    PresenceObserver
-	selfID      int64
-	rhythmMu    sync.Mutex
-	rhythm      map[int64]rhythmEntry
-	rhythmSeq   uint64
-	bubbleDelay time.Duration
+	presence  PresenceObserver
+	selfID    int64
+	rhythmMu  sync.Mutex
+	rhythm    map[int64]rhythmEntry
+	rhythmSeq uint64
 }
 
 type rhythmEntry struct {
@@ -78,16 +77,11 @@ func WithSelfID(selfID int64) Option {
 
 type Option func(*Service)
 
-func WithBubbleDelay(delay time.Duration) Option {
-	return func(s *Service) {
-		if delay >= 0 {
-			s.bubbleDelay = delay
-		}
-	}
-}
+// bubbleDelay 是分条气泡之间的发送间隔。测试通过覆盖该变量调整节奏。
+var bubbleDelay = 350 * time.Millisecond
 
 func New(sender ports.OutboundSender, memes *memesvc.Service, guard *outputguardsvc.Guard, opts ...Option) *Service {
-	service := &Service{sender: sender, memes: memes, guard: guard, rhythm: make(map[int64]rhythmEntry), bubbleDelay: 350 * time.Millisecond}
+	service := &Service{sender: sender, memes: memes, guard: guard, rhythm: make(map[int64]rhythmEntry)}
 	for _, opt := range opts {
 		opt(service)
 	}
@@ -254,7 +248,7 @@ func (s *Service) executeRhythm(ctx context.Context, event conversationdomain.Co
 	var receipt replydomain.ActionReceipt
 	for i, bubble := range plan.Bubbles {
 		if i > 0 {
-			timer := time.NewTimer(s.bubbleDelay)
+			timer := time.NewTimer(bubbleDelay)
 			select {
 			case <-rhythmCtx.Done():
 				timer.Stop()

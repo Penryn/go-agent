@@ -4,8 +4,6 @@ import (
 	"context"
 	"strings"
 
-	"github.com/cloudwego/eino/compose"
-
 	conversationdomain "github.com/phlin/go-agent/internal/domain/conversation"
 	profiledomain "github.com/phlin/go-agent/internal/domain/profile"
 	memsvc "github.com/phlin/go-agent/internal/services/memory"
@@ -20,66 +18,24 @@ type Output struct {
 	TraitCandidates []profiledomain.MemberTrait
 }
 
-type Service struct {
-	runnable compose.Runnable[Input, Output]
-}
+// Service 从一轮对话快照里提取群聊亮点。两个阈值：extract 的 confidence=0.8
+// 恒大于 review 的过滤线 0.7，所以整条链等价于「短文本直接入库」。
+type Service struct{}
 
-func New(ctx context.Context) (*Service, error) {
-	graph := compose.NewGraph[Input, Output]()
-	if err := graph.AddLambdaNode("extract", compose.InvokableLambda(extract)); err != nil {
-		return nil, err
-	}
-	if err := graph.AddLambdaNode("review", compose.InvokableLambda(review)); err != nil {
-		return nil, err
-	}
-	if err := graph.AddEdge(compose.START, "extract"); err != nil {
-		return nil, err
-	}
-	if err := graph.AddEdge("extract", "review"); err != nil {
-		return nil, err
-	}
-	if err := graph.AddEdge("review", compose.END); err != nil {
-		return nil, err
-	}
-	runnable, err := graph.Compile(ctx)
-	if err != nil {
-		return nil, err
-	}
-	return &Service{runnable: runnable}, nil
-}
+func New(_ context.Context) (*Service, error) { return &Service{}, nil }
 
-func (s *Service) Run(ctx context.Context, input Input) (Output, error) {
-	return s.runnable.Invoke(ctx, input)
-}
-
-func extract(_ context.Context, input Input) (Output, error) {
+func (s *Service) Run(_ context.Context, input Input) (Output, error) {
 	text := strings.TrimSpace(input.Snapshot.Event.Text)
-	if text == "" {
+	if text == "" || len([]rune(text)) > 24 {
 		return Output{}, nil
 	}
-
-	output := Output{}
-	if len([]rune(text)) <= 24 {
-		output.MemoryIntents = append(output.MemoryIntents, memsvc.WriteIntent{
-			Scope:         "group_curator",
-			MemoryType:    "conversation_highlight",
-			Subject:       "event",
-			Content:       text,
-			SourceEventID: input.Snapshot.Event.EventID,
-			Importance:    0.7,
-			Confidence:    0.8,
-		})
-	}
-	return output, nil
-}
-
-func review(_ context.Context, output Output) (Output, error) {
-	filtered := output.MemoryIntents[:0]
-	for _, intent := range output.MemoryIntents {
-		if intent.Confidence >= 0.7 && intent.Importance >= 0.5 {
-			filtered = append(filtered, intent)
-		}
-	}
-	output.MemoryIntents = filtered
-	return output, nil
+	return Output{MemoryIntents: []memsvc.WriteIntent{{
+		Scope:         "group_curator",
+		MemoryType:    "conversation_highlight",
+		Subject:       "event",
+		Content:       text,
+		SourceEventID: input.Snapshot.Event.EventID,
+		Importance:    0.7,
+		Confidence:    0.8,
+	}}}, nil
 }

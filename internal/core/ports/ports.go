@@ -29,12 +29,6 @@ type ReadAckingSender interface {
 	MarkRead(ctx context.Context, groupID int64, messageID string) error
 }
 
-// TypingStatusSender 是可选的拟人前摇能力：在组织较长回复前设置
-// 「正在输入」状态。不支持的平台返回 nil 即可。
-type TypingStatusSender interface {
-	SetTyping(ctx context.Context, groupID, userID int64) error
-}
-
 type MemoryQuery struct {
 	GroupID int64
 	UserID  int64
@@ -143,7 +137,7 @@ type ChatModelFactory interface {
 }
 
 // VectorMemoryStore 是语义记忆检索的 port。
-// 实现方：postgresstore.VectorStore；未配置时可用 NoopVectorStore 代替。
+// 实现方：postgresstore.VectorStore；未配置时传 nil，调用方自行跳过向量路径。
 type VectorMemoryStore interface {
 	// StoreMemory 将一条记忆向量化后存入向量库。
 	StoreMemory(ctx context.Context, record memorydomain.MemoryRecord) error
@@ -151,19 +145,8 @@ type VectorMemoryStore interface {
 	SearchMemories(ctx context.Context, query string, topK int, threshold float64) ([]memorydomain.MemoryRecord, error)
 }
 
-// NoopVectorStore 是 VectorMemoryStore 的空实现，用于向量检索未配置时。
-type NoopVectorStore struct{}
-
-func (NoopVectorStore) StoreMemory(_ context.Context, _ memorydomain.MemoryRecord) error {
-	return nil
-}
-
-func (NoopVectorStore) SearchMemories(_ context.Context, _ string, _ int, _ float64) ([]memorydomain.MemoryRecord, error) {
-	return nil, nil
-}
-
 // VectorMemeStore 是表情包语义向量检索的 port。
-// 实现方：postgresstore.VectorStore；未配置时可用 NoopVectorMemeStore 代替。
+// 实现方：postgresstore.VectorStore；未配置时传 nil，降级为关键词搜索。
 // SearchMemes 返回的 MemeSearchResult 中 Descriptor 字段为零值，由上层 MemeService 回查关系表补全。
 type VectorMemeStore interface {
 	// IndexMeme 将表情包描述文本向量化后存入向量库。
@@ -172,19 +155,4 @@ type VectorMemeStore interface {
 	SearchMemes(ctx context.Context, groupID int64, queryText string, topK int, threshold float64) ([]mediadomain.MemeSearchResult, error)
 	// DeleteMeme 从向量库删除指定表情包。
 	DeleteMeme(ctx context.Context, memeID string) error
-}
-
-// NoopVectorMemeStore 是 VectorMemeStore 的空实现，用于向量检索未配置时。
-type NoopVectorMemeStore struct{}
-
-func (NoopVectorMemeStore) IndexMeme(_ context.Context, _ string, _ string, _ int64) error {
-	return nil
-}
-
-func (NoopVectorMemeStore) SearchMemes(_ context.Context, _ int64, _ string, _ int, _ float64) ([]mediadomain.MemeSearchResult, error) {
-	return nil, nil
-}
-
-func (NoopVectorMemeStore) DeleteMeme(_ context.Context, _ string) error {
-	return nil
 }
