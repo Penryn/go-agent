@@ -92,6 +92,7 @@ func (r *Runtime) replyTools() []namedTool {
 	return []namedTool{
 		newSpeakTextTool(),
 		newStaySilentTool(),
+		newReactEmojiTool(),
 		newSendMemeTool(r.memeStore),
 		newQuoteReplyTool(),
 		newRecallRecentMessageTool(),
@@ -146,6 +147,25 @@ func ParseTerminalPlan(decisionID string, toolName string, raw string, session r
 			Intent:         session.Intent,
 			PlannedActions: []policydomain.DecisionAction{policydomain.ActionSilent},
 			SendMode:       "group",
+		}, true, nil
+	case "react_emoji":
+		var result reactEmojiResult
+		if err := json.Unmarshal([]byte(raw), &result); err != nil {
+			return replydomain.ReplyPlan{}, false, fmt.Errorf("decode react_emoji result: %w", err)
+		}
+		messageID := result.MessageID
+		if messageID == "" {
+			messageID = session.TriggerMessageID
+		}
+		return replydomain.ReplyPlan{
+			PlanID:         decisionID + "-plan",
+			Intent:         session.Intent,
+			PlannedActions: []policydomain.DecisionAction{policydomain.ActionReact},
+			ActionParams: map[string]any{
+				"emoji_id":   result.EmojiID,
+				"message_id": messageID,
+			},
+			SendMode: "group",
 		}, true, nil
 	case "quote_reply":
 		var result quoteReplyResult
@@ -324,6 +344,45 @@ func (t *staySilentTool) InvokableRun(_ context.Context, argumentsInJSON string,
 		"reason_code": strings.TrimSpace(args.ReasonCode),
 		"ttl_ms":      args.TTLMS,
 	})
+}
+
+type reactEmojiTool struct{}
+
+type reactEmojiArgs struct {
+	EmojiID    string `json:"emoji_id"`
+	MessageID  string `json:"message_id"`
+	ReasonCode string `json:"reason_code"`
+}
+
+type reactEmojiResult struct {
+	Tool      string `json:"tool"`
+	EmojiID   string `json:"emoji_id"`
+	MessageID string `json:"message_id"`
+}
+
+func newReactEmojiTool() *reactEmojiTool { return &reactEmojiTool{} }
+func (t *reactEmojiTool) Name() string   { return "react_emoji" }
+func (t *reactEmojiTool) Info(_ context.Context) (*schema.ToolInfo, error) {
+	return &schema.ToolInfo{
+		Name: t.Name(),
+		Desc: "对某条消息点一个表情回应就结束本轮（不说话）。适合「看了但不必回复」的场景：接梗点赞、认可对方说法、图片好看。常用 emoji_id：76（赞）4468（笑哭）78089（敬礼）28487（doge）。msg_id 不填则默认回应触发本轮的那条消息。",
+		ParamsOneOf: schema.NewParamsOneOfByParams(map[string]*schema.ParameterInfo{
+			"emoji_id":    {Type: schema.String, Required: true, Desc: "QQ 表情回应 ID，如 76=赞。"},
+			"message_id":  {Type: schema.String, Desc: "要回应的消息 msg_id，缺省回应当前触发消息。"},
+			"reason_code": {Type: schema.String, Desc: "Short reason code."},
+		}),
+	}, nil
+}
+
+func (t *reactEmojiTool) InvokableRun(_ context.Context, argumentsInJSON string, _ ...tool.Option) (string, error) {
+	var args reactEmojiArgs
+	if err := json.Unmarshal([]byte(argumentsInJSON), &args); err != nil {
+		return "", fmt.Errorf("decode react_emoji args: %w", err)
+	}
+	if strings.TrimSpace(args.EmojiID) == "" {
+		args.EmojiID = "76"
+	}
+	return marshal(reactEmojiResult{Tool: t.Name(), EmojiID: args.EmojiID, MessageID: args.MessageID})
 }
 
 type queryMemoryTool struct {

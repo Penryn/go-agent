@@ -51,6 +51,7 @@ type ToolContext struct {
 	TraceID           string                         `json:"trace_id" yaml:"trace_id"`
 	GroupID           int64                          `json:"group_id" yaml:"group_id"`
 	UserID            int64                          `json:"user_id" yaml:"user_id"`
+	TriggerMessageID  string                         `json:"trigger_message_id" yaml:"trigger_message_id"`
 	Intent            ReplyIntent                    `json:"intent" yaml:"intent"`
 	AllowedTools      []string                       `json:"allowed_tools" yaml:"allowed_tools"`
 	ObserveOnly       bool                           `json:"observe_only" yaml:"observe_only"`

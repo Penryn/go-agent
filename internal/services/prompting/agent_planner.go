@@ -65,6 +65,7 @@ func (p *AgentPlanner) Plan(ctx context.Context, snapshot conversationdomain.Con
 		TraceID:           snapshot.SnapshotID,
 		GroupID:           snapshot.Event.GroupID,
 		UserID:            snapshot.Event.UserID,
+		TriggerMessageID:  snapshot.Event.MessageID,
 		AllowedTools:      snapshot.GroupPolicy.ToolAllowlist,
 		ObserveOnly:       observeOnly,
 		RetrievedMemories: snapshot.RelevantMemories,
@@ -83,6 +84,7 @@ func (p *AgentPlanner) Plan(ctx context.Context, snapshot conversationdomain.Con
 	returnDirectly := map[string]bool{
 		"speak_text":  true,
 		"quote_reply": true,
+		"react_emoji": true,
 		"stay_silent": true,
 	}
 	if observeOnly {
