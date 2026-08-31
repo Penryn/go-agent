@@ -208,7 +208,7 @@ go run ./cmd/qqbotd -config configs/config.yaml
 go-agent/
 ├── cmd/qqbotd/              # 启动入口
 ├── configs/config.yaml      # 公开配置
-├── migrations/              # PostgreSQL 迁移脚本
+├── schema/                  # PostgreSQL 建表脚本(单文件,幂等)
 ├── tests/testdata/          # 测试用事件数据
 ├── internal/
 │   ├── domain/              # 核心领域模型
@@ -254,7 +254,7 @@ go-agent/
 
 ## 数据库迁移
 
-PostgreSQL 迁移脚本在 [`migrations/`](migrations/)，由应用启动时自动执行（含 pgvector 扩展、关系表与向量表），无需手动导入。
+PostgreSQL 建表脚本在 [`schema/schema.sql`](schema/schema.sql)，由应用启动时自动执行（含 pgvector 扩展、关系表与向量表），全部语句幂等，可重复执行。
 
 ## 开发
 

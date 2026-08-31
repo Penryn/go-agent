@@ -92,17 +92,17 @@ func (b *storeBundle) HealthCheck(ctx context.Context) error {
 }
 
 func applyPostgresMigrations(ctx context.Context, db *sql.DB) error {
-	migrationsDir, err := locateMigrationsDir()
+	schemaPath, err := locateSchemaFile()
 	if err != nil {
 		return err
 	}
-	if err := postgresstore.ApplyMigrations(ctx, db, migrationsDir); err != nil {
-		return fmt.Errorf("apply postgres migrations: %w", err)
+	if err := postgresstore.ApplySchema(ctx, db, schemaPath); err != nil {
+		return fmt.Errorf("apply postgres schema: %w", err)
 	}
 	return nil
 }
 
-func locateMigrationsDir() (string, error) {
+func locateSchemaFile() (string, error) {
 	wd, err := os.Getwd()
 	if err != nil {
 		return "", fmt.Errorf("get working directory: %w", err)
@@ -110,8 +110,8 @@ func locateMigrationsDir() (string, error) {
 
 	dir := wd
 	for {
-		candidate := filepath.Join(dir, "migrations")
-		if _, err := os.Stat(filepath.Join(candidate, "001_init.sql")); err == nil {
+		candidate := filepath.Join(dir, "schema", "schema.sql")
+		if _, err := os.Stat(candidate); err == nil {
 			return candidate, nil
 		}
 		parent := filepath.Dir(dir)
@@ -121,5 +121,5 @@ func locateMigrationsDir() (string, error) {
 		dir = parent
 	}
 
-	return "", errors.New("locate migrations directory: migrations/001_init.sql not found")
+	return "", errors.New("locate schema file: schema/schema.sql not found")
 }

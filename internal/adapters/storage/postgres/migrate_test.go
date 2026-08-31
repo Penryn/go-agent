@@ -6,7 +6,7 @@ import (
 	"testing"
 )
 
-func TestApplyMigrations(t *testing.T) {
+func TestApplySchema(t *testing.T) {
 	ctx := context.Background()
 	db, err := Open(ctx, "postgres://qqbot:qqbotpass@127.0.0.1:5432/qqbot?sslmode=disable")
 	if err != nil {
@@ -14,12 +14,12 @@ func TestApplyMigrations(t *testing.T) {
 	}
 	defer db.Close()
 
-	if err := ApplyMigrations(ctx, db, filepath.Join("..", "..", "..", "..", "migrations")); err != nil {
-		t.Fatalf("apply migrations: %v", err)
+	if err := ApplySchema(ctx, db, filepath.Join("..", "..", "..", "..", "schema", "schema.sql")); err != nil {
+		t.Fatalf("apply schema: %v", err)
 	}
 	// 幂等:重复应用不报错
-	if err := ApplyMigrations(ctx, db, filepath.Join("..", "..", "..", "..", "migrations")); err != nil {
-		t.Fatalf("re-apply migrations: %v", err)
+	if err := ApplySchema(ctx, db, filepath.Join("..", "..", "..", "..", "schema", "schema.sql")); err != nil {
+		t.Fatalf("re-apply schema: %v", err)
 	}
 
 	var tables int
@@ -27,7 +27,7 @@ func TestApplyMigrations(t *testing.T) {
 		`SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = 'public'`).Scan(&tables); err != nil {
 		t.Fatalf("count tables: %v", err)
 	}
-	// 12 张业务表 + schema_migrations = 13
+	// 12 张业务表(含向量表);schema_migrations 已随多文件迁移机制删除
 	if tables < 12 {
 		t.Fatalf("expected at least 12 tables, got %d", tables)
 	}

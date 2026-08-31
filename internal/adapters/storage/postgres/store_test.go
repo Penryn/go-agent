@@ -47,8 +47,8 @@ func setupPostgres(t *testing.T) *sql.DB {
 		}
 	})
 
-	if err := ApplyMigrations(ctx, db, filepath.Join("..", "..", "..", "..", "migrations")); err != nil {
-		t.Fatalf("apply migrations: %v", err)
+	if err := ApplySchema(ctx, db, filepath.Join("..", "..", "..", "..", "schema", "schema.sql")); err != nil {
+		t.Fatalf("apply schema: %v", err)
 	}
 	return db
 }

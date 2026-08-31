@@ -12,7 +12,7 @@ import (
 	memorydomain "github.com/phlin/go-agent/internal/domain/memory"
 )
 
-// pgVectorMaxDim 是 pgvector hnsw 索引的维度上限(migrations/004_vectors.sql 的 vector(2000))。
+// pgVectorMaxDim 是 pgvector hnsw 索引的维度上限(schema/schema.sql 的 vector(2000))。
 const pgVectorMaxDim = 2000
 
 // VectorStore 基于 pgvector 实现语义向量检索,同一 *sql.DB 上与关系表共用连接池。
