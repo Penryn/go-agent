@@ -3,6 +3,7 @@ package inmemory
 import (
 	"context"
 	"errors"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -335,7 +336,7 @@ func (s *Store) QueryMemories(_ context.Context, query ports.MemoryQuery) ([]mem
 		if query.Scope != "" && record.Scope != query.Scope {
 			continue
 		}
-		if len(query.Types) > 0 && !contains(query.Types, record.Type) {
+		if len(query.Types) > 0 && !slices.Contains(query.Types, record.Type) {
 			continue
 		}
 		if needle != "" && !strings.Contains(strings.ToLower(record.Content), needle) && !strings.Contains(strings.ToLower(record.Subject), needle) {
@@ -603,15 +604,6 @@ func (s *Sender) Actions() []replydomain.ActionExecution {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return append([]replydomain.ActionExecution(nil), s.actions...)
-}
-
-func contains(values []string, target string) bool {
-	for _, value := range values {
-		if value == target {
-			return true
-		}
-	}
-	return false
 }
 
 func profileKey(groupID, userID int64) string {

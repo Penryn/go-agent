@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 
@@ -275,7 +276,7 @@ func (s *Store) RecentEvents(ctx context.Context, groupID int64, limit int) ([]c
 		return nil, err
 	}
 
-	reverse(events)
+	slices.Reverse(events)
 	return events, nil
 }
 
@@ -786,18 +787,5 @@ func coalesceTime(value time.Time) time.Time {
 }
 
 func placeholders(count int) string {
-	if count <= 0 {
-		return ""
-	}
-	items := make([]string, count)
-	for i := range items {
-		items[i] = "?"
-	}
-	return strings.Join(items, ",")
-}
-
-func reverse[T any](items []T) {
-	for i, j := 0, len(items)-1; i < j; i, j = i+1, j-1 {
-		items[i], items[j] = items[j], items[i]
-	}
+	return strings.TrimSuffix(strings.Repeat("?,", count), ",")
 }

@@ -3,6 +3,7 @@ package outputguard
 import (
 	"log/slog"
 	"regexp"
+	"slices"
 	"strings"
 	"unicode/utf8"
 
@@ -171,10 +172,8 @@ func (g *defaultGuard) Clean(bubbles []string) Result {
 }
 
 func appendUniq(slice []string, s string) []string {
-	for _, v := range slice {
-		if v == s {
-			return slice
-		}
+	if slices.Contains(slice, s) {
+		return slice
 	}
 	return append(slice, s)
 }

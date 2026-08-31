@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"slices"
 	"sync"
 	"time"
 
@@ -208,7 +209,7 @@ func (r *Runtime) ProcessRawEvent(ctx context.Context, payload []byte) (Outcome,
 	r.observeEvent(ctx, envelope.Event)
 	var candidate humandomain.ThoughtCandidate
 	for i := len(memory.Candidates) - 1; i >= 0; i-- {
-		if contains(memory.Candidates[i].SourceEventIDs, envelope.Event.EventID) {
+		if slices.Contains(memory.Candidates[i].SourceEventIDs, envelope.Event.EventID) {
 			candidate = memory.Candidates[i]
 			break
 		}
@@ -422,15 +423,6 @@ func (r *Runtime) shouldIgnore(envelope conversationdomain.EventEnvelope) bool {
 
 func toEventRecord(envelope conversationdomain.EventEnvelope, origin humandomain.EventOrigin) humandomain.EventRecord {
 	return humandomain.EventRecord{EventID: envelope.Event.EventID, GroupID: envelope.Event.GroupID, UserID: envelope.Event.UserID, Origin: origin, Timestamp: envelope.ReceivedAt, Event: envelope.Event, RawPayload: envelope.RawPayload}
-}
-
-func contains(items []string, value string) bool {
-	for _, item := range items {
-		if item == value {
-			return true
-		}
-	}
-	return false
 }
 
 func silentDecision(id, reason string) policydomain.AutonomyDecision {

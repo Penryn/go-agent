@@ -714,13 +714,8 @@ func clamp(value, minValue, maxValue int) int {
 
 func appendUnique(items []string, value string, max int) []string {
 	value = strings.TrimSpace(value)
-	if value == "" {
+	if value == "" || slices.Contains(items, value) {
 		return items
-	}
-	for _, item := range items {
-		if item == value {
-			return items
-		}
 	}
 	items = append(items, value)
 	if max > 0 && len(items) > max {

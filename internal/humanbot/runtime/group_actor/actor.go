@@ -3,6 +3,7 @@ package group_actor
 import (
 	"context"
 	"errors"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -688,10 +689,8 @@ func supersedeBurstCandidates(memory *humandomain.GroupWorkingMemory, eventIDs [
 
 func overlaps(left, right []string) bool {
 	for _, l := range left {
-		for _, r := range right {
-			if l == r {
-				return true
-			}
+		if slices.Contains(right, l) {
+			return true
 		}
 	}
 	return false
@@ -818,10 +817,8 @@ func memoryTopic(text string) string {
 }
 
 func appendUnique(items []string, value string) []string {
-	for _, item := range items {
-		if item == value {
-			return items
-		}
+	if slices.Contains(items, value) {
+		return items
 	}
 	return append(items, value)
 }

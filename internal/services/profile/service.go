@@ -3,6 +3,7 @@ package profile
 import (
 	"context"
 	"log/slog"
+	"slices"
 	"strings"
 	"time"
 
@@ -116,13 +117,8 @@ func (s *Service) Query(ctx context.Context, groupID, userID int64) (profiledoma
 }
 
 func appendIfMissing(items []string, value string, max int) []string {
-	if value == "" {
+	if value == "" || slices.Contains(items, value) {
 		return items
-	}
-	for _, item := range items {
-		if item == value {
-			return items
-		}
 	}
 	items = append(items, value)
 	if max > 0 && len(items) > max {
