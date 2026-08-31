@@ -22,6 +22,7 @@ func New(store ports.ProfileStore, personaID string) *Service {
 }
 
 // ObserveEvent 更新成员统计，并被动累积熟悉度（上限 0.5）及记录 LastInteractAt。
+// 用户首次发言时同步初始化关系（affinity 起点 0.25）。
 func (s *Service) ObserveEvent(ctx context.Context, event conversationdomain.ConversationEvent) error {
 	profile, err := s.store.GetMemberProfile(ctx, event.GroupID, event.UserID)
 	if err != nil {
@@ -30,6 +31,7 @@ func (s *Service) ObserveEvent(ctx context.Context, event conversationdomain.Con
 
 	profile.Stats.GroupID = event.GroupID
 	profile.Stats.UserID = event.UserID
+	firstMessage := profile.Stats.MessageCount == 0
 	profile.Stats.MessageCount++
 	profile.Stats.LastSpokeAt = time.Unix(event.TimestampUnix, 0)
 	if profile.Stats.LastSpokeAt.IsZero() {
@@ -42,7 +44,6 @@ func (s *Service) ObserveEvent(ctx context.Context, event conversationdomain.Con
 		return err
 	}
 
-	// 熟悉度记录互动证据，而不是简单把每条消息当成同等质量的关系增长。
 	if s.personaID != "" {
 		rel, err := s.store.GetRelationship(ctx, s.personaID, event.GroupID, event.UserID)
 		if err != nil {
@@ -53,6 +54,12 @@ func (s *Service) ObserveEvent(ctx context.Context, event conversationdomain.Con
 		rel.GroupID = event.GroupID
 		rel.UserID = event.UserID
 		rel.LastInteractAt = time.Now()
+		// 首条消息初始化好感度：此后 affinity 的增减只能来自
+		// update_affinity 工具的主观判断，被动观察不再碰它。
+		if firstMessage {
+			rel.Affinity = 0.25
+		}
+		// 熟悉度记录互动证据，而不是简单把每条消息当成同等质量的关系增长。
 		if increment := familiarityEvidence(event); increment > 0 && rel.Familiarity < 0.5 {
 			rel.Familiarity = min(rel.Familiarity+increment, 0.5)
 		}
@@ -80,36 +87,6 @@ func familiarityEvidence(event conversationdomain.ConversationEvent) float64 {
 		increment += 0.002
 	}
 	return increment
-}
-
-// EnsureRelationshipInit 在用户首次发言时设定初始好感度（0.25），幂等。
-func (s *Service) EnsureRelationshipInit(ctx context.Context, event conversationdomain.ConversationEvent) error {
-	if s.personaID == "" {
-		return nil
-	}
-	profile, err := s.store.GetMemberProfile(ctx, event.GroupID, event.UserID)
-	if err != nil {
-		return err
-	}
-	// 只在第一条消息时触发
-	if profile.Stats.MessageCount != 1 {
-		return nil
-	}
-	rel, err := s.store.GetRelationship(ctx, s.personaID, event.GroupID, event.UserID)
-	if err != nil {
-		return err
-	}
-	// 已有好感度则跳过（幂等保护）
-	if rel.Affinity != 0 {
-		return nil
-	}
-	rel.PersonaID = s.personaID
-	rel.GroupID = event.GroupID
-	rel.UserID = event.UserID
-	rel.Affinity = 0.25
-	rel.LastInteractAt = time.Now()
-	slog.Debug("profile: init relationship", "group_id", event.GroupID, "user_id", event.UserID, "affinity", rel.Affinity)
-	return s.store.SaveRelationship(ctx, rel)
 }
 
 func (s *Service) Query(ctx context.Context, groupID, userID int64) (profiledomain.MemberProfile, error) {

@@ -47,6 +47,7 @@ func (c *Composer) instruction(snapshot conversationdomain.ContextSnapshot, deci
 			"当前回合任务层:",
 			"你现在处于观察模式，本轮不需要发言。",
 			"可以使用 query_memory、mark_memory_intent、query_member_profile 等工具被动观察和记录对话内容。",
+			"观察到群友明显的新特征（口头禅、喜好、关系变化）时，可以用 update_member_profile / update_affinity 记录，幅度要小；没有明显信号就不要调用。",
 			"完成观察后必须用 stay_silent 结束。",
 		)
 		return strings.Join(sections, "\n")
@@ -139,6 +140,7 @@ func (c *Composer) instruction(snapshot conversationdomain.ContextSnapshot, deci
 		"同一用户在极短时间内连续发送的多条消息通常是一个完整意思的分条发送，必须把它们合并为一个整体语义单元理解，不得孤立解读最后一条。",
 		"遇到涉及天气、新闻、实时数据或高风险事实时先查证；普通群内黑话和语境不明的词优先结合上下文或自然询问，不要为了显得确定而编造。",
 		"收到「帮我做XX」「帮我查XX」「陪我XX」「来一起XX」等行为请求时，不默认服从；结合上方心情倾向和关系好感度自主判断是否配合。好感度偏低（冷淡区间）或心情差时，倾向拒绝或敷衍；好感度高且心情好时，可以适当配合。",
+		"本轮互动中若对方表现出明确的态度变化或你了解到新的个人特征（口头禅、喜好、身份等），在结束前用 update_affinity / update_member_profile 记录，幅度要小（好感度单次变动不超过 0.1）；没有明显信号就不要调用，不要每轮都调。",
 	}
 	if decision.TriggerType == "poke_reply" {
 		taskLines = append(taskLines,
