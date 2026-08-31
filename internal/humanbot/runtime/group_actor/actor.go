@@ -118,11 +118,11 @@ func (m *Manager) Observe(ctx context.Context, record humandomain.EventRecord) (
 	if err != nil {
 		return humandomain.GroupWorkingMemory{}, err
 	}
-	memory, err := a.observe(ctx, record)
-	if err == nil {
-		err = m.save(ctx, memory)
+	memory := a.observe(record)
+	if err := m.save(ctx, memory); err != nil {
+		return memory, err
 	}
-	return memory, err
+	return memory, nil
 }
 
 func (m *Manager) Snapshot(ctx context.Context, groupID int64) (humandomain.GroupWorkingMemory, error) {
@@ -130,7 +130,7 @@ func (m *Manager) Snapshot(ctx context.Context, groupID int64) (humandomain.Grou
 	if err != nil {
 		return humandomain.GroupWorkingMemory{}, err
 	}
-	return a.snapshot(ctx)
+	return a.snapshot(), nil
 }
 
 func (m *Manager) actor(ctx context.Context, groupID int64) (*actor, error) {
@@ -169,28 +169,14 @@ func (m *Manager) ClaimDue(ctx context.Context, groupID int64, now time.Time, mi
 	if err != nil {
 		return humandomain.ThoughtCandidate{}, false, err
 	}
-	resultCh := make(chan result, 1)
-	select {
-	case a.mailbox <- request{op: "claim", now: now, minScore: minScore, result: resultCh}:
-	case <-ctx.Done():
-		return humandomain.ThoughtCandidate{}, false, ctx.Err()
-	case <-a.done:
-		return humandomain.ThoughtCandidate{}, false, errors.New("group actor: actor stopped")
+	candidate, memory := a.claim(now, minScore)
+	if candidate == nil {
+		return humandomain.ThoughtCandidate{}, false, nil
 	}
-	select {
-	case result := <-resultCh:
-		if result.candidate == nil {
-			return humandomain.ThoughtCandidate{}, false, nil
-		}
-		if err := m.save(ctx, result.memory); err != nil {
-			return humandomain.ThoughtCandidate{}, false, err
-		}
-		return *result.candidate, true, result.err
-	case <-ctx.Done():
-		return humandomain.ThoughtCandidate{}, false, ctx.Err()
-	case <-a.done:
-		return humandomain.ThoughtCandidate{}, false, errors.New("group actor: actor stopped")
+	if err := m.save(ctx, memory); err != nil {
+		return humandomain.ThoughtCandidate{}, false, err
 	}
+	return *candidate, true, nil
 }
 
 // EnqueueCandidate injects proactive or follow-up work into the owning group
@@ -218,25 +204,11 @@ func (m *Manager) EnqueueCandidate(ctx context.Context, groupID int64, candidate
 	if err != nil {
 		return err
 	}
-	resultCh := make(chan result, 1)
-	select {
-	case a.mailbox <- request{op: "enqueue", candidate: &candidate, result: resultCh}:
-	case <-ctx.Done():
-		return ctx.Err()
-	case <-a.done:
-		return errors.New("group actor: actor stopped")
+	memory, ok := a.enqueue(candidate)
+	if !ok {
+		return errors.New("group actor: candidate already exists")
 	}
-	select {
-	case result := <-resultCh:
-		if result.err != nil {
-			return result.err
-		}
-		return m.save(ctx, result.memory)
-	case <-ctx.Done():
-		return ctx.Err()
-	case <-a.done:
-		return errors.New("group actor: actor stopped")
-	}
+	return m.save(ctx, memory)
 }
 
 func (m *Manager) Complete(ctx context.Context, groupID int64, candidateID string) error {
@@ -244,25 +216,7 @@ func (m *Manager) Complete(ctx context.Context, groupID int64, candidateID strin
 	if err != nil {
 		return err
 	}
-	resultCh := make(chan result, 1)
-	select {
-	case a.mailbox <- request{op: "complete", candidateID: candidateID, result: resultCh}:
-	case <-ctx.Done():
-		return ctx.Err()
-	case <-a.done:
-		return errors.New("group actor: actor stopped")
-	}
-	select {
-	case result := <-resultCh:
-		if result.err == nil {
-			result.err = m.save(ctx, result.memory)
-		}
-		return result.err
-	case <-ctx.Done():
-		return ctx.Err()
-	case <-a.done:
-		return errors.New("group actor: actor stopped")
-	}
+	return m.save(ctx, a.complete(candidateID))
 }
 
 // CanExecute confirms that an accepted candidate has not been superseded or
@@ -272,15 +226,11 @@ func (m *Manager) CanExecute(ctx context.Context, groupID int64, candidateID str
 	if err != nil {
 		return false, err
 	}
-	valid, err := a.canExecute(ctx, candidateID, now)
-	if err == nil {
-		memory, snapshotErr := a.snapshot(ctx)
-		if snapshotErr != nil {
-			return false, snapshotErr
-		}
-		err = m.save(ctx, memory)
+	valid, memory := a.canExecute(candidateID, now)
+	if err := m.save(ctx, memory); err != nil {
+		return false, err
 	}
-	return valid, err
+	return valid, nil
 }
 
 // EnrichMedia writes asynchronous perception results through the owning group
@@ -290,14 +240,7 @@ func (m *Manager) EnrichMedia(ctx context.Context, groupID int64, eventID string
 	if err != nil {
 		return err
 	}
-	if err = a.enrichMedia(ctx, eventID, descriptors); err != nil {
-		return err
-	}
-	memory, err := a.snapshot(ctx)
-	if err != nil {
-		return err
-	}
-	return m.save(ctx, memory)
+	return m.save(ctx, a.enrichMedia(eventID, descriptors))
 }
 
 func (m *Manager) GroupIDs() []int64 {
@@ -311,8 +254,8 @@ func (m *Manager) GroupIDs() []int64 {
 }
 
 // PruneIdle retires actors that have been inactive longer than the configured
-// TTL and have no live candidates. Retirement is serialized through each
-// actor's mailbox, so working memory is persisted before the actor exits.
+// TTL and have no live candidates. Working memory is persisted before the
+// actor is dropped from the manager.
 func (m *Manager) PruneIdle(ctx context.Context, now time.Time) int {
 	if m == nil || m.idleTTL <= 0 {
 		return 0
@@ -329,29 +272,11 @@ func (m *Manager) PruneIdle(ctx context.Context, now time.Time) int {
 		if now.Sub(a.lastUsed()) < m.idleTTL {
 			continue
 		}
-		resultCh := make(chan result, 1)
-		ackCh := make(chan error, 1)
-		select {
-		case a.mailbox <- request{op: "retire_if_idle", now: now, idleTTL: m.idleTTL, result: resultCh, ack: ackCh}:
-		case <-ctx.Done():
-			return retired
-		case <-a.done:
+		memory, retire := a.retireIfIdle(now, m.idleTTL)
+		if !retire {
 			continue
 		}
-		select {
-		case result := <-resultCh:
-			if !result.retire {
-				continue
-			}
-			if err := m.save(ctx, result.memory); err != nil {
-				ackCh <- err
-				continue
-			}
-			ackCh <- nil
-		case <-ctx.Done():
-			ackCh <- ctx.Err()
-			return retired
-		case <-a.done:
+		if err := m.save(ctx, memory); err != nil {
 			continue
 		}
 		m.mu.Lock()
@@ -371,52 +296,26 @@ func (m *Manager) Close() error {
 		return nil
 	}
 	m.closed = true
-	groups := make([]*actor, 0, len(m.groups))
-	for _, a := range m.groups {
-		groups = append(groups, a)
-	}
 	m.mu.Unlock()
-	for _, a := range groups {
-		a.close()
-	}
 	if closer, ok := m.log.(interface{ Close() error }); ok {
 		return closer.Close()
 	}
 	return nil
 }
 
-type request struct {
-	op          string
-	record      humandomain.EventRecord
-	now         time.Time
-	minScore    float64
-	idleTTL     time.Duration
-	candidateID string
-	eventID     string
-	descriptors []mediadomain.MediaDescriptor
-	candidate   *humandomain.ThoughtCandidate
-	result      chan result
-	ack         chan error
-}
-
-type result struct {
-	memory    humandomain.GroupWorkingMemory
-	candidate *humandomain.ThoughtCandidate
-	valid     bool
-	retire    bool
-	err       error
-}
-
+// actor holds one group's working memory behind a mutex. Every method takes
+// the lock, mutates in place, and returns a detached clone so callers never
+// share slices with live state.
 type actor struct {
 	groupID       int64
 	tailSize      int
 	maxCandidates int
 	maxSeen       int
-	mailbox       chan request
-	stop          chan struct{}
-	done          chan struct{}
-	seen          map[string]struct{}
-	lastUsedNano  atomic.Int64
+
+	mu           sync.Mutex
+	memory       humandomain.GroupWorkingMemory
+	seen         map[string]struct{}
+	lastUsedNano atomic.Int64
 }
 
 func newActor(groupID int64, tailSize, maxCandidates, maxSeen int, initial humandomain.GroupWorkingMemory) *actor {
@@ -425,89 +324,19 @@ func newActor(groupID int64, tailSize, maxCandidates, maxSeen int, initial human
 		tailSize:      tailSize,
 		maxCandidates: maxCandidates,
 		maxSeen:       maxSeen,
-		mailbox:       make(chan request, 128),
-		stop:          make(chan struct{}),
-		done:          make(chan struct{}),
 		seen:          make(map[string]struct{}),
 	}
 	a.lastUsedNano.Store(time.Now().UnixNano())
+	if initial.GroupID == 0 {
+		initial.GroupID = groupID
+	}
 	for _, record := range initial.RecentTail {
 		if record.EventID != "" {
 			a.seen[record.EventID] = struct{}{}
 		}
 	}
-	go a.run(initial)
+	a.memory = initial
 	return a
-}
-
-func (a *actor) run(initial humandomain.GroupWorkingMemory) {
-	defer close(a.done)
-	memory := initial
-	if memory.GroupID == 0 {
-		memory.GroupID = a.groupID
-	}
-	for {
-		select {
-		case <-a.stop:
-			return
-		case req := <-a.mailbox:
-			if req.op != "retire_if_idle" {
-				a.touch()
-			}
-			switch req.op {
-			case "observe":
-				if _, duplicate := a.seen[req.record.EventID]; !duplicate {
-					a.seen[req.record.EventID] = struct{}{}
-					memory = reduce(memory, req.record, a.tailSize)
-					pruneCandidates(&memory, a.maxCandidates)
-					a.pruneSeen(memory.RecentTail)
-				}
-			case "claim":
-				candidate := claimCandidate(&memory, req.now, req.minScore)
-				pruneCandidates(&memory, a.maxCandidates)
-				req.result <- result{memory: cloneMemory(memory), candidate: candidate}
-				continue
-			case "enqueue":
-				if req.candidate == nil {
-					req.result <- result{err: errors.New("group actor: candidate is nil")}
-					continue
-				}
-				if !enqueueCandidate(&memory, *req.candidate) {
-					req.result <- result{memory: cloneMemory(memory), err: errors.New("group actor: candidate already exists")}
-					continue
-				}
-				pruneCandidates(&memory, a.maxCandidates)
-				req.result <- result{memory: cloneMemory(memory)}
-				continue
-			case "complete":
-				completeCandidate(&memory, req.candidateID)
-				pruneCandidates(&memory, a.maxCandidates)
-				req.result <- result{memory: cloneMemory(memory)}
-				continue
-			case "can_execute":
-				valid := canExecuteCandidate(&memory, req.candidateID, req.now)
-				req.result <- result{memory: cloneMemory(memory), valid: valid}
-				continue
-			case "enrich_media":
-				enrichMedia(&memory, req.eventID, req.descriptors)
-			case "snapshot":
-			case "retire_if_idle":
-				idle := nowIdle(a.lastUsed(), req.now, req.idleTTL)
-				if idle && !hasLiveCandidates(memory.Candidates) {
-					req.result <- result{retire: true, memory: cloneMemory(memory)}
-					if req.ack != nil {
-						if err := <-req.ack; err != nil {
-							continue
-						}
-					}
-					return
-				}
-				req.result <- result{retire: false, memory: cloneMemory(memory)}
-				continue
-			}
-			req.result <- result{memory: cloneMemory(memory)}
-		}
-	}
 }
 
 func nowIdle(lastUsed, now time.Time, ttl time.Duration) bool {
@@ -533,86 +362,82 @@ func (a *actor) lastUsed() time.Time {
 	return time.Unix(0, a.lastUsedNano.Load())
 }
 
-func (a *actor) canExecute(ctx context.Context, candidateID string, now time.Time) (bool, error) {
-	resultCh := make(chan result, 1)
-	select {
-	case a.mailbox <- request{op: "can_execute", candidateID: candidateID, now: now, result: resultCh}:
-	case <-ctx.Done():
-		return false, ctx.Err()
-	case <-a.done:
-		return false, errors.New("group actor: actor stopped")
+func (a *actor) observe(record humandomain.EventRecord) humandomain.GroupWorkingMemory {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.touch()
+	if _, duplicate := a.seen[record.EventID]; !duplicate {
+		a.seen[record.EventID] = struct{}{}
+		a.memory = reduce(a.memory, record, a.tailSize)
+		pruneCandidates(&a.memory, a.maxCandidates)
+		a.pruneSeen(a.memory.RecentTail)
 	}
-	select {
-	case result := <-resultCh:
-		return result.valid, result.err
-	case <-ctx.Done():
-		return false, ctx.Err()
-	case <-a.done:
-		return false, errors.New("group actor: actor stopped")
-	}
+	return cloneMemory(a.memory)
 }
 
-func (a *actor) enrichMedia(ctx context.Context, eventID string, descriptors []mediadomain.MediaDescriptor) error {
-	resultCh := make(chan result, 1)
-	copyDescriptors := append([]mediadomain.MediaDescriptor(nil), descriptors...)
-	select {
-	case a.mailbox <- request{op: "enrich_media", eventID: eventID, descriptors: copyDescriptors, result: resultCh}:
-	case <-ctx.Done():
-		return ctx.Err()
-	case <-a.done:
-		return errors.New("group actor: actor stopped")
-	}
-	select {
-	case result := <-resultCh:
-		return result.err
-	case <-ctx.Done():
-		return ctx.Err()
-	case <-a.done:
-		return errors.New("group actor: actor stopped")
-	}
+func (a *actor) claim(now time.Time, minScore float64) (*humandomain.ThoughtCandidate, humandomain.GroupWorkingMemory) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.touch()
+	candidate := claimCandidate(&a.memory, now, minScore)
+	pruneCandidates(&a.memory, a.maxCandidates)
+	return candidate, cloneMemory(a.memory)
 }
 
-func (a *actor) observe(ctx context.Context, record humandomain.EventRecord) (humandomain.GroupWorkingMemory, error) {
-	resultCh := make(chan result, 1)
-	select {
-	case a.mailbox <- request{op: "observe", record: record, result: resultCh}:
-	case <-ctx.Done():
-		return humandomain.GroupWorkingMemory{}, ctx.Err()
-	case <-a.done:
-		return humandomain.GroupWorkingMemory{}, errors.New("group actor: actor stopped")
+func (a *actor) enqueue(candidate humandomain.ThoughtCandidate) (humandomain.GroupWorkingMemory, bool) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.touch()
+	if !enqueueCandidate(&a.memory, candidate) {
+		return humandomain.GroupWorkingMemory{}, false
 	}
-	select {
-	case result := <-resultCh:
-		return result.memory, result.err
-	case <-ctx.Done():
-		return humandomain.GroupWorkingMemory{}, ctx.Err()
-	case <-a.done:
-		return humandomain.GroupWorkingMemory{}, errors.New("group actor: actor stopped")
-	}
+	pruneCandidates(&a.memory, a.maxCandidates)
+	return cloneMemory(a.memory), true
 }
 
-func (a *actor) snapshot(ctx context.Context) (humandomain.GroupWorkingMemory, error) {
-	resultCh := make(chan result, 1)
-	select {
-	case a.mailbox <- request{op: "snapshot", result: resultCh}:
-	case <-ctx.Done():
-		return humandomain.GroupWorkingMemory{}, ctx.Err()
-	case <-a.done:
-		return humandomain.GroupWorkingMemory{}, errors.New("group actor: actor stopped")
-	}
-	select {
-	case result := <-resultCh:
-		return result.memory, result.err
-	case <-ctx.Done():
-		return humandomain.GroupWorkingMemory{}, ctx.Err()
-	case <-a.done:
-		return humandomain.GroupWorkingMemory{}, errors.New("group actor: actor stopped")
-	}
+func (a *actor) complete(candidateID string) humandomain.GroupWorkingMemory {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.touch()
+	completeCandidate(&a.memory, candidateID)
+	pruneCandidates(&a.memory, a.maxCandidates)
+	return cloneMemory(a.memory)
 }
 
-func (a *actor) close() {
-	close(a.stop)
-	<-a.done
+func (a *actor) canExecute(candidateID string, now time.Time) (bool, humandomain.GroupWorkingMemory) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.touch()
+	valid := canExecuteCandidate(&a.memory, candidateID, now)
+	return valid, cloneMemory(a.memory)
+}
+
+func (a *actor) enrichMedia(eventID string, descriptors []mediadomain.MediaDescriptor) humandomain.GroupWorkingMemory {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.touch()
+	enrichMedia(&a.memory, eventID, descriptors)
+	return cloneMemory(a.memory)
+}
+
+// snapshot must touch the idle clock: deliberation reads it before thinking,
+// and a group mid-deliberation must not be reclaimed by PruneIdle.
+func (a *actor) snapshot() humandomain.GroupWorkingMemory {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.touch()
+	return cloneMemory(a.memory)
+}
+
+// retireIfIdle reports whether the actor may be dropped. The check happens
+// under the lock so a concurrent touch during the wait is respected.
+func (a *actor) retireIfIdle(now time.Time, idleTTL time.Duration) (humandomain.GroupWorkingMemory, bool) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if !nowIdle(a.lastUsed(), now, idleTTL) || hasLiveCandidates(a.memory.Candidates) {
+		return humandomain.GroupWorkingMemory{}, false
+	}
+	return cloneMemory(a.memory), true
 }
 
 func (a *actor) pruneSeen(tail []humandomain.EventRecord) {
