@@ -6,16 +6,16 @@ CREATE TABLE IF NOT EXISTS messages (
   reply_to_message_id VARCHAR(128) NULL,
   kind VARCHAR(32) NOT NULL,
   text_content TEXT NOT NULL,
-  segments_json JSON NOT NULL,
-  attachments_json JSON NOT NULL,
+  segments_json JSONB NOT NULL,
+  attachments_json JSONB NOT NULL,
   mentioned_bot BOOLEAN NOT NULL DEFAULT FALSE,
   named_bot BOOLEAN NOT NULL DEFAULT FALSE,
   is_reply_to_bot BOOLEAN NOT NULL DEFAULT FALSE,
-  occurred_at DATETIME(6) NOT NULL,
-  created_at DATETIME(6) NOT NULL,
-  KEY idx_messages_group_occurred (group_id, occurred_at),
-  KEY idx_messages_message_id (message_id)
+  occurred_at TIMESTAMPTZ NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL
 );
+CREATE INDEX IF NOT EXISTS idx_messages_group_occurred ON messages (group_id, occurred_at);
+CREATE INDEX IF NOT EXISTS idx_messages_message_id ON messages (message_id);
 
 CREATE TABLE IF NOT EXISTS memories (
   memory_id VARCHAR(128) PRIMARY KEY,
@@ -25,27 +25,27 @@ CREATE TABLE IF NOT EXISTS memories (
   content TEXT NOT NULL,
   source_event_id VARCHAR(128) NOT NULL,
   descriptor_ref VARCHAR(255) NOT NULL,
-  confidence DOUBLE NOT NULL,
-  importance DOUBLE NOT NULL,
-  created_at DATETIME(6) NOT NULL,
-  expires_at DATETIME(6) NULL,
-  updated_at DATETIME(6) NOT NULL,
-  KEY idx_memories_scope_type (scope, type),
-  KEY idx_memories_created (created_at)
+  confidence DOUBLE PRECISION NOT NULL,
+  importance DOUBLE PRECISION NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL,
+  expires_at TIMESTAMPTZ NULL,
+  updated_at TIMESTAMPTZ NOT NULL
 );
+CREATE INDEX IF NOT EXISTS idx_memories_scope_type ON memories (scope, type);
+CREATE INDEX IF NOT EXISTS idx_memories_created ON memories (created_at);
 
 CREATE TABLE IF NOT EXISTS member_profiles (
   group_id BIGINT NOT NULL,
   user_id BIGINT NOT NULL,
   nickname VARCHAR(255) NOT NULL,
   message_count BIGINT NOT NULL,
-  last_spoke_at DATETIME(6) NOT NULL,
-  active_score DOUBLE NOT NULL,
-  tags_json JSON NOT NULL,
-  common_phrases_json JSON NOT NULL,
-  interests_json JSON NOT NULL,
-  traits_json JSON NOT NULL,
-  updated_at DATETIME(6) NOT NULL,
+  last_spoke_at TIMESTAMPTZ NOT NULL,
+  active_score DOUBLE PRECISION NOT NULL,
+  tags_json JSONB NOT NULL,
+  common_phrases_json JSONB NOT NULL,
+  interests_json JSONB NOT NULL,
+  traits_json JSONB NOT NULL,
+  updated_at TIMESTAMPTZ NOT NULL,
   PRIMARY KEY (group_id, user_id)
 );
 
@@ -53,11 +53,11 @@ CREATE TABLE IF NOT EXISTS relationships (
   persona_id VARCHAR(128) NOT NULL,
   group_id BIGINT NOT NULL,
   user_id BIGINT NOT NULL,
-  familiarity DOUBLE NOT NULL,
-  affinity DOUBLE NOT NULL,
-  tease_tolerance DOUBLE NOT NULL,
-  grudge_score DOUBLE NOT NULL,
-  last_interact_at DATETIME(6) NOT NULL,
+  familiarity DOUBLE PRECISION NOT NULL,
+  affinity DOUBLE PRECISION NOT NULL,
+  tease_tolerance DOUBLE PRECISION NOT NULL,
+  grudge_score DOUBLE PRECISION NOT NULL,
+  last_interact_at TIMESTAMPTZ NOT NULL,
   PRIMARY KEY (persona_id, group_id, user_id)
 );
 
@@ -74,24 +74,25 @@ CREATE TABLE IF NOT EXISTS meme_assets (
   animated BOOLEAN NOT NULL DEFAULT FALSE,
   status VARCHAR(32) NOT NULL,
   send_count BIGINT NOT NULL DEFAULT 0,
-  last_sent_at DATETIME(6) NULL,
-  created_at DATETIME(6) NOT NULL,
-  KEY idx_meme_assets_group (group_id),
-  UNIQUE KEY uniq_meme_content_hash (content_hash)
+  dud_count BIGINT NOT NULL DEFAULT 0,
+  last_sent_at TIMESTAMPTZ NULL,
+  created_at TIMESTAMPTZ NOT NULL
 );
+CREATE INDEX IF NOT EXISTS idx_meme_assets_group ON meme_assets (group_id);
+CREATE UNIQUE INDEX IF NOT EXISTS uniq_meme_content_hash ON meme_assets (content_hash);
 
 CREATE TABLE IF NOT EXISTS meme_descriptors (
   meme_id VARCHAR(128) PRIMARY KEY,
   title VARCHAR(255) NOT NULL,
   summary TEXT NOT NULL,
-  keywords_json JSON NOT NULL,
-  emotion_tags_json JSON NOT NULL,
-  scene_tags_json JSON NOT NULL,
-  usage_hints_json JSON NOT NULL,
+  keywords_json JSONB NOT NULL,
+  emotion_tags_json JSONB NOT NULL,
+  scene_tags_json JSONB NOT NULL,
+  usage_hints_json JSONB NOT NULL,
   language VARCHAR(32) NOT NULL,
-  confidence DOUBLE NOT NULL,
+  confidence DOUBLE PRECISION NOT NULL,
   reviewed BOOLEAN NOT NULL DEFAULT FALSE,
-  updated_at DATETIME(6) NOT NULL,
+  updated_at TIMESTAMPTZ NOT NULL,
   CONSTRAINT fk_meme_descriptor_asset FOREIGN KEY (meme_id) REFERENCES meme_assets(meme_id) ON DELETE CASCADE
 );
 
@@ -102,27 +103,27 @@ CREATE TABLE IF NOT EXISTS learning_candidates (
   value TEXT NOT NULL,
   meaning TEXT NOT NULL,
   evidence_count INT NOT NULL,
-  example_event_ids_json JSON NOT NULL,
-  confidence DOUBLE NOT NULL,
+  example_event_ids_json JSONB NOT NULL,
+  confidence DOUBLE PRECISION NOT NULL,
   status VARCHAR(32) NOT NULL,
-  created_at DATETIME(6) NOT NULL
+  created_at TIMESTAMPTZ NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS learning_watermarks (
   group_id BIGINT NOT NULL,
   kind VARCHAR(64) NOT NULL,
-  occurred_at DATETIME(6) NOT NULL,
+  occurred_at TIMESTAMPTZ NOT NULL,
   event_id VARCHAR(128) NOT NULL,
-  updated_at DATETIME(6) NOT NULL,
+  updated_at TIMESTAMPTZ NOT NULL,
   PRIMARY KEY (group_id, kind)
 );
 
 CREATE TABLE IF NOT EXISTS group_working_memory (
   group_id BIGINT PRIMARY KEY,
-  state_json JSON NOT NULL,
-  updated_at DATETIME(6) NOT NULL,
-  KEY idx_group_working_memory_updated (updated_at)
+  state_json JSONB NOT NULL,
+  updated_at TIMESTAMPTZ NOT NULL
 );
+CREATE INDEX IF NOT EXISTS idx_group_working_memory_updated ON group_working_memory (updated_at);
 
 CREATE TABLE IF NOT EXISTS thought_records (
   thought_id VARCHAR(128) PRIMARY KEY,
@@ -130,29 +131,38 @@ CREATE TABLE IF NOT EXISTS thought_records (
   group_id BIGINT NOT NULL,
   event_id VARCHAR(128) NOT NULL,
   interpretation TEXT NOT NULL,
-  evidence_json JSON NOT NULL,
-  uncertainty DOUBLE NOT NULL,
+  evidence_json JSONB NOT NULL,
+  uncertainty DOUBLE PRECISION NOT NULL,
   chosen_action VARCHAR(64) NOT NULL,
   outcome VARCHAR(64) NOT NULL,
-  created_at DATETIME(6) NOT NULL,
-  KEY idx_thought_records_group_created (group_id, created_at)
+  created_at TIMESTAMPTZ NOT NULL
 );
+CREATE INDEX IF NOT EXISTS idx_thought_records_group_created ON thought_records (group_id, created_at);
 
 CREATE TABLE IF NOT EXISTS async_outbox (
   task_id VARCHAR(128) PRIMARY KEY,
   kind VARCHAR(64) NOT NULL,
   idempotency_key VARCHAR(255) NOT NULL,
-  payload_json JSON NOT NULL,
+  payload_json JSONB NOT NULL,
   status VARCHAR(32) NOT NULL,
   attempts INT NOT NULL DEFAULT 0,
   max_attempts INT NOT NULL DEFAULT 5,
-  available_at DATETIME(6) NOT NULL,
-  locked_until DATETIME(6) NULL,
+  available_at TIMESTAMPTZ NOT NULL,
+  locked_until TIMESTAMPTZ NULL,
   locked_by VARCHAR(128) NULL,
   last_error TEXT NULL,
-  created_at DATETIME(6) NOT NULL,
-  updated_at DATETIME(6) NOT NULL,
-  UNIQUE KEY uniq_async_outbox_idempotency (idempotency_key),
-  KEY idx_async_outbox_claim (status, available_at, locked_until),
-  KEY idx_async_outbox_updated (updated_at)
+  created_at TIMESTAMPTZ NOT NULL,
+  updated_at TIMESTAMPTZ NOT NULL
 );
+CREATE UNIQUE INDEX IF NOT EXISTS uniq_async_outbox_idempotency ON async_outbox (kind, idempotency_key);
+CREATE INDEX IF NOT EXISTS idx_async_outbox_claim ON async_outbox (status, available_at, locked_until);
+CREATE INDEX IF NOT EXISTS idx_async_outbox_updated ON async_outbox (updated_at);
+
+-- 运行时状态(原 Redis runtime_state / persona_state 两类 key)。
+-- expires_at 取代 Redis TTL:读取时 WHERE expires_at > NOW(),过期即视为不存在。
+CREATE TABLE IF NOT EXISTS runtime_states (
+  key VARCHAR(255) PRIMARY KEY,
+  state_json JSONB NOT NULL,
+  expires_at TIMESTAMPTZ NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_runtime_states_expires ON runtime_states (expires_at);

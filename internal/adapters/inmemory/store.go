@@ -62,6 +62,19 @@ func (s *Store) SaveThought(_ context.Context, thought replydomain.ThoughtRecord
 	return nil
 }
 
+// RecentThoughts 返回一群最近的思考记录（新到旧）。
+func (s *Store) RecentThoughts(_ context.Context, groupID int64, limit int) ([]replydomain.ThoughtRecord, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	records := make([]replydomain.ThoughtRecord, 0, limit)
+	for i := len(s.thoughts) - 1; i >= 0 && len(records) < limit; i-- {
+		if s.thoughts[i].GroupID == groupID {
+			records = append(records, s.thoughts[i])
+		}
+	}
+	return records, nil
+}
+
 func (s *Store) LoadWorkingMemory(_ context.Context, groupID int64) (humandomain.GroupWorkingMemory, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -330,6 +343,7 @@ func (s *Store) QueryMemories(_ context.Context, query ports.MemoryQuery) ([]mem
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
+	now := time.Now()
 	result := make([]memorydomain.MemoryRecord, 0, len(s.memories))
 	needle := strings.ToLower(strings.TrimSpace(query.Query))
 	for _, record := range s.memories {
@@ -339,17 +353,20 @@ func (s *Store) QueryMemories(_ context.Context, query ports.MemoryQuery) ([]mem
 		if len(query.Types) > 0 && !slices.Contains(query.Types, record.Type) {
 			continue
 		}
+		// 遗忘：过期的记忆不再被召回
+		if record.ExpiresAt != nil && record.ExpiresAt.Before(now) {
+			continue
+		}
 		if needle != "" && !strings.Contains(strings.ToLower(record.Content), needle) && !strings.Contains(strings.ToLower(record.Subject), needle) {
 			continue
 		}
 		result = append(result, record)
 	}
 
+	// 遗忘：重要性随时间贴现——真人记忆里旧事除非特别重要，否则淡出。
+	// 排序键 = Importance / (1 + 天数/7)，一周龄的记忆权重减半。
 	sort.Slice(result, func(i, j int) bool {
-		if result[i].Importance == result[j].Importance {
-			return result[i].CreatedAt.After(result[j].CreatedAt)
-		}
-		return result[i].Importance > result[j].Importance
+		return memoryRecallScore(result[i], now) > memoryRecallScore(result[j], now)
 	})
 
 	if query.TopK > 0 && len(result) > query.TopK {
@@ -357,6 +374,18 @@ func (s *Store) QueryMemories(_ context.Context, query ports.MemoryQuery) ([]mem
 	}
 
 	return result, nil
+}
+
+// memoryRecallScore 是记忆的召回优先级：重要性按时间贴现，但高重要性的
+// 旧事仍应压过低分新事——真人记得「重要旧事」，淡忘的是「无聊近事」。
+// 贴现用 age/(importance*30) 的形态：0.9 重要性 30 天龄 ≈ 减半，0.3 的 3 天就减半。
+func memoryRecallScore(record memorydomain.MemoryRecord, now time.Time) float64 {
+	ageDays := now.Sub(record.CreatedAt).Hours() / 24
+	if ageDays < 0 {
+		ageDays = 0
+	}
+	halfLife := max(record.Importance, 0.1) * 30
+	return record.Importance / (1 + ageDays/halfLife)
 }
 
 func (s *Store) UpsertMeme(_ context.Context, asset mediadomain.MemeAsset, descriptor mediadomain.MemeDescriptor) error {
@@ -437,6 +466,21 @@ func (s *Store) MarkMemeSent(_ context.Context, memeID string) error {
 	}
 	now := time.Now()
 	asset.LastSentAt = &now
+	asset.SendCount++
+	s.memeAssets[memeID] = asset
+	return nil
+}
+
+// MarkMemeDud 记一次哑弹（发送后群里持续冷场）。
+func (s *Store) MarkMemeDud(_ context.Context, memeID string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	asset, ok := s.memeAssets[memeID]
+	if !ok {
+		return errors.New("meme not found")
+	}
+	asset.DudCount++
 	s.memeAssets[memeID] = asset
 	return nil
 }

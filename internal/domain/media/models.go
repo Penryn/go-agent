@@ -56,6 +56,10 @@ type MemeAsset struct {
 	Status         string     `json:"status" yaml:"status"`
 	CreatedAt      time.Time  `json:"created_at" yaml:"created_at"`
 	LastSentAt     *time.Time `json:"last_sent_at,omitempty" yaml:"last_sent_at,omitempty"`
+	// SendCount 是累计发送次数；DudCount 是发送后群里持续冷场的次数。
+	// 两者构成「这个表情效果如何」的粗反馈：哑弹率高的表情检索时降权。
+	SendCount int `json:"send_count" yaml:"send_count"`
+	DudCount  int `json:"dud_count" yaml:"dud_count"`
 }
 
 type MemeDescriptor struct {

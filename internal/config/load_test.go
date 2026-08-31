@@ -14,7 +14,7 @@ func TestLoadReadsDotEnvSecrets(t *testing.T) {
 	if err := os.WriteFile(path, []byte("app:\n  mode: test\npersona:\n  id: test\n  name: Test Bot\n"), 0o600); err != nil {
 		t.Fatalf("write config: %v", err)
 	}
-	if err := os.WriteFile(filepath.Join(dir, ".env"), []byte("QQBOT_QQ_ACCESS_TOKEN=qq-secret\nQQBOT_MAIN_MODEL_API_KEY=model-secret\nQQBOT_STORAGE_MYSQL_PASSWORD=db-secret\n"), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, ".env"), []byte("QQBOT_QQ_ACCESS_TOKEN=qq-secret\nQQBOT_MAIN_MODEL_API_KEY=model-secret\nQQBOT_STORAGE_POSTGRES_PASSWORD=db-secret\n"), 0o600); err != nil {
 		t.Fatalf("write config: %v", err)
 	}
 
@@ -29,8 +29,8 @@ func TestLoadReadsDotEnvSecrets(t *testing.T) {
 	if got, want := cfg.Models.Main.APIKey, "model-secret"; got != want {
 		t.Fatalf("main model api key mismatch: got %q want %q", got, want)
 	}
-	if got, want := cfg.Storage.MySQL.Password, "db-secret"; got != want {
-		t.Fatalf("mysql password mismatch: got %q want %q", got, want)
+	if got, want := cfg.Storage.Postgres.Password, "db-secret"; got != want {
+		t.Fatalf("postgres password mismatch: got %q want %q", got, want)
 	}
 }
 

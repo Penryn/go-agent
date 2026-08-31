@@ -275,3 +275,27 @@ func TestPokeEventProducesHighUrgencyCandidate(t *testing.T) {
 		t.Fatalf("poke candidate should be claimable: ok=%v err=%v intent=%s", ok, err, claimed.Intent)
 	}
 }
+
+func TestGroupIncreaseProducesWelcomeCandidate(t *testing.T) {
+	log := ingress.NewMemoryEventLog()
+	manager := NewManager(log)
+	defer manager.Close()
+
+	notice := eventRecord("join-1", 1, 42, "", time.Unix(100, 0))
+	notice.Event.Kind = conversationdomain.EventNotice
+	memory, err := manager.Observe(context.Background(), notice)
+	if err != nil {
+		t.Fatalf("observe notice: %v", err)
+	}
+	if len(memory.Candidates) != 1 {
+		t.Fatalf("expected one welcome candidate, got %d", len(memory.Candidates))
+	}
+	candidate := memory.Candidates[0]
+	if candidate.ReasonCode != "member_joined" || candidate.Score < 0.5 {
+		t.Fatalf("unexpected join candidate: %+v", candidate)
+	}
+	// 招呼时间窗有限：过期后不再可领
+	if _, ok, _ := manager.ClaimDue(context.Background(), 1, time.Unix(200, 0), 0.5); ok {
+		t.Fatal("join candidate should have expired after its window")
+	}
+}

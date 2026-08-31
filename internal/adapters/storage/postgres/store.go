@@ -1,4 +1,4 @@
-package mysqlstore
+package postgresstore
 
 import (
 	"context"
@@ -7,10 +7,11 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
-	_ "github.com/go-sql-driver/mysql"
+	_ "github.com/jackc/pgx/v5/stdlib"
 
 	"github.com/phlin/go-agent/internal/core/ports"
 	conversationdomain "github.com/phlin/go-agent/internal/domain/conversation"
@@ -33,15 +34,15 @@ type Store struct {
 }
 
 func Open(ctx context.Context, dsn string) (*sql.DB, error) {
-	db, err := sql.Open("mysql", dsn)
+	db, err := sql.Open("pgx", dsn)
 	if err != nil {
-		return nil, fmt.Errorf("open mysql: %w", err)
+		return nil, fmt.Errorf("open postgres: %w", err)
 	}
 	db.SetConnMaxLifetime(5 * time.Minute)
 	db.SetMaxOpenConns(10)
 	db.SetMaxIdleConns(5)
 	if err := db.PingContext(ctx); err != nil {
-		return nil, fmt.Errorf("ping mysql: %w", err)
+		return nil, fmt.Errorf("ping postgres: %w", err)
 	}
 	return db, nil
 }
@@ -73,8 +74,8 @@ func (s *Store) EnqueueOutbox(ctx context.Context, task ports.OutboxTask) error 
 		INSERT INTO async_outbox (
 			task_id, kind, idempotency_key, payload_json, status, attempts, max_attempts,
 			available_at, locked_until, locked_by, last_error, created_at, updated_at
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL, ?, ?)
-		ON DUPLICATE KEY UPDATE task_id = task_id
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NULL, NULL, NULL, $9, $10)
+		ON CONFLICT (kind, idempotency_key) DO UPDATE SET task_id = async_outbox.task_id
 	`, task.ID, task.Kind, task.IdempotencyKey, task.Payload, task.Status, task.Attempts, task.MaxAttempts,
 		task.AvailableAt, task.CreatedAt, task.UpdatedAt)
 	return err
@@ -99,16 +100,18 @@ func (s *Store) ClaimOutbox(ctx context.Context, workerID string, now time.Time,
 		SELECT task_id, kind, idempotency_key, payload_json, status, attempts, max_attempts,
 		       available_at, locked_until, locked_by, last_error, created_at, updated_at
 		FROM async_outbox
-		WHERE (status IN (?, ?) AND available_at <= ?)
-		   OR (status = ? AND (locked_until IS NULL OR locked_until <= ?))
+		WHERE (status IN ($1, $2) AND available_at <= $3)
+		   OR (status = $4 AND (locked_until IS NULL OR locked_until <= $5))
 		ORDER BY created_at ASC, task_id ASC
-		LIMIT ?
+		LIMIT $6
 		FOR UPDATE SKIP LOCKED
 	`, ports.OutboxPending, ports.OutboxRetry, now, ports.OutboxRunning, now, limit)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
+	// ponytail: pgx 不允许在同一事务连接上边遍历 rows 边 Exec,先收集完再统一加锁,
+	// 行数受 LIMIT 约束,内存可控。
 	tasks := make([]ports.OutboxTask, 0, limit)
 	for rows.Next() {
 		var task ports.OutboxTask
@@ -123,19 +126,23 @@ func (s *Store) ClaimOutbox(ctx context.Context, workerID string, now time.Time,
 		}
 		task.LockedBy = lockedBy.String
 		task.LastError = lastError.String
-		task.Status = ports.OutboxRunning
-		task.Attempts++
-		task.LockedBy = workerID
-		task.LockedUntil = now.Add(lease)
-		task.UpdatedAt = now
-		if _, err := tx.ExecContext(ctx, `UPDATE async_outbox SET status = ?, attempts = ?, locked_until = ?, locked_by = ?, updated_at = ? WHERE task_id = ?`,
-			ports.OutboxRunning, task.Attempts, task.LockedUntil, workerID, now, task.ID); err != nil {
-			return nil, err
-		}
 		tasks = append(tasks, task)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
+	}
+	rows.Close()
+
+	for i := range tasks {
+		tasks[i].Status = ports.OutboxRunning
+		tasks[i].Attempts++
+		tasks[i].LockedBy = workerID
+		tasks[i].LockedUntil = now.Add(lease)
+		tasks[i].UpdatedAt = now
+		if _, err := tx.ExecContext(ctx, `UPDATE async_outbox SET status = $1, attempts = $2, locked_until = $3, locked_by = $4, updated_at = $5 WHERE task_id = $6`,
+			ports.OutboxRunning, tasks[i].Attempts, tasks[i].LockedUntil, workerID, now, tasks[i].ID); err != nil {
+			return nil, err
+		}
 	}
 	if err := tx.Commit(); err != nil {
 		return nil, err
@@ -144,7 +151,7 @@ func (s *Store) ClaimOutbox(ctx context.Context, workerID string, now time.Time,
 }
 
 func (s *Store) CompleteOutbox(ctx context.Context, id string) error {
-	result, err := s.db.ExecContext(ctx, `UPDATE async_outbox SET status = ?, locked_until = NULL, locked_by = NULL, updated_at = ? WHERE task_id = ?`, ports.OutboxCompleted, time.Now(), id)
+	result, err := s.db.ExecContext(ctx, `UPDATE async_outbox SET status = $1, locked_until = NULL, locked_by = NULL, updated_at = $2 WHERE task_id = $3`, ports.OutboxCompleted, time.Now(), id)
 	if err != nil {
 		return err
 	}
@@ -156,7 +163,7 @@ func (s *Store) CompleteOutbox(ctx context.Context, id string) error {
 
 func (s *Store) FailOutbox(ctx context.Context, id string, taskErr error, retryAt time.Time) error {
 	var attempts, maxAttempts int
-	if err := s.db.QueryRowContext(ctx, `SELECT attempts, max_attempts FROM async_outbox WHERE task_id = ?`, id).Scan(&attempts, &maxAttempts); err != nil {
+	if err := s.db.QueryRowContext(ctx, `SELECT attempts, max_attempts FROM async_outbox WHERE task_id = $1`, id).Scan(&attempts, &maxAttempts); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return errors.New("outbox: task not found")
 		}
@@ -170,7 +177,7 @@ func (s *Store) FailOutbox(ctx context.Context, id string, taskErr error, retryA
 	if status == ports.OutboxRetry {
 		retry = retryAt
 	}
-	_, err := s.db.ExecContext(ctx, `UPDATE async_outbox SET status = ?, available_at = COALESCE(?, available_at), locked_until = NULL, locked_by = NULL, last_error = ?, updated_at = ? WHERE task_id = ?`,
+	_, err := s.db.ExecContext(ctx, `UPDATE async_outbox SET status = $1, available_at = COALESCE($2, available_at), locked_until = NULL, locked_by = NULL, last_error = $3, updated_at = $4 WHERE task_id = $5`,
 		status, retry, nullableError(taskErr), time.Now(), id)
 	return err
 }
@@ -202,15 +209,15 @@ func (s *Store) ArchiveEvent(ctx context.Context, event conversationdomain.Conve
 			event_id, group_id, user_id, message_id, reply_to_message_id, kind, text_content,
 			segments_json, attachments_json, mentioned_bot, named_bot, is_reply_to_bot,
 			occurred_at, created_at
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-		ON DUPLICATE KEY UPDATE
-			text_content = VALUES(text_content),
-			segments_json = VALUES(segments_json),
-			attachments_json = VALUES(attachments_json),
-			mentioned_bot = VALUES(mentioned_bot),
-			named_bot = VALUES(named_bot),
-			is_reply_to_bot = VALUES(is_reply_to_bot),
-			occurred_at = VALUES(occurred_at)
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+		ON CONFLICT (event_id) DO UPDATE SET
+			text_content = EXCLUDED.text_content,
+			segments_json = EXCLUDED.segments_json,
+			attachments_json = EXCLUDED.attachments_json,
+			mentioned_bot = EXCLUDED.mentioned_bot,
+			named_bot = EXCLUDED.named_bot,
+			is_reply_to_bot = EXCLUDED.is_reply_to_bot,
+			occurred_at = EXCLUDED.occurred_at
 	`, event.EventID, event.GroupID, event.UserID, event.MessageID, nullableString(event.ReplyToMessageID), event.Kind,
 		event.Text, segmentsJSON, attachmentsJSON, event.MentionedBot, event.NamedBot, event.IsReplyToBot, occurredAt, time.Now())
 	return err
@@ -225,9 +232,9 @@ func (s *Store) RecentEvents(ctx context.Context, groupID int64, limit int) ([]c
 		SELECT event_id, group_id, user_id, message_id, reply_to_message_id, kind, text_content,
 		       segments_json, attachments_json, mentioned_bot, named_bot, is_reply_to_bot, occurred_at
 		FROM messages
-		WHERE group_id = ?
+		WHERE group_id = $1
 		ORDER BY occurred_at DESC
-		LIMIT ?
+		LIMIT $2
 	`, groupID, limit)
 	if err != nil {
 		return nil, err
@@ -236,38 +243,8 @@ func (s *Store) RecentEvents(ctx context.Context, groupID int64, limit int) ([]c
 
 	events := []conversationdomain.ConversationEvent{}
 	for rows.Next() {
-		var (
-			event           conversationdomain.ConversationEvent
-			replyTo         sql.NullString
-			segmentsJSON    []byte
-			attachmentsJSON []byte
-			occurredAt      time.Time
-			kind            string
-		)
-		if err := rows.Scan(
-			&event.EventID,
-			&event.GroupID,
-			&event.UserID,
-			&event.MessageID,
-			&replyTo,
-			&kind,
-			&event.Text,
-			&segmentsJSON,
-			&attachmentsJSON,
-			&event.MentionedBot,
-			&event.NamedBot,
-			&event.IsReplyToBot,
-			&occurredAt,
-		); err != nil {
-			return nil, err
-		}
-		event.Kind = conversationdomain.EventKind(kind)
-		event.ReplyToMessageID = replyTo.String
-		event.TimestampUnix = occurredAt.Unix()
-		if err := json.Unmarshal(segmentsJSON, &event.Segments); err != nil {
-			return nil, err
-		}
-		if err := json.Unmarshal(attachmentsJSON, &event.Attachments); err != nil {
+		event, err := scanEvent(rows)
+		if err != nil {
 			return nil, err
 		}
 		events = append(events, event)
@@ -288,9 +265,9 @@ func (s *Store) EventsAfter(ctx context.Context, groupID int64, after time.Time,
 		SELECT event_id, group_id, user_id, message_id, reply_to_message_id, kind, text_content,
 		       segments_json, attachments_json, mentioned_bot, named_bot, is_reply_to_bot, occurred_at
 		FROM messages
-		WHERE group_id = ? AND (occurred_at > ? OR (occurred_at = ? AND event_id > ?))
+		WHERE group_id = $1 AND (occurred_at > $2 OR (occurred_at = $3 AND event_id > $4))
 		ORDER BY occurred_at ASC, event_id ASC
-		LIMIT ?
+		LIMIT $5
 	`, groupID, after, after, afterEventID, limit)
 	if err != nil {
 		return nil, err
@@ -299,32 +276,52 @@ func (s *Store) EventsAfter(ctx context.Context, groupID int64, after time.Time,
 
 	events := []conversationdomain.ConversationEvent{}
 	for rows.Next() {
-		var (
-			event           conversationdomain.ConversationEvent
-			replyTo         sql.NullString
-			segmentsJSON    []byte
-			attachmentsJSON []byte
-			occurredAt      time.Time
-			kind            string
-		)
-		if err := rows.Scan(
-			&event.EventID, &event.GroupID, &event.UserID, &event.MessageID, &replyTo, &kind, &event.Text,
-			&segmentsJSON, &attachmentsJSON, &event.MentionedBot, &event.NamedBot, &event.IsReplyToBot, &occurredAt,
-		); err != nil {
-			return nil, err
-		}
-		event.Kind = conversationdomain.EventKind(kind)
-		event.ReplyToMessageID = replyTo.String
-		event.TimestampUnix = occurredAt.Unix()
-		if err := json.Unmarshal(segmentsJSON, &event.Segments); err != nil {
-			return nil, err
-		}
-		if err := json.Unmarshal(attachmentsJSON, &event.Attachments); err != nil {
+		event, err := scanEvent(rows)
+		if err != nil {
 			return nil, err
 		}
 		events = append(events, event)
 	}
 	return events, rows.Err()
+}
+
+// scanEvent 从单行扫描 ConversationEvent,RecentEvents/EventsAfter 共用。
+func scanEvent(rows *sql.Rows) (conversationdomain.ConversationEvent, error) {
+	var (
+		event           conversationdomain.ConversationEvent
+		replyTo         sql.NullString
+		segmentsJSON    []byte
+		attachmentsJSON []byte
+		occurredAt      time.Time
+		kind            string
+	)
+	if err := rows.Scan(
+		&event.EventID,
+		&event.GroupID,
+		&event.UserID,
+		&event.MessageID,
+		&replyTo,
+		&kind,
+		&event.Text,
+		&segmentsJSON,
+		&attachmentsJSON,
+		&event.MentionedBot,
+		&event.NamedBot,
+		&event.IsReplyToBot,
+		&occurredAt,
+	); err != nil {
+		return conversationdomain.ConversationEvent{}, err
+	}
+	event.Kind = conversationdomain.EventKind(kind)
+	event.ReplyToMessageID = replyTo.String
+	event.TimestampUnix = occurredAt.Unix()
+	if err := json.Unmarshal(segmentsJSON, &event.Segments); err != nil {
+		return conversationdomain.ConversationEvent{}, err
+	}
+	if err := json.Unmarshal(attachmentsJSON, &event.Attachments); err != nil {
+		return conversationdomain.ConversationEvent{}, err
+	}
+	return event, nil
 }
 
 func (s *Store) UpsertMemory(ctx context.Context, record memorydomain.MemoryRecord) error {
@@ -338,18 +335,18 @@ func (s *Store) UpsertMemory(ctx context.Context, record memorydomain.MemoryReco
 		INSERT INTO memories (
 			memory_id, scope, type, subject, content, source_event_id, descriptor_ref,
 			confidence, importance, created_at, expires_at, updated_at
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-		ON DUPLICATE KEY UPDATE
-			scope = VALUES(scope),
-			type = VALUES(type),
-			subject = VALUES(subject),
-			content = VALUES(content),
-			source_event_id = VALUES(source_event_id),
-			descriptor_ref = VALUES(descriptor_ref),
-			confidence = VALUES(confidence),
-			importance = VALUES(importance),
-			expires_at = VALUES(expires_at),
-			updated_at = VALUES(updated_at)
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+		ON CONFLICT (memory_id) DO UPDATE SET
+			scope = EXCLUDED.scope,
+			type = EXCLUDED.type,
+			subject = EXCLUDED.subject,
+			content = EXCLUDED.content,
+			source_event_id = EXCLUDED.source_event_id,
+			descriptor_ref = EXCLUDED.descriptor_ref,
+			confidence = EXCLUDED.confidence,
+			importance = EXCLUDED.importance,
+			expires_at = EXCLUDED.expires_at,
+			updated_at = EXCLUDED.updated_at
 	`, record.MemoryID, record.Scope, record.Type, record.Subject, record.Content, record.SourceEventID, record.DescriptorRef,
 		record.Confidence, record.Importance, createdAt, nullableTime(record.ExpiresAt), now)
 	return err
@@ -364,23 +361,28 @@ func (s *Store) QueryMemories(ctx context.Context, query ports.MemoryQuery) ([]m
 	`
 	args := []any{}
 	if query.Scope != "" {
-		base += " AND scope = ?"
+		base += " AND scope = $" + strconv.Itoa(len(args)+1)
 		args = append(args, query.Scope)
 	}
 	if len(query.Types) > 0 {
-		base += " AND type IN (" + placeholders(len(query.Types)) + ")"
+		phs := make([]string, 0, len(query.Types))
 		for _, memoryType := range query.Types {
 			args = append(args, memoryType)
+			phs = append(phs, "$"+strconv.Itoa(len(args)))
 		}
+		base += " AND type IN (" + strings.Join(phs, ",") + ")"
 	}
 	if trimmed := strings.TrimSpace(query.Query); trimmed != "" {
-		base += " AND (subject LIKE ? OR content LIKE ?)"
 		like := "%" + trimmed + "%"
+		base += " AND (subject LIKE $" + strconv.Itoa(len(args)+1) + " OR content LIKE $" + strconv.Itoa(len(args)+2) + ")"
 		args = append(args, like, like)
 	}
-	base += " ORDER BY importance DESC, created_at DESC"
+	// 遗忘：过期记忆不再召回；重要性按时间贴现（高重要性衰减更慢，
+	// 半衰 = importance*30 天）——重要旧事压过无聊近事，无聊近事先淡出。
+	base += " AND (expires_at IS NULL OR expires_at > NOW())"
+	base += " ORDER BY importance / (1 + EXTRACT(EPOCH FROM (NOW() - created_at)) / 86400.0 / (GREATEST(importance, 0.1) * 30.0)) DESC, created_at DESC"
 	if query.TopK > 0 {
-		base += " LIMIT ?"
+		base += " LIMIT $" + strconv.Itoa(len(args)+1)
 		args = append(args, query.TopK)
 	}
 
@@ -419,6 +421,114 @@ func (s *Store) QueryMemories(ctx context.Context, query ports.MemoryQuery) ([]m
 	return records, rows.Err()
 }
 
+func (s *Store) GetMemberProfile(ctx context.Context, groupID, userID int64) (profiledomain.MemberProfile, error) {
+	var (
+		profile           profiledomain.MemberProfile
+		tagsJSON          []byte
+		commonPhrasesJSON []byte
+		interestsJSON     []byte
+		traitsJSON        []byte
+	)
+
+	err := s.db.QueryRowContext(ctx, `
+		SELECT nickname, message_count, last_spoke_at, active_score, tags_json, common_phrases_json, interests_json, traits_json
+		FROM member_profiles
+		WHERE group_id = $1 AND user_id = $2
+	`, groupID, userID).Scan(
+		&profile.Stats.Nickname,
+		&profile.Stats.MessageCount,
+		&profile.Stats.LastSpokeAt,
+		&profile.Stats.ActiveScore,
+		&tagsJSON,
+		&commonPhrasesJSON,
+		&interestsJSON,
+		&traitsJSON,
+	)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return profiledomain.MemberProfile{Stats: profiledomain.MemberStats{GroupID: groupID, UserID: userID}}, nil
+		}
+		return profiledomain.MemberProfile{}, err
+	}
+	profile.Stats.GroupID = groupID
+	profile.Stats.UserID = userID
+	_ = json.Unmarshal(tagsJSON, &profile.Tags)
+	_ = json.Unmarshal(commonPhrasesJSON, &profile.CommonPhrases)
+	_ = json.Unmarshal(interestsJSON, &profile.Interests)
+	_ = json.Unmarshal(traitsJSON, &profile.Traits)
+	return profile, nil
+}
+
+func (s *Store) SaveMemberProfile(ctx context.Context, profile profiledomain.MemberProfile) error {
+	tagsJSON, _ := json.Marshal(profile.Tags)
+	commonPhrasesJSON, _ := json.Marshal(profile.CommonPhrases)
+	interestsJSON, _ := json.Marshal(profile.Interests)
+	traitsJSON, _ := json.Marshal(profile.Traits)
+
+	_, err := s.db.ExecContext(ctx, `
+		INSERT INTO member_profiles (
+			group_id, user_id, nickname, message_count, last_spoke_at, active_score,
+			tags_json, common_phrases_json, interests_json, traits_json, updated_at
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+		ON CONFLICT (group_id, user_id) DO UPDATE SET
+			nickname = EXCLUDED.nickname,
+			message_count = EXCLUDED.message_count,
+			last_spoke_at = EXCLUDED.last_spoke_at,
+			active_score = EXCLUDED.active_score,
+			tags_json = EXCLUDED.tags_json,
+			common_phrases_json = EXCLUDED.common_phrases_json,
+			interests_json = EXCLUDED.interests_json,
+			traits_json = EXCLUDED.traits_json,
+			updated_at = EXCLUDED.updated_at
+	`, profile.Stats.GroupID, profile.Stats.UserID, profile.Stats.Nickname, profile.Stats.MessageCount,
+		coalesceTime(profile.Stats.LastSpokeAt), profile.Stats.ActiveScore, tagsJSON, commonPhrasesJSON, interestsJSON, traitsJSON, time.Now())
+	return err
+}
+
+func (s *Store) GetRelationship(ctx context.Context, personaID string, groupID, userID int64) (profiledomain.RelationshipState, error) {
+	var state profiledomain.RelationshipState
+	err := s.db.QueryRowContext(ctx, `
+		SELECT familiarity, affinity, tease_tolerance, grudge_score, last_interact_at
+		FROM relationships
+		WHERE persona_id = $1 AND group_id = $2 AND user_id = $3
+	`, personaID, groupID, userID).Scan(
+		&state.Familiarity,
+		&state.Affinity,
+		&state.TeaseTolerance,
+		&state.GrudgeScore,
+		&state.LastInteractAt,
+	)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return profiledomain.RelationshipState{
+				PersonaID: personaID,
+				GroupID:   groupID,
+				UserID:    userID,
+			}, nil
+		}
+		return profiledomain.RelationshipState{}, err
+	}
+	state.PersonaID = personaID
+	state.GroupID = groupID
+	state.UserID = userID
+	return state, nil
+}
+
+func (s *Store) SaveRelationship(ctx context.Context, state profiledomain.RelationshipState) error {
+	_, err := s.db.ExecContext(ctx, `
+		INSERT INTO relationships (
+			persona_id, group_id, user_id, familiarity, affinity, tease_tolerance, grudge_score, last_interact_at
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+		ON CONFLICT (persona_id, group_id, user_id) DO UPDATE SET
+			familiarity = EXCLUDED.familiarity,
+			affinity = EXCLUDED.affinity,
+			tease_tolerance = EXCLUDED.tease_tolerance,
+			grudge_score = EXCLUDED.grudge_score,
+			last_interact_at = EXCLUDED.last_interact_at
+	`, state.PersonaID, state.GroupID, state.UserID, state.Familiarity, state.Affinity, state.TeaseTolerance, state.GrudgeScore, coalesceTime(state.LastInteractAt))
+	return err
+}
+
 func (s *Store) UpsertMeme(ctx context.Context, asset mediadomain.MemeAsset, descriptor mediadomain.MemeDescriptor) error {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -434,18 +544,18 @@ func (s *Store) UpsertMeme(ctx context.Context, asset mediadomain.MemeAsset, des
 		INSERT INTO meme_assets (
 			meme_id, group_id, source_event_id, object_key, file_ext, content_hash, perceptual_hash,
 			width, height, animated, status, created_at
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-		ON DUPLICATE KEY UPDATE
-			group_id = VALUES(group_id),
-			source_event_id = VALUES(source_event_id),
-			object_key = VALUES(object_key),
-			file_ext = VALUES(file_ext),
-			content_hash = VALUES(content_hash),
-			perceptual_hash = VALUES(perceptual_hash),
-			width = VALUES(width),
-			height = VALUES(height),
-			animated = VALUES(animated),
-			status = VALUES(status)
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+		ON CONFLICT (meme_id) DO UPDATE SET
+			group_id = EXCLUDED.group_id,
+			source_event_id = EXCLUDED.source_event_id,
+			object_key = EXCLUDED.object_key,
+			file_ext = EXCLUDED.file_ext,
+			content_hash = EXCLUDED.content_hash,
+			perceptual_hash = EXCLUDED.perceptual_hash,
+			width = EXCLUDED.width,
+			height = EXCLUDED.height,
+			animated = EXCLUDED.animated,
+			status = EXCLUDED.status
 	`, asset.MemeID, asset.GroupID, asset.SourceEventID, asset.ObjectKey, asset.FileExt, asset.ContentHash, asset.PerceptualHash,
 		asset.Width, asset.Height, asset.Animated, asset.Status, coalesceTime(asset.CreatedAt))
 	if err != nil {
@@ -460,18 +570,18 @@ func (s *Store) UpsertMeme(ctx context.Context, asset mediadomain.MemeAsset, des
 		INSERT INTO meme_descriptors (
 			meme_id, title, summary, keywords_json, emotion_tags_json, scene_tags_json,
 			usage_hints_json, language, confidence, reviewed, updated_at
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-		ON DUPLICATE KEY UPDATE
-			title = VALUES(title),
-			summary = VALUES(summary),
-			keywords_json = VALUES(keywords_json),
-			emotion_tags_json = VALUES(emotion_tags_json),
-			scene_tags_json = VALUES(scene_tags_json),
-			usage_hints_json = VALUES(usage_hints_json),
-			language = VALUES(language),
-			confidence = VALUES(confidence),
-			reviewed = VALUES(reviewed),
-			updated_at = VALUES(updated_at)
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+		ON CONFLICT (meme_id) DO UPDATE SET
+			title = EXCLUDED.title,
+			summary = EXCLUDED.summary,
+			keywords_json = EXCLUDED.keywords_json,
+			emotion_tags_json = EXCLUDED.emotion_tags_json,
+			scene_tags_json = EXCLUDED.scene_tags_json,
+			usage_hints_json = EXCLUDED.usage_hints_json,
+			language = EXCLUDED.language,
+			confidence = EXCLUDED.confidence,
+			reviewed = EXCLUDED.reviewed,
+			updated_at = EXCLUDED.updated_at
 	`, descriptor.MemeID, descriptor.Title, descriptor.Summary, keywordsJSON, emotionJSON, sceneJSON,
 		usageJSON, descriptor.Language, descriptor.Confidence, descriptor.Reviewed, coalesceTime(descriptor.UpdatedAt))
 	if err != nil {
@@ -496,10 +606,10 @@ func (s *Store) SearchMemes(ctx context.Context, query ports.MemeQuery) ([]media
 		       d.usage_hints_json, d.language, d.confidence, d.reviewed
 		FROM meme_assets a
 		JOIN meme_descriptors d ON d.meme_id = a.meme_id
-		WHERE (a.group_id = ? OR a.group_id = 0)
-		  AND (d.title LIKE ? OR d.summary LIKE ? OR d.keywords_json LIKE ?)
+		WHERE (a.group_id = $1 OR a.group_id = 0)
+		  AND (d.title LIKE $2 OR d.summary LIKE $3 OR d.keywords_json::text LIKE $4)
 		ORDER BY a.send_count DESC, d.updated_at DESC
-		LIMIT ?
+		LIMIT $5
 	`, query.GroupID, like, like, like, limit)
 	if err != nil {
 		return nil, err
@@ -558,21 +668,20 @@ func (s *Store) GetMeme(ctx context.Context, memeID string) (mediadomain.MemeAss
 	err := s.db.QueryRowContext(ctx, `
 		SELECT a.meme_id, a.group_id, a.source_event_id, a.object_key, a.file_ext, a.content_hash,
 		       a.perceptual_hash, a.width, a.height, a.animated, a.status, a.created_at, a.last_sent_at,
+		       a.send_count, a.dud_count,
 		       d.title, d.summary, d.keywords_json, d.emotion_tags_json, d.scene_tags_json,
 		       d.usage_hints_json, d.language, d.confidence, d.reviewed, d.updated_at
 		FROM meme_assets a
 		JOIN meme_descriptors d ON d.meme_id = a.meme_id
-		WHERE a.meme_id = ?
+		WHERE a.meme_id = $1
 	`, memeID).Scan(
 		&asset.MemeID, &asset.GroupID, &asset.SourceEventID, &asset.ObjectKey, &asset.FileExt, &asset.ContentHash,
 		&asset.PerceptualHash, &asset.Width, &asset.Height, &asset.Animated, &asset.Status, &asset.CreatedAt, &lastSentAt,
+		&asset.SendCount, &asset.DudCount,
 		&descriptor.Title, &descriptor.Summary, &keywordsJSON, &emotionJSON, &sceneJSON,
 		&usageJSON, &descriptor.Language, &descriptor.Confidence, &descriptor.Reviewed, &descriptor.UpdatedAt,
 	)
 	if err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			return mediadomain.MemeAsset{}, mediadomain.MemeDescriptor{}, err
-		}
 		return mediadomain.MemeAsset{}, mediadomain.MemeDescriptor{}, err
 	}
 
@@ -590,7 +699,7 @@ func (s *Store) GetMeme(ctx context.Context, memeID string) (mediadomain.MemeAss
 func (s *Store) CountMemesByGroup(ctx context.Context, groupID int64) (int, error) {
 	var count int
 	err := s.db.QueryRowContext(ctx,
-		`SELECT COUNT(*) FROM meme_assets WHERE group_id = ?`,
+		`SELECT COUNT(*) FROM meme_assets WHERE group_id = $1`,
 		groupID,
 	).Scan(&count)
 	return count, err
@@ -601,7 +710,7 @@ func (s *Store) DeleteOldestMemes(ctx context.Context, groupID int64, deleteCoun
 		return nil
 	}
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT meme_id FROM meme_assets WHERE group_id = ? ORDER BY created_at ASC LIMIT ?`,
+		`SELECT meme_id FROM meme_assets WHERE group_id = $1 ORDER BY created_at ASC LIMIT $2`,
 		groupID, deleteCount,
 	)
 	if err != nil {
@@ -623,11 +732,13 @@ func (s *Store) DeleteOldestMemes(ctx context.Context, groupID int64, deleteCoun
 	if len(ids) == 0 {
 		return nil
 	}
-	ph := placeholders(len(ids))
 	args := make([]any, len(ids))
+	phs := make([]string, len(ids))
 	for i, id := range ids {
 		args[i] = id
+		phs[i] = "$" + strconv.Itoa(i+1)
 	}
+	ph := strings.Join(phs, ",")
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
@@ -641,6 +752,11 @@ func (s *Store) DeleteOldestMemes(ctx context.Context, groupID int64, deleteCoun
 		`DELETE FROM meme_descriptors WHERE meme_id IN (`+ph+`)`, args...); err != nil {
 		return err
 	}
+	// 同库顺带清向量,避免孤儿向量仍被检索返回(旧 Qdrant 时代无法同事务做到)。
+	if _, err = tx.ExecContext(ctx,
+		`DELETE FROM meme_vectors WHERE meme_id IN (`+ph+`)`, args...); err != nil {
+		return err
+	}
 	if _, err = tx.ExecContext(ctx,
 		`DELETE FROM meme_assets WHERE meme_id IN (`+ph+`)`, args...); err != nil {
 		return err
@@ -651,117 +767,19 @@ func (s *Store) DeleteOldestMemes(ctx context.Context, groupID int64, deleteCoun
 func (s *Store) MarkMemeSent(ctx context.Context, memeID string) error {
 	_, err := s.db.ExecContext(ctx, `
 		UPDATE meme_assets
-		SET send_count = send_count + 1, last_sent_at = ?
-		WHERE meme_id = ?
+		SET send_count = send_count + 1, last_sent_at = $1
+		WHERE meme_id = $2
 	`, time.Now(), memeID)
 	return err
 }
 
-func (s *Store) GetMemberProfile(ctx context.Context, groupID, userID int64) (profiledomain.MemberProfile, error) {
-	var (
-		profile           profiledomain.MemberProfile
-		tagsJSON          []byte
-		commonPhrasesJSON []byte
-		interestsJSON     []byte
-		traitsJSON        []byte
-	)
-
-	err := s.db.QueryRowContext(ctx, `
-		SELECT nickname, message_count, last_spoke_at, active_score, tags_json, common_phrases_json, interests_json, traits_json
-		FROM member_profiles
-		WHERE group_id = ? AND user_id = ?
-	`, groupID, userID).Scan(
-		&profile.Stats.Nickname,
-		&profile.Stats.MessageCount,
-		&profile.Stats.LastSpokeAt,
-		&profile.Stats.ActiveScore,
-		&tagsJSON,
-		&commonPhrasesJSON,
-		&interestsJSON,
-		&traitsJSON,
-	)
-	if err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			return profiledomain.MemberProfile{Stats: profiledomain.MemberStats{GroupID: groupID, UserID: userID}}, nil
-		}
-		return profiledomain.MemberProfile{}, err
-	}
-	profile.Stats.GroupID = groupID
-	profile.Stats.UserID = userID
-	_ = json.Unmarshal(tagsJSON, &profile.Tags)
-	_ = json.Unmarshal(commonPhrasesJSON, &profile.CommonPhrases)
-	_ = json.Unmarshal(interestsJSON, &profile.Interests)
-	_ = json.Unmarshal(traitsJSON, &profile.Traits)
-	return profile, nil
-}
-
-func (s *Store) SaveMemberProfile(ctx context.Context, profile profiledomain.MemberProfile) error {
-	tagsJSON, _ := json.Marshal(profile.Tags)
-	commonPhrasesJSON, _ := json.Marshal(profile.CommonPhrases)
-	interestsJSON, _ := json.Marshal(profile.Interests)
-	traitsJSON, _ := json.Marshal(profile.Traits)
-
+// MarkMemeDud 记一次哑弹（发送后群里持续冷场）。
+func (s *Store) MarkMemeDud(ctx context.Context, memeID string) error {
 	_, err := s.db.ExecContext(ctx, `
-		INSERT INTO member_profiles (
-			group_id, user_id, nickname, message_count, last_spoke_at, active_score,
-			tags_json, common_phrases_json, interests_json, traits_json, updated_at
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-		ON DUPLICATE KEY UPDATE
-			nickname = VALUES(nickname),
-			message_count = VALUES(message_count),
-			last_spoke_at = VALUES(last_spoke_at),
-			active_score = VALUES(active_score),
-			tags_json = VALUES(tags_json),
-			common_phrases_json = VALUES(common_phrases_json),
-			interests_json = VALUES(interests_json),
-			traits_json = VALUES(traits_json),
-			updated_at = VALUES(updated_at)
-	`, profile.Stats.GroupID, profile.Stats.UserID, profile.Stats.Nickname, profile.Stats.MessageCount,
-		coalesceTime(profile.Stats.LastSpokeAt), profile.Stats.ActiveScore, tagsJSON, commonPhrasesJSON, interestsJSON, traitsJSON, time.Now())
-	return err
-}
-
-func (s *Store) GetRelationship(ctx context.Context, personaID string, groupID, userID int64) (profiledomain.RelationshipState, error) {
-	var state profiledomain.RelationshipState
-	err := s.db.QueryRowContext(ctx, `
-		SELECT familiarity, affinity, tease_tolerance, grudge_score, last_interact_at
-		FROM relationships
-		WHERE persona_id = ? AND group_id = ? AND user_id = ?
-	`, personaID, groupID, userID).Scan(
-		&state.Familiarity,
-		&state.Affinity,
-		&state.TeaseTolerance,
-		&state.GrudgeScore,
-		&state.LastInteractAt,
-	)
-	if err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			return profiledomain.RelationshipState{
-				PersonaID: personaID,
-				GroupID:   groupID,
-				UserID:    userID,
-			}, nil
-		}
-		return profiledomain.RelationshipState{}, err
-	}
-	state.PersonaID = personaID
-	state.GroupID = groupID
-	state.UserID = userID
-	return state, nil
-}
-
-func (s *Store) SaveRelationship(ctx context.Context, state profiledomain.RelationshipState) error {
-	_, err := s.db.ExecContext(ctx, `
-		INSERT INTO relationships (
-			persona_id, group_id, user_id, familiarity, affinity, tease_tolerance, grudge_score, last_interact_at
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-		ON DUPLICATE KEY UPDATE
-			familiarity = VALUES(familiarity),
-			affinity = VALUES(affinity),
-			tease_tolerance = VALUES(tease_tolerance),
-			grudge_score = VALUES(grudge_score),
-			last_interact_at = VALUES(last_interact_at)
-	`, state.PersonaID, state.GroupID, state.UserID, state.Familiarity, state.Affinity, state.TeaseTolerance, state.GrudgeScore, coalesceTime(state.LastInteractAt))
+		UPDATE meme_assets
+		SET dud_count = dud_count + 1
+		WHERE meme_id = $1
+	`, memeID)
 	return err
 }
 
@@ -784,8 +802,4 @@ func coalesceTime(value time.Time) time.Time {
 		return time.Now()
 	}
 	return value
-}
-
-func placeholders(count int) string {
-	return strings.TrimSuffix(strings.Repeat("?,", count), ",")
 }

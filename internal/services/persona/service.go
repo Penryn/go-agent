@@ -39,7 +39,9 @@ func (s *Service) RegisterJobs(sched *scheduler.Scheduler, groupIDs []int64) {
 // tired / withdrawn / aggro 抬高阈值（更难开口），talkBias 为正则降低（更愿意接话）。
 // 返回值直接叠加在 base 阈值上，调用方负责 clamp 到 [0,1]。
 func (s *Service) ThresholdAdjustment(ctx context.Context, groupID int64) float64 {
-	state, err := s.store.GetPersonaState(ctx, s.personaID, groupID)
+	// 读全局槽：情绪跨群一致，groupID 仅保留在签名上以兼容调用方。
+	_ = groupID
+	state, err := s.store.GetPersonaState(ctx, s.personaID, globalMoodSlot)
 	if err != nil {
 		return 0
 	}
@@ -59,8 +61,12 @@ func (s *Service) ThresholdAdjustment(ctx context.Context, groupID int64) float6
 	return adjustment
 }
 
+// globalMoodSlot 是全局人格状态的 GroupID（0）：mood/energy 不按群分片，
+// 「我这个人此刻的状态」在所有群一致——两群有共同好友时不会穿帮。
+const globalMoodSlot int64 = 0
+
 // UpdateAfterTurn 在 processor.go 的 fireAndForget 中调用。
-// 根据本轮 decision 和 snapshot 计算情绪变化方向，写入 Redis。
+// 根据本轮 decision 和 snapshot 计算情绪变化方向，写入运行时状态存储。
 // replied=true 表示实际发出了内容（receipt.Sent==true 或 guard_silenced 的情况不计沉默）。
 func (s *Service) UpdateAfterTurn(
 	ctx context.Context,
@@ -69,12 +75,13 @@ func (s *Service) UpdateAfterTurn(
 	replied bool,
 ) error {
 	groupID := snapshot.Event.GroupID
-	current, err := s.store.GetPersonaState(ctx, s.personaID, groupID)
+	// 读全局槽：情绪是「我」的状态，不是「我在这个群」的状态。
+	current, err := s.store.GetPersonaState(ctx, s.personaID, globalMoodSlot)
 	if err != nil {
 		return err
 	}
 
-	// 防抖：30s 内已更新过则跳过
+	// 防抖：30s 内已更新过则跳过（跨群共享同一防抖窗口）
 	if !current.UpdatedAt.IsZero() && time.Since(current.UpdatedAt) < debounceWindow {
 		return nil
 	}
@@ -83,7 +90,7 @@ func (s *Service) UpdateAfterTurn(
 
 	next := personadomain.PersonaState{
 		PersonaID: s.personaID,
-		GroupID:   groupID,
+		GroupID:   globalMoodSlot,
 		Mood:      string(mood),
 		Energy:    string(energy),
 		TalkBias:  talkBias,
@@ -95,7 +102,7 @@ func (s *Service) UpdateAfterTurn(
 		return err
 	}
 	slog.Debug("persona mood updated",
-		"group_id", groupID,
+		"triggered_by_group", groupID,
 		"mood", next.Mood,
 		"energy", next.Energy,
 		"trigger", decision.TriggerType,
@@ -151,14 +158,12 @@ func transitionState(current personadomain.PersonaState, snapshot conversationdo
 	return mood, energy, min(max(talkBias, -0.5), 0.5)
 }
 
-// decayAllGroups 返回一个 Scheduler JobFunc，对所有已知群执行情绪衰减。
+// decayAllGroups 返回一个 Scheduler JobFunc。情绪状态全局共享（单槽），
+// groupIDs 只用于日志观测，衰减本身只需执行一次。
 func (s *Service) decayAllGroups(groupIDs []int64) func(ctx context.Context) error {
 	return func(ctx context.Context) error {
-		for _, gid := range groupIDs {
-			if err := s.decayGroup(ctx, gid); err != nil {
-				slog.Warn("persona decay failed", "group_id", gid, "err", err)
-				// 单群失败不中断整体
-			}
+		if err := s.decayGroup(ctx, globalMoodSlot); err != nil {
+			slog.Warn("persona decay failed", "err", err)
 		}
 		return nil
 	}

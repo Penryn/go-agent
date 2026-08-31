@@ -1,76 +1,23 @@
 services:
-  mysql:
-    image: mysql:8.0
-    container_name: qqbot-mysql
-    restart: unless-stopped
-    command:
-      - --character-set-server=utf8mb4
-      - --collation-server=utf8mb4_0900_ai_ci
-      - --default-authentication-plugin=caching_sha2_password
-    environment:
-      TZ: ${TZ:-Asia/Shanghai}
-      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-rootpass}
-      MYSQL_DATABASE: ${MYSQL_DATABASE:-qqbot}
-      MYSQL_USER: ${MYSQL_USER:-qqbot}
-      MYSQL_PASSWORD: ${MYSQL_PASSWORD:-qqbotpass}
-    ports:
-      - "127.0.0.1:3306:3306"
-    volumes:
-      - ./data/mysql:/var/lib/mysql
-    healthcheck:
-      test:
-        [
-          "CMD-SHELL",
-          "mysqladmin ping -h 127.0.0.1 -uroot -p$$MYSQL_ROOT_PASSWORD --silent",
-        ]
-      interval: 10s
-      timeout: 5s
-      retries: 10
-      start_period: 20s
-    networks:
-      - qqbot-net
-
-  redis:
-    image: redis:7-alpine
-    container_name: qqbot-redis
-    restart: unless-stopped
-    command:
-      - redis-server
-      - --appendonly
-      - "yes"
-      - --save
-      - "60"
-      - "1000"
-    environment:
-      TZ: ${TZ:-Asia/Shanghai}
-    ports:
-      - "127.0.0.1:6379:6379"
-    volumes:
-      - ./data/redis:/data
-    healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
-      interval: 10s
-      timeout: 5s
-      retries: 10
-    networks:
-      - qqbot-net
-
-  qdrant:
-    image: qdrant/qdrant:v1.17.0
-    container_name: qqbot-qdrant
+  postgres:
+    image: pgvector/pgvector:pg17
+    container_name: qqbot-postgres
     restart: unless-stopped
     environment:
       TZ: ${TZ:-Asia/Shanghai}
+      POSTGRES_USER: ${POSTGRES_USER:-qqbot}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-qqbotpass}
+      POSTGRES_DB: ${POSTGRES_DB:-qqbot}
     ports:
-      - "127.0.0.1:6333:6333"
-      - "127.0.0.1:6334:6334"
+      - "127.0.0.1:5432:5432"
     volumes:
-      - ./data/qdrant:/qdrant/storage
+      - ./data/postgres:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/6333 && printf 'GET /healthz HTTP/1.0\\r\\nHost: 127.0.0.1\\r\\n\\r\\n' >&3 && read line <&3 && [[ \"$$line\" == *200* ]]"]
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER:-qqbot} -d $${POSTGRES_DB:-qqbot}"]
       interval: 10s
       timeout: 5s
       retries: 10
+      start_period: 10s
     networks:
       - qqbot-net
 

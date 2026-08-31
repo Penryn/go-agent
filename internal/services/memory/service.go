@@ -28,7 +28,7 @@ type WriteIntent struct {
 // Option 是 Service 的函数式配置项。
 type Option func(*Service)
 
-// WithVectorStore 注入语义向量存储，用于在写入 MySQL 后异步同步到 Qdrant。
+// WithVectorStore 注入语义向量存储，用于在写入主存储后异步同步到向量库。
 func WithVectorStore(v ports.VectorMemoryStore) Option {
 	return func(s *Service) { s.vectorStore = v }
 }
@@ -96,12 +96,12 @@ func (s *Service) MarkIntent(ctx context.Context, intent WriteIntent) (memorydom
 		ExpiresAt:     s.resolveExpiresAt(intent.MemoryType),
 	}
 
-	// Step 1: 写入 MySQL（主存储，失败则整体失败）
+	// Step 1: 写入主存储（失败则整体失败）
 	if err := s.store.UpsertMemory(ctx, record); err != nil {
 		return memorydomain.MemoryRecord{}, err
 	}
 
-	// Step 2: submit Qdrant synchronization as background work (副存储，失败只打日志，不影响主流程)
+	// Step 2: submit vector synchronization as background work (副存储，失败只打日志，不影响主流程)
 	if s.vectorStore != nil {
 		vs := s.vectorStore
 		r := record
@@ -117,7 +117,7 @@ func (s *Service) MarkIntent(ctx context.Context, intent WriteIntent) (memorydom
 			slog.Warn("memory: outbox enqueue failed, using process-local queue", "memory_id", r.MemoryID, "err", marshalErr)
 		}
 		job := backgroundruntime.Job{
-			Name:    "qdrant_store_memory",
+			Name:    "vector_store_memory",
 			Timeout: 10 * time.Second,
 			Run: func(ctx context.Context) error {
 				return vs.StoreMemory(ctx, r)
@@ -125,7 +125,7 @@ func (s *Service) MarkIntent(ctx context.Context, intent WriteIntent) (memorydom
 		}
 		if s.background != nil {
 			if !s.background.Submit(job) {
-				slog.Warn("memory: qdrant sync job dropped", "memory_id", r.MemoryID)
+				slog.Warn("memory: vector sync job dropped", "memory_id", r.MemoryID)
 			}
 		} else {
 			backgroundruntime.RunInline(ctx, job)

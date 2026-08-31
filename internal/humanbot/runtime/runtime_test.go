@@ -131,3 +131,50 @@ func TestProcessCandidateCompletesAfterDeliberationError(t *testing.T) {
 		}
 	}
 }
+
+func TestProactiveCandidateRequiresIdleAndTopic(t *testing.T) {
+	ctx := context.Background()
+	eventLog := ingress.NewMemoryEventLog()
+	working := group_actor.NewManager(eventLog)
+	defer working.Close()
+
+	r := &Runtime{
+		working:              working,
+		proactiveProbability: 1, // 概率必中，聚焦冷场/话题判定
+		proactiveThreshold:   0.6,
+		lastProactive:        make(map[int64]time.Time),
+		ctx:                  ctx,
+	}
+
+	// 群完全没动静：无话题不开口
+	if _, ok := r.proactiveCandidate(1, time.Now()); ok {
+		t.Fatal("empty group must not produce proactive candidate")
+	}
+
+	// 有人说话但还在聊（不冷场）：不插嘴
+	fresh := time.Now().Add(-time.Minute)
+	_, err := working.Observe(ctx, humandomain.EventRecord{
+		EventID: "e1", GroupID: 1, UserID: 7, Origin: humandomain.OriginInbound,
+		Timestamp: fresh,
+		Event:     conversationdomain.ConversationEvent{EventID: "e1", GroupID: 1, UserID: 7, Text: "今晚吃什么？", Kind: conversationdomain.EventMessage, TimestampUnix: fresh.Unix()},
+	})
+	if err != nil {
+		t.Fatalf("observe: %v", err)
+	}
+	if _, ok := r.proactiveCandidate(1, time.Now()); ok {
+		t.Fatal("active conversation must not produce proactive candidate")
+	}
+
+	// 冷场超过阈值 + 有 OpenLoops（问句）：生成候选
+	idle := time.Now()
+	candidate, ok := r.proactiveCandidate(1, idle.Add(proactiveIdleThreshold+time.Minute))
+	if !ok {
+		t.Fatal("idle group with open loops should produce proactive candidate")
+	}
+	if candidate.Intent != "continue_topic" || candidate.Score < r.proactiveThreshold {
+		t.Fatalf("unexpected proactive candidate: %+v", candidate)
+	}
+	if !candidate.DueAt.After(idle) || candidate.ExpiresAt.Before(candidate.DueAt) {
+		t.Fatalf("proactive candidate timing broken: due=%v expires=%v", candidate.DueAt, candidate.ExpiresAt)
+	}
+}

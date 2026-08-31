@@ -94,6 +94,9 @@ func (s *Service) Normalize(payload []byte) (conversationdomain.EventEnvelope, e
 				kind = conversationdomain.EventPoke
 			}
 			// else: 保持 EventMeta，非目标 poke 静默丢弃
+		} else if raw.NoticeType == "group_increase" {
+			// 新成员进群：真人通常会打个招呼或调侃一句。
+			kind = conversationdomain.EventNotice
 		} else {
 			kind = conversationdomain.EventNotice
 		}

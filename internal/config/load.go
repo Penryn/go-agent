@@ -90,17 +90,15 @@ func Default() Config {
 			MaxVideoSeconds: 60,
 		},
 		Storage: StorageConfig{
-			MySQL: MySQLConfig{
+			Postgres: PostgresConfig{
 				Host:      "127.0.0.1",
-				Port:      3306,
+				Port:      5432,
 				Database:  "qqbot",
 				User:      "qqbot",
-				ParseTime: true,
-				Charset:   "utf8mb4",
+				SSLMode:   "disable",
+				VectorDim: 2048,
 			},
-			Redis:  RedisConfig{Addr: "127.0.0.1:6379"},
-			Qdrant: QdrantConfig{URL: "http://127.0.0.1:6333", Collection: "qqbot_memories"},
-			MinIO:  MinIOConfig{Endpoint: "127.0.0.1:9000", Bucket: "qqbot-media", UseSSL: false},
+			MinIO: MinIOConfig{Endpoint: "127.0.0.1:9000", Bucket: "qqbot-media", UseSSL: false},
 		},
 		QQ: QQConfig{
 			Enabled:     false,
@@ -179,9 +177,7 @@ func overrideWithEnvSecrets(cfg *Config) {
 	stringOverride("QQBOT_MAIN_MODEL_API_KEY", &cfg.Models.Main.APIKey)
 	stringOverride("QQBOT_VISION_MODEL_API_KEY", &cfg.Models.Vision.APIKey)
 	stringOverride("QQBOT_EMBEDDING_MODEL_API_KEY", &cfg.Models.Embedding.APIKey)
-	stringOverride("QQBOT_STORAGE_MYSQL_PASSWORD", &cfg.Storage.MySQL.Password)
-	stringOverride("QQBOT_STORAGE_REDIS_PASSWORD", &cfg.Storage.Redis.Password)
-	stringOverride("QQBOT_STORAGE_QDRANT_API_KEY", &cfg.Storage.Qdrant.APIKey)
+	stringOverride("QQBOT_STORAGE_POSTGRES_PASSWORD", &cfg.Storage.Postgres.Password)
 	stringOverride("QQBOT_STORAGE_MINIO_ACCESS_KEY", &cfg.Storage.MinIO.AccessKey)
 	stringOverride("QQBOT_STORAGE_MINIO_SECRET_KEY", &cfg.Storage.MinIO.SecretKey)
 	stringOverride("QQBOT_QQ_ACCESS_TOKEN", &cfg.QQ.AccessToken)

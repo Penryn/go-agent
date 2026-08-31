@@ -8,7 +8,9 @@ import (
 	"fmt"
 	"log/slog"
 	"path"
+	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/phlin/go-agent/internal/config"
@@ -25,6 +27,61 @@ type Service struct {
 	background  backgroundSubmitter
 	outbox      interface {
 		Enqueue(context.Context, string, string, []byte) error
+	}
+	// 质量反馈：发送后记录观察起点，群消息到达时判定该表情是否哑弹
+	pendingMu    sync.Mutex
+	pendingWatch map[string]time.Time // memeID -> 发送时刻
+}
+
+// dudObservationWindow 是表情发出后等待群反应的窗口：窗口内群里没有任何
+// 新消息视为哑弹（没人接梗）。
+const dudObservationWindow = 5 * time.Minute
+
+// markSentAt 记录表情发送时刻，开启哑弹观察。
+func (s *Service) markSentAt(memeID string) {
+	s.pendingMu.Lock()
+	if s.pendingWatch == nil {
+		s.pendingWatch = make(map[string]time.Time)
+	}
+	s.pendingWatch[memeID] = time.Now()
+	s.pendingMu.Unlock()
+}
+
+// settleDudsOnActivity 在群新消息到达时调用：活跃说明表情没把天聊死，
+// 清掉观察；发送后一直冷场到窗口期满的记一次哑弹。
+func (s *Service) settleDudsOnActivity(ctx context.Context, now time.Time) {
+	s.pendingMu.Lock()
+	var duds []string
+	for id, sentAt := range s.pendingWatch {
+		if now.Sub(sentAt) >= dudObservationWindow {
+			duds = append(duds, id)
+		}
+		delete(s.pendingWatch, id) // 群活跃了：不管有没有到期，这次发送都不算哑弹
+	}
+	s.pendingMu.Unlock()
+	for _, id := range duds {
+		if err := s.store.MarkMemeDud(ctx, id); err != nil {
+			slog.Debug("meme: mark dud failed", "meme_id", id, "err", err)
+		}
+	}
+}
+
+// sweepExpiredDuds 由检索路径顺带触发：发送后群彻底没人说话（连
+// ObserveEvent 都没来），在下次检索时兜底结算。
+func (s *Service) sweepExpiredDuds(ctx context.Context, now time.Time) {
+	s.pendingMu.Lock()
+	var duds []string
+	for id, sentAt := range s.pendingWatch {
+		if now.Sub(sentAt) >= dudObservationWindow {
+			duds = append(duds, id)
+			delete(s.pendingWatch, id)
+		}
+	}
+	s.pendingMu.Unlock()
+	for _, id := range duds {
+		if err := s.store.MarkMemeDud(ctx, id); err != nil {
+			slog.Debug("meme: mark dud failed", "meme_id", id, "err", err)
+		}
 	}
 }
 
@@ -74,6 +131,10 @@ func (s *Service) ObserveEvent(ctx context.Context, event conversationdomain.Con
 	if !s.cfg.AutoCollect {
 		return nil
 	}
+
+	// 质量反馈：群里来了新消息，说明之前发的表情没有把天聊死，
+	// 结算观察窗内挂着的表情；超窗冷场的记一次哑弹。
+	s.settleDudsOnActivity(ctx, time.Now())
 
 	// D-3: per_group_limit 写入前清理超额记录
 	if s.cfg.PerGroupLimit > 0 {
@@ -159,13 +220,15 @@ func (s *Service) ProcessVectorIndex(ctx context.Context, task VectorIndexTask) 
 // Search 搜索表情包，向量优先；向量无结果时 fallback 到关键词搜索。
 // 关键词搜索路径自动应用 RepeatCooldown 冷却过滤；若冷却期内无结果则放开冷却重试。
 func (s *Service) Search(ctx context.Context, query ports.MemeQuery) ([]mediadomain.MemeSearchResult, error) {
+	// 顺带结算过期的哑弹观察（群彻底没人说话时没有 ObserveEvent 可触发）
+	s.sweepExpiredDuds(ctx, time.Now())
 	// 向量优先路径
 	if s.vectorStore != nil && s.cfg.SemanticTopK > 0 && strings.TrimSpace(query.Query) != "" {
 		vectorResults, err := s.vectorStore.SearchMemes(ctx, query.GroupID, query.Query, s.cfg.SemanticTopK, s.cfg.SemanticThreshold)
 		if err != nil {
 			slog.Warn("meme.Search: vector search failed, fallback to keyword", "group_id", query.GroupID, "err", err)
 		} else if len(vectorResults) > 0 {
-			// 用 memeID 回查 MySQL 补全 Descriptor，并走 RepeatCooldown 过滤
+			// 用 memeID 回查关系表补全 Descriptor，并走 RepeatCooldown 过滤
 			return s.enrichAndFilter(ctx, vectorResults, query)
 		}
 	}
@@ -183,7 +246,7 @@ func (s *Service) keywordSearch(ctx context.Context, query ports.MemeQuery) ([]m
 	return s.applyCooldown(ctx, results, query)
 }
 
-// enrichAndFilter 根据向量搜索返回的 memeID 回查 MySQL 补全 Descriptor，然后应用冷却过滤。
+// enrichAndFilter 根据向量搜索返回的 memeID 回查关系表补全 Descriptor，然后应用冷却过滤。
 func (s *Service) enrichAndFilter(ctx context.Context, vectorResults []mediadomain.MemeSearchResult, query ports.MemeQuery) ([]mediadomain.MemeSearchResult, error) {
 	enriched := make([]mediadomain.MemeSearchResult, 0, len(vectorResults))
 	for _, r := range vectorResults {
@@ -201,14 +264,13 @@ func (s *Service) enrichAndFilter(ctx context.Context, vectorResults []mediadoma
 	return s.applyCooldown(ctx, enriched, query)
 }
 
-// applyCooldown 按 RepeatCooldown 过滤最近发送过的表情包；若全部被过滤则放开限制返回原结果。
+// applyCooldown 按 RepeatCooldown 过滤最近发送过的表情包，再按哑弹率
+// 排序（效果差的排后面）；若全部被过滤则放开限制返回原结果。
 func (s *Service) applyCooldown(ctx context.Context, results []mediadomain.MemeSearchResult, _ ports.MemeQuery) ([]mediadomain.MemeSearchResult, error) {
-	cooldown, parseErr := time.ParseDuration(s.cfg.RepeatCooldown)
-	if parseErr != nil || cooldown <= 0 {
-		return results, nil
-	}
-	cutoff := time.Now().Add(-cooldown)
-	filtered := results[:0]
+	cooldown, _ := time.ParseDuration(s.cfg.RepeatCooldown)
+	now := time.Now()
+	cutoff := now.Add(-cooldown)
+	filtered := make([]mediadomain.MemeSearchResult, 0, len(results))
 	for _, r := range results {
 		asset, _, getErr := s.store.GetMeme(ctx, r.MemeID)
 		if getErr != nil {
@@ -219,11 +281,26 @@ func (s *Service) applyCooldown(ctx context.Context, results []mediadomain.MemeS
 			filtered = append(filtered, r)
 		}
 	}
-	if len(filtered) > 0 {
-		return filtered, nil
+	if len(filtered) == 0 {
+		slog.Debug("meme.Search: all results in cooldown, fallback without cooldown filter")
+		filtered = results
 	}
-	slog.Debug("meme.Search: all results in cooldown, fallback without cooldown filter")
-	return results, nil
+
+	// 哑弹降权：DudCount/SendCount 高的表情沉底。发送次数少时不惩罚
+	// （新表情值得机会）；冷却未启用时 parseErr 会非空，排序仍然生效。
+	sort.SliceStable(filtered, func(i, j int) bool {
+		return dudRate(filtered[i].MemeID, s) < dudRate(filtered[j].MemeID, s)
+	})
+	return filtered, nil
+}
+
+// dudRate 返回表情的哑弹率；发送不足 3 次视为 0（样本太少不可信）。
+func dudRate(memeID string, s *Service) float64 {
+	asset, _, err := s.store.GetMeme(context.Background(), memeID)
+	if err != nil || asset.SendCount < 3 {
+		return 0
+	}
+	return float64(asset.DudCount) / float64(asset.SendCount)
 }
 
 // BuildSendSegments 构建发送消息片段。
@@ -255,6 +332,7 @@ func (s *Service) BuildSendSegments(ctx context.Context, memeID string, replyToM
 
 // MarkSent 标记表情包已发送，更新发送计数和最后发送时间。
 func (s *Service) MarkSent(ctx context.Context, memeID string) error {
+	s.markSentAt(memeID)
 	return s.store.MarkMemeSent(ctx, memeID)
 }
 

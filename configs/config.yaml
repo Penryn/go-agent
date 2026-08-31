@@ -224,7 +224,7 @@ memory:
     user_catchphrase: true
   # 达到该阈值后才写入长期记忆。
   write_threshold: 0.65
-  # Qdrant 语义检索配置（F3 双轨记忆）。
+  # 语义检索配置（F3 双轨记忆），向量检索由 storage.postgres 提供。
   semantic_top_k: 6
   semantic_threshold: 0.75
 
@@ -239,7 +239,7 @@ meme:
   # 同一张表情包重复发送冷却。
   repeat_cooldown: 10m
   prefer_group_scoped: true
-  # 表情包语义向量搜索配置（需配合 storage.qdrant.meme_collection 启用）。
+  # 表情包语义向量搜索配置，向量检索由 storage.postgres 提供。
   semantic_top_k: 5
   semantic_threshold: 0.72
 
@@ -252,27 +252,15 @@ multimodal:
 storage:
   # 当前默认启动仍使用 in-memory store。
   # 这里的配置已经用于适配器与集成测试，后续可切到主运行时。
-  mysql:
+  postgres:
     host: 127.0.0.1
-    port: 3306
+    port: 5432
     database: qqbot
     user: qqbot
-    parse_time: true
-    charset: utf8mb4
-    # 私密项 password 从 .env 的 QQBOT_STORAGE_MYSQL_PASSWORD 读取。
-  redis:
-    addr: 127.0.0.1:6379
-    db: 0
-    # 私密项 password 从 .env 的 QQBOT_STORAGE_REDIS_PASSWORD 读取。
-  qdrant:
-    # Go 客户端使用 gRPC 协议，端口为 6334（REST 端口 6333 会被自动映射到 6334）。
-    url: http://127.0.0.1:6334
-    collection: qqbot_memories
+    ssl_mode: disable
     # 向量维度，须与 embedding 模型输出维度一致。Doubao embedding-large 为 2048，lite 为 1024。
     vector_dim: 2048
-    # 表情包向量集合名，为空时禁用 meme 语义搜索。
-    meme_collection: qqbot_memes
-    # 私密项 api key 从 .env 的 QQBOT_STORAGE_QDRANT_API_KEY 读取。
+    # 私密项 password 从 .env 的 QQBOT_STORAGE_POSTGRES_PASSWORD 读取。
   minio:
     endpoint: 127.0.0.1:9000
     bucket: qqbot-media

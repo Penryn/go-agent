@@ -78,13 +78,13 @@ func NewApp(ctx context.Context, cfg config.Config) (*App, error) {
 	}
 
 	vectorGraph := buildVectorGraph(ctx, cfg, modelFactory, stores)
-	qdrantVectorStore := vectorGraph.memory
+	vectorMemoryStore := vectorGraph.memory
 	memeVectorStore := vectorGraph.meme
 
-	// contextService 需要 VectorMemoryStore（无 Qdrant 时降级为 NoopVectorStore）
+	// contextService 需要 VectorMemoryStore（无向量存储时降级为 NoopVectorStore）
 	var vectorStore ports.VectorMemoryStore = ports.NoopVectorStore{}
-	if qdrantVectorStore != nil {
-		vectorStore = qdrantVectorStore
+	if vectorMemoryStore != nil {
+		vectorStore = vectorMemoryStore
 	}
 	contextService := contextsvc.New(stores.memory, vectorStore, stores.profile, stores.state, policyService, cfg.Persona)
 	eventLog := humaningress.NewMemoryEventLog()
@@ -112,10 +112,10 @@ func NewApp(ctx context.Context, cfg config.Config) (*App, error) {
 		})
 	}
 
-	// memorySvc：有 Qdrant 时注入 WithVectorStore；同时注入差异化 TTL 配置
+	// memorySvc：有向量存储时注入 WithVectorStore；同时注入差异化 TTL 配置
 	memOpts := []memsvc.Option{}
-	if qdrantVectorStore != nil {
-		memOpts = append(memOpts, memsvc.WithVectorStore(qdrantVectorStore))
+	if vectorMemoryStore != nil {
+		memOpts = append(memOpts, memsvc.WithVectorStore(vectorMemoryStore))
 	}
 	if len(cfg.Memory.TypeTTL) > 0 || cfg.Memory.DefaultTTL != "" {
 		memOpts = append(memOpts, memsvc.WithTypeTTL(cfg.Memory.TypeTTL, cfg.Memory.DefaultTTL))
@@ -228,14 +228,20 @@ func NewApp(ctx context.Context, cfg config.Config) (*App, error) {
 	// Context projection and planner compatibility remain behind this adapter.
 	deliberator := humandeliberation.NewAdapter(contextService, planner)
 	humanRuntime := humanruntime.New(ctx, normalizer, presenceManager, deliberator, perceptionPipeline, turnObserver, executor, humanruntime.Config{
-		GroupWhitelist: cfg.QQ.GroupWhitelist,
-		SelfID:         cfg.QQ.SelfID,
-		JobTimeout:     120 * time.Second,
-		WorkerCount:    cfg.Runtime.WorkerCount,
+		GroupWhitelist:    cfg.QQ.GroupWhitelist,
+		SelfID:            cfg.QQ.SelfID,
+		JobTimeout:        120 * time.Second,
+		WorkerCount:       cfg.Runtime.WorkerCount,
+		ProactiveInterval: time.Minute,
+		// 冷场主动开口：消费 autonomy 配置里的基础概率与评分阈值。
+		ProactiveBaseProbability: cfg.Autonomy.ProactiveBaseProbability,
+		ProactiveScoreThreshold:  cfg.Autonomy.ProactiveScoreThreshold,
 	})
 	if thoughtStore, ok := stores.memory.(ports.ThoughtStore); ok {
 		humanRuntime.SetThoughtStore(thoughtStore)
+		contextService.WithThoughtStore(thoughtStore)
 	}
+	humanRuntime.SetMemoryStore(stores.memory)
 
 	// Scheduler：注册所有定时任务
 	sched := scheduler.New()
