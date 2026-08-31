@@ -199,9 +199,6 @@ autonomy:
   proactive_score_threshold: 0.85
   max_replies_per_10min: 6
   max_replies_per_hour: 24
-  # 是否启用 LLM Gate。默认启用；关闭时仅用启发式判定。
-  llm_gate_enabled: true
-  llm_gate_timeout_ms: 1500
   suppress_on_flood: true
   # 连续发言达上限后的封口时长（秒）。
   bot_dominance_suppress_sec: 60

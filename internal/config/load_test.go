@@ -66,13 +66,6 @@ func TestDefaultToolAllowlistEmpty(t *testing.T) {
 	}
 }
 
-func TestDefaultLLMGateEnabled(t *testing.T) {
-	cfg := Default()
-	if !cfg.Autonomy.LLMGateEnabled {
-		t.Fatal("expected LLMGateEnabled=true by default")
-	}
-}
-
 func TestDefaultGroupWhitelistEmpty(t *testing.T) {
 	cfg := Default()
 	if cfg.QQ.GroupWhitelist != nil {

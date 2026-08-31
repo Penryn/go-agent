@@ -62,8 +62,6 @@ func Default() Config {
 			ProactiveScoreThreshold:  0.65,
 			MaxRepliesPer10Min:       6,
 			MaxRepliesPerHour:        24,
-			LLMGateEnabled:           true,
-			LLMGateTimeoutMs:         1500,
 			SuppressOnFlood:          true,
 			BotDominanceSuppressSec:  60,
 		},

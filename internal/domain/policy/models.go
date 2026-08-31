@@ -47,8 +47,6 @@ type AutonomyPolicy struct {
 	ProactiveScoreThreshold  float64 `json:"proactive_score_threshold" yaml:"proactive_score_threshold"`
 	MaxRepliesPer10Min       int     `json:"max_replies_per_10min" yaml:"max_replies_per_10min"`
 	MaxRepliesPerHour        int     `json:"max_replies_per_hour" yaml:"max_replies_per_hour"`
-	LLMGateEnabled           bool    `json:"llm_gate_enabled" yaml:"llm_gate_enabled"`
-	LLMGateTimeoutMs         int     `json:"llm_gate_timeout_ms" yaml:"llm_gate_timeout_ms"`
 	SuppressOnFlood          bool    `json:"suppress_on_flood" yaml:"suppress_on_flood"`
 	BotDominanceSuppressSec  int     `json:"bot_dominance_suppress_sec" yaml:"bot_dominance_suppress_sec"`
 }

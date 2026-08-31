@@ -133,7 +133,7 @@ func (c *Composer) instruction(snapshot conversationdomain.ContextSnapshot, deci
 	taskLines := []string{
 		"",
 		"当前回合任务层:",
-		"你只负责在已经决定可以说话时，选择自然的回复方式。",
+		"你被判定为一个可以发言的机会，但最终说不说由你抉择：像真人一样掂量此刻插话是否自然。话题已翻篇、群友在自聊、或接话会很刻意时，直接用 stay_silent 保持沉默——选择性沉默比硬接更真实。",
 		"本轮回应目的: " + dialogueGoal(decision.TriggerType) + "。",
 		"如果需要收集信息，可以先用 query_memory 或 search_meme；最终必须用 speak_text、quote_reply 或 stay_silent 结束。",
 		"若消息上下文中提供了 msg_id 且用户明确要求引用特定消息，优先使用 quote_reply 并传入对应 msg_id。",
@@ -145,6 +145,13 @@ func (c *Composer) instruction(snapshot conversationdomain.ContextSnapshot, deci
 	if decision.TriggerType == "poke_reply" {
 		taskLines = append(taskLines,
 			"触发事件：对方戳了你一下（无文字内容）。请根据当前心情和与对方的关系自然回应这个小互动，可以是调侃、疑问、搭腔、或简短敷衍。不要说「你戳我做什么」这类机械问句，也不要解释「你戳了我一下」，直接自然发挥。",
+		)
+	}
+	// 被 @ / 被点名 / 被引用时同样保留沉默权——真人被 cue 也可能选择不接，
+	// 尤其在心情差、对方好感低、或这声 @ 明显无意义时。
+	if snapshot.Event.MentionedBot || snapshot.Event.NamedBot || snapshot.Event.IsReplyToBot {
+		taskLines = append(taskLines,
+			"你被对方直接 @ 或引用了。多数时候该回应，但如果这声 @ 只是随手一@、话题已经结束、或回应会很尴尬，也可以像真人一样晾着不回，用 stay_silent 结束。",
 		)
 	}
 	sections = append(sections, taskLines...)
