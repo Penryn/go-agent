@@ -766,6 +766,16 @@ func (s *Store) MarkMemeSent(ctx context.Context, memeID string) error {
 	return err
 }
 
+// MarkMemeDud 记一次哑弹（发送后群里持续冷场）。
+func (s *Store) MarkMemeDud(ctx context.Context, memeID string) error {
+	_, err := s.db.ExecContext(ctx, `
+		UPDATE meme_assets
+		SET dud_count = dud_count + 1
+		WHERE meme_id = $1
+	`, memeID)
+	return err
+}
+
 func nullableString(value string) any {
 	if strings.TrimSpace(value) == "" {
 		return nil

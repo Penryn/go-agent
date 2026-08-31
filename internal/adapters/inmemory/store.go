@@ -466,6 +466,21 @@ func (s *Store) MarkMemeSent(_ context.Context, memeID string) error {
 	}
 	now := time.Now()
 	asset.LastSentAt = &now
+	asset.SendCount++
+	s.memeAssets[memeID] = asset
+	return nil
+}
+
+// MarkMemeDud 记一次哑弹（发送后群里持续冷场）。
+func (s *Store) MarkMemeDud(_ context.Context, memeID string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	asset, ok := s.memeAssets[memeID]
+	if !ok {
+		return errors.New("meme not found")
+	}
+	asset.DudCount++
 	s.memeAssets[memeID] = asset
 	return nil
 }

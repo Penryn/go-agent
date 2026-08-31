@@ -117,6 +117,8 @@ type MemeStore interface {
 	SearchMemes(ctx context.Context, query MemeQuery) ([]mediadomain.MemeSearchResult, error)
 	GetMeme(ctx context.Context, memeID string) (mediadomain.MemeAsset, mediadomain.MemeDescriptor, error)
 	MarkMemeSent(ctx context.Context, memeID string) error
+	// MarkMemeDud 给表情记一次哑弹（发送后群里持续冷场）。
+	MarkMemeDud(ctx context.Context, memeID string) error
 	CountMemesByGroup(ctx context.Context, groupID int64) (int, error)
 	DeleteOldestMemes(ctx context.Context, groupID int64, deleteCount int) error
 }

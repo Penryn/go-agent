@@ -660,6 +660,16 @@ func (s *Store) MarkMemeSent(ctx context.Context, memeID string) error {
 	return err
 }
 
+// MarkMemeDud 记一次哑弹（发送后群里持续冷场）。
+func (s *Store) MarkMemeDud(ctx context.Context, memeID string) error {
+	_, err := s.db.ExecContext(ctx, `
+		UPDATE meme_assets
+		SET dud_count = dud_count + 1
+		WHERE meme_id = ?
+	`, memeID)
+	return err
+}
+
 func (s *Store) GetMemberProfile(ctx context.Context, groupID, userID int64) (profiledomain.MemberProfile, error) {
 	var (
 		profile           profiledomain.MemberProfile
