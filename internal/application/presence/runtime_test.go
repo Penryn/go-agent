@@ -118,6 +118,25 @@ func (*blockingTurnObserver) AfterTurn(context.Context, conversationdomain.Conte
 	return nil
 }
 
+type inboundResetTurnObserver struct {
+	checks int
+	reset  bool
+}
+
+func (o *inboundResetTurnObserver) ObserveInbound(context.Context, conversationdomain.ConversationEvent) error {
+	o.reset = true
+	return nil
+}
+
+func (o *inboundResetTurnObserver) CanDeliberate(context.Context, int64, time.Time) (bool, error) {
+	o.checks++
+	return o.reset, nil
+}
+
+func (*inboundResetTurnObserver) AfterTurn(context.Context, conversationdomain.ContextSnapshot, policydomain.AutonomyDecision, replydomain.ActionReceipt) error {
+	return nil
+}
+
 func TestProcessRawEventUsesCandidateRuntime(t *testing.T) {
 	ctx := context.Background()
 	cfg := config.Default()
@@ -210,6 +229,29 @@ func TestRateLimitAppliesAfterModelDeliberation(t *testing.T) {
 	}
 	if outcome.Decision.Action != policydomain.ActionSilent || outcome.Receipt.Sent {
 		t.Fatalf("rate limit did not suppress only output: %+v", outcome)
+	}
+}
+
+func TestInboundMessageResetsConsecutiveTurnGate(t *testing.T) {
+	ctx := context.Background()
+	working := group_actor.NewManager(ingress.NewMemoryEventLog())
+	defer working.Close()
+	planner := &recordingDeliberator{}
+	turns := &inboundResetTurnObserver{}
+	runtime := New(ctx, normalizer.New("onebot", 123456, nil), working, planner, nil, turns,
+		action.New(inmemory.NewSender(), nil, nil), Config{SelfID: 123456})
+	defer runtime.Close()
+
+	payload := []byte(`{"post_type":"message","message_type":"group","time":1710000000,"self_id":123456,"group_id":100,"user_id":200,"message_id":"m-reset","message":[{"type":"text","data":{"text":"普通闲聊"}}]}`)
+	outcome, err := runtime.ProcessRawEvent(ctx, payload)
+	if err != nil {
+		t.Fatalf("process raw event: %v", err)
+	}
+	if !turns.reset || turns.checks != 1 {
+		t.Fatalf("inbound reset hook was not applied: %+v", turns)
+	}
+	if !outcome.Receipt.Sent || outcome.Decision.Action != policydomain.ActionReply {
+		t.Fatalf("inbound message remained blocked after reset: %+v", outcome)
 	}
 }
 

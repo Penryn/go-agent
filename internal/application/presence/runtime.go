@@ -58,6 +58,13 @@ type TurnObserver interface {
 	AfterTurn(context.Context, conversationdomain.ContextSnapshot, policydomain.AutonomyDecision, replydomain.ActionReceipt) error
 }
 
+// InboundTurnObserver is an optional lifecycle hook for observers that keep
+// state about consecutive bot turns. It is separate from TurnObserver so
+// existing lightweight test and embedding implementations remain compatible.
+type InboundTurnObserver interface {
+	ObserveInbound(context.Context, conversationdomain.ConversationEvent) error
+}
+
 // pollInterval 是调度循环周期;100ms 足够即时,再快只会空转。
 const pollInterval = 100 * time.Millisecond
 
@@ -187,6 +194,11 @@ func (r *Runtime) SubmitRaw(ctx context.Context, payload []byte) error {
 	if r.executor != nil {
 		r.executor.CancelQueued(envelope.Event.GroupID)
 	}
+	if observer, ok := r.turns.(InboundTurnObserver); ok {
+		if err := observer.ObserveInbound(ctx, envelope.Event); err != nil {
+			return fmt.Errorf("observe inbound turn: %w", err)
+		}
+	}
 	if r.confirmations != nil {
 		r.confirmations.ObserveConfirmation(envelope.Event.GroupID, envelope.Event.UserID, envelope.Event.Text, envelope.ReceivedAt)
 	}
@@ -220,6 +232,11 @@ func (r *Runtime) ProcessRawEvent(ctx context.Context, payload []byte) (Outcome,
 	}
 	if r.shouldIgnore(envelope) {
 		return Outcome{Envelope: envelope, Decision: silentDecision(envelope.TraceID, "ignored")}, nil
+	}
+	if observer, ok := r.turns.(InboundTurnObserver); ok {
+		if err := observer.ObserveInbound(ctx, envelope.Event); err != nil {
+			return Outcome{Envelope: envelope}, fmt.Errorf("observe inbound turn: %w", err)
+		}
 	}
 	record := toEventRecord(envelope, presencedomain.OriginInbound)
 	memory, err := r.working.Observe(ctx, record)

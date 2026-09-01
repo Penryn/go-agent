@@ -5,8 +5,8 @@ import (
 	"testing"
 	"time"
 
-	personasvc "github.com/phlin/go-agent/internal/application/persona"
 	postgresstore "github.com/phlin/go-agent/internal/adapters/storage/postgres"
+	personasvc "github.com/phlin/go-agent/internal/application/persona"
 	conversationdomain "github.com/phlin/go-agent/internal/domain/conversation"
 	policydomain "github.com/phlin/go-agent/internal/domain/policy"
 	replydomain "github.com/phlin/go-agent/internal/domain/reply"
@@ -54,5 +54,37 @@ func TestCanDeliberateBlocksFlood(t *testing.T) {
 	observer := New(states, nil, 0, &stubPolicy{maxConsecutive: 3})
 	if allowed, err := observer.CanDeliberate(context.Background(), 2, time.Now()); err != nil || allowed {
 		t.Fatalf("consecutive cap should suppress deliberation: allowed=%v err=%v", allowed, err)
+	}
+}
+
+func TestObserveInboundResetsConsecutiveBotTurns(t *testing.T) {
+	states := postgresstore.NewStateStore(testsupport.NewDB(t))
+	ctx := context.Background()
+	if err := states.SaveRuntimeState(ctx, policydomain.RuntimeState{
+		GroupID:             3,
+		State:               policydomain.StateCooldown,
+		ConsecutiveBotTurns: 3,
+	}); err != nil {
+		t.Fatalf("save runtime state: %v", err)
+	}
+
+	observer := New(states, nil, 0, &stubPolicy{maxConsecutive: 3})
+	if err := observer.ObserveInbound(ctx, conversationdomain.ConversationEvent{
+		GroupID: 3,
+		UserID:  9,
+		Kind:    conversationdomain.EventMessage,
+	}); err != nil {
+		t.Fatalf("observe inbound: %v", err)
+	}
+
+	state, err := states.GetRuntimeState(ctx, 3)
+	if err != nil {
+		t.Fatalf("get runtime state: %v", err)
+	}
+	if state.ConsecutiveBotTurns != 0 {
+		t.Fatalf("inbound message did not reset consecutive turns: %+v", state)
+	}
+	if allowed, err := observer.CanDeliberate(ctx, 3, time.Now()); err != nil || !allowed {
+		t.Fatalf("inbound message should reopen deliberation: allowed=%v err=%v", allowed, err)
 	}
 }

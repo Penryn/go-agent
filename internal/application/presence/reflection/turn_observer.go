@@ -33,6 +33,28 @@ func New(states ports.RuntimeStateStore, persona *personasvc.Service, cooldown t
 	return &TurnObserver{states: states, persona: persona, cooldown: cooldown, policies: policies}
 }
 
+// ObserveInbound starts a new human interaction sequence. The consecutive bot
+// turn cap is intended to prevent back-to-back bot messages; a new inbound
+// message means the bot is no longer speaking consecutively.
+func (o *TurnObserver) ObserveInbound(ctx context.Context, event conversationdomain.ConversationEvent) error {
+	if o == nil || o.states == nil || event.GroupID == 0 {
+		return nil
+	}
+	if event.Kind != conversationdomain.EventMessage && event.Kind != conversationdomain.EventPoke && event.Kind != conversationdomain.EventNotice {
+		return nil
+	}
+	state, err := o.states.GetRuntimeState(ctx, event.GroupID)
+	if err != nil {
+		return err
+	}
+	if state.ConsecutiveBotTurns == 0 {
+		return nil
+	}
+	state.GroupID = event.GroupID
+	state.ConsecutiveBotTurns = 0
+	return o.states.SaveRuntimeState(ctx, state)
+}
+
 func (o *TurnObserver) CanDeliberate(ctx context.Context, groupID int64, now time.Time) (bool, error) {
 	if o == nil || o.states == nil {
 		return true, nil
