@@ -237,7 +237,6 @@ func New(ctx context.Context, cfg config.Config) (*App, error) {
 		GroupWhitelist:    cfg.QQ.GroupWhitelist,
 		SelfID:            cfg.QQ.SelfID,
 		JobTimeout:        jobTimeout,
-		WorkerCount:       cfg.Runtime.WorkerCount,
 		ProactiveInterval: time.Minute,
 		// 冷场主动开口：消费 autonomy 配置里的基础概率与评分阈值。
 		ProactiveBaseProbability: cfg.Autonomy.ProactiveBaseProbability,

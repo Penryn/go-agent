@@ -26,7 +26,6 @@ import (
 type Config struct {
 	PollInterval   time.Duration
 	JobTimeout     time.Duration
-	WorkerCount    int
 	GroupWhitelist []int64
 	SelfID         int64
 	// ProactiveInterval 是主动开口扫描周期；0 时禁用主动发言。
@@ -60,7 +59,7 @@ type TurnObserver interface {
 }
 
 func DefaultConfig() Config {
-	return Config{PollInterval: 100 * time.Millisecond, JobTimeout: 120 * time.Second, WorkerCount: 4}
+	return Config{PollInterval: 100 * time.Millisecond, JobTimeout: 120 * time.Second}
 }
 
 // 主动开口的触发条件：群冷场超过该时长，且群里有未接上的话题（OpenLoops）
@@ -109,15 +108,6 @@ type Runtime struct {
 	ctx       context.Context
 	cancel    context.CancelFunc
 	wg        sync.WaitGroup
-	workersWG sync.WaitGroup
-	jobs      chan candidateJob
-	locks     sync.Map
-}
-
-type candidateJob struct {
-	groupID   int64
-	candidate presencedomain.ThoughtCandidate
-	timeout   time.Duration
 }
 
 // SetThoughtStore enables durable, concise deliberation records. It is
@@ -150,9 +140,6 @@ func New(parent context.Context, normalizer *normalizersvc.Service, working *gro
 	if cfg.JobTimeout <= 0 {
 		cfg.JobTimeout = defaults.JobTimeout
 	}
-	if cfg.WorkerCount <= 0 {
-		cfg.WorkerCount = defaults.WorkerCount
-	}
 	ctx, cancel := context.WithCancel(parent)
 	r := &Runtime{
 		normalizer:           normalizer,
@@ -169,16 +156,11 @@ func New(parent context.Context, normalizer *normalizersvc.Service, working *gro
 		lastProactive:        make(map[int64]time.Time),
 		ctx:                  ctx,
 		cancel:               cancel,
-		jobs:                 make(chan candidateJob, cfg.WorkerCount*2),
 	}
 	for _, groupID := range cfg.GroupWhitelist {
 		r.whitelist[groupID] = struct{}{}
 	}
 	r.wg.Add(1)
-	for i := 0; i < cfg.WorkerCount; i++ {
-		r.workersWG.Add(1)
-		go r.worker()
-	}
 	go r.loop(cfg.PollInterval, cfg.JobTimeout)
 	if r.proactiveInterval > 0 && r.proactiveProbability > 0 {
 		r.wg.Add(1)
@@ -263,7 +245,6 @@ func (r *Runtime) ProcessRawEvent(ctx context.Context, payload []byte) (Outcome,
 
 func (r *Runtime) loop(interval, timeout time.Duration) {
 	defer r.wg.Done()
-	defer close(r.jobs)
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 	for {
@@ -277,20 +258,22 @@ func (r *Runtime) loop(interval, timeout time.Duration) {
 				if err != nil || !ok {
 					continue
 				}
-				job := candidateJob{groupID: groupID, candidate: candidate, timeout: timeout}
-				select {
-				case r.jobs <- job:
-				case <-r.ctx.Done():
-					_ = r.working.Complete(context.Background(), groupID, candidate.CandidateID)
-					return
-				default:
-					// A claimed candidate must reach a terminal state even when the
-					// bounded queue is saturated.
-					_ = r.working.Complete(context.Background(), groupID, candidate.CandidateID)
-					slog.Warn("human runtime: candidate queue full", "group_id", groupID, "candidate_id", candidate.CandidateID)
-				}
+				// 跨群并发直接开 goroutine;同群串行由 Manager 内部互斥与
+				// CanExecute 幂等闸门保证。
+				r.wg.Add(1)
+				go r.runCandidate(groupID, candidate, timeout)
 			}
 		}
+	}
+}
+
+// runCandidate 失败路径也必须终结候选,避免已认领工作永久占位。
+func (r *Runtime) runCandidate(groupID int64, candidate presencedomain.ThoughtCandidate, timeout time.Duration) {
+	defer r.wg.Done()
+	ctx, cancel := context.WithTimeout(r.ctx, timeout)
+	defer cancel()
+	if _, err := r.processCandidate(ctx, groupID, candidate); err != nil {
+		slog.Warn("human runtime: candidate failed", "group_id", groupID, "candidate_id", candidate.CandidateID, "err", err)
 	}
 }
 
@@ -412,34 +395,6 @@ func (r *Runtime) markProactive(groupID int64, now time.Time) {
 	r.proactiveMu.Lock()
 	defer r.proactiveMu.Unlock()
 	r.lastProactive[groupID] = now
-}
-
-func (r *Runtime) worker() {
-	defer r.workersWG.Done()
-	for {
-		select {
-		case <-r.ctx.Done():
-			// The scheduler closes jobs after it stops producing. Drain any
-			// already-claimed work so shutdown cannot leave accepted candidates
-			// leased forever.
-			for job := range r.jobs {
-				_ = r.working.Complete(context.Background(), job.groupID, job.candidate.CandidateID)
-			}
-			return
-		case job, ok := <-r.jobs:
-			if !ok {
-				return
-			}
-			lock := r.groupLock(job.groupID)
-			lock.Lock()
-			ctx, cancel := context.WithTimeout(r.ctx, job.timeout)
-			if _, err := r.processCandidate(ctx, job.groupID, job.candidate); err != nil {
-				slog.Warn("human runtime: candidate failed", "group_id", job.groupID, "candidate_id", job.candidate.CandidateID, "err", err)
-			}
-			cancel()
-			lock.Unlock()
-		}
-	}
 }
 
 func (r *Runtime) processCandidate(ctx context.Context, groupID int64, candidate presencedomain.ThoughtCandidate) (Outcome, error) {
@@ -581,14 +536,8 @@ func silentDecision(id, reason string) policydomain.AutonomyDecision {
 	return policydomain.AutonomyDecision{DecisionID: id + "-decision", Action: policydomain.ActionSilent, ReasonCodes: []string{reason}, Confidence: 1}
 }
 
-func (r *Runtime) groupLock(groupID int64) *sync.Mutex {
-	lock, _ := r.locks.LoadOrStore(groupID, &sync.Mutex{})
-	return lock.(*sync.Mutex)
-}
-
 func (r *Runtime) Close() error {
 	r.cancel()
 	r.wg.Wait()
-	r.workersWG.Wait()
 	return nil
 }
