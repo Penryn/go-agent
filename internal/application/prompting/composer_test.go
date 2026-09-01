@@ -202,6 +202,7 @@ func TestInstructionIncludesNaturalGroupChatRules(t *testing.T) {
 		"没有新增信息、态度或笑点",
 		"话明显还没说完，先结合前后文等待",
 		"不要逐项复述 OCR、水印和画面元素",
+		"文字表达优先；表情符号和颜文字只在确实能补充情绪或语气时偶尔使用",
 		"认真倾诉时先收起玩笑",
 	} {
 		if !strings.Contains(instruction, expected) {
