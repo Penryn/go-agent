@@ -2,12 +2,15 @@ package tools
 
 import (
 	"context"
+	"encoding/json"
 	"testing"
+	"time"
 
 	"github.com/cloudwego/eino/components/tool"
 	"github.com/cloudwego/eino/schema"
 
 	"github.com/phlin/go-agent/internal/adapters/inmemory"
+	personadomain "github.com/phlin/go-agent/internal/domain/persona"
 	profiledomain "github.com/phlin/go-agent/internal/domain/profile"
 	replydomain "github.com/phlin/go-agent/internal/domain/reply"
 )
@@ -41,7 +44,7 @@ func TestToolSchemas(t *testing.T) {
 		names[info.Name] = candidate
 	}
 
-	for _, name := range []string{"speak_text", "search_meme", "stay_silent", "send_meme", "quote_reply", "query_member_profile", "repair_message", "poke_member"} {
+	for _, name := range []string{"speak_text", "search_meme", "stay_silent", "send_meme", "quote_reply", "query_member_profile", "update_persona_fact", "repair_message", "poke_member"} {
 		if _, ok := names[name]; !ok {
 			t.Fatalf("expected tool %s", name)
 		}
@@ -106,4 +109,75 @@ func TestExternalToolsRequireExplicitAllowlist(t *testing.T) {
 		}
 	}
 	t.Fatal("explicitly allowed external tool was not exposed")
+}
+
+func TestUpdatePersonaFactAuthorizationAndProvenance(t *testing.T) {
+	store := inmemory.NewStore()
+	now := time.Now().Truncate(time.Second)
+	session := replydomain.ToolContext{
+		GroupID:              1,
+		UserID:               2,
+		TriggerEventID:       "event-1",
+		TriggerTimestampUnix: now.Unix(),
+		Budget:               map[string]int{},
+	}
+	verifiedTool := newUpdatePersonaFactTool(store, session, "main", []int64{2})
+	raw, err := verifiedTool.InvokableRun(context.Background(), `{
+		"key":"school_status",
+		"value":"已经正式开课，正在适应课程",
+		"source_kind":"owner_statement",
+		"evidence_event_id":"event-1",
+		"confidence":1
+	}`)
+	if err != nil {
+		t.Fatalf("update verified fact: %v", err)
+	}
+	var result map[string]any
+	if err := json.Unmarshal([]byte(raw), &result); err != nil || result["status"] != personadomain.PersonaFactVerified {
+		t.Fatalf("unexpected verified result: raw=%s err=%v", raw, err)
+	}
+	facts, err := store.CurrentPersonaFacts(context.Background(), "main", now.Add(time.Minute))
+	if err != nil || len(facts) != 1 || facts[0].Value != "已经正式开课，正在适应课程" || facts[0].SourceUserID != 2 {
+		t.Fatalf("unexpected stored facts: facts=%+v err=%v", facts, err)
+	}
+
+	unauthorized := newUpdatePersonaFactTool(store, replydomain.ToolContext{
+		GroupID:        1,
+		UserID:         9,
+		TriggerEventID: "event-2",
+		Budget:         map[string]int{},
+	}, "main", []int64{2})
+	raw, err = unauthorized.InvokableRun(context.Background(), `{
+		"key":"school_status",
+		"value":"已经大三",
+		"source_kind":"owner_statement",
+		"evidence_event_id":"event-2"
+	}`)
+	if err != nil {
+		t.Fatalf("reject unauthorized owner: %v", err)
+	}
+	if err := json.Unmarshal([]byte(raw), &result); err != nil || result["reason"] != "owner_not_authorized" {
+		t.Fatalf("unexpected unauthorized result: raw=%s err=%v", raw, err)
+	}
+
+	reported := newUpdatePersonaFactTool(store, replydomain.ToolContext{
+		GroupID:              1,
+		UserID:               9,
+		TriggerEventID:       "event-3",
+		TriggerTimestampUnix: now.Unix(),
+		Budget:               map[string]int{},
+	}, "main", []int64{2})
+	raw, err = reported.InvokableRun(context.Background(), `{
+		"key":"school_familiarity",
+		"value":"听说已经基本认得教学楼",
+		"source_kind":"group_report",
+		"evidence_event_id":"event-3",
+		"ttl_hours":24
+	}`)
+	if err != nil {
+		t.Fatalf("update reported fact: %v", err)
+	}
+	if err := json.Unmarshal([]byte(raw), &result); err != nil || result["status"] != personadomain.PersonaFactReported {
+		t.Fatalf("unexpected reported result: raw=%s err=%v", raw, err)
+	}
 }

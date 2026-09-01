@@ -58,8 +58,20 @@ func TestLoadReadsPublicYAMLConfig(t *testing.T) {
 
 func TestExampleConfigLoads(t *testing.T) {
 	path := filepath.Join("..", "..", "configs", "config.example.yaml")
-	if _, err := Load(path); err != nil {
+	cfg, err := Load(path)
+	if err != nil {
 		t.Fatalf("load example config: %v", err)
+	}
+	if cfg.Persona.Name != "芙芙" || len(cfg.Persona.InitialFacts) != 1 || len(cfg.Persona.ResponseScenarios) == 0 {
+		t.Fatalf("example persona runtime config not loaded: %+v", cfg.Persona)
+	}
+}
+
+func TestValidateRejectsInvalidPersonaFactTimestamp(t *testing.T) {
+	cfg := Default()
+	cfg.Persona.InitialFacts[0].EffectiveAt = "tomorrow"
+	if err := Validate(cfg); err == nil {
+		t.Fatal("expected invalid persona fact timestamp to fail validation")
 	}
 }
 

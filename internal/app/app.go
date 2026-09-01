@@ -85,6 +85,7 @@ func New(ctx context.Context, cfg config.Config) (*App, error) {
 	})
 
 	contextService := contextsvc.New(stores.memory, stores.profile, stores.state, policyService, cfg.Persona, hybridRetrieval, cfg.Memory.TopK)
+	contextService.WithPersonaFactStore(stores.personaFacts)
 	eventLog := presenceingress.NewMemoryEventLog()
 	actorOptions := []presenceactor.Option{
 		presenceactor.WithArchive(stores.memory),
@@ -170,6 +171,8 @@ func New(ctx context.Context, cfg config.Config) (*App, error) {
 	toolRuntime := toolsvc.NewRuntime(stores.memory, stores.meme,
 		toolsvc.WithProfileStore(stores.profile),
 		toolsvc.WithPersonaID(cfg.Persona.ID),
+		toolsvc.WithPersonaFactStore(stores.personaFacts),
+		toolsvc.WithPersonaFactAdmins(cfg.Persona.FactUpdateUserWhitelist),
 		toolsvc.WithMemoryService(memorySvc),
 		toolsvc.WithMemeService(memeService),
 		toolsvc.WithMemoryRetriever(hybridRetrieval),

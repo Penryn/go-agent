@@ -53,10 +53,12 @@ func (p *AgentPlanner) Plan(ctx context.Context, snapshot conversationdomain.Con
 		GroupID:              snapshot.Event.GroupID,
 		UserID:               snapshot.Event.UserID,
 		TriggerMessageID:     snapshot.Event.MessageID,
+		TriggerEventID:       snapshot.Event.EventID,
+		TriggerTimestampUnix: snapshot.Event.TimestampUnix,
 		AllowedTools:         snapshot.GroupPolicy.ToolAllowlist,
 		RetrievedMemories:    snapshot.RelevantMemories,
 		MediaDescriptors:     snapshot.MediaDescriptors,
-		Budget:               map[string]int{"update_affinity": 0, "update_member_profile": 0},
+		Budget:               map[string]int{"update_affinity": 0, "update_member_profile": 0, "update_persona_fact": 0},
 		TriggerType:          decision.TriggerType,
 		RecallableMessageIDs: recallableMessageIDs(snapshot),
 		Intent: replydomain.ReplyIntent{

@@ -16,6 +16,45 @@ type FewShotExample struct {
 	BotSays  string `json:"bot_says" yaml:"bot_says"`
 }
 
+// ResponseScenario describes how to respond to a class of situations without
+// freezing a time-sensitive answer into the long-lived persona definition.
+type ResponseScenario struct {
+	Situation string   `json:"situation" yaml:"situation"`
+	Rules     []string `json:"rules" yaml:"rules"`
+}
+
+// PersonaFactSeed provides the initial value for a mutable runtime fact. A
+// newer verified runtime fact with the same key supersedes this seed.
+type PersonaFactSeed struct {
+	Key         string `json:"key" yaml:"key"`
+	Value       string `json:"value" yaml:"value"`
+	EffectiveAt string `json:"effective_at,omitempty" yaml:"effective_at,omitempty"`
+}
+
+const (
+	PersonaFactVerified = "verified"
+	PersonaFactReported = "reported"
+)
+
+// PersonaFact is an append-only, source-attributed fact about the persona's
+// current life. Verified facts may override config seeds; reported facts are
+// injected only as hearsay and normally expire.
+type PersonaFact struct {
+	FactID        string    `json:"fact_id" yaml:"fact_id"`
+	PersonaID     string    `json:"persona_id" yaml:"persona_id"`
+	Key           string    `json:"key" yaml:"key"`
+	Value         string    `json:"value" yaml:"value"`
+	Status        string    `json:"status" yaml:"status"`
+	SourceKind    string    `json:"source_kind" yaml:"source_kind"`
+	SourceGroupID int64     `json:"source_group_id" yaml:"source_group_id"`
+	SourceUserID  int64     `json:"source_user_id" yaml:"source_user_id"`
+	SourceEventID string    `json:"source_event_id" yaml:"source_event_id"`
+	Confidence    float64   `json:"confidence" yaml:"confidence"`
+	EffectiveAt   time.Time `json:"effective_at" yaml:"effective_at"`
+	ExpiresAt     time.Time `json:"expires_at,omitempty" yaml:"expires_at,omitempty"`
+	RecordedAt    time.Time `json:"recorded_at" yaml:"recorded_at"`
+}
+
 // SpeechPatterns 描述角色的口头习惯、禁忌用语和表情包频率。
 type SpeechPatterns struct {
 	// Catchphrases 是角色偶尔会说的习惯用语。
@@ -45,10 +84,16 @@ type PersonaConfig struct {
 	AllowTeasing      bool     `json:"allow_teasing" yaml:"allow_teasing"`
 	AllowQuestions    bool     `json:"allow_questions" yaml:"allow_questions"`
 	PreferMemes       bool     `json:"prefer_memes" yaml:"prefer_memes"`
+	// FactUpdateUserWhitelist lists QQ users allowed to turn a direct statement
+	// into a durable verified persona fact. Other users may only contribute
+	// short-lived reported facts.
+	FactUpdateUserWhitelist []int64            `json:"-" yaml:"fact_update_user_whitelist,omitempty"`
+	InitialFacts            []PersonaFactSeed  `json:"initial_facts,omitempty" yaml:"initial_facts,omitempty"`
+	ResponseScenarios       []ResponseScenario `json:"response_scenarios,omitempty" yaml:"response_scenarios,omitempty"`
 	// Traits 是性格特征列表，如 ["直率", "爱开玩笑"]。
-	Traits     []string        `json:"traits" yaml:"traits"`
+	Traits     []string       `json:"traits" yaml:"traits"`
 	Background Background     `json:"background" yaml:"background"`
-	Speech     SpeechPatterns  `json:"speech" yaml:"speech"`
+	Speech     SpeechPatterns `json:"speech" yaml:"speech"`
 	// GroupOverrides are static, typed per-group persona changes. Dynamic
 	// policy overlays are accepted separately by Resolve for backwards
 	// compatible config loading.
@@ -91,6 +136,7 @@ type PersonaProfile struct {
 	OutputRules     []string           `json:"output_rules" yaml:"output_rules"`
 	ToolAllowlist   []string           `json:"tool_allowlist" yaml:"tool_allowlist"`
 	FewShotExamples []FewShotExample   `json:"few_shot_examples" yaml:"few_shot_examples"`
+	CurrentFacts    []PersonaFact      `json:"current_facts,omitempty" yaml:"current_facts,omitempty"`
 }
 
 type PersonaState struct {

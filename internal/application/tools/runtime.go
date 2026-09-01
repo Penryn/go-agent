@@ -2,6 +2,7 @@ package tools
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -18,21 +19,24 @@ import (
 	"github.com/phlin/go-agent/internal/application/ports"
 	retrievalsvc "github.com/phlin/go-agent/internal/application/retrieval"
 	"github.com/phlin/go-agent/internal/application/textutil"
+	personadomain "github.com/phlin/go-agent/internal/domain/persona"
 	policydomain "github.com/phlin/go-agent/internal/domain/policy"
 	profiledomain "github.com/phlin/go-agent/internal/domain/profile"
 	replydomain "github.com/phlin/go-agent/internal/domain/reply"
 )
 
 type Runtime struct {
-	memoryStore  ports.MemoryStore
-	memeStore    ports.MemeStore
-	profileStore ports.ProfileStore
-	personaID    string
-	memSvc       *memsvc.Service
-	memeSvc      *memesvc.Service
-	retriever    *retrievalsvc.Service
-	external     []registeredTool
-	approvals    *WriteApprovalStore
+	memoryStore       ports.MemoryStore
+	memeStore         ports.MemeStore
+	profileStore      ports.ProfileStore
+	personaFacts      ports.PersonaFactStore
+	personaID         string
+	personaFactAdmins []int64
+	memSvc            *memsvc.Service
+	memeSvc           *memesvc.Service
+	retriever         *retrievalsvc.Service
+	external          []registeredTool
+	approvals         *WriteApprovalStore
 }
 
 type Option func(*Runtime)
@@ -54,6 +58,14 @@ func WithProfileStore(store ports.ProfileStore) Option {
 
 func WithPersonaID(id string) Option {
 	return func(rt *Runtime) { rt.personaID = id }
+}
+
+func WithPersonaFactStore(store ports.PersonaFactStore) Option {
+	return func(rt *Runtime) { rt.personaFacts = store }
+}
+
+func WithPersonaFactAdmins(userIDs []int64) Option {
+	return func(rt *Runtime) { rt.personaFactAdmins = append([]int64(nil), userIDs...) }
 }
 
 func WithMemoryService(svc *memsvc.Service) Option {
@@ -144,7 +156,7 @@ func builtinToolMode(name string) ToolMode {
 	switch name {
 	case "speak_text", "stay_silent", "react_emoji", "send_meme", "quote_reply", "repair_message", "poke_member":
 		return ToolModeTerminal
-	case "mark_memory_intent", "update_affinity", "update_member_profile":
+	case "mark_memory_intent", "update_affinity", "update_member_profile", "update_persona_fact":
 		return ToolModeState
 	default:
 		return ToolModeIntermediate
@@ -221,6 +233,7 @@ func (r *Runtime) profileTools(session replydomain.ToolContext) []namedTool {
 		newMarkMemoryIntentTool(r.memSvc, session),
 		newUpdateAffinityTool(r.profileStore, session, r.personaID),
 		newUpdateMemberProfileTool(r.profileStore, session, r.personaID),
+		newUpdatePersonaFactTool(r.personaFacts, session, r.personaID, r.personaFactAdmins),
 	}
 }
 
@@ -1111,4 +1124,134 @@ func (t *updateMemberProfileTool) InvokableRun(ctx context.Context, argumentsInJ
 	slog.Debug("tool: update_member_profile", "user_id", args.UserID,
 		"traits_added", len(args.AddTraits), "tags_added", len(args.AddTags))
 	return marshal(map[string]any{"accepted": true})
+}
+
+// update_persona_fact tool
+
+type updatePersonaFactTool struct {
+	store     ports.PersonaFactStore
+	session   replydomain.ToolContext
+	personaID string
+	admins    []int64
+}
+
+type updatePersonaFactArgs struct {
+	Key             string  `json:"key"`
+	Value           string  `json:"value"`
+	SourceKind      string  `json:"source_kind"`
+	EvidenceEventID string  `json:"evidence_event_id"`
+	Confidence      float64 `json:"confidence"`
+	TTLHours        int     `json:"ttl_hours"`
+}
+
+var mutablePersonaFactKeys = map[string]bool{
+	"school_status":      true,
+	"school_familiarity": true,
+	"course_status":      true,
+	"current_routine":    true,
+	"recent_experience":  true,
+}
+
+func newUpdatePersonaFactTool(store ports.PersonaFactStore, session replydomain.ToolContext, personaID string, admins []int64) *updatePersonaFactTool {
+	return &updatePersonaFactTool{store: store, session: session, personaID: personaID, admins: append([]int64(nil), admins...)}
+}
+
+func (t *updatePersonaFactTool) Name() string { return "update_persona_fact" }
+
+func (t *updatePersonaFactTool) Info(_ context.Context) (*schema.ToolInfo, error) {
+	return &schema.ToolInfo{
+		Name: t.Name(),
+		Desc: "Record a real change in your own current life. Admin statements become verified facts; group reports and web search stay short-lived and unverified. Never use for stable identity or every turn.",
+		ParamsOneOf: schema.NewParamsOneOfByParams(map[string]*schema.ParameterInfo{
+			"key":               {Type: schema.String, Required: true, Desc: "One of: school_status, school_familiarity, course_status, current_routine, recent_experience."},
+			"value":             {Type: schema.String, Required: true, Desc: "Concise current fact, without roleplay or speculation."},
+			"source_kind":       {Type: schema.String, Required: true, Desc: "One of: owner_statement, group_report, web_search."},
+			"evidence_event_id": {Type: schema.String, Required: true, Desc: "Current event ID supporting the update."},
+			"confidence":        {Type: schema.Number, Desc: "Confidence in [0,1]."},
+			"ttl_hours":         {Type: schema.Integer, Desc: "Reported-fact lifetime in hours; defaults to 72 and is capped at 168."},
+		}),
+	}, nil
+}
+
+func (t *updatePersonaFactTool) InvokableRun(ctx context.Context, argumentsInJSON string, _ ...tool.Option) (string, error) {
+	if t.store == nil {
+		return marshal(map[string]any{"accepted": false, "reason": "no_store"})
+	}
+	if t.session.Budget != nil {
+		if t.session.Budget[t.Name()] >= 1 {
+			return marshal(map[string]any{"accepted": false, "reason": "budget_exceeded"})
+		}
+		t.session.Budget[t.Name()]++
+	}
+	var args updatePersonaFactArgs
+	if err := json.Unmarshal([]byte(argumentsInJSON), &args); err != nil {
+		return "", fmt.Errorf("decode update_persona_fact args: %w", err)
+	}
+	args.Key = strings.TrimSpace(args.Key)
+	args.Value = strings.TrimSpace(args.Value)
+	args.SourceKind = strings.TrimSpace(args.SourceKind)
+	args.EvidenceEventID = strings.TrimSpace(args.EvidenceEventID)
+	if !mutablePersonaFactKeys[args.Key] {
+		return marshal(map[string]any{"accepted": false, "reason": "key_not_mutable"})
+	}
+	if args.Value == "" || len([]rune(args.Value)) > 240 {
+		return marshal(map[string]any{"accepted": false, "reason": "invalid_value"})
+	}
+	if args.EvidenceEventID == "" || args.EvidenceEventID != t.session.TriggerEventID {
+		return marshal(map[string]any{"accepted": false, "reason": "evidence_must_be_current_event"})
+	}
+
+	now := time.Now()
+	effectiveAt := now
+	if t.session.TriggerTimestampUnix > 0 {
+		effectiveAt = time.Unix(t.session.TriggerTimestampUnix, 0)
+	}
+	fact := personadomain.PersonaFact{
+		PersonaID:     t.personaID,
+		Key:           args.Key,
+		Value:         args.Value,
+		SourceKind:    args.SourceKind,
+		SourceGroupID: t.session.GroupID,
+		SourceUserID:  t.session.UserID,
+		SourceEventID: args.EvidenceEventID,
+		EffectiveAt:   effectiveAt,
+		RecordedAt:    now,
+	}
+	switch args.SourceKind {
+	case "owner_statement":
+		if !slices.Contains(t.admins, t.session.UserID) {
+			return marshal(map[string]any{"accepted": false, "reason": "owner_not_authorized"})
+		}
+		fact.Status = personadomain.PersonaFactVerified
+		fact.Confidence = clampF(args.Confidence, 0.8, 1)
+		if args.Confidence == 0 {
+			fact.Confidence = 1
+		}
+	case "group_report", "web_search":
+		fact.Status = personadomain.PersonaFactReported
+		fact.Confidence = clampF(args.Confidence, 0.1, 0.8)
+		if args.Confidence == 0 {
+			fact.Confidence = 0.6
+		}
+		ttlHours := clamp(args.TTLHours, 1, 168)
+		if args.TTLHours == 0 {
+			ttlHours = 72
+		}
+		fact.ExpiresAt = now.Add(time.Duration(ttlHours) * time.Hour)
+	default:
+		return marshal(map[string]any{"accepted": false, "reason": "invalid_source_kind"})
+	}
+	digest := sha256.Sum256([]byte(strings.Join([]string{
+		fact.PersonaID, fact.Key, fact.Value, fact.Status, fact.SourceKind, fact.SourceEventID,
+	}, "\x00")))
+	fact.FactID = fmt.Sprintf("persona-fact-%x", digest[:12])
+	if err := t.store.AppendPersonaFact(ctx, fact); err != nil {
+		return "", err
+	}
+	return marshal(map[string]any{
+		"accepted":   true,
+		"fact_id":    fact.FactID,
+		"status":     fact.Status,
+		"expires_at": fact.ExpiresAt,
+	})
 }

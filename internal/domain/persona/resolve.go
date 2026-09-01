@@ -80,6 +80,12 @@ func cloneConfig(config PersonaConfig) PersonaConfig {
 	config.Interests = append([]string(nil), config.Interests...)
 	config.Constraints = append([]string(nil), config.Constraints...)
 	config.Traits = append([]string(nil), config.Traits...)
+	config.FactUpdateUserWhitelist = append([]int64(nil), config.FactUpdateUserWhitelist...)
+	config.InitialFacts = append([]PersonaFactSeed(nil), config.InitialFacts...)
+	config.ResponseScenarios = append([]ResponseScenario(nil), config.ResponseScenarios...)
+	for i := range config.ResponseScenarios {
+		config.ResponseScenarios[i].Rules = append([]string(nil), config.ResponseScenarios[i].Rules...)
+	}
 	config.Background.BehaviorHints = append([]string(nil), config.Background.BehaviorHints...)
 	config.Speech.Catchphrases = append([]string(nil), config.Speech.Catchphrases...)
 	config.Speech.Avoidances = append([]string(nil), config.Speech.Avoidances...)

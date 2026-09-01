@@ -139,6 +139,13 @@ type RuntimeStateStore interface {
 	SavePersonaState(ctx context.Context, state personadomain.PersonaState) error
 }
 
+// PersonaFactStore persists an append-only fact history and returns the latest
+// non-expired value for each (key, status) pair.
+type PersonaFactStore interface {
+	AppendPersonaFact(ctx context.Context, fact personadomain.PersonaFact) error
+	CurrentPersonaFacts(ctx context.Context, personaID string, now time.Time) ([]personadomain.PersonaFact, error)
+}
+
 type ChatModelFactory interface {
 	MainChatModel(ctx context.Context) (model.BaseChatModel, error)
 	VisionChatModel(ctx context.Context) (model.BaseChatModel, error)

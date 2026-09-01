@@ -85,6 +85,10 @@ func relevantFewShot(examples []personadomain.FewShotExample, trigger string) []
 	return selected
 }
 
+func relevantScenarios(scenarios []personadomain.ResponseScenario) []personadomain.ResponseScenario {
+	return selectLimit(scenarios, 4)
+}
+
 func selectByKeywords(values, keywords []string, limit int) []string {
 	if len(keywords) == 0 {
 		return nil

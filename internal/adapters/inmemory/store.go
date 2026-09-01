@@ -30,6 +30,7 @@ var (
 	_ ports.MemeStore          = (*Store)(nil)
 	_ ports.ProfileStore       = (*Store)(nil)
 	_ ports.RuntimeStateStore  = (*Store)(nil)
+	_ ports.PersonaFactStore   = (*Store)(nil)
 	_ ports.OutboundSender     = (*Sender)(nil)
 )
 
@@ -43,6 +44,7 @@ type Store struct {
 	relations     map[string]profiledomain.RelationshipState
 	runtimeStates map[int64]policydomain.RuntimeState
 	personaStates map[string]personadomain.PersonaState
+	personaFacts  []personadomain.PersonaFact
 	learningMarks map[string]memorydomain.LearningWatermark
 	thoughts      []replydomain.ThoughtRecord
 	workingStates map[int64]presencedomain.GroupWorkingMemory
@@ -651,6 +653,46 @@ func (s *Store) SavePersonaState(_ context.Context, state personadomain.PersonaS
 	defer s.mu.Unlock()
 	s.personaStates[personaStateKey(state.PersonaID, state.GroupID)] = state
 	return nil
+}
+
+func (s *Store) AppendPersonaFact(_ context.Context, fact personadomain.PersonaFact) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, existing := range s.personaFacts {
+		if existing.FactID == fact.FactID {
+			return nil
+		}
+	}
+	s.personaFacts = append(s.personaFacts, fact)
+	return nil
+}
+
+func (s *Store) CurrentPersonaFacts(_ context.Context, personaID string, now time.Time) ([]personadomain.PersonaFact, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	latest := make(map[string]personadomain.PersonaFact)
+	for _, fact := range s.personaFacts {
+		if fact.PersonaID != personaID || (!fact.ExpiresAt.IsZero() && !fact.ExpiresAt.After(now)) {
+			continue
+		}
+		key := fact.Key + "\x00" + fact.Status
+		current, ok := latest[key]
+		if !ok || fact.EffectiveAt.After(current.EffectiveAt) ||
+			(fact.EffectiveAt.Equal(current.EffectiveAt) && fact.RecordedAt.After(current.RecordedAt)) {
+			latest[key] = fact
+		}
+	}
+	result := make([]personadomain.PersonaFact, 0, len(latest))
+	for _, fact := range latest {
+		result = append(result, fact)
+	}
+	sort.Slice(result, func(i, j int) bool {
+		if result[i].Key == result[j].Key {
+			return result[i].Status < result[j].Status
+		}
+		return result[i].Key < result[j].Key
+	})
+	return result, nil
 }
 
 type Sender struct {

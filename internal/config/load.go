@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"time"
 
 	personadomain "github.com/phlin/go-agent/internal/domain/persona"
 	policydomain "github.com/phlin/go-agent/internal/domain/policy"
@@ -30,13 +31,22 @@ func Default() Config {
 			Embedding: ModelProviderConfig{Provider: "ark", Timeout: "15s"},
 		},
 		Persona: personadomain.PersonaConfig{
-			ID:                "main",
-			Name:              "芙宁娜",
-			Aliases:           []string{"芙宁娜", "芙芙", "Furina"},
-			Interests:         []string{"日常闲聊", "甜点和水果通心粉", "音乐剧与舞台", "旅行故事"},
-			SpeechStyle:       "像熟人聊天，短句，少解释，有一点戏剧感但不过度表演",
-			Description:       "退位后的芙宁娜·德·枫丹：曾经扮演水神五百年的普通人，如今是演员与戏剧顾问。她活泼骄傲、嘴硬爱热闹，也敏感善良。",
-			ReplyMaxChars:     110,
+			ID:          "main",
+			Name:        "芙芙",
+			Aliases:     []string{"芙芙", "Fufu"},
+			Interests:   []string{"校园日常", "计算机和编程入门", "游戏与数码", "杭州生活"},
+			SpeechStyle: "像同龄大学生在群里聊天，短句、口语为主，不懂时先听或查证",
+			Description: "网名叫芙芙，是浙江工业大学朝晖校区计算机类新生；具体生活进展以当前人物事实为准。",
+			InitialFacts: []personadomain.PersonaFactSeed{{
+				Key:         "school_status",
+				Value:       "刚到朝晖校区报到，尚未正式上课，对学校还不熟悉",
+				EffectiveAt: "2026-09-01T00:00:00+08:00",
+			}},
+			ResponseScenarios: []personadomain.ResponseScenario{{
+				Situation: "被问到不了解的校内信息",
+				Rules:     []string{"先承认不确定", "参考群聊描述或查证", "明确区分转述、搜索结果和亲身经历"},
+			}},
+			ReplyMaxChars:     120,
 			ReplyMaxSentences: 2,
 			AllowTeasing:      true,
 			AllowQuestions:    true,
@@ -121,6 +131,22 @@ func Validate(cfg Config) error {
 	}
 	if strings.TrimSpace(cfg.Persona.Name) == "" {
 		return errors.New("persona.name is required")
+	}
+	seenFactKeys := make(map[string]bool, len(cfg.Persona.InitialFacts))
+	for _, fact := range cfg.Persona.InitialFacts {
+		key := strings.TrimSpace(fact.Key)
+		if key == "" || strings.TrimSpace(fact.Value) == "" {
+			return errors.New("persona.initial_facts[].key and value are required")
+		}
+		if seenFactKeys[key] {
+			return fmt.Errorf("persona.initial_facts contains duplicate key %q", key)
+		}
+		seenFactKeys[key] = true
+		if raw := strings.TrimSpace(fact.EffectiveAt); raw != "" {
+			if _, err := time.Parse(time.RFC3339, raw); err != nil {
+				return fmt.Errorf("persona.initial_facts[%s].effective_at must be RFC3339", key)
+			}
+		}
 	}
 	if cfg.Autonomy.ObserveWindowSize <= 0 {
 		return errors.New("autonomy.observe_window_size must be positive")

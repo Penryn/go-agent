@@ -397,6 +397,41 @@ func TestRuntimeStates(t *testing.T) {
 	}
 }
 
+func TestPersonaFactsRoundtripAndExpiry(t *testing.T) {
+	ctx := context.Background()
+	store := NewStore(setupPostgres(t))
+	now := time.Now().Truncate(time.Second)
+	facts := []personadomain.PersonaFact{
+		{
+			FactID: "persona-fact-old", PersonaID: "main", Key: "school_status", Value: "尚未上课",
+			Status: personadomain.PersonaFactVerified, SourceKind: "config", Confidence: 1,
+			EffectiveAt: now.Add(-24 * time.Hour), RecordedAt: now.Add(-24 * time.Hour),
+		},
+		{
+			FactID: "persona-fact-new", PersonaID: "main", Key: "school_status", Value: "已经开课",
+			Status: personadomain.PersonaFactVerified, SourceKind: "owner_statement", Confidence: 1,
+			EffectiveAt: now, RecordedAt: now,
+		},
+		{
+			FactID: "persona-fact-expired", PersonaID: "main", Key: "school_familiarity", Value: "听说已经很熟",
+			Status: personadomain.PersonaFactReported, SourceKind: "group_report", Confidence: 0.5,
+			EffectiveAt: now, RecordedAt: now, ExpiresAt: now.Add(-time.Minute),
+		},
+	}
+	for _, fact := range facts {
+		if err := store.AppendPersonaFact(ctx, fact); err != nil {
+			t.Fatalf("append persona fact: %v", err)
+		}
+	}
+	current, err := store.CurrentPersonaFacts(ctx, "main", now)
+	if err != nil {
+		t.Fatalf("current persona facts: %v", err)
+	}
+	if len(current) != 1 || current[0].FactID != "persona-fact-new" {
+		t.Fatalf("unexpected current facts: %+v", current)
+	}
+}
+
 func TestMemoryForgetting(t *testing.T) {
 	ctx := context.Background()
 	db := setupPostgres(t)

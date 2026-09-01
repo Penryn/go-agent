@@ -28,6 +28,7 @@ var (
 	_ ports.ThoughtStore              = (*Store)(nil)
 	_ ports.MemeStore                 = (*Store)(nil)
 	_ ports.ProfileStore              = (*Store)(nil)
+	_ ports.PersonaFactStore          = (*Store)(nil)
 	_ ports.OutboxStore               = (*Store)(nil)
 	_ ports.AtomicMemeProjectionStore = (*Store)(nil)
 )

@@ -171,6 +171,27 @@ CREATE TABLE IF NOT EXISTS runtime_states (
 );
 CREATE INDEX IF NOT EXISTS idx_runtime_states_expires ON runtime_states (expires_at);
 
+-- 人物事实采用追加式事件记录。读取时按 (fact_key, status) 选择最新的未过期值，
+-- verified 是当前事实，reported 是带来源的短期转述。
+CREATE TABLE IF NOT EXISTS persona_fact_events (
+  fact_id VARCHAR(128) PRIMARY KEY,
+  persona_id VARCHAR(128) NOT NULL,
+  fact_key VARCHAR(64) NOT NULL,
+  fact_value TEXT NOT NULL,
+  status VARCHAR(16) NOT NULL,
+  source_kind VARCHAR(32) NOT NULL,
+  source_group_id BIGINT NOT NULL DEFAULT 0,
+  source_user_id BIGINT NOT NULL DEFAULT 0,
+  source_event_id VARCHAR(128) NOT NULL DEFAULT '',
+  confidence DOUBLE PRECISION NOT NULL,
+  effective_at TIMESTAMPTZ NOT NULL,
+  expires_at TIMESTAMPTZ NULL,
+  recorded_at TIMESTAMPTZ NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_persona_fact_current
+  ON persona_fact_events (persona_id, fact_key, status, effective_at DESC, recorded_at DESC);
+CREATE INDEX IF NOT EXISTS idx_persona_fact_expiry ON persona_fact_events (expires_at);
+
 -- 使用 halfvec(2048) 保留 ark embedding-large 的完整输出；halfvec HNSW 上限为 4000 维。
 CREATE TABLE IF NOT EXISTS memory_vectors (
   memory_id VARCHAR(128) PRIMARY KEY,

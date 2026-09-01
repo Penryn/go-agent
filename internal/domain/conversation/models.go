@@ -77,6 +77,7 @@ type ContextSnapshot struct {
 	RelationshipState profiledomain.RelationshipState `json:"relationship_state" yaml:"relationship_state"`
 	PersonaProfile    personadomain.PersonaProfile    `json:"persona_profile" yaml:"persona_profile"`
 	PersonaState      personadomain.PersonaState      `json:"persona_state" yaml:"persona_state"`
+	PersonaFacts      []personadomain.PersonaFact     `json:"persona_facts,omitempty" yaml:"persona_facts,omitempty"`
 	GroupPolicy       policydomain.GroupPolicy        `json:"group_policy" yaml:"group_policy"`
 	RuntimeState      policydomain.RuntimeState       `json:"runtime_state" yaml:"runtime_state"`
 	DecisionHints     []string                        `json:"decision_hints" yaml:"decision_hints"`

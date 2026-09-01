@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"sort"
+	"strings"
 	"time"
 
 	policysvc "github.com/phlin/go-agent/internal/application/policy"
@@ -33,6 +34,7 @@ type Service struct {
 	memoryTopK    int
 	workingMemory WorkingMemoryReader
 	thoughts      ports.ThoughtStore
+	personaFacts  ports.PersonaFactStore
 	retriever     *retrievalsvc.Service
 }
 
@@ -41,6 +43,10 @@ func (s *Service) WithThoughtStore(store ports.ThoughtStore) { s.thoughts = stor
 
 func (s *Service) WithWorkingMemory(reader WorkingMemoryReader) {
 	s.workingMemory = reader
+}
+
+func (s *Service) WithPersonaFactStore(store ports.PersonaFactStore) {
+	s.personaFacts = store
 }
 
 func New(
@@ -126,6 +132,10 @@ func (s *Service) BuildSnapshot(ctx context.Context, envelope conversationdomain
 	if err != nil {
 		return conversationdomain.ContextSnapshot{}, fmt.Errorf("load persona state: %w", err)
 	}
+	personaFacts, err := s.currentPersonaFacts(ctx, time.Now())
+	if err != nil {
+		return conversationdomain.ContextSnapshot{}, fmt.Errorf("load persona facts: %w", err)
+	}
 
 	if len(mediaDescriptors) == 0 {
 		mediaDescriptors = append([]mediadomain.MediaDescriptor(nil), working.MediaByEvent[envelope.Event.EventID]...)
@@ -150,6 +160,7 @@ func (s *Service) BuildSnapshot(ctx context.Context, envelope conversationdomain
 		OutputRules:     []string{fmt.Sprintf("最大 %d 字", personaConfig.ReplyMaxChars), fmt.Sprintf("最大 %d 句", personaConfig.ReplyMaxSentences)},
 		ToolAllowlist:   append([]string(nil), resolvedPersona.ToolAllowlist...),
 		FewShotExamples: append([]personadomain.FewShotExample(nil), resolvedPersona.FewShotExamples...),
+		CurrentFacts:    append([]personadomain.PersonaFact(nil), personaFacts...),
 	}
 
 	projection := conversationdomain.ProjectionMetadata{
@@ -176,10 +187,71 @@ func (s *Service) BuildSnapshot(ctx context.Context, envelope conversationdomain
 		RelationshipState: relationship,
 		PersonaProfile:    personaProfile,
 		PersonaState:      personaState,
+		PersonaFacts:      append([]personadomain.PersonaFact(nil), personaFacts...),
 		GroupPolicy:       groupPolicy,
 		RuntimeState:      runtimeState,
 		DecisionHints:     buildDecisionHints(envelope.Event),
 	}, nil
+}
+
+func (s *Service) currentPersonaFacts(ctx context.Context, now time.Time) ([]personadomain.PersonaFact, error) {
+	latest := make(map[string]personadomain.PersonaFact)
+	for _, seed := range s.persona.InitialFacts {
+		key := strings.TrimSpace(seed.Key)
+		value := strings.TrimSpace(seed.Value)
+		if key == "" || value == "" {
+			continue
+		}
+		effectiveAt, _ := time.Parse(time.RFC3339, strings.TrimSpace(seed.EffectiveAt))
+		fact := personadomain.PersonaFact{
+			FactID:      "config:" + s.persona.ID + ":" + key,
+			PersonaID:   s.persona.ID,
+			Key:         key,
+			Value:       value,
+			Status:      personadomain.PersonaFactVerified,
+			SourceKind:  "config",
+			Confidence:  1,
+			EffectiveAt: effectiveAt,
+			RecordedAt:  effectiveAt,
+		}
+		latest[key+"\x00"+fact.Status] = fact
+	}
+	if s.personaFacts != nil {
+		facts, err := s.personaFacts.CurrentPersonaFacts(ctx, s.persona.ID, now)
+		if err != nil {
+			return nil, err
+		}
+		for _, fact := range facts {
+			key := fact.Key + "\x00" + fact.Status
+			current, ok := latest[key]
+			if !ok || fact.EffectiveAt.After(current.EffectiveAt) ||
+				(fact.EffectiveAt.Equal(current.EffectiveAt) && fact.RecordedAt.After(current.RecordedAt)) {
+				latest[key] = fact
+			}
+		}
+	}
+	result := make([]personadomain.PersonaFact, 0, len(latest))
+	verifiedByKey := make(map[string]personadomain.PersonaFact)
+	for _, fact := range latest {
+		if fact.Status == personadomain.PersonaFactVerified {
+			verifiedByKey[fact.Key] = fact
+		}
+	}
+	for _, fact := range latest {
+		if fact.Status == personadomain.PersonaFactReported {
+			if verified, ok := verifiedByKey[fact.Key]; ok && !fact.EffectiveAt.After(verified.EffectiveAt) {
+				continue
+			}
+		}
+		result = append(result, fact)
+	}
+	sort.Slice(result, func(i, j int) bool {
+		if result[i].Status == result[j].Status {
+			return result[i].Key < result[j].Key
+		}
+		return result[i].Status == personadomain.PersonaFactVerified
+	})
+	return result, nil
 }
 
 // recentThoughts 取该群最近几轮的判断摘要；失败静默（回看是增强不是依赖）。
