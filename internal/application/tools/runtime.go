@@ -82,15 +82,6 @@ func (r *Runtime) ToolContext(ctx context.Context, groupID, userID int64) contex
 	return withToolIdentity(ctx, groupID, userID)
 }
 
-// speakingTools 是在 observe-only 模式下需要排除的发言/行动工具。
-var speakingTools = map[string]bool{
-	"speak_text":            true,
-	"quote_reply":           true,
-	"send_meme":             true,
-	"recall_recent_message": true,
-	"poke_member":           true,
-}
-
 func (r *Runtime) Tools(session replydomain.ToolContext) []tool.BaseTool {
 	internal := make([]namedTool, 0, 13)
 	internal = append(internal, r.replyTools()...)
@@ -104,9 +95,6 @@ func (r *Runtime) Tools(session replydomain.ToolContext) []tool.BaseTool {
 
 	allowed := make([]tool.BaseTool, 0, len(all))
 	for _, candidate := range all {
-		if session.ObserveOnly && speakingTools[candidate.name] {
-			continue
-		}
 		if (candidate.external && !slices.Contains(session.AllowedTools, candidate.name)) ||
 			(!candidate.external && len(session.AllowedTools) > 0 && !slices.Contains(session.AllowedTools, candidate.name)) {
 			continue
@@ -1027,8 +1015,8 @@ func (t *updateMemberProfileTool) InvokableRun(ctx context.Context, argumentsInJ
 		return "", err
 	}
 
-	// Update familiarity if delta provided (ignored in observe-only mode)
-	if args.FamiliarityDelta != 0 && !t.session.ObserveOnly {
+	// Update familiarity if delta provided
+	if args.FamiliarityDelta != 0 {
 		rel, err := t.store.GetRelationship(ctx, t.personaID, t.session.GroupID, args.UserID)
 		if err != nil {
 			return "", err

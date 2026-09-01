@@ -51,14 +51,9 @@ func Default() Config {
 		},
 		Autonomy: policydomain.AutonomyPolicy{
 			ObserveWindowSize:        20,
-			FollowUpWindowSec:        120,
 			MinReplyIntervalSec:      30,
 			ProactiveBaseProbability: 0.05,
 			ProactiveScoreThreshold:  0.65,
-			MaxRepliesPer10Min:       6,
-			MaxRepliesPerHour:        24,
-			SuppressOnFlood:          true,
-			BotDominanceSuppressSec:  60,
 		},
 		Memory: MemoryConfig{
 			TopK:       6,

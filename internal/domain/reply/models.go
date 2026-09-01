@@ -54,7 +54,6 @@ type ToolContext struct {
 	TriggerMessageID  string                         `json:"trigger_message_id" yaml:"trigger_message_id"`
 	Intent            ReplyIntent                    `json:"intent" yaml:"intent"`
 	AllowedTools      []string                       `json:"allowed_tools" yaml:"allowed_tools"`
-	ObserveOnly       bool                           `json:"observe_only" yaml:"observe_only"`
 	RetrievedMemories []memorydomain.MemoryRecord    `json:"retrieved_memories" yaml:"retrieved_memories"`
 	MediaDescriptors  []mediadomain.MediaDescriptor  `json:"media_descriptors" yaml:"media_descriptors"`
 	RetrievedMemes    []mediadomain.MemeSearchResult `json:"retrieved_memes" yaml:"retrieved_memes"`

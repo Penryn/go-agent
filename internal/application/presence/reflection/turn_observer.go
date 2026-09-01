@@ -24,8 +24,6 @@ type TurnObserver struct {
 // PolicyResolver 是 CanDeliberate 输出规则闸门需要的群策略视图。
 type PolicyResolver interface {
 	EffectiveGroupPolicy(groupID int64) policydomain.GroupPolicy
-	QuietHourActive(now time.Time, policy policydomain.GroupPolicy) bool
-	ActiveHourActive(now time.Time, policy policydomain.GroupPolicy) bool
 }
 
 func New(states ports.RuntimeStateStore, persona *personasvc.Service, cooldown time.Duration, policies PolicyResolver) *TurnObserver {

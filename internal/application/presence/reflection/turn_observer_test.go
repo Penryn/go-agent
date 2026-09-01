@@ -38,21 +38,11 @@ func TestTurnObserverPersistsCooldownAndPersonaFeedback(t *testing.T) {
 
 // stubPolicy 让 CanDeliberate 的规则闸门可独立于 config 构造。
 type stubPolicy struct {
-	quietHours     []string
-	activeHours    []string
 	maxConsecutive int
 }
 
 func (p *stubPolicy) EffectiveGroupPolicy(groupID int64) policydomain.GroupPolicy {
-	return policydomain.GroupPolicy{GroupID: groupID, MaxConsecutiveBot: p.maxConsecutive, QuietHours: p.quietHours, ActiveHours: p.activeHours}
-}
-
-func (p *stubPolicy) QuietHourActive(now time.Time, policy policydomain.GroupPolicy) bool {
-	return len(policy.QuietHours) > 0
-}
-
-func (p *stubPolicy) ActiveHourActive(now time.Time, policy policydomain.GroupPolicy) bool {
-	return len(policy.ActiveHours) > 0
+	return policydomain.GroupPolicy{GroupID: groupID, MaxConsecutiveBot: p.maxConsecutive}
 }
 
 func TestCanDeliberateBlocksFlood(t *testing.T) {

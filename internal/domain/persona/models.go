@@ -2,8 +2,8 @@ package persona
 
 import "time"
 
-// BackgroundStory 描述角色的背景故事与行为倾向。
-type BackgroundStory struct {
+// Background 描述角色的背景故事与行为倾向。
+type Background struct {
 	// Summary 是一段自由文本的背景介绍，渲染时直接追加到长期人格层。
 	Summary string `json:"summary" yaml:"summary"`
 	// BehaviorHints 是白话描述的行为倾向列表，每条独立一行渲染。
@@ -48,7 +48,7 @@ type PersonaConfig struct {
 	PreferMemes       bool     `json:"prefer_memes" yaml:"prefer_memes"`
 	// Traits 是性格特征列表，如 ["直率", "爱开玩笑"]。
 	Traits     []string        `json:"traits" yaml:"traits"`
-	Background BackgroundStory `json:"background" yaml:"background"`
+	Background Background     `json:"background" yaml:"background"`
 	Speech     SpeechPatterns  `json:"speech" yaml:"speech"`
 	// GroupOverrides are static, typed per-group persona changes. Dynamic
 	// policy overlays are accepted separately by Resolve for backwards

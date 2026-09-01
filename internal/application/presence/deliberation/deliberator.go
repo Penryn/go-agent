@@ -138,13 +138,10 @@ func resolveAction(intent string, proposed []policydomain.DecisionAction) policy
 func decisionFor(envelope conversationdomain.EventEnvelope, candidate presencedomain.ThoughtCandidate) policydomain.AutonomyDecision {
 	return policydomain.AutonomyDecision{
 		DecisionID:  envelope.TraceID + "-decision",
-		StateBefore: policydomain.StateObserving,
-		StateAfter:  policydomain.StateCooldown,
 		Action:      baselineAction(candidate.Intent),
 		TriggerType: candidate.Intent,
 		Score:       candidate.Score,
 		Confidence:  1 - candidate.Uncertainty,
 		ReasonCodes: []string{"thought_candidate", candidate.Intent},
-		Explain:     map[string]float64{"candidate_score": candidate.Score},
 	}
 }

@@ -186,19 +186,12 @@ group_policies: []
 autonomy:
   # 上下文观察窗口大小。
   observe_window_size: 20
-  # 跟进同一话题的时间窗口。
-  follow_up_window_sec: 120
   # 最小回复间隔，避免刷屏。
   min_reply_interval_sec: 3
   # 主动插话的基础概率。
   proactive_base_probability: 0.05
   # 主动插话需要达到的评分阈值。
   proactive_score_threshold: 0.85
-  max_replies_per_10min: 6
-  max_replies_per_hour: 24
-  suppress_on_flood: true
-  # 连续发言达上限后的封口时长（秒）。
-  bot_dominance_suppress_sec: 60
 
 memory:
   # 检索上下文时取回的长期记忆条数。

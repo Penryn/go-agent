@@ -5,11 +5,8 @@ import "time"
 type AutonomyState string
 
 const (
-	StateObserving          AutonomyState = "observing"
-	StateDirectTriggered    AutonomyState = "direct_triggered"
-	StateProactiveCandidate AutonomyState = "proactive_candidate"
-	StateCooldown           AutonomyState = "cooldown"
-	StateSuppressed         AutonomyState = "suppressed"
+	StateObserving AutonomyState = "observing"
+	StateCooldown  AutonomyState = "cooldown"
 )
 
 type DecisionAction string
@@ -41,14 +38,9 @@ type GroupPolicy struct {
 
 type AutonomyPolicy struct {
 	ObserveWindowSize        int     `json:"observe_window_size" yaml:"observe_window_size"`
-	FollowUpWindowSec        int     `json:"follow_up_window_sec" yaml:"follow_up_window_sec"`
 	MinReplyIntervalSec      int     `json:"min_reply_interval_sec" yaml:"min_reply_interval_sec"`
 	ProactiveBaseProbability float64 `json:"proactive_base_probability" yaml:"proactive_base_probability"`
 	ProactiveScoreThreshold  float64 `json:"proactive_score_threshold" yaml:"proactive_score_threshold"`
-	MaxRepliesPer10Min       int     `json:"max_replies_per_10min" yaml:"max_replies_per_10min"`
-	MaxRepliesPerHour        int     `json:"max_replies_per_hour" yaml:"max_replies_per_hour"`
-	SuppressOnFlood          bool    `json:"suppress_on_flood" yaml:"suppress_on_flood"`
-	BotDominanceSuppressSec  int     `json:"bot_dominance_suppress_sec" yaml:"bot_dominance_suppress_sec"`
 }
 
 type RuntimeState struct {
@@ -67,24 +59,10 @@ type RuntimeState struct {
 }
 
 type AutonomyDecision struct {
-	DecisionID  string             `json:"decision_id" yaml:"decision_id"`
-	Action      DecisionAction     `json:"action" yaml:"action"`
-	StateBefore AutonomyState      `json:"state_before" yaml:"state_before"`
-	StateAfter  AutonomyState      `json:"state_after" yaml:"state_after"`
-	TriggerType string             `json:"trigger_type" yaml:"trigger_type"`
-	Score       float64            `json:"score" yaml:"score"`
-	Confidence  float64            `json:"confidence" yaml:"confidence"`
-	DelayMs     int                `json:"delay_ms" yaml:"delay_ms"`
-	ReasonCodes []string           `json:"reason_codes" yaml:"reason_codes"`
-	Explain     map[string]float64 `json:"explain" yaml:"explain"`
-}
-
-type DecisionAudit struct {
-	TraceID     string             `json:"trace_id" yaml:"trace_id"`
-	GroupID     int64              `json:"group_id" yaml:"group_id"`
-	State       AutonomyState      `json:"state" yaml:"state"`
-	Action      DecisionAction     `json:"action" yaml:"action"`
-	ReasonCodes []string           `json:"reason_codes" yaml:"reason_codes"`
-	Explain     map[string]float64 `json:"explain" yaml:"explain"`
-	GeneratedAt time.Time          `json:"generated_at" yaml:"generated_at"`
+	DecisionID  string          `json:"decision_id" yaml:"decision_id"`
+	Action      DecisionAction  `json:"action" yaml:"action"`
+	TriggerType string          `json:"trigger_type" yaml:"trigger_type"`
+	Score       float64         `json:"score" yaml:"score"`
+	Confidence  float64         `json:"confidence" yaml:"confidence"`
+	ReasonCodes []string        `json:"reason_codes" yaml:"reason_codes"`
 }

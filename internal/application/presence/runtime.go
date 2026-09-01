@@ -578,7 +578,7 @@ func toEventRecord(envelope conversationdomain.EventEnvelope, origin presencedom
 }
 
 func silentDecision(id, reason string) policydomain.AutonomyDecision {
-	return policydomain.AutonomyDecision{DecisionID: id + "-decision", Action: policydomain.ActionSilent, StateBefore: policydomain.StateObserving, StateAfter: policydomain.StateObserving, ReasonCodes: []string{reason}, Explain: map[string]float64{reason: 1}, Confidence: 1}
+	return policydomain.AutonomyDecision{DecisionID: id + "-decision", Action: policydomain.ActionSilent, ReasonCodes: []string{reason}, Confidence: 1}
 }
 
 func (r *Runtime) groupLock(groupID int64) *sync.Mutex {

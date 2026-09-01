@@ -52,7 +52,6 @@ func (p *AgentPlanner) Plan(ctx context.Context, snapshot conversationdomain.Con
 		UserID:            snapshot.Event.UserID,
 		TriggerMessageID:  snapshot.Event.MessageID,
 		AllowedTools:      snapshot.GroupPolicy.ToolAllowlist,
-		ObserveOnly:       false,
 		RetrievedMemories: snapshot.RelevantMemories,
 		MediaDescriptors:  snapshot.MediaDescriptors,
 		Budget:            map[string]int{"update_affinity": 0, "update_member_profile": 0},

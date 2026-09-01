@@ -19,10 +19,8 @@ type MultimodalAttachment struct {
 	ObjectKey    string    `json:"object_key" yaml:"object_key"`
 	PlatformHint string    `json:"platform_hint" yaml:"platform_hint"`
 	MIME         string    `json:"mime" yaml:"mime"`
-	SizeBytes    int64     `json:"size_bytes" yaml:"size_bytes"`
 	Width        int       `json:"width" yaml:"width"`
 	Height       int       `json:"height" yaml:"height"`
-	DurationMs   int       `json:"duration_ms" yaml:"duration_ms"`
 	ContentHash  string    `json:"content_hash" yaml:"content_hash"`
 }
 
@@ -31,15 +29,12 @@ type MediaDescriptor struct {
 	Kind          MediaKind `json:"kind" yaml:"kind"`
 	Summary       string    `json:"summary" yaml:"summary"`
 	SceneTags     []string  `json:"scene_tags" yaml:"scene_tags"`
-	Entities      []string  `json:"entities" yaml:"entities"`
 	OCRTexts      []string  `json:"ocr_texts" yaml:"ocr_texts"`
 	EmotionHints  []string  `json:"emotion_hints" yaml:"emotion_hints"`
 	MemeSignals   []string  `json:"meme_signals" yaml:"meme_signals"`
 	MemeKeywords  []string  `json:"meme_keywords" yaml:"meme_keywords"`
 	SafetySignals []string  `json:"safety_signals" yaml:"safety_signals"`
-	Keyframes     []string  `json:"keyframes" yaml:"keyframes"`
 	Confidence    float64   `json:"confidence" yaml:"confidence"`
-	CostTokens    int       `json:"cost_tokens" yaml:"cost_tokens"`
 }
 
 type MemeAsset struct {

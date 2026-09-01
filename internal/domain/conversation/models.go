@@ -50,14 +50,6 @@ type EventEnvelope struct {
 	CorrelationID string            `json:"correlation_id" yaml:"correlation_id"`
 }
 
-type ConversationContext struct {
-	GroupID        int64                         `json:"group_id" yaml:"group_id"`
-	ObserveWindow  []ConversationEvent           `json:"observe_window" yaml:"observe_window"`
-	RecentMedia    []mediadomain.MediaDescriptor `json:"recent_media" yaml:"recent_media"`
-	ActiveTopics   []string                      `json:"active_topics" yaml:"active_topics"`
-	LastSnapshotID string                        `json:"last_snapshot_id" yaml:"last_snapshot_id"`
-}
-
 // ThoughtDigest 是 ThoughtRecord 的窄投影：只保留模型回看上次判断
 // 需要的字段，避免 conversation 反向依赖 reply 包。
 type ThoughtDigest struct {
