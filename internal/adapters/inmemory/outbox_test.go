@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/phlin/go-agent/internal/core/ports"
+	"github.com/phlin/go-agent/internal/application/ports"
 )
 
 func TestOutboxIsIdempotentAndRetriesBeforeDeadLetter(t *testing.T) {

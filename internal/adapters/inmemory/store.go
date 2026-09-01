@@ -10,17 +10,17 @@ import (
 	"sync"
 	"time"
 
-	"github.com/phlin/go-agent/internal/core/ports"
-	searchcore "github.com/phlin/go-agent/internal/core/search"
-	"github.com/phlin/go-agent/internal/core/search/bm25"
+	"github.com/phlin/go-agent/internal/application/ports"
 	conversationdomain "github.com/phlin/go-agent/internal/domain/conversation"
 	mediadomain "github.com/phlin/go-agent/internal/domain/media"
 	memorydomain "github.com/phlin/go-agent/internal/domain/memory"
 	personadomain "github.com/phlin/go-agent/internal/domain/persona"
 	policydomain "github.com/phlin/go-agent/internal/domain/policy"
+	presencedomain "github.com/phlin/go-agent/internal/domain/presence"
 	profiledomain "github.com/phlin/go-agent/internal/domain/profile"
 	replydomain "github.com/phlin/go-agent/internal/domain/reply"
-	humandomain "github.com/phlin/go-agent/internal/humanbot/domain"
+	searchcore "github.com/phlin/go-agent/internal/search"
+	"github.com/phlin/go-agent/internal/search/bm25"
 )
 
 var (
@@ -45,7 +45,7 @@ type Store struct {
 	personaStates map[string]personadomain.PersonaState
 	learningMarks map[string]memorydomain.LearningWatermark
 	thoughts      []replydomain.ThoughtRecord
-	workingStates map[int64]humandomain.GroupWorkingMemory
+	workingStates map[int64]presencedomain.GroupWorkingMemory
 	outbox        map[string]ports.OutboxTask
 	outboxByKey   map[string]string
 	outboxSeq     int64
@@ -77,13 +77,13 @@ func (s *Store) RecentThoughts(_ context.Context, groupID int64, limit int) ([]r
 	return records, nil
 }
 
-func (s *Store) LoadWorkingMemory(_ context.Context, groupID int64) (humandomain.GroupWorkingMemory, error) {
+func (s *Store) LoadWorkingMemory(_ context.Context, groupID int64) (presencedomain.GroupWorkingMemory, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return cloneWorkingMemory(s.workingStates[groupID]), nil
 }
 
-func (s *Store) SaveWorkingMemory(_ context.Context, memory humandomain.GroupWorkingMemory) error {
+func (s *Store) SaveWorkingMemory(_ context.Context, memory presencedomain.GroupWorkingMemory) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.workingStates[memory.GroupID] = cloneWorkingMemory(memory)
@@ -100,7 +100,7 @@ func NewStore() *Store {
 		runtimeStates: make(map[int64]policydomain.RuntimeState),
 		personaStates: make(map[string]personadomain.PersonaState),
 		learningMarks: make(map[string]memorydomain.LearningWatermark),
-		workingStates: make(map[int64]humandomain.GroupWorkingMemory),
+		workingStates: make(map[int64]presencedomain.GroupWorkingMemory),
 		outbox:        make(map[string]ports.OutboxTask),
 		outboxByKey:   make(map[string]string),
 	}
@@ -234,10 +234,10 @@ func outboxKey(kind, idempotencyKey string) string {
 	return kind + "\x00" + idempotencyKey
 }
 
-func cloneWorkingMemory(memory humandomain.GroupWorkingMemory) humandomain.GroupWorkingMemory {
-	memory.RecentTail = append([]humandomain.EventRecord(nil), memory.RecentTail...)
+func cloneWorkingMemory(memory presencedomain.GroupWorkingMemory) presencedomain.GroupWorkingMemory {
+	memory.RecentTail = append([]presencedomain.EventRecord(nil), memory.RecentTail...)
 	memory.OpenLoops = append([]string(nil), memory.OpenLoops...)
-	memory.Candidates = append([]humandomain.ThoughtCandidate(nil), memory.Candidates...)
+	memory.Candidates = append([]presencedomain.ThoughtCandidate(nil), memory.Candidates...)
 	if memory.MediaByEvent != nil {
 		memory.MediaByEvent = make(map[string][]mediadomain.MediaDescriptor, len(memory.MediaByEvent))
 		for id, descriptors := range memory.MediaByEvent {

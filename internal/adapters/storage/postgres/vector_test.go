@@ -8,7 +8,7 @@ import (
 
 	"github.com/cloudwego/eino/components/embedding"
 
-	"github.com/phlin/go-agent/internal/core/ports"
+	"github.com/phlin/go-agent/internal/application/ports"
 	memorydomain "github.com/phlin/go-agent/internal/domain/memory"
 )
 

@@ -27,8 +27,8 @@ internal/adapters/storage/postgres/
 └── store_test.go   # 集成测试(本地 PG 可达才跑,否则 skip)
 
 migrations/         # 全部重写为 PG 方言,重新编号
-装配点:internal/runtime/bootstrap/dependencies.go(关系库)
-      internal/runtime/bootstrap/graphs.go(向量)
+装配点:internal/app/dependencies.go(关系库)
+      internal/app/graphs.go(向量)
 ```
 
 **vector.go 不依赖 eino-ext。** 现状是 `qdrantstore` 把 embedder 交给 eino-ext 的 qdrant indexer/retriever 编排;eino-ext 无 PG 组件,自写约 120 行(embedder 调用 + `ON CONFLICT` 写入 + `<=>` 检索),并顺手删除 eino-ext 的 qdrant/embedding 相关依赖。embedder 仍通过 `factory.EmbeddingModel()` 注入,保留 eino 本体的 `embedding.Embedder` 接口。

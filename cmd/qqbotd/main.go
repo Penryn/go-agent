@@ -12,8 +12,8 @@ import (
 	"strings"
 	"syscall"
 
+	"github.com/phlin/go-agent/internal/app"
 	"github.com/phlin/go-agent/internal/config"
-	"github.com/phlin/go-agent/internal/runtime/bootstrap"
 )
 
 func main() {
@@ -44,13 +44,13 @@ func main() {
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 
-	app, err := bootstrap.NewApp(ctx, cfg)
+	application, err := app.New(ctx, cfg)
 	if err != nil {
 		slog.Error("bootstrap app", "error", err)
 		os.Exit(1)
 	}
 	defer func() {
-		if err := app.Close(); err != nil {
+		if err := application.Close(); err != nil {
 			slog.Warn("close app resources", "error", err)
 		}
 	}()
@@ -62,7 +62,7 @@ func main() {
 			os.Exit(1)
 		}
 
-		result, err := app.ProcessRawEvent(ctx, payload)
+		result, err := application.ProcessRawEvent(ctx, payload)
 		if err != nil {
 			slog.Error("process once-event payload", "error", err)
 			os.Exit(1)
@@ -78,7 +78,7 @@ func main() {
 		return
 	}
 
-	if err := app.Run(ctx); err != nil && !errors.Is(err, context.Canceled) {
+	if err := application.Run(ctx); err != nil && !errors.Is(err, context.Canceled) {
 		slog.Error("run app", "error", err)
 		os.Exit(1)
 	}

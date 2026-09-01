@@ -1,0 +1,101 @@
+// Package perception runs slow media understanding outside the ingress and
+// actor paths, then returns results to the owning group actor as enrichment.
+package perception
+
+import (
+	"context"
+	"encoding/json"
+	"log/slog"
+	"strings"
+
+	memesvc "github.com/phlin/go-agent/internal/application/meme"
+	multimodalsvc "github.com/phlin/go-agent/internal/application/multimodal"
+	groupactor "github.com/phlin/go-agent/internal/application/presence/group_actor"
+	mediadomain "github.com/phlin/go-agent/internal/domain/media"
+	presencedomain "github.com/phlin/go-agent/internal/domain/presence"
+)
+
+type Pipeline struct {
+	vision  *multimodalsvc.Service
+	memes   *memesvc.Service
+	working *groupactor.Manager
+	outbox  interface {
+		Enqueue(context.Context, string, string, []byte) error
+	}
+}
+
+type Option func(*Pipeline)
+
+func WithOutbox(submitter interface {
+	Enqueue(context.Context, string, string, []byte) error
+}) Option {
+	return func(p *Pipeline) { p.outbox = submitter }
+}
+
+func New(vision *multimodalsvc.Service, memes *memesvc.Service, working *groupactor.Manager, opts ...Option) *Pipeline {
+	p := &Pipeline{vision: vision, memes: memes, working: working}
+	for _, opt := range opts {
+		opt(p)
+	}
+	return p
+}
+
+// Submit never blocks message ingress. Queue pressure can defer media
+// understanding, but the original event has already been persisted by Actor.
+func (p *Pipeline) Submit(record presencedomain.EventRecord) {
+	if p == nil || p.outbox == nil || p.working == nil || record.Origin != presencedomain.OriginInbound || len(record.Event.Attachments) == 0 {
+		return
+	}
+	record.RawPayload = nil
+	payload, err := json.Marshal(record)
+	if err == nil {
+		err = p.outbox.Enqueue(context.Background(), "perception_event", record.EventID, payload)
+	}
+	if err != nil {
+		slog.Warn("perception: outbox enqueue failed", "event_id", record.EventID, "err", err)
+	}
+}
+
+// Process executes one persisted perception task. It is the handler seam used
+// by the durable outbox runtime.
+func (p *Pipeline) Process(ctx context.Context, record presencedomain.EventRecord) error {
+	return p.process(ctx, record)
+}
+
+func (p *Pipeline) process(ctx context.Context, record presencedomain.EventRecord) error {
+	descriptors := fallbackDescriptors(record.Event.Attachments)
+	if p.vision != nil {
+		result, err := p.vision.Understand(ctx, record.Event.Attachments)
+		if err != nil {
+			slog.Warn("perception: vision failed, using fallback", "event_id", record.EventID, "err", err)
+		} else if len(result) > 0 {
+			descriptors = result
+		}
+	}
+	if err := p.working.EnrichMedia(ctx, record.GroupID, record.EventID, descriptors); err != nil {
+		return err
+	}
+	if p.memes != nil {
+		if err := p.memes.ObserveEvent(ctx, record.Event, descriptors); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func fallbackDescriptors(attachments []mediadomain.MultimodalAttachment) []mediadomain.MediaDescriptor {
+	descriptors := make([]mediadomain.MediaDescriptor, 0, len(attachments))
+	for _, attachment := range attachments {
+		summary := strings.TrimSpace(attachment.PlatformHint)
+		if summary == "" {
+			summary = "收到一个" + string(attachment.Kind) + "附件"
+		}
+		descriptors = append(descriptors, mediadomain.MediaDescriptor{
+			AttachmentID: attachment.AttachmentID,
+			Kind:         attachment.Kind,
+			Summary:      summary,
+			Confidence:   0.2,
+		})
+	}
+	return descriptors
+}

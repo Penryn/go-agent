@@ -20,11 +20,11 @@ BM25 和向量只负责候选召回。RRF 只比较 rank，不直接相加 BM25 
 
 ## 目标模块
 
-### `internal/core/search/bm25`
+### `internal/search/bm25`
 
 纯 Go、无存储依赖的 BM25 implementation。默认 tokenizer 面向中文短文本：保留英文/数字词，中文按字符和相邻双字片段生成 token。tokenizer 是 implementation 细节，未来可以替换为更成熟的中文 analyzer。
 
-### `internal/services/retrieval`
+### `internal/application/retrieval`
 
 统一混合检索 module，负责：
 

@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/phlin/go-agent/internal/core/ports"
+	"github.com/phlin/go-agent/internal/application/ports"
 	conversationdomain "github.com/phlin/go-agent/internal/domain/conversation"
 	memorydomain "github.com/phlin/go-agent/internal/domain/memory"
 )

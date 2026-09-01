@@ -8,29 +8,29 @@ import (
 	"time"
 
 	memorydomain "github.com/phlin/go-agent/internal/domain/memory"
+	presencedomain "github.com/phlin/go-agent/internal/domain/presence"
 	replydomain "github.com/phlin/go-agent/internal/domain/reply"
-	humandomain "github.com/phlin/go-agent/internal/humanbot/domain"
 )
 
 // Working-memory, thought and learning cursor persistence live together
 // because they form the runtime projection used to resume background work.
-func (s *Store) LoadWorkingMemory(ctx context.Context, groupID int64) (humandomain.GroupWorkingMemory, error) {
+func (s *Store) LoadWorkingMemory(ctx context.Context, groupID int64) (presencedomain.GroupWorkingMemory, error) {
 	var raw []byte
 	err := s.db.QueryRowContext(ctx, `SELECT state_json FROM group_working_memory WHERE group_id = $1`, groupID).Scan(&raw)
 	if errors.Is(err, sql.ErrNoRows) {
-		return humandomain.GroupWorkingMemory{GroupID: groupID}, nil
+		return presencedomain.GroupWorkingMemory{GroupID: groupID}, nil
 	}
 	if err != nil {
-		return humandomain.GroupWorkingMemory{}, err
+		return presencedomain.GroupWorkingMemory{}, err
 	}
-	var state humandomain.GroupWorkingMemory
+	var state presencedomain.GroupWorkingMemory
 	if err := json.Unmarshal(raw, &state); err != nil {
-		return humandomain.GroupWorkingMemory{}, err
+		return presencedomain.GroupWorkingMemory{}, err
 	}
 	return state, nil
 }
 
-func (s *Store) SaveWorkingMemory(ctx context.Context, state humandomain.GroupWorkingMemory) error {
+func (s *Store) SaveWorkingMemory(ctx context.Context, state presencedomain.GroupWorkingMemory) error {
 	raw, err := json.Marshal(state)
 	if err != nil {
 		return err

@@ -7,7 +7,7 @@ import (
 
 	napcatsdk "github.com/zjutjh/napcat-sdk"
 
-	"github.com/phlin/go-agent/internal/services/textutil"
+	"github.com/phlin/go-agent/internal/application/textutil"
 )
 
 type WSReceiver struct {

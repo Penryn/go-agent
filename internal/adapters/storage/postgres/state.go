@@ -8,7 +8,7 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/phlin/go-agent/internal/core/ports"
+	"github.com/phlin/go-agent/internal/application/ports"
 	personadomain "github.com/phlin/go-agent/internal/domain/persona"
 	policydomain "github.com/phlin/go-agent/internal/domain/policy"
 )

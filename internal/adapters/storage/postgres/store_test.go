@@ -8,15 +8,15 @@ import (
 	"testing"
 	"time"
 
-	"github.com/phlin/go-agent/internal/core/ports"
+	"github.com/phlin/go-agent/internal/application/ports"
 	conversationdomain "github.com/phlin/go-agent/internal/domain/conversation"
 	mediadomain "github.com/phlin/go-agent/internal/domain/media"
 	memorydomain "github.com/phlin/go-agent/internal/domain/memory"
 	personadomain "github.com/phlin/go-agent/internal/domain/persona"
 	policydomain "github.com/phlin/go-agent/internal/domain/policy"
+	presencedomain "github.com/phlin/go-agent/internal/domain/presence"
 	profiledomain "github.com/phlin/go-agent/internal/domain/profile"
 	replydomain "github.com/phlin/go-agent/internal/domain/reply"
-	humandomain "github.com/phlin/go-agent/internal/humanbot/domain"
 )
 
 func setupPostgres(t *testing.T) *sql.DB {
@@ -322,7 +322,7 @@ func TestWatermarksAndThoughts(t *testing.T) {
 		t.Fatalf("unexpected thoughts: %+v", thoughts)
 	}
 
-	mem := humandomain.GroupWorkingMemory{GroupID: 1}
+	mem := presencedomain.GroupWorkingMemory{GroupID: 1}
 	if err := store.SaveWorkingMemory(ctx, mem); err != nil {
 		t.Fatalf("save working memory: %v", err)
 	}

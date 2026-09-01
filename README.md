@@ -206,51 +206,27 @@ go run ./cmd/qqbotd -config configs/config.yaml
 
 ```
 go-agent/
-├── cmd/qqbotd/              # 启动入口
-├── configs/config.yaml      # 公开配置
-├── schema/                  # PostgreSQL 建表脚本(单文件,幂等)
-├── tests/testdata/          # 测试用事件数据
+├── cmd/qqbotd/                  # 启动入口
+├── configs/config.yaml          # 公开配置
+├── docs/                        # 架构、ADR 与专项设计
+├── schema/                      # PostgreSQL 幂等 schema
+├── tests/testdata/              # 跨包测试数据
 ├── internal/
-│   ├── domain/              # 核心领域模型
-│   │   ├── conversation/    #   事件、消息、上下文快照
-│   │   ├── media/           #   多模态附件、表情包资产
-│   │   ├── memory/          #   长期记忆、学习候选
-│   │   ├── persona/         #   人格配置与状态
-│   │   ├── policy/          #   群策略、自主决策、状态机
-│   │   ├── profile/         #   群友画像、关系状态
-│   │   └── reply/           #   回复计划、动作执行
-│   ├── core/
-│   │   └── ports/           #   端口接口（依赖倒置边界）
-│   ├── humanbot/
-│   │   ├── domain/          #   Presence、working memory、thought candidate
-│   │   └── runtime/         #   ingress、群 Actor、scheduler、deliberation
-│   ├── services/            # 业务服务
-│   │   ├── normalizer/      #   OneBot 事件标准化
-│   │   ├── context/         #   上下文快照构建
-│   │   ├── policy/          #   群策略引擎
-│   │   ├── prompting/       #   Prompt 编排 & Agent Planner
-│   │   ├── action/          #   动作执行器
-│   │   ├── memory/          #   记忆读写
-│   │   ├── profile/         #   画像管理
-│   │   ├── meme/            #   表情包采集与检索
-│   │   ├── multimodal/      #   图片 / 视频理解
-│   │   ├── curator/         #   后台记忆提炼
-│   │   ├── learning/        #   后台黑话学习
-│   │   ├── review/          #   记忆 / 学习审核
-│   │   └── tools/           #   Agent 运行时工具集
-│   ├── adapters/            # 外部适配器
-│   │   ├── inbound/napcat/  #   WS 收事件 + HTTP 入站
-│   │   ├── outbound/napcat/ #   HTTP 出站动作
-│   │   ├── model/           #   LLM 工厂（Ark / OpenAI）
-│   │   ├── inmemory/        #   内存存储（开发用）
-│   │   └── storage/         #   PostgreSQL
-│   ├── runtime/
-│   │   ├── bootstrap/       #   应用初始化与依赖组装
-│   │   └── scheduler/       #   后台任务调度
-│   └── config/              # 配置加载与校验
-├── docker-compose.yml       # 基础设施编排
-└── DESIGN.md                # 完整架构设计文档
+│   ├── app/                     # 依赖组装、启停与健康检查
+│   ├── config/                  # 配置加载与校验
+│   ├── domain/                  # 纯领域状态和值对象
+│   │   └── presence/            # Working memory 与 thought candidate
+│   ├── application/             # 用例与业务编排
+│   │   ├── ports/               # 外部能力接口
+│   │   ├── presence/            # 主消息生命周期
+│   │   ├── runtime/             # Outbox 与后台调度
+│   │   └── <capability>/         # memory、meme、prompting、tools 等
+│   ├── adapters/                # NapCat、模型与存储实现
+│   └── search/                  # 无 I/O 的检索算法内核
+└── docker-compose.yml           # 基础设施编排
 ```
+
+完整目录职责、依赖规则和变更入口见 [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)。
 
 ## 数据库迁移
 
@@ -266,7 +242,7 @@ go test -race ./... # 竞态检测
 docker compose config  # 验证 compose 配置
 ```
 
-完整的重构设计和事件生命周期说明见 [`HUMAN_PRESENCE_REDESIGN.md`](HUMAN_PRESENCE_REDESIGN.md)。
+事件生命周期与异步可靠性决策见 [`docs/adr/0001-runtime-lifecycle-and-outbox.md`](docs/adr/0001-runtime-lifecycle-and-outbox.md)。
 
 ## License
 

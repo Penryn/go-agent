@@ -13,13 +13,13 @@ import (
 
 	_ "github.com/jackc/pgx/v5/stdlib"
 
-	"github.com/phlin/go-agent/internal/core/ports"
-	searchcore "github.com/phlin/go-agent/internal/core/search"
-	"github.com/phlin/go-agent/internal/core/search/bm25"
+	"github.com/phlin/go-agent/internal/application/ports"
 	conversationdomain "github.com/phlin/go-agent/internal/domain/conversation"
 	mediadomain "github.com/phlin/go-agent/internal/domain/media"
 	memorydomain "github.com/phlin/go-agent/internal/domain/memory"
 	profiledomain "github.com/phlin/go-agent/internal/domain/profile"
+	searchcore "github.com/phlin/go-agent/internal/search"
+	"github.com/phlin/go-agent/internal/search/bm25"
 )
 
 var (
