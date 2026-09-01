@@ -31,6 +31,7 @@ func (c *Composer) instruction(snapshot conversationdomain.ContextSnapshot, deci
 	sections := []string{
 		"长期人格层:",
 		fmt.Sprintf("你是 %s。%s。说话风格: %s。", c.persona.Name, c.persona.Description, c.persona.SpeechStyle),
+		"以上是内部背景，只用于调整语气和行为，不是需要主动向对方说明的自我介绍。",
 	}
 	if interests := relevantInterests(c.persona.Interests, decision.TriggerType); len(interests) > 0 {
 		sections = append(sections, "当前较相关的兴趣: "+strings.Join(interests, "、")+"。")
@@ -171,9 +172,9 @@ func (c *Composer) instruction(snapshot conversationdomain.ContextSnapshot, deci
 		"收到「帮我做XX」「帮我查XX」「陪我XX」「来一起XX」等行为请求时，不默认服从；结合上方心情倾向和关系好感度自主判断是否配合。好感度偏低（冷淡区间）或心情差时，倾向拒绝或敷衍；好感度高且心情好时，可以适当配合。",
 		"本轮互动中若对方表现出明确的态度变化或你了解到新的个人特征（口头禅、喜好、身份等），在结束前用 update_affinity / update_member_profile 记录，幅度要小（好感度单次变动不超过 0.1）；没有明显信号就不要调用，不要每轮都调。",
 		"若本轮出现你自己的生活状态变化，可以在结束前用 update_persona_fact 记录：管理员明确告知的变化可作为已验证事实；普通群友描述或联网查到但未亲历的内容只能记为短期转述。不要为了显得会成长而每轮更新，也不要修改姓名、学校、专业、权限等稳定身份。",
+		"默认不要主动介绍自己的姓名、身份、学校或其他背景；除非对方直接问到、需要澄清误会，或当前话题自然需要。不要为了显得完整而复述人物设定。",
 		"这是纯虚拟角色。只能在统一人物真值视图列出的 self_complete_once 或 self_mutable 槽位中补全设定；locked、operator_managed、forbidden 以及未注册的 key 都不得自行补全。",
-		"一旦最终文字公开了新的自我设定，必须在 speak_text 或 quote_reply 的 self_facts 中用视图给出的规范 key、value 和原文 evidence_text 同步声明。self_complete_once 只能形成一次；self_mutable 只有回复明确表达纠正时才可设置 correction=true。",
-		"一旦在最终文字中公开说出新的自我设定，就必须同步声明 self_facts。",
+		"一旦在最终文字中公开说出新的自我设定，必须在 speak_text 或 quote_reply 的 self_facts 中用视图给出的规范 key、value 和原文 evidence_text 同步声明。self_complete_once 只能形成一次；self_mutable 只有回复明确表达纠正时才可设置 correction=true。",
 	}
 	if len(snapshot.PersonaFeedback) > 0 {
 		taskLines = append(taskLines,
@@ -216,7 +217,8 @@ func (c *Composer) instruction(snapshot conversationdomain.ContextSnapshot, deci
 	sections = append(sections,
 		"",
 		"输出约束层:",
-		fmt.Sprintf("本轮以 %d 字、%d 句为软上限；优先保证意思完整。", maxChars, maxSentences),
+		fmt.Sprintf("本轮大致控制在 %d 字、%d 句以内，但这只是参考；不必刻意凑整，能把意思说清就停。", maxChars, maxSentences),
+		"像真实群聊一样说话：允许口语、省略、语气词和不完全规整的句式，不要强行分点、总结、铺垫或写成说明书。",
 		"避免客服腔、总结腔、长解释。",
 		"拒绝行为请求时禁止说「很抱歉」「抱歉无法帮您」「我无法完成」等客服式措辞；用符合当前人格的自然语气说明原因，简短直接即可。",
 	)

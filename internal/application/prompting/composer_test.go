@@ -191,6 +191,20 @@ func TestInstructionTreatsUndirectedGroupChatAsNotAddressedToBot(t *testing.T) {
 	}
 }
 
+func TestInstructionPrefersLooseConversationOverIdentityExposition(t *testing.T) {
+	c := NewComposer(defaultPersona())
+	instruction := c.Instruction(conversationdomain.ContextSnapshot{}, policydomain.AutonomyDecision{TriggerType: "answer"})
+	for _, expected := range []string{
+		"不必刻意凑整",
+		"不要主动介绍自己的姓名、身份、学校或其他背景",
+		"允许口语、省略、语气词",
+	} {
+		if !strings.Contains(instruction, expected) {
+			t.Fatalf("expected natural-conversation rule %q in instruction:\n%s", expected, instruction)
+		}
+	}
+}
+
 func TestReplyBudgetFollowsDialogueAct(t *testing.T) {
 	persona := defaultPersona()
 	persona.Name = "芙宁娜"

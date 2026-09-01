@@ -404,10 +404,10 @@ func (t *speakTextTool) Name() string { return "speak_text" }
 func (t *speakTextTool) Info(_ context.Context) (*schema.ToolInfo, error) {
 	return &schema.ToolInfo{
 		Name: t.Name(),
-		Desc: "Send one or two short message bubbles as the bot's final reply in the current group.",
+		Desc: "Send a natural conversational reply in the current group. Use bubbles only when a genuine pause or change of thought makes separate messages feel natural.",
 		ParamsOneOf: schema.NewParamsOneOfByParams(map[string]*schema.ParameterInfo{
 			"text":                {Type: schema.String, Required: true, Desc: "Primary reply text."},
-			"bubbles":             {Type: schema.Array, Desc: "Optional split bubbles, at most two."},
+			"bubbles":             {Type: schema.Array, Desc: "Optional separate message bubbles when the reply naturally pauses or changes thought."},
 			"reply_to_message_id": {Type: schema.String, Desc: "Optional message ID to quote-reply."},
 			"self_facts":          selfFactsParameter(),
 		}),
