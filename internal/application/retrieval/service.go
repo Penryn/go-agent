@@ -189,17 +189,17 @@ func mergeVectorMemeCandidates(group, global []mediadomain.MemeSearchResult) []m
 	return results
 }
 
-// mergeRRF 用 Reciprocal Rank Fusion 融合 lexical 与 semantic 两轨结果:
-// score += 1/(rrfK + rank+1),按融合分稳定排序后截断。better 在两轨给出
-// 同一 ID 的不同投影时挑选更完整的那条(取首个非空 summary/content)。
+// rrfItem 是 Reciprocal Rank Fusion 的中间结构:score += 1/(rrfK + rank+1)。
+type rrfItem[T any] struct {
+	item  T
+	score float64
+	order int
+}
+
+// mergeRRF 按 id 融合两轨结果,同 id 时 better 取更完整投影(非空 content/summary)。
 func mergeRRF[T any](lexical, semantic []T, limit int, id func(T) string, better func(cur, next T) T) []T {
-	type ranked struct {
-		item  T
-		score float64
-		order int
-	}
-	byID := make(map[string]*ranked, len(lexical)+len(semantic))
-	add := func(items []T) {
+	byID := make(map[string]*rrfItem[T], len(lexical)+len(semantic))
+	for _, items := range [][]T{lexical, semantic} {
 		for rank, item := range items {
 			key := id(item)
 			if key == "" {
@@ -207,16 +207,14 @@ func mergeRRF[T any](lexical, semantic []T, limit int, id func(T) string, better
 			}
 			entry := byID[key]
 			if entry == nil {
-				entry = &ranked{item: item, order: len(byID)}
+				entry = &rrfItem[T]{item: item, order: len(byID)}
 				byID[key] = entry
 			}
 			entry.score += 1 / (rrfK + float64(rank+1))
 			entry.item = better(entry.item, item)
 		}
 	}
-	add(lexical)
-	add(semantic)
-	items := make([]ranked, 0, len(byID))
+	items := make([]rrfItem[T], 0, len(byID))
 	for _, entry := range byID {
 		items = append(items, *entry)
 	}
