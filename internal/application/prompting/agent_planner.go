@@ -7,11 +7,11 @@ import (
 	"strings"
 	"time"
 
+	modelcomponent "github.com/cloudwego/eino/components/model"
 	"github.com/cloudwego/eino/adk"
 	"github.com/cloudwego/eino/compose"
 	"github.com/cloudwego/eino/schema"
 
-	"github.com/phlin/go-agent/internal/application/ports"
 	"github.com/phlin/go-agent/internal/application/textutil"
 	toolsvc "github.com/phlin/go-agent/internal/application/tools"
 	conversationdomain "github.com/phlin/go-agent/internal/domain/conversation"
@@ -19,14 +19,19 @@ import (
 	replydomain "github.com/phlin/go-agent/internal/domain/reply"
 )
 
+// MainModelFactory 是本包对模型工厂的最小依赖面(接口定义在消费方)。
+type MainModelFactory interface {
+	MainChatModel(ctx context.Context) (modelcomponent.BaseChatModel, error)
+}
+
 type AgentPlanner struct {
-	factory  ports.ChatModelFactory
+	factory  MainModelFactory
 	tools    *toolsvc.Runtime
 	composer *Composer
 	fallback *DeterministicPlanner
 }
 
-func NewAgentPlanner(factory ports.ChatModelFactory, tools *toolsvc.Runtime, composer *Composer, fallback *DeterministicPlanner) *AgentPlanner {
+func NewAgentPlanner(factory MainModelFactory, tools *toolsvc.Runtime, composer *Composer, fallback *DeterministicPlanner) *AgentPlanner {
 	return &AgentPlanner{
 		factory:  factory,
 		tools:    tools,

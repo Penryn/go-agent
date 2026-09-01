@@ -4,8 +4,6 @@ import (
 	"context"
 	"time"
 
-	"github.com/cloudwego/eino/components/model"
-
 	conversationdomain "github.com/phlin/go-agent/internal/domain/conversation"
 	mediadomain "github.com/phlin/go-agent/internal/domain/media"
 	memorydomain "github.com/phlin/go-agent/internal/domain/memory"
@@ -150,11 +148,6 @@ type RuntimeStateStore interface {
 type PersonaFactStore interface {
 	AppendPersonaFact(ctx context.Context, fact personadomain.PersonaFact) error
 	CurrentPersonaFacts(ctx context.Context, personaID string, now time.Time) ([]personadomain.PersonaFact, error)
-}
-
-type ChatModelFactory interface {
-	MainChatModel(ctx context.Context) (model.BaseChatModel, error)
-	VisionChatModel(ctx context.Context) (model.BaseChatModel, error)
 }
 
 // VectorMemoryStore 是语义记忆检索的 port。

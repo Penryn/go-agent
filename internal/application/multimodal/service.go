@@ -7,21 +7,26 @@ import (
 	"strings"
 	"time"
 
+	modelcomponent "github.com/cloudwego/eino/components/model"
 	"github.com/cloudwego/eino/schema"
 
-	"github.com/phlin/go-agent/internal/application/ports"
 	"github.com/phlin/go-agent/internal/config"
 	mediadomain "github.com/phlin/go-agent/internal/domain/media"
 )
 
 const defaultDownloadTimeout = 10 * time.Second
 
+// visionModelFactory 是本包对模型工厂的最小依赖面(接口定义在消费方)。
+type visionModelFactory interface {
+	VisionChatModel(ctx context.Context) (modelcomponent.BaseChatModel, error)
+}
+
 type Service struct {
-	factory         ports.ChatModelFactory
+	factory visionModelFactory
 	downloadTimeout time.Duration
 }
 
-func New(factory ports.ChatModelFactory, cfg config.MultimodalConfig) *Service {
+func New(factory visionModelFactory, cfg config.MultimodalConfig) *Service {
 	timeout := defaultDownloadTimeout
 	if cfg.DownloadTimeout != "" {
 		if d, err := time.ParseDuration(cfg.DownloadTimeout); err == nil && d > 0 {
