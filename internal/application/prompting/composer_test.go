@@ -55,24 +55,6 @@ func TestInstructionDefaultsEmptyMoodAndEnergy(t *testing.T) {
 	}
 }
 
-func TestInstructionUsesGroupPersonaOverlay(t *testing.T) {
-	c := NewComposer(defaultPersona())
-	snapshot := conversationdomain.ContextSnapshot{
-		Event: conversationdomain.ConversationEvent{GroupID: 42},
-		GroupPolicy: policydomain.GroupPolicy{PersonaOverlay: map[string]any{
-			"name":         "群里的艾莲",
-			"speech_style": "只说半句",
-		}},
-	}
-
-	instruction := c.Instruction(snapshot, policydomain.AutonomyDecision{})
-	if !strings.Contains(instruction, "你是 群里的艾莲") {
-		t.Fatalf("expected group persona name, got:\n%s", instruction)
-	}
-	if !strings.Contains(instruction, "说话风格: 只说半句") {
-		t.Fatalf("expected group speech style, got:\n%s", instruction)
-	}
-}
 
 func TestInstructionSelectsTurnRelevantPersonaContext(t *testing.T) {
 	persona := defaultPersona()

@@ -38,9 +38,6 @@ func (s *Service) EffectiveGroupPolicy(groupID int64) policydomain.GroupPolicy {
 		if override.MaxConsecutiveBot != 0 {
 			policy.MaxConsecutiveBot = override.MaxConsecutiveBot
 		}
-		if override.PersonaOverlay != nil {
-			policy.PersonaOverlay = override.PersonaOverlay
-		}
 	}
 
 	return policy

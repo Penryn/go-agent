@@ -143,10 +143,6 @@ func (s *Service) BuildSnapshot(ctx context.Context, envelope conversationdomain
 	// vision 未跑或失败时不再拼「收到一个xx附件」的假描述——
 	// 模型看到的媒体描述要么是真实理解，要么没有。
 	groupPolicy := s.policy.EffectiveGroupPolicy(envelope.Event.GroupID)
-	resolvedPersona := personadomain.Resolve(s.persona, envelope.Event.GroupID, groupPolicy.PersonaOverlay)
-	if resolvedPersona.ToolAllowlist != nil {
-		groupPolicy.ToolAllowlist = append([]string(nil), resolvedPersona.ToolAllowlist...)
-	}
 	projection := conversationdomain.ProjectionMetadata{
 		Name:     "group_working_memory+archive",
 		Version:  working.Version,

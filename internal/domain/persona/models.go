@@ -94,31 +94,8 @@ type PersonaConfig struct {
 	Traits     []string       `json:"traits" yaml:"traits"`
 	Background Background     `json:"background" yaml:"background"`
 	Speech     SpeechPatterns `json:"speech" yaml:"speech"`
-	// GroupOverrides are static, typed per-group persona changes. Dynamic
-	// policy overlays are accepted separately by Resolve for backwards
-	// compatible config loading.
-	GroupOverrides map[int64]PersonaOverride `json:"group_overrides" yaml:"group_overrides"`
 }
 
-// PersonaOverride contains fields that may be changed for one group. Pointer
-// scalars preserve the distinction between "unset" and an explicit false/0.
-type PersonaOverride struct {
-	Version           *string          `json:"version,omitempty" yaml:"version,omitempty"`
-	Name              *string          `json:"name,omitempty" yaml:"name,omitempty"`
-	Description       *string          `json:"description,omitempty" yaml:"description,omitempty"`
-	SpeechStyle       *string          `json:"speech_style,omitempty" yaml:"speech_style,omitempty"`
-	Interests         []string         `json:"interests,omitempty" yaml:"interests,omitempty"`
-	Constraints       []string         `json:"constraints,omitempty" yaml:"constraints,omitempty"`
-	Traits            []string         `json:"traits,omitempty" yaml:"traits,omitempty"`
-	ReplyMaxChars     *int             `json:"reply_max_chars,omitempty" yaml:"reply_max_chars,omitempty"`
-	ReplyMaxSentences *int             `json:"reply_max_sentences,omitempty" yaml:"reply_max_sentences,omitempty"`
-	AllowTeasing      *bool            `json:"allow_teasing,omitempty" yaml:"allow_teasing,omitempty"`
-	AllowQuestions    *bool            `json:"allow_questions,omitempty" yaml:"allow_questions,omitempty"`
-	PreferMemes       *bool            `json:"prefer_memes,omitempty" yaml:"prefer_memes,omitempty"`
-	Speech            *SpeechPatterns  `json:"speech,omitempty" yaml:"speech,omitempty"`
-	ToolAllowlist     []string         `json:"tool_allowlist,omitempty" yaml:"tool_allowlist,omitempty"`
-	FewShotExamples   []FewShotExample `json:"few_shot_examples,omitempty" yaml:"few_shot_examples,omitempty"`
-}
 
 
 type PersonaState struct {

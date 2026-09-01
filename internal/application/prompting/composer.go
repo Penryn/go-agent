@@ -21,15 +21,7 @@ func NewComposer(persona personadomain.PersonaConfig) *Composer {
 	return &Composer{persona: persona, recentMaxChar: 6000, memoryMaxChar: 3000}
 }
 
-// Instruction resolves group-specific persona configuration for this turn,
-// while keeping the mutable PersonaState in the conversation snapshot.
 func (c *Composer) Instruction(snapshot conversationdomain.ContextSnapshot, decision policydomain.AutonomyDecision) string {
-	resolved := personadomain.Resolve(c.persona, snapshot.Event.GroupID, snapshot.GroupPolicy.PersonaOverlay)
-	if resolved.Hash != personadomain.Hash(c.persona) {
-		clone := *c
-		clone.persona = resolved.Config
-		return clone.instruction(snapshot, decision)
-	}
 	return c.instruction(snapshot, decision)
 }
 
