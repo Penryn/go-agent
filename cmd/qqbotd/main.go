@@ -85,14 +85,9 @@ func main() {
 }
 
 func parseLogLevel(s string) slog.Level {
-	switch strings.ToLower(strings.TrimSpace(s)) {
-	case "debug":
-		return slog.LevelDebug
-	case "warn", "warning":
-		return slog.LevelWarn
-	case "error":
-		return slog.LevelError
-	default:
+	var level slog.Level
+	if err := level.UnmarshalText([]byte(strings.TrimSpace(s))); err != nil {
 		return slog.LevelInfo
 	}
+	return level
 }
