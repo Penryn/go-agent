@@ -2,6 +2,7 @@ package prompting
 
 import (
 	"context"
+	"slices"
 	"testing"
 	"time"
 
@@ -66,6 +67,9 @@ func TestAgentPlannerToolLoop(t *testing.T) {
 	}
 	if len(plan.PlannedActions) == 0 || plan.PlannedActions[0] != policydomain.ActionReply {
 		t.Fatalf("unexpected actions: %#v", plan.PlannedActions)
+	}
+	if !slices.Equal(plan.PlannedTools, []string{"query_memory", "speak_text"}) {
+		t.Fatalf("unexpected tool trace: %#v", plan.PlannedTools)
 	}
 }
 
@@ -149,6 +153,61 @@ func TestAgentPlannerSendMemeReturnsDirectly(t *testing.T) {
 	}
 	if len(mockModel.Inputs()) != 1 {
 		t.Fatalf("send_meme should terminate the tool loop, model calls=%d", len(mockModel.Inputs()))
+	}
+}
+
+func TestAgentPlannerRepairsRecentBotMessage(t *testing.T) {
+	now := time.Now()
+	snapshot := sampleSnapshot()
+	snapshot.SelfID = 99
+	snapshot.Event.TimestampUnix = now.Unix()
+	snapshot.RecentTurns = []conversationdomain.ConversationEvent{{
+		EventID:       "outbound-old",
+		GroupID:       1,
+		UserID:        99,
+		MessageID:     "bot-1",
+		Kind:          conversationdomain.EventMessage,
+		Text:          "说错了",
+		TimestampUnix: now.Add(-time.Minute).Unix(),
+	}}
+	mockModel := modeladapter.NewMockChatModel(schema.AssistantMessage("", []schema.ToolCall{{
+		ID: "tool-1", Type: "function", Function: schema.FunctionCall{
+			Name: "repair_message", Arguments: `{"message_id":"bot-1","corrected_text":"改成这句"}`,
+		},
+	}}))
+	planner := NewAgentPlanner(
+		modeladapter.StaticFactory{MainModel: mockModel},
+		toolsvc.NewRuntime(inmemory.NewStore(), inmemory.NewStore()),
+		NewComposer(defaultPersona()),
+		NewDeterministicPlanner(defaultPersona()),
+	)
+	plan, err := planner.Plan(context.Background(), snapshot, sampleDecision())
+	if err != nil {
+		t.Fatalf("plan repair: %v", err)
+	}
+	if len(plan.PlannedActions) != 1 || plan.PlannedActions[0] != policydomain.ActionRepair {
+		t.Fatalf("unexpected repair actions: %#v", plan.PlannedActions)
+	}
+	if !slices.Equal(plan.PlannedTools, []string{"repair_message"}) {
+		t.Fatalf("unexpected repair tool trace: %#v", plan.PlannedTools)
+	}
+}
+
+func TestRecallableMessageIDsRejectOldAndForeignMessages(t *testing.T) {
+	now := time.Now()
+	snapshot := conversationdomain.ContextSnapshot{
+		SelfID: 99,
+		Event:  conversationdomain.ConversationEvent{TimestampUnix: now.Unix()},
+		RecentTurns: []conversationdomain.ConversationEvent{
+			{UserID: 99, MessageID: "old", Kind: conversationdomain.EventMessage, TimestampUnix: now.Add(-10 * time.Minute).Unix()},
+			{UserID: 2, MessageID: "foreign", Kind: conversationdomain.EventMessage, TimestampUnix: now.Add(-time.Minute).Unix()},
+			{UserID: 99, MessageID: "recalled", Kind: conversationdomain.EventMessage, TimestampUnix: now.Add(-time.Minute).Unix()},
+			{UserID: 99, Kind: conversationdomain.EventRecall, ReplyToMessageID: "recalled", TimestampUnix: now.Add(-30 * time.Second).Unix()},
+			{UserID: 99, MessageID: "recent", Kind: conversationdomain.EventMessage, TimestampUnix: now.Add(-time.Minute).Unix()},
+		},
+	}
+	if got := recallableMessageIDs(snapshot); !slices.Equal(got, []string{"recent"}) {
+		t.Fatalf("unexpected recallable messages: %#v", got)
 	}
 }
 

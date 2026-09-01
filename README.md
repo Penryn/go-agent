@@ -119,7 +119,7 @@ go run ./cmd/qqbotd \
 
 | 类型 | 工具 |
 |------|------|
-| 最终动作 | `speak_text`、`quote_reply`、`send_meme`、`react_emoji`、`recall_recent_message`、`poke_member`、`stay_silent` |
+| 最终动作 | `speak_text`、`quote_reply`、`send_meme`、`react_emoji`、`repair_message`、`poke_member`、`stay_silent` |
 | 信息读取 | `query_memory`、`search_meme`、`query_member_profile` |
 | 状态更新 | `mark_memory_intent`、`update_affinity`、`update_member_profile` |
 
@@ -129,6 +129,8 @@ go run ./cmd/qqbotd \
 - Codex：通过 `delegate_codex_task` 执行复杂本地任务，默认只读
 
 外部 MCP/Codex 工具即使已启用，也必须显式加入目标群的 `tool_allowlist`。Codex 写任务还受 QQ 用户白名单、工作目录和危险操作确认约束；联网默认关闭。
+
+每轮可以连续调用多个信息或状态工具，但只能选择一个最终动作。`poke_member` 只在被戳场景开放；`repair_message` 只允许撤回上下文中最近的 Bot 消息，并可发送一条纠正文案。
 
 ## 常用配置
 

@@ -22,19 +22,25 @@ type toolRuntimeGuard struct {
 	traceID       string
 	maxToolCalls  int
 	maxResultByte int
+	terminalTools map[string]bool
 
-	mu    sync.Mutex
-	calls int
-	seen  map[string]struct{}
+	mu             sync.Mutex
+	calls          int
+	seen           map[string]struct{}
+	terminalCalled string
 }
 
-func newToolRuntimeGuard(traceID string, maxToolCalls, maxResultBytes int) *toolRuntimeGuard {
-	return &toolRuntimeGuard{
+func newToolRuntimeGuard(traceID string, maxToolCalls, maxResultBytes int, terminalSets ...map[string]bool) *toolRuntimeGuard {
+	guard := &toolRuntimeGuard{
 		traceID:       traceID,
 		maxToolCalls:  maxToolCalls,
 		maxResultByte: maxResultBytes,
 		seen:          make(map[string]struct{}),
 	}
+	if len(terminalSets) > 0 {
+		guard.terminalTools = terminalSets[0]
+	}
+	return guard
 }
 
 // middleware is installed on Eino's ToolsNode. State is scoped to one Plan
@@ -52,6 +58,13 @@ func (g *toolRuntimeGuard) middleware(next compose.InvokableToolEndpoint) compos
 			return &compose.ToolOutput{Result: `{"error":"tool_call_budget_exceeded","retryable":false}`}, nil
 		}
 		g.calls++
+		if g.terminalTools[input.Name] {
+			if g.terminalCalled != "" {
+				g.mu.Unlock()
+				return &compose.ToolOutput{Result: `{"error":"multiple_terminal_tool_calls","retryable":false}`}, nil
+			}
+			g.terminalCalled = input.Name
+		}
 		if _, duplicate := g.seen[key]; duplicate {
 			g.mu.Unlock()
 			return &compose.ToolOutput{Result: `{"error":"duplicate_tool_call","retryable":false}`}, nil
@@ -97,8 +110,7 @@ func hashToolArguments(raw string) string {
 func retryEmptyTool(name string) bool {
 	name = strings.ToLower(strings.TrimSpace(name))
 	return strings.HasPrefix(name, "query_") ||
-		strings.HasPrefix(name, "search_") ||
-		name == "recall_recent_message"
+		strings.HasPrefix(name, "search_")
 }
 
 // truncateToolResult keeps the model-facing result bounded while preserving a

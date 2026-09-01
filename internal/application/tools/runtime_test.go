@@ -25,9 +25,11 @@ func TestToolSchemas(t *testing.T) {
 	})
 	runtime := NewRuntime(store, store, WithProfileStore(store))
 	tools := runtime.Tools(replydomain.ToolContext{
-		GroupID:      1,
-		UserID:       2,
-		AllowedTools: nil,
+		GroupID:              1,
+		UserID:               2,
+		AllowedTools:         nil,
+		TriggerType:          "poke_reply",
+		RecallableMessageIDs: []string{"bot-1"},
 	})
 
 	names := map[string]tool.BaseTool{}
@@ -39,10 +41,40 @@ func TestToolSchemas(t *testing.T) {
 		names[info.Name] = candidate
 	}
 
-	for _, name := range []string{"speak_text", "search_meme", "stay_silent", "send_meme", "quote_reply", "query_member_profile", "recall_recent_message", "poke_member"} {
+	for _, name := range []string{"speak_text", "search_meme", "stay_silent", "send_meme", "quote_reply", "query_member_profile", "repair_message", "poke_member"} {
 		if _, ok := names[name]; !ok {
 			t.Fatalf("expected tool %s", name)
 		}
+	}
+}
+
+func TestContextualTerminalTools(t *testing.T) {
+	runtime := NewRuntime(inmemory.NewStore(), inmemory.NewStore())
+	base := runtime.TerminalTools(replydomain.ToolContext{})
+	if base["poke_member"] || base["repair_message"] {
+		t.Fatalf("contextual tools leaked into a normal turn: %#v", base)
+	}
+	contextual := runtime.TerminalTools(replydomain.ToolContext{
+		TriggerType:          "poke_reply",
+		RecallableMessageIDs: []string{"bot-1"},
+	})
+	if !contextual["poke_member"] || !contextual["repair_message"] {
+		t.Fatalf("contextual terminal tools missing: %#v", contextual)
+	}
+}
+
+func TestRepairMessageOnlyAcceptsRecentBotMessage(t *testing.T) {
+	candidate := newRepairMessageTool(replydomain.ToolContext{RecallableMessageIDs: []string{"bot-1"}})
+	if _, err := candidate.InvokableRun(context.Background(), `{"message_id":"other"}`); err == nil {
+		t.Fatal("expected a non-recallable message to be rejected")
+	}
+	raw, err := candidate.InvokableRun(context.Background(), `{"message_id":"bot-1","corrected_text":"改一下"}`)
+	if err != nil {
+		t.Fatalf("repair recent message: %v", err)
+	}
+	plan, ok, err := ParseTerminalPlan("decision-1", "repair_message", raw, replydomain.ToolContext{})
+	if err != nil || !ok || plan.PlannedActions[0] != "repair" {
+		t.Fatalf("unexpected repair plan: plan=%+v ok=%v err=%v", plan, ok, err)
 	}
 }
 

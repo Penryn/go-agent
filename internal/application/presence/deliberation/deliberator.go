@@ -109,7 +109,7 @@ func allowedFor(intent string) []policydomain.DecisionAction {
 		return allowed
 	}
 	if _, ok := intentBaseline[intent]; ok {
-		return []policydomain.DecisionAction{policydomain.ActionReply, policydomain.ActionMemeOnly, policydomain.ActionSilent}
+		return []policydomain.DecisionAction{policydomain.ActionReply, policydomain.ActionMemeOnly, policydomain.ActionRepair, policydomain.ActionSilent}
 	}
 	return nil
 }

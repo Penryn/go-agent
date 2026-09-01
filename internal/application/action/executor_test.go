@@ -2,6 +2,7 @@ package action
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -125,6 +126,70 @@ func TestExecuteReactFallsBackToEventMessageID(t *testing.T) {
 	actions := sender.Actions()
 	if len(actions) != 1 || actions[0].TargetMessageID != "m1" {
 		t.Fatalf("expected fallback to event message id m1, got %s", actions[0].TargetMessageID)
+	}
+}
+
+func TestExecuteRepairRecallsThenReplies(t *testing.T) {
+	sender := inmemory.NewSender()
+	executor := New(sender, nil, nil)
+	receipt, err := executor.Execute(context.Background(), conversationEvent(), policydomain.AutonomyDecision{
+		DecisionID: "d-repair",
+		Action:     policydomain.ActionRepair,
+	}, replydomain.ReplyPlan{
+		SendMode: "group",
+		ActionParams: map[string]any{
+			"message_id":          "bot-old",
+			"corrected_text":      "改成这句",
+			"reply_to_message_id": "user-msg",
+		},
+	})
+	if err != nil {
+		t.Fatalf("execute repair: %v", err)
+	}
+	actions := sender.Actions()
+	if len(actions) != 2 {
+		t.Fatalf("expected recall and reply, got %#v", actions)
+	}
+	if actions[0].Kind != policydomain.ActionRecall || actions[0].TargetMessageID != "bot-old" {
+		t.Fatalf("unexpected recall step: %+v", actions[0])
+	}
+	if actions[1].Kind != policydomain.ActionReply || actions[1].ReplyToMessageID != "user-msg" {
+		t.Fatalf("unexpected reply step: %+v", actions[1])
+	}
+	if len(receipt.StepReceipts) != 2 || receipt.Partial {
+		t.Fatalf("unexpected aggregate receipt: %+v", receipt)
+	}
+}
+
+type failSecondSender struct {
+	calls int
+}
+
+func (s *failSecondSender) Send(_ context.Context, action replydomain.ActionExecution) (replydomain.ActionReceipt, error) {
+	s.calls++
+	if s.calls == 2 {
+		return replydomain.ActionReceipt{}, errors.New("reply unavailable")
+	}
+	return replydomain.ActionReceipt{ActionID: action.ActionID, PlatformMessageID: action.TargetMessageID, Sent: true}, nil
+}
+
+func TestExecuteRepairReportsPartialSuccess(t *testing.T) {
+	sender := &failSecondSender{}
+	executor := New(sender, nil, nil)
+	receipt, err := executor.Execute(context.Background(), conversationEvent(), policydomain.AutonomyDecision{
+		DecisionID: "d-partial",
+		Action:     policydomain.ActionRepair,
+	}, replydomain.ReplyPlan{
+		ActionParams: map[string]any{"message_id": "bot-old", "corrected_text": "纠正"},
+	})
+	if err == nil {
+		t.Fatal("expected replacement send to fail")
+	}
+	if !receipt.Partial || receipt.DropReason != "repair_reply_failed" || len(receipt.StepReceipts) != 2 {
+		t.Fatalf("unexpected partial receipt: %+v", receipt)
+	}
+	if receipt.StepReceipts[0].ActionID != "d-partial-recall" || receipt.StepReceipts[1].ActionID != "d-partial-reply" {
+		t.Fatalf("unexpected repair step receipts: %+v", receipt.StepReceipts)
 	}
 }
 

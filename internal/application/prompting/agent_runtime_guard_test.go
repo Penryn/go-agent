@@ -89,3 +89,26 @@ func TestToolRuntimeGuardEnforcesCallBudget(t *testing.T) {
 		t.Fatalf("underlying tool called %d times, want 1", calls.Load())
 	}
 }
+
+func TestToolRuntimeGuardAllowsOnlyOneTerminalTool(t *testing.T) {
+	guard := newToolRuntimeGuard("trace-1", 4, 1024, map[string]bool{
+		"speak_text":  true,
+		"stay_silent": true,
+	})
+	var calls atomic.Int32
+	next := guard.middleware(func(_ context.Context, _ *compose.ToolInput) (*compose.ToolOutput, error) {
+		calls.Add(1)
+		return &compose.ToolOutput{Result: `{"ok":true}`}, nil
+	})
+	_, _ = next(context.Background(), &compose.ToolInput{Name: "speak_text", Arguments: `{"text":"hi"}`})
+	result, err := next(context.Background(), &compose.ToolInput{Name: "stay_silent", Arguments: `{}`})
+	if err != nil {
+		t.Fatalf("second terminal call: %v", err)
+	}
+	if result.Result != `{"error":"multiple_terminal_tool_calls","retryable":false}` {
+		t.Fatalf("unexpected second terminal result: %q", result.Result)
+	}
+	if calls.Load() != 1 {
+		t.Fatalf("underlying tool called %d times, want 1", calls.Load())
+	}
+}

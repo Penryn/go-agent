@@ -19,6 +19,7 @@ const (
 	ActionPokeBack  DecisionAction = "poke_back"
 	ActionPokeReply DecisionAction = "poke_reply" // 被戳后以对话方式回复
 	ActionRecall    DecisionAction = "recall"
+	ActionRepair    DecisionAction = "repair"
 )
 
 type GroupPolicy struct {
@@ -52,10 +53,10 @@ type RuntimeState struct {
 }
 
 type AutonomyDecision struct {
-	DecisionID  string          `json:"decision_id" yaml:"decision_id"`
-	Action      DecisionAction  `json:"action" yaml:"action"`
-	TriggerType string          `json:"trigger_type" yaml:"trigger_type"`
-	Score       float64         `json:"score" yaml:"score"`
-	Confidence  float64         `json:"confidence" yaml:"confidence"`
-	ReasonCodes []string        `json:"reason_codes" yaml:"reason_codes"`
+	DecisionID  string         `json:"decision_id" yaml:"decision_id"`
+	Action      DecisionAction `json:"action" yaml:"action"`
+	TriggerType string         `json:"trigger_type" yaml:"trigger_type"`
+	Score       float64        `json:"score" yaml:"score"`
+	Confidence  float64        `json:"confidence" yaml:"confidence"`
+	ReasonCodes []string       `json:"reason_codes" yaml:"reason_codes"`
 }

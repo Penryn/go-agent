@@ -16,6 +16,7 @@ const (
 	EventMessage EventKind = "message"
 	EventNotice  EventKind = "notice"
 	EventPoke    EventKind = "poke"
+	EventRecall  EventKind = "recall"
 	EventMeta    EventKind = "meta_event"
 )
 
@@ -61,6 +62,7 @@ type ThoughtDigest struct {
 
 type ContextSnapshot struct {
 	SnapshotID       string                      `json:"snapshot_id" yaml:"snapshot_id"`
+	SelfID           int64                       `json:"self_id" yaml:"self_id"`
 	Projection       ProjectionMetadata          `json:"projection" yaml:"projection"`
 	Event            ConversationEvent           `json:"event" yaml:"event"`
 	RecentTurns      []ConversationEvent         `json:"recent_turns" yaml:"recent_turns"`

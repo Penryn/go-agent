@@ -43,6 +43,7 @@ func TestResolveActionUsesAllowedPlannerProposal(t *testing.T) {
 		{name: "reply can choose meme", intent: "answer", proposed: policydomain.ActionMemeOnly, want: policydomain.ActionMemeOnly},
 		{name: "image reaction can choose text", intent: "react", proposed: policydomain.ActionReply, want: policydomain.ActionReply},
 		{name: "planner can stay silent", intent: "answer", proposed: policydomain.ActionSilent, want: policydomain.ActionSilent},
+		{name: "reply can repair recent bot message", intent: "answer", proposed: policydomain.ActionRepair, want: policydomain.ActionRepair},
 		{name: "reply cannot recall", intent: "answer", proposed: policydomain.ActionRecall, want: policydomain.ActionReply},
 		{name: "poke can answer in text", intent: "poke_reply", proposed: policydomain.ActionReply, want: policydomain.ActionReply},
 		{name: "poke can poke back", intent: "poke_reply", proposed: policydomain.ActionPokeBack, want: policydomain.ActionPokeBack},

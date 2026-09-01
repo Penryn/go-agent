@@ -163,6 +163,7 @@ func (s *Service) BuildSnapshot(ctx context.Context, envelope conversationdomain
 	}
 	return conversationdomain.ContextSnapshot{
 		SnapshotID:        fmt.Sprintf("snapshot-%d", time.Now().UnixNano()),
+		SelfID:            envelope.SelfID,
 		Projection:        projection,
 		Event:             envelope.Event,
 		RecentTurns:       recentTurns,

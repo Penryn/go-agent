@@ -2,8 +2,10 @@ package prompting
 
 import (
 	"context"
+	"encoding/json"
 	"log/slog"
 	"strings"
+	"time"
 
 	"github.com/cloudwego/eino/adk"
 	"github.com/cloudwego/eino/compose"
@@ -47,14 +49,16 @@ func (p *AgentPlanner) Plan(ctx context.Context, snapshot conversationdomain.Con
 	}
 
 	toolContext := replydomain.ToolContext{
-		TraceID:           snapshot.SnapshotID,
-		GroupID:           snapshot.Event.GroupID,
-		UserID:            snapshot.Event.UserID,
-		TriggerMessageID:  snapshot.Event.MessageID,
-		AllowedTools:      snapshot.GroupPolicy.ToolAllowlist,
-		RetrievedMemories: snapshot.RelevantMemories,
-		MediaDescriptors:  snapshot.MediaDescriptors,
-		Budget:            map[string]int{"update_affinity": 0, "update_member_profile": 0},
+		TraceID:              snapshot.SnapshotID,
+		GroupID:              snapshot.Event.GroupID,
+		UserID:               snapshot.Event.UserID,
+		TriggerMessageID:     snapshot.Event.MessageID,
+		AllowedTools:         snapshot.GroupPolicy.ToolAllowlist,
+		RetrievedMemories:    snapshot.RelevantMemories,
+		MediaDescriptors:     snapshot.MediaDescriptors,
+		Budget:               map[string]int{"update_affinity": 0, "update_member_profile": 0},
+		TriggerType:          decision.TriggerType,
+		RecallableMessageIDs: recallableMessageIDs(snapshot),
 		Intent: replydomain.ReplyIntent{
 			Kind:            "chat",
 			Goal:            dialogueGoal(decision.TriggerType),
@@ -66,15 +70,9 @@ func (p *AgentPlanner) Plan(ctx context.Context, snapshot conversationdomain.Con
 	}
 	ctx = p.tools.ToolContext(ctx, toolContext.GroupID, toolContext.UserID)
 
-	returnDirectly := map[string]bool{
-		"speak_text":  true,
-		"quote_reply": true,
-		"send_meme":   true,
-		"react_emoji": true,
-		"stay_silent": true,
-	}
 	// 只调用一次 Tools()，缓存结果供 agent 构建和日志共用
 	toolList := p.tools.Tools(toolContext)
+	returnDirectly := p.tools.TerminalTools(toolContext)
 
 	slog.Info("planner: starting LLM agent",
 		"trace_id", snapshot.SnapshotID,
@@ -85,7 +83,7 @@ func (p *AgentPlanner) Plan(ctx context.Context, snapshot conversationdomain.Con
 	)
 
 	maxIterations := defaultMaxIterations
-	guard := newToolRuntimeGuard(snapshot.SnapshotID, defaultMaxToolCalls, defaultToolResultMaxBytes)
+	guard := newToolRuntimeGuard(snapshot.SnapshotID, defaultMaxToolCalls, defaultToolResultMaxBytes, returnDirectly)
 
 	agent, err := adk.NewChatModelAgent(ctx, &adk.ChatModelAgentConfig{
 		Name:        "main_persona_agent",
@@ -112,9 +110,10 @@ func (p *AgentPlanner) Plan(ctx context.Context, snapshot conversationdomain.Con
 	iter := runner.Run(ctx, p.composer.Messages(snapshot))
 
 	var (
-		assistantText string
-		toolName      string
-		toolContent   string
+		assistantText   string
+		terminalName    string
+		terminalContent string
+		plannedTools    []string
 	)
 	for {
 		event, ok := iter.Next()
@@ -131,8 +130,12 @@ func (p *AgentPlanner) Plan(ctx context.Context, snapshot conversationdomain.Con
 		}
 
 		if event.Output.MessageOutput.Role == schema.Tool {
-			toolName = event.Output.MessageOutput.ToolName
-			toolContent = msg.Content
+			toolName := event.Output.MessageOutput.ToolName
+			plannedTools = append(plannedTools, toolName)
+			if returnDirectly[toolName] && terminalName == "" && !toolResultFailed(msg.Content) {
+				terminalName = toolName
+				terminalContent = msg.Content
+			}
 			slog.Debug("planner: tool result", "tool", toolName, "trace_id", snapshot.SnapshotID)
 			continue
 		}
@@ -151,8 +154,9 @@ func (p *AgentPlanner) Plan(ctx context.Context, snapshot conversationdomain.Con
 		}
 	}
 
-	if plan, ok, err := toolsvc.ParseTerminalPlan(decision.DecisionID, toolName, toolContent, toolContext); err == nil && ok {
-		slog.Info("planner: terminal tool", "tool", toolName, "trace_id", snapshot.SnapshotID, "bubbles", len(plan.Bubbles))
+	if plan, ok, err := toolsvc.ParseTerminalPlan(decision.DecisionID, terminalName, terminalContent, toolContext); err == nil && ok {
+		plan.PlannedTools = append([]string(nil), plannedTools...)
+		slog.Info("planner: terminal tool", "tool", terminalName, "trace_id", snapshot.SnapshotID, "bubbles", len(plan.Bubbles))
 		return plan, nil
 	}
 
@@ -165,9 +169,55 @@ func (p *AgentPlanner) Plan(ctx context.Context, snapshot conversationdomain.Con
 			PlannedActions: []policydomain.DecisionAction{policydomain.ActionReply},
 			SendMode:       "group",
 			FallbackText:   assistantText,
+			PlannedTools:   append([]string(nil), plannedTools...),
 		}, nil
 	}
 
 	slog.Warn("planner: no output from agent, fallback", "trace_id", snapshot.SnapshotID)
 	return p.fallback.Plan(ctx, snapshot, decision)
+}
+
+const (
+	recallWindow          = 5 * time.Minute
+	maxRecallableMessages = 3
+)
+
+func recallableMessageIDs(snapshot conversationdomain.ContextSnapshot) []string {
+	if snapshot.SelfID == 0 {
+		return nil
+	}
+	base := time.Now()
+	if snapshot.Event.TimestampUnix > 0 {
+		base = time.Unix(snapshot.Event.TimestampUnix, 0)
+	}
+	result := make([]string, 0, maxRecallableMessages)
+	recalled := make(map[string]bool)
+	for i := len(snapshot.RecentTurns) - 1; i >= 0 && len(result) < maxRecallableMessages; i-- {
+		turn := snapshot.RecentTurns[i]
+		if turn.UserID == snapshot.SelfID && turn.Kind == conversationdomain.EventRecall && turn.ReplyToMessageID != "" {
+			recalled[turn.ReplyToMessageID] = true
+			continue
+		}
+		if turn.UserID != snapshot.SelfID || turn.MessageID == "" || turn.Kind != conversationdomain.EventMessage {
+			continue
+		}
+		if recalled[turn.MessageID] {
+			continue
+		}
+		if turn.TimestampUnix > 0 {
+			age := base.Sub(time.Unix(turn.TimestampUnix, 0))
+			if age < 0 || age > recallWindow {
+				continue
+			}
+		}
+		result = append(result, turn.MessageID)
+	}
+	return result
+}
+
+func toolResultFailed(raw string) bool {
+	var envelope struct {
+		Error string `json:"error"`
+	}
+	return json.Unmarshal([]byte(raw), &envelope) == nil && envelope.Error != ""
 }

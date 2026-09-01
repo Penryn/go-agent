@@ -116,7 +116,7 @@ func (c *Composer) instruction(snapshot conversationdomain.ContextSnapshot, deci
 		"当前回合任务层:",
 		"每条群消息都会交给你判断。不要把进入本轮理解成必须回复；像真人一样决定是说话、点表情、发图、调用工具处理任务，还是用 stay_silent 保持沉默。群友彼此闲聊且没有自然插话点时通常应保持沉默。",
 		"本轮回应目的: " + dialogueGoal(decision.TriggerType) + "。",
-		"如果需要收集信息，可以先用 query_memory、search_meme、MCP 或 Codex 工具；简单实时查询优先 MCP，复杂的代码、文件、浏览或多步任务才交给 delegate_codex_task。最终必须用 speak_text、quote_reply、send_meme、react_emoji 或 stay_silent 结束。",
+		"如果需要收集信息，可以先用 query_memory、search_meme、MCP 或 Codex 工具；简单实时查询优先 MCP，复杂的代码、文件、浏览或多步任务才交给 delegate_codex_task。查询和状态工具可以连续调用，但最终只能选择一个终结工具。通常用 speak_text、quote_reply、send_meme、react_emoji 或 stay_silent 结束。",
 		"如果任务需要修改文件，调用 delegate_codex_task 时必须传 write=true。只有 Codex 写权限 QQ 白名单用户可以使用；普通项目编辑无需重复确认，但删除、覆盖、凭据/密钥或其他破坏性任务会先在 QQ 中要求对完全相同任务明确回复“确认”或“允许”，不得绕过。",
 		"react_emoji 是「点个赞就走」的低成本互动：看到好图、认可对方说法、想接梗但没必要说话时，用它点一个表情回应即可，不必强行组织文字。",
 		"若消息上下文中提供了 msg_id 且用户明确要求引用特定消息，优先使用 quote_reply 并传入对应 msg_id。",
@@ -124,7 +124,11 @@ func (c *Composer) instruction(snapshot conversationdomain.ContextSnapshot, deci
 		"遇到涉及天气、新闻、实时数据或高风险事实时先查证；普通群内黑话和语境不明的词优先结合上下文或自然询问，不要为了显得确定而编造。",
 		"收到「帮我做XX」「帮我查XX」「陪我XX」「来一起XX」等行为请求时，不默认服从；结合上方心情倾向和关系好感度自主判断是否配合。好感度偏低（冷淡区间）或心情差时，倾向拒绝或敷衍；好感度高且心情好时，可以适当配合。",
 		"本轮互动中若对方表现出明确的态度变化或你了解到新的个人特征（口头禅、喜好、身份等），在结束前用 update_affinity / update_member_profile 记录，幅度要小（好感度单次变动不超过 0.1）；没有明显信号就不要调用，不要每轮都调。",
-		"若你发现自己刚发出的消息内容有误、发错了对象、或玩笑明显过界，可以用 recall_recent_message 撤回再决定是否重说；正常内容不要撤。",
+	}
+	if ids := recallableMessageIDs(snapshot); len(ids) > 0 {
+		taskLines = append(taskLines,
+			"若你最近发出的消息确实有误、发错对象或玩笑明显过界，可以用 repair_message 撤回，并可同时提供纠正文案；只能使用上下文标出的你的 msg_id，正常内容不要撤。",
+		)
 	}
 	if decision.TriggerType == "poke_reply" {
 		taskLines = append(taskLines,
@@ -234,7 +238,12 @@ func (c *Composer) Messages(snapshot conversationdomain.ContextSnapshot) []*sche
 
 		// 角色标签：区分当前触发用户与其他群成员
 		var roleTag string
-		if turn.UserID == currentUserID {
+		if snapshot.SelfID != 0 && turn.UserID == snapshot.SelfID {
+			roleTag = "[你]"
+			if turn.MessageID != "" {
+				roleTag += "[msg_id=" + turn.MessageID + "]"
+			}
+		} else if turn.UserID == currentUserID {
 			roleTag = "[当前用户]"
 		} else {
 			roleTag = fmt.Sprintf("[用户%d]", turn.UserID)

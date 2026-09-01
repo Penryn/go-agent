@@ -113,6 +113,9 @@ func (s *Service) Execute(ctx context.Context, event conversationdomain.Conversa
 			DropReason: "action_silent",
 		}, nil
 	}
+	if decision.Action == policydomain.ActionRepair {
+		return s.executeRepair(ctx, event, decision, plan)
+	}
 
 	action, err := s.buildAction(ctx, event, decision, plan)
 	if errors.Is(err, errGuardSilenced) {
@@ -150,32 +153,9 @@ func (s *Service) Execute(ctx context.Context, event conversationdomain.Conversa
 		"text", textContent,
 	)
 
-	receipt, err := s.sender.Send(ctx, action)
+	receipt, err := s.sendAndObserve(ctx, action)
 	if err != nil {
 		return replydomain.ActionReceipt{}, err
-	}
-	if receipt.Sent && s.presence != nil {
-		selfEvent := conversationdomain.ConversationEvent{
-			EventID:          "outbound-" + action.ActionID,
-			GroupID:          action.GroupID,
-			UserID:           s.selfID,
-			MessageID:        receipt.PlatformMessageID,
-			ReplyToMessageID: action.ReplyToMessageID,
-			Kind:             conversationdomain.EventMessage,
-			Segments:         action.Segments,
-			Text:             actionText(action.Segments),
-			TimestampUnix:    time.Now().Unix(),
-		}
-		if _, observeErr := s.presence.Observe(ctx, presencedomain.EventRecord{
-			EventID:   selfEvent.EventID,
-			GroupID:   selfEvent.GroupID,
-			UserID:    selfEvent.UserID,
-			Origin:    presencedomain.OriginOutbound,
-			Timestamp: time.Now(),
-			Event:     selfEvent,
-		}); observeErr != nil {
-			slog.Warn("executor: observe outbound event failed", "action_id", action.ActionID, "err", observeErr)
-		}
 	}
 
 	// B-1: 发送成功后提交标记表情包已发送的后台任务。
@@ -200,6 +180,139 @@ func (s *Service) Execute(ctx context.Context, event conversationdomain.Conversa
 	}
 
 	return receipt, nil
+}
+
+func (s *Service) sendAndObserve(ctx context.Context, action replydomain.ActionExecution) (replydomain.ActionReceipt, error) {
+	receipt, err := s.sender.Send(ctx, action)
+	if err != nil {
+		return replydomain.ActionReceipt{}, err
+	}
+	if !receipt.Sent || s.presence == nil || action.Kind == policydomain.ActionRecall {
+		return receipt, nil
+	}
+	selfEvent := conversationdomain.ConversationEvent{
+		EventID:          "outbound-" + action.ActionID,
+		GroupID:          action.GroupID,
+		UserID:           s.selfID,
+		MessageID:        receipt.PlatformMessageID,
+		ReplyToMessageID: action.ReplyToMessageID,
+		Kind:             conversationdomain.EventMessage,
+		Segments:         action.Segments,
+		Text:             actionText(action.Segments),
+		TimestampUnix:    time.Now().Unix(),
+	}
+	if _, observeErr := s.presence.Observe(ctx, presencedomain.EventRecord{
+		EventID:   selfEvent.EventID,
+		GroupID:   selfEvent.GroupID,
+		UserID:    selfEvent.UserID,
+		Origin:    presencedomain.OriginOutbound,
+		Timestamp: time.Now(),
+		Event:     selfEvent,
+	}); observeErr != nil {
+		slog.Warn("executor: observe outbound event failed", "action_id", action.ActionID, "err", observeErr)
+	}
+	return receipt, nil
+}
+
+func (s *Service) executeRepair(ctx context.Context, event conversationdomain.ConversationEvent, decision policydomain.AutonomyDecision, plan replydomain.ReplyPlan) (replydomain.ActionReceipt, error) {
+	messageID, _ := plan.ActionParams["message_id"].(string)
+	if messageID == "" {
+		return replydomain.ActionReceipt{}, errors.New("repair message_id is required")
+	}
+	recallAction := replydomain.ActionExecution{
+		ActionID:        fmt.Sprintf("%s-recall", decision.DecisionID),
+		Kind:            policydomain.ActionRecall,
+		GroupID:         event.GroupID,
+		TargetMessageID: messageID,
+		ReasonCodes:     decision.ReasonCodes,
+		Meta:            map[string]any{"send_mode": plan.SendMode, "repair": true},
+	}
+	recallReceipt, err := s.sendAndObserve(ctx, recallAction)
+	if err != nil {
+		return replydomain.ActionReceipt{}, fmt.Errorf("repair recall: %w", err)
+	}
+	if recallReceipt.Sent {
+		s.observeRecall(ctx, recallAction)
+	}
+	aggregate := replydomain.ActionReceipt{
+		ActionID:          decision.DecisionID,
+		PlatformMessageID: recallReceipt.PlatformMessageID,
+		Sent:              recallReceipt.Sent,
+		StepReceipts:      []replydomain.ActionReceipt{recallReceipt},
+	}
+
+	correctedText, _ := plan.ActionParams["corrected_text"].(string)
+	if correctedText == "" {
+		correctedText = plan.FallbackText
+	}
+	if correctedText == "" {
+		return aggregate, nil
+	}
+	replyTo, _ := plan.ActionParams["reply_to_message_id"].(string)
+	replacementPlan := replydomain.ReplyPlan{
+		PlanID:           plan.PlanID,
+		Intent:           plan.Intent,
+		ReplyToMessageID: replyTo,
+		Bubbles:          []string{correctedText},
+		SendMode:         plan.SendMode,
+		FallbackText:     correctedText,
+	}
+	replyDecision := decision
+	replyDecision.Action = policydomain.ActionReply
+	replyAction, buildErr := s.buildAction(ctx, event, replyDecision, replacementPlan)
+	if buildErr != nil {
+		aggregate.Partial = true
+		switch {
+		case errors.Is(buildErr, errGuardSilenced):
+			aggregate.DropReason = "repair_reply_guard_silenced"
+			return aggregate, nil
+		case errors.Is(buildErr, errDropSend):
+			aggregate.DropReason = "repair_reply_no_content"
+			return aggregate, nil
+		default:
+			return aggregate, fmt.Errorf("build repair reply: %w", buildErr)
+		}
+	}
+	replyAction.ActionID = fmt.Sprintf("%s-reply", decision.DecisionID)
+	replyReceipt, sendErr := s.sendAndObserve(ctx, replyAction)
+	if replyReceipt.ActionID == "" {
+		replyReceipt.ActionID = replyAction.ActionID
+	}
+	aggregate.StepReceipts = append(aggregate.StepReceipts, replyReceipt)
+	if sendErr != nil {
+		aggregate.Partial = true
+		aggregate.DropReason = "repair_reply_failed"
+		return aggregate, fmt.Errorf("send repair reply: %w", sendErr)
+	}
+	aggregate.PlatformMessageID = replyReceipt.PlatformMessageID
+	aggregate.Sent = recallReceipt.Sent || replyReceipt.Sent
+	return aggregate, nil
+}
+
+func (s *Service) observeRecall(ctx context.Context, action replydomain.ActionExecution) {
+	if s.presence == nil {
+		return
+	}
+	now := time.Now()
+	event := conversationdomain.ConversationEvent{
+		EventID:          "outbound-" + action.ActionID,
+		GroupID:          action.GroupID,
+		UserID:           s.selfID,
+		ReplyToMessageID: action.TargetMessageID,
+		Kind:             conversationdomain.EventRecall,
+		Text:             "（已撤回上一条消息）",
+		TimestampUnix:    now.Unix(),
+	}
+	if _, err := s.presence.Observe(ctx, presencedomain.EventRecord{
+		EventID:   event.EventID,
+		GroupID:   event.GroupID,
+		UserID:    event.UserID,
+		Origin:    presencedomain.OriginOutbound,
+		Timestamp: now,
+		Event:     event,
+	}); err != nil {
+		slog.Warn("executor: observe recall failed", "action_id", action.ActionID, "err", err)
+	}
 }
 
 func (s *Service) executeRhythm(ctx context.Context, event conversationdomain.ConversationEvent, decision policydomain.AutonomyDecision, plan replydomain.ReplyPlan) (replydomain.ActionReceipt, error) {

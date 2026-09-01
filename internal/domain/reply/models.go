@@ -48,16 +48,18 @@ type ThoughtRecord struct {
 }
 
 type ToolContext struct {
-	TraceID           string                         `json:"trace_id" yaml:"trace_id"`
-	GroupID           int64                          `json:"group_id" yaml:"group_id"`
-	UserID            int64                          `json:"user_id" yaml:"user_id"`
-	TriggerMessageID  string                         `json:"trigger_message_id" yaml:"trigger_message_id"`
-	Intent            ReplyIntent                    `json:"intent" yaml:"intent"`
-	AllowedTools      []string                       `json:"allowed_tools" yaml:"allowed_tools"`
-	RetrievedMemories []memorydomain.MemoryRecord    `json:"retrieved_memories" yaml:"retrieved_memories"`
-	MediaDescriptors  []mediadomain.MediaDescriptor  `json:"media_descriptors" yaml:"media_descriptors"`
-	RetrievedMemes    []mediadomain.MemeSearchResult `json:"retrieved_memes" yaml:"retrieved_memes"`
-	Budget            map[string]int                 `json:"budget" yaml:"budget"`
+	TraceID              string                         `json:"trace_id" yaml:"trace_id"`
+	GroupID              int64                          `json:"group_id" yaml:"group_id"`
+	UserID               int64                          `json:"user_id" yaml:"user_id"`
+	TriggerMessageID     string                         `json:"trigger_message_id" yaml:"trigger_message_id"`
+	Intent               ReplyIntent                    `json:"intent" yaml:"intent"`
+	AllowedTools         []string                       `json:"allowed_tools" yaml:"allowed_tools"`
+	RetrievedMemories    []memorydomain.MemoryRecord    `json:"retrieved_memories" yaml:"retrieved_memories"`
+	MediaDescriptors     []mediadomain.MediaDescriptor  `json:"media_descriptors" yaml:"media_descriptors"`
+	RetrievedMemes       []mediadomain.MemeSearchResult `json:"retrieved_memes" yaml:"retrieved_memes"`
+	Budget               map[string]int                 `json:"budget" yaml:"budget"`
+	TriggerType          string                         `json:"trigger_type" yaml:"trigger_type"`
+	RecallableMessageIDs []string                       `json:"recallable_message_ids" yaml:"recallable_message_ids"`
 }
 
 type ActionExecution struct {
@@ -77,6 +79,9 @@ type ActionReceipt struct {
 	PlatformMessageID string `json:"platform_message_id" yaml:"platform_message_id"`
 	Sent              bool   `json:"sent" yaml:"sent"`
 	// DropReason 记录未发送的原因，空字符串表示正常发送。
-	// 可选值: "action_silent"（策略决定沉默）/ "no_content"（内容为空）/ "guard_silenced"（OutputGuard 过滤）
-	DropReason string `json:"drop_reason,omitempty" yaml:"drop_reason,omitempty"`
+	// 常见值: "action_silent" / "no_content" / "guard_silenced"，
+	// repair 复合动作还会记录具体失败步骤。
+	DropReason   string          `json:"drop_reason,omitempty" yaml:"drop_reason,omitempty"`
+	StepReceipts []ActionReceipt `json:"step_receipts,omitempty" yaml:"step_receipts,omitempty"`
+	Partial      bool            `json:"partial,omitempty" yaml:"partial,omitempty"`
 }

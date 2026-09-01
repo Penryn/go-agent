@@ -82,39 +82,80 @@ func (r *Runtime) ToolContext(ctx context.Context, groupID, userID int64) contex
 	return withToolIdentity(ctx, groupID, userID)
 }
 
-func (r *Runtime) Tools(session replydomain.ToolContext) []tool.BaseTool {
+type ToolMode string
+
+const (
+	ToolModeIntermediate ToolMode = "intermediate"
+	ToolModeState        ToolMode = "state"
+	ToolModeTerminal     ToolMode = "terminal"
+)
+
+func (r *Runtime) availableTools(session replydomain.ToolContext) []registeredTool {
 	internal := make([]namedTool, 0, 13)
-	internal = append(internal, r.replyTools()...)
+	internal = append(internal, r.replyTools(session)...)
 	internal = append(internal, r.knowledgeTools(session)...)
 	internal = append(internal, r.profileTools(session)...)
 	all := make([]registeredTool, 0, len(internal)+len(r.external))
 	for _, candidate := range internal {
-		all = append(all, registeredTool{name: candidate.Name(), tool: candidate})
+		all = append(all, registeredTool{name: candidate.Name(), tool: candidate, mode: builtinToolMode(candidate.Name())})
 	}
 	all = append(all, r.external...)
 
-	allowed := make([]tool.BaseTool, 0, len(all))
+	allowed := make([]registeredTool, 0, len(all))
 	for _, candidate := range all {
 		if (candidate.external && !slices.Contains(session.AllowedTools, candidate.name)) ||
 			(!candidate.external && len(session.AllowedTools) > 0 && !slices.Contains(session.AllowedTools, candidate.name)) {
 			continue
 		}
-		allowed = append(allowed, candidate.tool)
+		allowed = append(allowed, candidate)
 	}
 	return allowed
+}
+
+func (r *Runtime) Tools(session replydomain.ToolContext) []tool.BaseTool {
+	available := r.availableTools(session)
+	result := make([]tool.BaseTool, 0, len(available))
+	for _, candidate := range available {
+		result = append(result, candidate.tool)
+	}
+	return result
+}
+
+// TerminalTools returns the tools that end the agent loop and produce the
+// single outward ReplyPlan for this turn.
+func (r *Runtime) TerminalTools(session replydomain.ToolContext) map[string]bool {
+	result := make(map[string]bool)
+	for _, candidate := range r.availableTools(session) {
+		if candidate.mode == ToolModeTerminal {
+			result[candidate.name] = true
+		}
+	}
+	return result
 }
 
 type registeredTool struct {
 	name     string
 	tool     tool.BaseTool
 	external bool
+	mode     ToolMode
+}
+
+func builtinToolMode(name string) ToolMode {
+	switch name {
+	case "speak_text", "stay_silent", "react_emoji", "send_meme", "quote_reply", "repair_message", "poke_member":
+		return ToolModeTerminal
+	case "mark_memory_intent", "update_affinity", "update_member_profile":
+		return ToolModeState
+	default:
+		return ToolModeIntermediate
+	}
 }
 
 // RegisterTools adds tools discovered at startup (for example MCP and Codex)
 // while preserving the existing per-group allowlist behavior.
 func (r *Runtime) RegisterTools(ctx context.Context, tools ...tool.BaseTool) error {
 	known := make(map[string]bool, len(r.external)+13)
-	for _, candidate := range r.replyTools() {
+	for _, candidate := range r.allReplyTools() {
 		known[candidate.Name()] = true
 	}
 	for _, candidate := range r.knowledgeTools(replydomain.ToolContext{}) {
@@ -138,21 +179,33 @@ func (r *Runtime) RegisterTools(ctx context.Context, tools ...tool.BaseTool) err
 			return fmt.Errorf("duplicate tool name %q", info.Name)
 		}
 		known[info.Name] = true
-		r.external = append(r.external, registeredTool{name: info.Name, tool: candidate, external: true})
+		r.external = append(r.external, registeredTool{name: info.Name, tool: candidate, external: true, mode: ToolModeIntermediate})
 	}
 	return nil
 }
 
-func (r *Runtime) replyTools() []namedTool {
-	return []namedTool{
+func (r *Runtime) replyTools(session replydomain.ToolContext) []namedTool {
+	result := []namedTool{
 		newSpeakTextTool(),
 		newStaySilentTool(),
 		newReactEmojiTool(),
 		newSendMemeTool(r.memeStore),
 		newQuoteReplyTool(),
-		newRecallRecentMessageTool(),
-		newPokeMemberTool(),
 	}
+	if len(session.RecallableMessageIDs) > 0 {
+		result = append(result, newRepairMessageTool(session))
+	}
+	if session.TriggerType == "poke_reply" {
+		result = append(result, newPokeMemberTool())
+	}
+	return result
+}
+
+func (r *Runtime) allReplyTools() []namedTool {
+	return r.replyTools(replydomain.ToolContext{
+		TriggerType:          "poke_reply",
+		RecallableMessageIDs: []string{"placeholder"},
+	})
 }
 
 func (r *Runtime) knowledgeTools(session replydomain.ToolContext) []namedTool {
@@ -274,19 +327,25 @@ func ParseTerminalPlan(decisionID string, toolName string, raw string, session r
 			},
 			SendMode: "group",
 		}, true, nil
-	case "recall_recent_message":
-		var result recallRecentMessageResult
+	case "repair_message":
+		var result repairMessageResult
 		if err := json.Unmarshal([]byte(raw), &result); err != nil {
-			return replydomain.ReplyPlan{}, false, fmt.Errorf("decode recall_recent_message result: %w", err)
+			return replydomain.ReplyPlan{}, false, fmt.Errorf("decode repair_message result: %w", err)
 		}
+		correctedText := textutil.StripThinkBlocks(result.CorrectedText)
 		return replydomain.ReplyPlan{
-			PlanID:         decisionID + "-plan",
-			Intent:         session.Intent,
-			PlannedActions: []policydomain.DecisionAction{policydomain.ActionRecall},
+			PlanID:           decisionID + "-plan",
+			Intent:           session.Intent,
+			ReplyToMessageID: result.ReplyToMessageID,
+			Bubbles:          compactStrings([]string{correctedText}, 1),
+			PlannedActions:   []policydomain.DecisionAction{policydomain.ActionRepair},
 			ActionParams: map[string]any{
-				"message_id": result.MessageID,
+				"message_id":          result.MessageID,
+				"corrected_text":      correctedText,
+				"reply_to_message_id": result.ReplyToMessageID,
 			},
-			SendMode: "group",
+			SendMode:     "group",
+			FallbackText: correctedText,
 		}, true, nil
 	case "poke_member":
 		var result pokeMemberResult
@@ -675,34 +734,52 @@ func (t *queryMemberProfileTool) InvokableRun(ctx context.Context, argumentsInJS
 	return marshal(map[string]any{"profile": profile})
 }
 
-type recallRecentMessageTool struct{}
-type recallRecentMessageArgs struct {
-	MessageID  string `json:"message_id"`
-	ReasonCode string `json:"reason_code"`
+type repairMessageTool struct {
+	session replydomain.ToolContext
 }
-type recallRecentMessageResult struct {
-	Tool      string `json:"tool"`
-	MessageID string `json:"message_id"`
+type repairMessageArgs struct {
+	MessageID        string `json:"message_id"`
+	CorrectedText    string `json:"corrected_text"`
+	ReplyToMessageID string `json:"reply_to_message_id"`
+	ReasonCode       string `json:"reason_code"`
+}
+type repairMessageResult struct {
+	Tool             string `json:"tool"`
+	MessageID        string `json:"message_id"`
+	CorrectedText    string `json:"corrected_text"`
+	ReplyToMessageID string `json:"reply_to_message_id"`
 }
 
-func newRecallRecentMessageTool() *recallRecentMessageTool { return &recallRecentMessageTool{} }
-func (t *recallRecentMessageTool) Name() string            { return "recall_recent_message" }
-func (t *recallRecentMessageTool) Info(_ context.Context) (*schema.ToolInfo, error) {
+func newRepairMessageTool(session replydomain.ToolContext) *repairMessageTool {
+	return &repairMessageTool{session: session}
+}
+func (t *repairMessageTool) Name() string { return "repair_message" }
+func (t *repairMessageTool) Info(_ context.Context) (*schema.ToolInfo, error) {
 	return &schema.ToolInfo{
 		Name: t.Name(),
-		Desc: "撤回自己最近发出的一条消息。用于社交修复：发现刚说的话内容错了、发错对象、玩笑过了会冒犯人时，撤回比留着更得体。不要撤回正常内容。",
+		Desc: "Repair one of your recent messages by recalling it and optionally sending a corrected replacement. Only message IDs supplied in the current context are accepted.",
 		ParamsOneOf: schema.NewParamsOneOfByParams(map[string]*schema.ParameterInfo{
-			"message_id":  {Type: schema.String, Required: true, Desc: "要撤回的 bot 消息 ID。"},
-			"reason_code": {Type: schema.String, Desc: "Optional reason."},
+			"message_id":          {Type: schema.String, Required: true, Desc: "Recent bot message ID to recall."},
+			"corrected_text":      {Type: schema.String, Desc: "Optional corrected replacement text."},
+			"reply_to_message_id": {Type: schema.String, Desc: "Optional user message ID to quote in the replacement."},
+			"reason_code":         {Type: schema.String, Desc: "Short reason for the repair."},
 		}),
 	}, nil
 }
-func (t *recallRecentMessageTool) InvokableRun(_ context.Context, argumentsInJSON string, _ ...tool.Option) (string, error) {
-	var args recallRecentMessageArgs
+func (t *repairMessageTool) InvokableRun(_ context.Context, argumentsInJSON string, _ ...tool.Option) (string, error) {
+	var args repairMessageArgs
 	if err := json.Unmarshal([]byte(argumentsInJSON), &args); err != nil {
 		return "", err
 	}
-	return marshal(recallRecentMessageResult{Tool: t.Name(), MessageID: args.MessageID})
+	if !slices.Contains(t.session.RecallableMessageIDs, args.MessageID) {
+		return "", errors.New("repair_message: message_id is not a recent bot message")
+	}
+	return marshal(repairMessageResult{
+		Tool:             t.Name(),
+		MessageID:        args.MessageID,
+		CorrectedText:    strings.TrimSpace(args.CorrectedText),
+		ReplyToMessageID: args.ReplyToMessageID,
+	})
 }
 
 type pokeMemberTool struct{}
