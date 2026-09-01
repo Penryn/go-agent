@@ -89,8 +89,8 @@ func (s *VectorStore) SearchMemories(ctx context.Context, query string, groupID,
 		FROM memory_vectors v
 		JOIN memories m ON m.memory_id = v.memory_id
 		WHERE (m.expires_at IS NULL OR m.expires_at > NOW())
-		  AND (($2 = 0 AND m.scope = 'global')
-		       OR ($2 <> 0 AND (m.scope = 'global' OR m.scope = 'group:' || $2::text OR m.scope = 'group:' || $2::text || ':user:' || $3::text)))
+		  AND (($2::bigint = 0 AND m.scope = 'global')
+		       OR ($2::bigint <> 0 AND (m.scope = 'global' OR m.scope = 'group:' || $2::bigint::text OR m.scope = 'group:' || $2::bigint::text || ':user:' || $3::bigint::text)))
 		ORDER BY v.embedding <=> $1
 		LIMIT $4
 	`, vec, groupID, userID, topK)

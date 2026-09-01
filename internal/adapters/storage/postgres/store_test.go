@@ -148,7 +148,7 @@ func TestEventsAndMemories(t *testing.T) {
 	if err := store.UpsertMemory(ctx, record); err != nil {
 		t.Fatalf("upsert memory: %v", err)
 	}
-	records, err := store.QueryMemories(ctx, ports.MemoryQuery{Scope: "group:1", Query: "旧梗", TopK: 3})
+	records, err := store.QueryMemories(ctx, ports.MemoryQuery{GroupID: 1, Scope: "group:1", Query: "旧梗", TopK: 3})
 	if err != nil {
 		t.Fatalf("query memories: %v", err)
 	}
@@ -426,7 +426,7 @@ func TestMemoryForgetting(t *testing.T) {
 			t.Fatalf("upsert %s: %v", r.MemoryID, err)
 		}
 	}
-	records, err := store.QueryMemories(ctx, ports.MemoryQuery{Scope: "group:1", TopK: 10})
+	records, err := store.QueryMemories(ctx, ports.MemoryQuery{GroupID: 1, Scope: "group:1", TopK: 10})
 	if err != nil {
 		t.Fatalf("query memories: %v", err)
 	}

@@ -166,9 +166,3 @@ go test ./...
 go test -race ./...
 docker compose config
 ```
-
-更多资料：
-
-- [架构与依赖规则](docs/ARCHITECTURE.md)
-- [运行时生命周期与 Outbox ADR](docs/adr/0001-runtime-lifecycle-and-outbox.md)
-- [RAG 重构说明](docs/RAG_REFACTOR.md)
