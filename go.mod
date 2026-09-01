@@ -5,9 +5,7 @@ go 1.25.8
 require (
 	github.com/cloudwego/eino v0.9.18
 	github.com/cloudwego/eino-ext/components/embedding/ark v0.1.1
-	github.com/cloudwego/eino-ext/components/embedding/openai v0.0.0-20260311121809-88ebb0eecbdb
 	github.com/cloudwego/eino-ext/components/model/ark v0.1.69
-	github.com/cloudwego/eino-ext/components/model/openai v0.1.9
 	github.com/cloudwego/eino-ext/components/tool/mcp/officialmcp v0.1.1
 	github.com/jackc/pgx/v5 v5.10.0
 	github.com/modelcontextprotocol/go-sdk v1.7.0
@@ -18,17 +16,21 @@ require (
 )
 
 require (
+	github.com/bytedance/mockey v1.3.0 // indirect
+	github.com/rogpeppe/go-internal v1.14.1 // indirect
+	github.com/smarty/assertions v1.16.0 // indirect
+)
+
+require (
 	github.com/bahlo/generic-list-go v0.2.0 // indirect
 	github.com/buger/jsonparser v1.1.2 // indirect
 	github.com/bytedance/gopkg v0.1.3 // indirect
 	github.com/bytedance/sonic v1.15.2 // indirect
 	github.com/bytedance/sonic/loader v0.5.1 // indirect
 	github.com/cloudwego/base64x v0.1.6 // indirect
-	github.com/cloudwego/eino-ext/libs/acl/openai v0.1.14 // indirect
 	github.com/coder/websocket v1.8.15
 	github.com/dustin/go-humanize v1.0.1 // indirect
 	github.com/eino-contrib/jsonschema v1.0.3 // indirect
-	github.com/evanphx/json-patch v0.5.2 // indirect
 	github.com/google/jsonschema-go v0.4.3 // indirect
 	github.com/google/uuid v1.6.0 // indirect
 	github.com/goph/emperror v0.17.2 // indirect
@@ -40,7 +42,6 @@ require (
 	github.com/klauspost/compress v1.13.5 // indirect
 	github.com/klauspost/cpuid/v2 v2.2.11 // indirect
 	github.com/mailru/easyjson v0.9.0 // indirect
-	github.com/meguminnnnnnnnn/go-openai v0.1.1 // indirect
 	github.com/modern-go/concurrent v0.0.0-20180306012644-bacd9c7ef1dd // indirect
 	github.com/modern-go/reflect2 v1.0.2 // indirect
 	github.com/nikolalohinski/gonja v1.5.3 // indirect

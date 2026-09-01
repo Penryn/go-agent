@@ -35,25 +35,6 @@ func TestFactoryBuildsArkModelByDefault(t *testing.T) {
 	}
 }
 
-func TestFactoryBuildsOpenAICompatibleModelWhenExplicitlyConfigured(t *testing.T) {
-	factory := NewFactory(config.ModelsConfig{
-		Main: config.ModelProviderConfig{
-			Provider: "openai_compat",
-			Model:    "gpt-4o-mini",
-			BaseURL:  "http://127.0.0.1:18080/v1",
-			APIKey:   "test-key",
-			Timeout:  "2s",
-		},
-	})
-
-	model, err := factory.MainChatModel(context.Background())
-	if err != nil {
-		t.Fatalf("main chat model: %v", err)
-	}
-	if model == nil {
-		t.Fatal("expected non-nil model")
-	}
-}
 
 func TestFactoryReturnsUnavailableWhenModelConfigMissing(t *testing.T) {
 	factory := NewFactory(config.ModelsConfig{})
@@ -129,25 +110,6 @@ func TestFactoryBuildsArkEmbeddingModelByDefault(t *testing.T) {
 	}
 }
 
-func TestFactoryBuildsOpenAICompatibleEmbeddingModel(t *testing.T) {
-	factory := NewFactory(config.ModelsConfig{
-		Embedding: config.ModelProviderConfig{
-			Provider: "openai_compat",
-			Model:    "text-embedding-3-small",
-			BaseURL:  "http://127.0.0.1:18080/v1",
-			APIKey:   "test-key",
-			Timeout:  "2s",
-		},
-	})
-
-	embedder, err := factory.EmbeddingModel(context.Background())
-	if err != nil {
-		t.Fatalf("embedding model: %v", err)
-	}
-	if embedder == nil {
-		t.Fatal("expected non-nil embedder")
-	}
-}
 
 func TestFactoryReturnsUnavailableWhenEmbeddingConfigMissing(t *testing.T) {
 	factory := NewFactory(config.ModelsConfig{})

@@ -4,15 +4,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"net/http"
 	"strings"
 	"sync"
 	"time"
 
 	arkemb "github.com/cloudwego/eino-ext/components/embedding/ark"
-	openaiemb "github.com/cloudwego/eino-ext/components/embedding/openai"
 	arkmodel "github.com/cloudwego/eino-ext/components/model/ark"
-	openaimodel "github.com/cloudwego/eino-ext/components/model/openai"
 	"github.com/cloudwego/eino/components/embedding"
 	modelcomponent "github.com/cloudwego/eino/components/model"
 	arkruntime "github.com/volcengine/volcengine-go-sdk/service/arkruntime/model"
@@ -113,16 +110,6 @@ func (f *Factory) newChatModel(ctx context.Context, cfg config.ModelProviderConf
 			Timeout:  durationPtr(timeout),
 			Thinking: &arkruntime.Thinking{Type: arkruntime.ThinkingTypeDisabled}, // 禁用深度思考，避免长时间等待
 		})
-	case "openai":
-		timeout := parseTimeout(cfg.Timeout, 30*time.Second)
-		return openaimodel.NewChatModel(ctx, &openaimodel.ChatModelConfig{
-			APIKey:  cfg.APIKey,
-			Model:   cfg.Model,
-			BaseURL: strings.TrimSpace(cfg.BaseURL),
-			HTTPClient: &http.Client{
-				Timeout: timeout,
-			},
-		})
 	default:
 		return nil, fmt.Errorf("unsupported chat model provider %q", cfg.Provider)
 	}
@@ -166,16 +153,6 @@ func (f *Factory) newEmbeddingModel(ctx context.Context, cfg config.ModelProvide
 			embCfg.APIType = &apiType
 		}
 		return arkemb.NewEmbedder(ctx, embCfg)
-	case "openai":
-		timeout := parseTimeout(cfg.Timeout, 15*time.Second)
-		return openaiemb.NewEmbedder(ctx, &openaiemb.EmbeddingConfig{
-			APIKey:  cfg.APIKey,
-			Model:   cfg.Model,
-			BaseURL: strings.TrimSpace(cfg.BaseURL),
-			HTTPClient: &http.Client{
-				Timeout: timeout,
-			},
-		})
 	default:
 		return nil, fmt.Errorf("unsupported embedding model provider %q", cfg.Provider)
 	}
@@ -188,14 +165,11 @@ func modelConfigured(cfg config.ModelProviderConfig) bool {
 }
 
 func normalizeProvider(provider string) string {
-	switch strings.ToLower(strings.TrimSpace(provider)) {
-	case "", "ark":
+	provider = strings.ToLower(strings.TrimSpace(provider))
+	if provider == "" {
 		return "ark"
-	case "openai", "openai_compat", "openai-compatible", "openai_compatible":
-		return "openai"
-	default:
-		return strings.ToLower(strings.TrimSpace(provider))
 	}
+	return provider
 }
 
 func parseTimeout(raw string, fallback time.Duration) time.Duration {
