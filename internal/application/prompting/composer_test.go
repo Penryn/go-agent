@@ -112,6 +112,23 @@ func TestMessagesFallbackToPersistedSenderNames(t *testing.T) {
 	}
 }
 
+func TestMessagesExposeAddresseeSignal(t *testing.T) {
+	c := NewComposer(defaultPersona())
+	ordinary := c.Messages(conversationdomain.ContextSnapshot{
+		Event: conversationdomain.ConversationEvent{EventID: "ordinary", UserID: 7, Text: "土豆豆腐，不吃了你一个。"},
+	})[0].Content
+	if !strings.Contains(ordinary, "当前消息未检测到") || !strings.Contains(ordinary, "默认不是对你说的") {
+		t.Fatalf("ordinary message missing non-addressed signal:\n%s", ordinary)
+	}
+
+	direct := c.Messages(conversationdomain.ContextSnapshot{
+		Event: conversationdomain.ConversationEvent{EventID: "direct", UserID: 7, Text: "帮我看看这个", MentionedBot: true},
+	})[0].Content
+	if !strings.Contains(direct, "包含直接指向你的平台信号") {
+		t.Fatalf("direct message missing addressed signal:\n%s", direct)
+	}
+}
+
 func TestInstructionRendersUnifiedPersonaView(t *testing.T) {
 	c := NewComposer(defaultPersona())
 	snapshot := conversationdomain.ContextSnapshot{PersonaFacts: []personadomain.PersonaFact{
@@ -148,6 +165,28 @@ func TestInstructionIncludesCurrentFactsAndDynamicScenarios(t *testing.T) {
 	} {
 		if !strings.Contains(instruction, expected) {
 			t.Fatalf("expected %q in instruction:\n%s", expected, instruction)
+		}
+	}
+}
+
+func TestInstructionTreatsUndirectedGroupChatAsNotAddressedToBot(t *testing.T) {
+	c := NewComposer(defaultPersona())
+	instruction := c.Instruction(conversationdomain.ContextSnapshot{
+		SelfID: 123456,
+		Event: conversationdomain.ConversationEvent{
+			UserID: 200,
+			Text:   "土豆豆腐 不吃了你一个，一个也不行！",
+		},
+	}, policydomain.AutonomyDecision{TriggerType: "continue_topic"})
+
+	for _, expected := range []string{
+		"收件人判断优先于话题判断",
+		"当前消息没有直接指向你的证据",
+		"默认使用 stay_silent",
+		"话题确实有意思",
+	} {
+		if !strings.Contains(instruction, expected) {
+			t.Fatalf("expected undirected-chat rule %q in instruction:\n%s", expected, instruction)
 		}
 	}
 }

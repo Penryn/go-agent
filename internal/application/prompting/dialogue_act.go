@@ -24,7 +24,7 @@ func dialogueGoal(trigger string) string {
 	case "follow_up":
 		return "延续尚未完成的话题，不重复已经说过的内容"
 	case "continue_topic":
-		return "群冷场了，你在主动接回之前的话题；像随口一提，不写成开场白"
+		return "观察群聊是否存在自然插话点；没有明确和你相关的内容时保持安静，只有确实适合接回的话题才像随口一提地回应"
 	default:
 		return "结合上下文自然接话"
 	}
