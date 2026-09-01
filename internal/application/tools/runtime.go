@@ -86,14 +86,6 @@ func (r *Runtime) ToolContext(ctx context.Context, groupID, userID int64) contex
 	return withToolIdentity(ctx, groupID, userID)
 }
 
-type ToolMode string
-
-const (
-	ToolModeIntermediate ToolMode = "intermediate"
-	ToolModeState        ToolMode = "state"
-	ToolModeTerminal     ToolMode = "terminal"
-)
-
 func (r *Runtime) availableTools(session replydomain.ToolContext) []registeredTool {
 	internal := make([]namedTool, 0, 13)
 	internal = append(internal, r.replyTools(session)...)
@@ -101,7 +93,7 @@ func (r *Runtime) availableTools(session replydomain.ToolContext) []registeredTo
 	internal = append(internal, r.profileTools(session)...)
 	all := make([]registeredTool, 0, len(internal)+len(r.external))
 	for _, candidate := range internal {
-		all = append(all, registeredTool{name: candidate.Name(), tool: candidate, mode: builtinToolMode(candidate.Name())})
+		all = append(all, registeredTool{name: candidate.Name(), tool: candidate, terminal: isTerminalTool(candidate.Name())})
 	}
 	all = append(all, r.external...)
 
@@ -130,7 +122,7 @@ func (r *Runtime) Tools(session replydomain.ToolContext) []tool.BaseTool {
 func (r *Runtime) TerminalTools(session replydomain.ToolContext) map[string]bool {
 	result := make(map[string]bool)
 	for _, candidate := range r.availableTools(session) {
-		if candidate.mode == ToolModeTerminal {
+		if candidate.terminal {
 			result[candidate.name] = true
 		}
 	}
@@ -141,18 +133,16 @@ type registeredTool struct {
 	name     string
 	tool     tool.BaseTool
 	external bool
-	mode     ToolMode
+	// terminal 工具终结 agent 循环,产出本轮对外的 ReplyPlan。
+	terminal bool
 }
 
-func builtinToolMode(name string) ToolMode {
+func isTerminalTool(name string) bool {
 	switch name {
 	case "speak_text", "stay_silent", "react_emoji", "send_meme", "quote_reply", "repair_message", "poke_member":
-		return ToolModeTerminal
-	case "mark_memory_intent", "update_affinity", "update_member_profile", "update_persona_fact":
-		return ToolModeState
-	default:
-		return ToolModeIntermediate
+		return true
 	}
+	return false
 }
 
 // RegisterTools adds tools discovered at startup (for example MCP and Codex)
@@ -183,7 +173,7 @@ func (r *Runtime) RegisterTools(ctx context.Context, tools ...tool.BaseTool) err
 			return fmt.Errorf("duplicate tool name %q", info.Name)
 		}
 		known[info.Name] = true
-		r.external = append(r.external, registeredTool{name: info.Name, tool: candidate, external: true, mode: ToolModeIntermediate})
+		r.external = append(r.external, registeredTool{name: info.Name, tool: candidate, external: true})
 	}
 	return nil
 }
