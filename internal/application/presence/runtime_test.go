@@ -6,22 +6,25 @@ import (
 	"testing"
 	"time"
 
-	postgresstore "github.com/phlin/go-agent/internal/adapters/storage/postgres"
 	"github.com/phlin/go-agent/internal/adapters/inmemory"
-	"github.com/phlin/go-agent/internal/testsupport"
+	postgresstore "github.com/phlin/go-agent/internal/adapters/storage/postgres"
 	"github.com/phlin/go-agent/internal/application/action"
 	contextsvc "github.com/phlin/go-agent/internal/application/context"
 	"github.com/phlin/go-agent/internal/application/normalizer"
+	personasvc "github.com/phlin/go-agent/internal/application/persona"
 	policysvc "github.com/phlin/go-agent/internal/application/policy"
+	"github.com/phlin/go-agent/internal/application/ports"
 	"github.com/phlin/go-agent/internal/application/presence/deliberation"
 	"github.com/phlin/go-agent/internal/application/presence/group_actor"
 	"github.com/phlin/go-agent/internal/application/presence/ingress"
 	retrievalsvc "github.com/phlin/go-agent/internal/application/retrieval"
 	"github.com/phlin/go-agent/internal/config"
 	conversationdomain "github.com/phlin/go-agent/internal/domain/conversation"
+	personadomain "github.com/phlin/go-agent/internal/domain/persona"
 	policydomain "github.com/phlin/go-agent/internal/domain/policy"
 	presencedomain "github.com/phlin/go-agent/internal/domain/presence"
 	replydomain "github.com/phlin/go-agent/internal/domain/reply"
+	"github.com/phlin/go-agent/internal/testsupport"
 )
 
 type failingDeliberator struct{}
@@ -48,6 +51,60 @@ func (d *recordingDeliberator) Deliberate(_ context.Context, input deliberation.
 		Decision: policydomain.AutonomyDecision{DecisionID: "model-decision", Action: policydomain.ActionReply},
 		Plan:     replydomain.ReplyPlan{Bubbles: []string{"model considered this"}, PlannedActions: []policydomain.DecisionAction{policydomain.ActionReply}, SendMode: "group"},
 	}, nil
+}
+
+type canonDeliberator struct{}
+
+func (canonDeliberator) Deliberate(_ context.Context, input deliberation.Input) (deliberation.Result, error) {
+	return deliberation.Result{
+		Snapshot: conversationdomain.ContextSnapshot{Event: input.Envelope.Event},
+		Decision: policydomain.AutonomyDecision{DecisionID: "canon-decision", Action: policydomain.ActionReply},
+		Plan: replydomain.ReplyPlan{
+			Bubbles:        []string{"我高中读的是文科。"},
+			PlannedActions: []policydomain.DecisionAction{policydomain.ActionReply},
+			SendMode:       "group",
+			ProposedPersonaFacts: []replydomain.PersonaFactCandidate{{
+				Key: "education.high_school_major", Value: "文科", EvidenceText: "我高中读的是文科",
+			}},
+		},
+	}, nil
+}
+
+type runtimeCanonStore struct {
+	facts []personadomain.PersonaFact
+}
+
+func (s *runtimeCanonStore) AppendPersonaFact(_ context.Context, fact personadomain.PersonaFact) error {
+	s.facts = append(s.facts, fact)
+	return nil
+}
+
+func (s *runtimeCanonStore) CurrentPersonaFacts(_ context.Context, _ string, _ time.Time) ([]personadomain.PersonaFact, error) {
+	return append([]personadomain.PersonaFact(nil), s.facts...), nil
+}
+
+type failedSender struct{}
+
+func (failedSender) Send(context.Context, replydomain.ActionExecution) (replydomain.ActionReceipt, error) {
+	return replydomain.ActionReceipt{}, errors.New("send failed")
+}
+
+type secondSendFails struct{ calls int }
+
+func (s *secondSendFails) Send(_ context.Context, action replydomain.ActionExecution) (replydomain.ActionReceipt, error) {
+	s.calls++
+	if s.calls == 2 {
+		return replydomain.ActionReceipt{}, errors.New("second send failed")
+	}
+	return replydomain.ActionReceipt{ActionID: action.ActionID, PlatformMessageID: "partial-1", Sent: true}, nil
+}
+
+type partialCanonDeliberator struct{}
+
+func (partialCanonDeliberator) Deliberate(_ context.Context, input deliberation.Input) (deliberation.Result, error) {
+	result, _ := (canonDeliberator{}).Deliberate(context.Background(), input)
+	result.Plan.Bubbles = []string{"我高中读的是文科。", "这事我记得很清楚。"}
+	return result, nil
 }
 
 type blockingTurnObserver struct{ checks int }
@@ -154,6 +211,75 @@ func TestRateLimitAppliesAfterModelDeliberation(t *testing.T) {
 	if outcome.Decision.Action != policydomain.ActionSilent || outcome.Receipt.Sent {
 		t.Fatalf("rate limit did not suppress only output: %+v", outcome)
 	}
+}
+
+func TestPersonaCanonPersistsOnlyAfterSuccessfulSend(t *testing.T) {
+	for _, test := range []struct {
+		name      string
+		sender    ports.OutboundSender
+		wantFacts int
+		wantError bool
+	}{
+		{name: "success", sender: inmemory.NewSender(), wantFacts: 1},
+		{name: "failure", sender: failedSender{}, wantFacts: 0, wantError: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			ctx := context.Background()
+			working := group_actor.NewManager(ingress.NewMemoryEventLog())
+			defer working.Close()
+			store := &runtimeCanonStore{}
+			runtime := New(ctx, normalizer.New("onebot", 123456, nil), working, canonDeliberator{}, nil, nil,
+				action.New(test.sender, nil, nil), Config{SelfID: 123456})
+			defer runtime.Close()
+			runtime.SetCanonService(personasvc.NewCanonService(store, runtimeCanonDefinition(t), nil))
+
+			payload := []byte(`{"post_type":"message","message_type":"group","time":1710000000,"self_id":123456,"group_id":100,"user_id":200,"message_id":"m-canon","message":[{"type":"text","data":{"text":"你高中学什么？"}}]}`)
+			_, err := runtime.ProcessRawEvent(ctx, payload)
+			if (err != nil) != test.wantError {
+				t.Fatalf("ProcessRawEvent error=%v wantError=%v", err, test.wantError)
+			}
+			if len(store.facts) != test.wantFacts {
+				t.Fatalf("stored facts=%d want=%d: %+v", len(store.facts), test.wantFacts, store.facts)
+			}
+		})
+	}
+}
+
+func TestPersonaCanonUsesSuccessfullyDeliveredPartialText(t *testing.T) {
+	ctx := context.Background()
+	working := group_actor.NewManager(ingress.NewMemoryEventLog())
+	defer working.Close()
+	store := &runtimeCanonStore{}
+	runtime := New(ctx, normalizer.New("onebot", 123456, nil), working, partialCanonDeliberator{}, nil, nil,
+		action.New(&secondSendFails{}, nil, nil), Config{SelfID: 123456})
+	defer runtime.Close()
+	runtime.SetCanonService(personasvc.NewCanonService(store, runtimeCanonDefinition(t), nil))
+
+	payload := []byte(`{"post_type":"message","message_type":"group","time":1710000000,"self_id":123456,"group_id":100,"user_id":200,"message_id":"m-partial","message":[{"type":"text","data":{"text":"你高中学什么？"}}]}`)
+	outcome, err := runtime.ProcessRawEvent(ctx, payload)
+	if err == nil {
+		t.Fatal("expected second bubble send error")
+	}
+	if !outcome.Receipt.Sent || outcome.Receipt.DeliveredText != "我高中读的是文科。" {
+		t.Fatalf("actual partial delivery was not preserved: %+v", outcome.Receipt)
+	}
+	if len(store.facts) != 1 || store.facts[0].Value != "文科" {
+		t.Fatalf("fact from delivered first bubble was not persisted: %+v", store.facts)
+	}
+}
+
+func runtimeCanonDefinition(t *testing.T) personadomain.PersonaDefinition {
+	t.Helper()
+	definition, err := personadomain.Compile(personadomain.PersonaConfig{
+		ID: "main", Name: "Test", Facts: []personadomain.PersonaFactDefinition{
+			{Key: "identity.display_name", Value: "Test", Policy: personadomain.FactPolicyLocked},
+			{Key: "education.high_school_major", Policy: personadomain.FactPolicySelfCompleteOnce},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return definition
 }
 
 func TestProcessCandidateCompletesAfterDeliberationError(t *testing.T) {

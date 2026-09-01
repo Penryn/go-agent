@@ -4,7 +4,6 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
-	"strings"
 )
 
 // ResolvedPersona is the immutable persona input for one group turn. Runtime
@@ -12,6 +11,7 @@ import (
 // loaded independently from the durable runtime state store.
 type ResolvedPersona struct {
 	Config          PersonaConfig
+	Definition      PersonaDefinition
 	Version         string
 	Hash            string
 	FewShotExamples []FewShotExample
@@ -22,13 +22,12 @@ type ResolvedPersona struct {
 // loaded independently from the durable runtime state store.
 func Resolve(base PersonaConfig) ResolvedPersona {
 	resolved := cloneConfig(base)
-	hash := Hash(resolved)
-	version := strings.TrimSpace(resolved.Version)
-	if version == "" {
-		version = hash[:12]
-	}
+	definition, _ := Compile(resolved)
+	hash := definition.Hash
+	version := definition.Version
 	return ResolvedPersona{
 		Config:          resolved,
+		Definition:      definition,
 		Version:         version,
 		Hash:            hash,
 		FewShotExamples: append([]FewShotExample(nil), resolved.Speech.FewShotExamples...),
@@ -52,6 +51,10 @@ func cloneConfig(config PersonaConfig) PersonaConfig {
 	config.Constraints = append([]string(nil), config.Constraints...)
 	config.Traits = append([]string(nil), config.Traits...)
 	config.FactUpdateUserWhitelist = append([]int64(nil), config.FactUpdateUserWhitelist...)
+	config.Facts = append([]PersonaFactDefinition(nil), config.Facts...)
+	for i := range config.Facts {
+		config.Facts[i] = cloneFactDefinition(config.Facts[i])
+	}
 	config.InitialFacts = append([]PersonaFactSeed(nil), config.InitialFacts...)
 	config.ResponseScenarios = append([]ResponseScenario(nil), config.ResponseScenarios...)
 	for i := range config.ResponseScenarios {
@@ -63,4 +66,3 @@ func cloneConfig(config PersonaConfig) PersonaConfig {
 	config.Speech.FewShotExamples = append([]FewShotExample(nil), config.Speech.FewShotExamples...)
 	return config
 }
-

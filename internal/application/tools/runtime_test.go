@@ -9,10 +9,10 @@ import (
 	"github.com/cloudwego/eino/components/tool"
 	"github.com/cloudwego/eino/schema"
 
-	"github.com/phlin/go-agent/internal/testsupport"
 	personadomain "github.com/phlin/go-agent/internal/domain/persona"
 	profiledomain "github.com/phlin/go-agent/internal/domain/profile"
 	replydomain "github.com/phlin/go-agent/internal/domain/reply"
+	"github.com/phlin/go-agent/internal/testsupport"
 )
 
 type externalTestTool struct{}
@@ -91,6 +91,26 @@ func TestTerminalPlan(t *testing.T) {
 	}
 }
 
+func TestTerminalPlanCarriesDeclaredPersonaFacts(t *testing.T) {
+	raw := `{
+		"tool":"speak_text",
+		"bubbles":["我高中读的是文科。"],
+		"self_facts":[{
+			"key":"education.high_school_major",
+			"value":"文科",
+			"evidence_text":"我高中读的是文科",
+			"correction":false
+		}]
+	}`
+	plan, ok, err := ParseTerminalPlan("decision-1", "speak_text", raw, replydomain.ToolContext{})
+	if err != nil || !ok {
+		t.Fatalf("parse terminal plan: ok=%v err=%v", ok, err)
+	}
+	if len(plan.ProposedPersonaFacts) != 1 || plan.ProposedPersonaFacts[0].Key != "education.high_school_major" {
+		t.Fatalf("declared self facts were lost: %+v", plan.ProposedPersonaFacts)
+	}
+}
+
 func TestExternalToolsRequireExplicitAllowlist(t *testing.T) {
 	runtime := NewRuntime(testsupport.NewStore(t))
 	if err := runtime.RegisterTools(context.Background(), externalTestTool{}); err != nil {
@@ -121,7 +141,8 @@ func TestUpdatePersonaFactAuthorizationAndProvenance(t *testing.T) {
 		TriggerTimestampUnix: now.Unix(),
 		Budget:               map[string]int{},
 	}
-	verifiedTool := newUpdatePersonaFactTool(store, session, "main", []int64{2})
+	definition := toolPersonaDefinition(t)
+	verifiedTool := newUpdatePersonaFactTool(store, session, definition, []int64{2})
 	raw, err := verifiedTool.InvokableRun(context.Background(), `{
 		"key":"school_status",
 		"value":"已经正式开课，正在适应课程",
@@ -146,7 +167,7 @@ func TestUpdatePersonaFactAuthorizationAndProvenance(t *testing.T) {
 		UserID:         9,
 		TriggerEventID: "event-2",
 		Budget:         map[string]int{},
-	}, "main", []int64{2})
+	}, definition, []int64{2})
 	raw, err = unauthorized.InvokableRun(context.Background(), `{
 		"key":"school_status",
 		"value":"已经大三",
@@ -166,7 +187,7 @@ func TestUpdatePersonaFactAuthorizationAndProvenance(t *testing.T) {
 		TriggerEventID:       "event-3",
 		TriggerTimestampUnix: now.Unix(),
 		Budget:               map[string]int{},
-	}, "main", []int64{2})
+	}, definition, []int64{2})
 	raw, err = reported.InvokableRun(context.Background(), `{
 		"key":"school_familiarity",
 		"value":"听说已经基本认得教学楼",
@@ -180,4 +201,19 @@ func TestUpdatePersonaFactAuthorizationAndProvenance(t *testing.T) {
 	if err := json.Unmarshal([]byte(raw), &result); err != nil || result["status"] != personadomain.PersonaFactReported {
 		t.Fatalf("unexpected reported result: raw=%s err=%v", raw, err)
 	}
+}
+
+func toolPersonaDefinition(t *testing.T) personadomain.PersonaDefinition {
+	t.Helper()
+	definition, err := personadomain.Compile(personadomain.PersonaConfig{
+		ID: "main", Name: "Test", Facts: []personadomain.PersonaFactDefinition{
+			{Key: "identity.display_name", Value: "Test", Policy: personadomain.FactPolicyLocked},
+			{Key: "education.enrollment.status", Policy: personadomain.FactPolicyOperatorManaged, Aliases: []string{"school_status"}},
+			{Key: "education.campus.familiarity", Policy: personadomain.FactPolicyOperatorManaged, Aliases: []string{"school_familiarity"}},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return definition
 }

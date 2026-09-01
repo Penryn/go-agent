@@ -2,6 +2,8 @@ CREATE TABLE IF NOT EXISTS messages (
   event_id VARCHAR(128) PRIMARY KEY,
   group_id BIGINT NOT NULL,
   user_id BIGINT NOT NULL,
+  sender_qq_nickname VARCHAR(255) NOT NULL DEFAULT '',
+  sender_group_card VARCHAR(255) NOT NULL DEFAULT '',
   message_id VARCHAR(128) NOT NULL,
   reply_to_message_id VARCHAR(128) NULL,
   kind VARCHAR(32) NOT NULL,
@@ -14,6 +16,8 @@ CREATE TABLE IF NOT EXISTS messages (
   occurred_at TIMESTAMPTZ NOT NULL,
   created_at TIMESTAMPTZ NOT NULL
 );
+ALTER TABLE messages ADD COLUMN IF NOT EXISTS sender_qq_nickname VARCHAR(255) NOT NULL DEFAULT '';
+ALTER TABLE messages ADD COLUMN IF NOT EXISTS sender_group_card VARCHAR(255) NOT NULL DEFAULT '';
 CREATE INDEX IF NOT EXISTS idx_messages_group_occurred ON messages (group_id, occurred_at);
 CREATE INDEX IF NOT EXISTS idx_messages_message_id ON messages (message_id);
 
@@ -40,6 +44,8 @@ CREATE TABLE IF NOT EXISTS member_profiles (
   group_id BIGINT NOT NULL,
   user_id BIGINT NOT NULL,
   nickname VARCHAR(255) NOT NULL,
+  qq_nickname VARCHAR(255) NOT NULL DEFAULT '',
+  group_card VARCHAR(255) NOT NULL DEFAULT '',
   message_count BIGINT NOT NULL,
   last_spoke_at TIMESTAMPTZ NOT NULL,
   active_score DOUBLE PRECISION NOT NULL,
@@ -50,6 +56,8 @@ CREATE TABLE IF NOT EXISTS member_profiles (
   updated_at TIMESTAMPTZ NOT NULL,
   PRIMARY KEY (group_id, user_id)
 );
+ALTER TABLE member_profiles ADD COLUMN IF NOT EXISTS qq_nickname VARCHAR(255) NOT NULL DEFAULT '';
+ALTER TABLE member_profiles ADD COLUMN IF NOT EXISTS group_card VARCHAR(255) NOT NULL DEFAULT '';
 
 CREATE TABLE IF NOT EXISTS relationships (
   persona_id VARCHAR(128) NOT NULL,
@@ -176,21 +184,42 @@ CREATE INDEX IF NOT EXISTS idx_runtime_states_expires ON runtime_states (expires
 CREATE TABLE IF NOT EXISTS persona_fact_events (
   fact_id VARCHAR(128) PRIMARY KEY,
   persona_id VARCHAR(128) NOT NULL,
-  fact_key VARCHAR(64) NOT NULL,
+  fact_key VARCHAR(96) NOT NULL,
   fact_value TEXT NOT NULL,
   status VARCHAR(16) NOT NULL,
   source_kind VARCHAR(32) NOT NULL,
   source_group_id BIGINT NOT NULL DEFAULT 0,
   source_user_id BIGINT NOT NULL DEFAULT 0,
   source_event_id VARCHAR(128) NOT NULL DEFAULT '',
+  supersedes_fact_id VARCHAR(128) NULL,
+  definition_hash VARCHAR(128) NOT NULL DEFAULT '',
+  resolution_state VARCHAR(32) NOT NULL DEFAULT 'active',
   confidence DOUBLE PRECISION NOT NULL,
   effective_at TIMESTAMPTZ NOT NULL,
   expires_at TIMESTAMPTZ NULL,
   recorded_at TIMESTAMPTZ NOT NULL
 );
+ALTER TABLE persona_fact_events ADD COLUMN IF NOT EXISTS supersedes_fact_id VARCHAR(128) NULL;
+ALTER TABLE persona_fact_events ADD COLUMN IF NOT EXISTS definition_hash VARCHAR(128) NOT NULL DEFAULT '';
+ALTER TABLE persona_fact_events ADD COLUMN IF NOT EXISTS resolution_state VARCHAR(32) NOT NULL DEFAULT 'active';
+ALTER TABLE persona_fact_events ALTER COLUMN fact_key TYPE VARCHAR(96);
 CREATE INDEX IF NOT EXISTS idx_persona_fact_current
   ON persona_fact_events (persona_id, fact_key, status, effective_at DESC, recorded_at DESC);
 CREATE INDEX IF NOT EXISTS idx_persona_fact_expiry ON persona_fact_events (expires_at);
+
+CREATE TABLE IF NOT EXISTS persona_fact_reservations (
+  reservation_id VARCHAR(128) NOT NULL,
+  persona_id VARCHAR(128) NOT NULL,
+  fact_key VARCHAR(96) NOT NULL,
+  fact_value TEXT NOT NULL,
+  expected_fact_id VARCHAR(128) NOT NULL DEFAULT '',
+  definition_hash VARCHAR(128) NOT NULL,
+  expires_at TIMESTAMPTZ NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL,
+  PRIMARY KEY (reservation_id, fact_key),
+  UNIQUE (persona_id, fact_key)
+);
+CREATE INDEX IF NOT EXISTS idx_persona_fact_reservations_expiry ON persona_fact_reservations (expires_at);
 
 -- 使用 halfvec(2048) 保留 ark embedding-large 的完整输出；halfvec HNSW 上限为 4000 维。
 CREATE TABLE IF NOT EXISTS memory_vectors (

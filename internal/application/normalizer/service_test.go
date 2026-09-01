@@ -31,6 +31,26 @@ func TestNormalizeMentionEvent(t *testing.T) {
 	}
 }
 
+func TestNormalizeSenderIdentity(t *testing.T) {
+	payload := []byte(`{
+		"post_type":"message","message_type":"group","time":1700000000,
+		"self_id":123456,"group_id":1,"user_id":2,"message_id":"sender-1",
+		"sender":{"nickname":"QQ名字","card":"群昵称"},
+		"message":[{"type":"text","data":{"text":"你好"}}]
+	}`)
+
+	envelope, err := New("onebot", 123456, nil).Normalize(payload)
+	if err != nil {
+		t.Fatalf("normalize: %v", err)
+	}
+	if envelope.Event.Sender.QQNickname != "QQ名字" || envelope.Event.Sender.GroupCard != "群昵称" {
+		t.Fatalf("sender identity mismatch: %+v", envelope.Event.Sender)
+	}
+	if envelope.Event.Sender.DisplayName != "群昵称" {
+		t.Fatalf("group card should be preferred as display name: %+v", envelope.Event.Sender)
+	}
+}
+
 func TestNormalizeMissingMessageIDIsStable(t *testing.T) {
 	payload := []byte(`{"post_type":"notice","notice_type":"group_recall","time":0,"self_id":1,"group_id":2,"user_id":3}`)
 	svc := New("onebot", 1, nil)

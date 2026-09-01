@@ -3,9 +3,14 @@ package profile
 import "time"
 
 type MemberStats struct {
-	GroupID      int64     `json:"group_id" yaml:"group_id"`
-	UserID       int64     `json:"user_id" yaml:"user_id"`
+	GroupID int64 `json:"group_id" yaml:"group_id"`
+	UserID  int64 `json:"user_id" yaml:"user_id"`
+	// Nickname remains the preferred display name for compatibility. The two
+	// source names are retained separately so group-card changes do not erase
+	// the account nickname.
 	Nickname     string    `json:"nickname" yaml:"nickname"`
+	QQNickname   string    `json:"qq_nickname" yaml:"qq_nickname"`
+	GroupCard    string    `json:"group_card" yaml:"group_card"`
 	MessageCount int64     `json:"message_count" yaml:"message_count"`
 	LastSpokeAt  time.Time `json:"last_spoke_at" yaml:"last_spoke_at"`
 	ActiveScore  float64   `json:"active_score" yaml:"active_score"`

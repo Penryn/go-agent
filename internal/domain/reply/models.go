@@ -19,15 +19,26 @@ type ReplyIntent struct {
 	MaxChars          int     `json:"max_chars" yaml:"max_chars"`
 }
 
+// PersonaFactCandidate is a fictional self-fact explicitly declared alongside
+// the final text that states it. Runtime validates it against current canon and
+// persists it only after the outward action is actually delivered.
+type PersonaFactCandidate struct {
+	Key          string `json:"key" yaml:"key"`
+	Value        string `json:"value" yaml:"value"`
+	EvidenceText string `json:"evidence_text" yaml:"evidence_text"`
+	Correction   bool   `json:"correction" yaml:"correction"`
+}
+
 type ReplyPlan struct {
-	PlanID             string                        `json:"plan_id" yaml:"plan_id"`
-	Intent             ReplyIntent                   `json:"intent" yaml:"intent"`
-	ReplyToMessageID   string                        `json:"reply_to_message_id" yaml:"reply_to_message_id"`
-	Bubbles            []string                      `json:"bubbles" yaml:"bubbles"`
-	PlannedActions     []policydomain.DecisionAction `json:"planned_actions" yaml:"planned_actions"`
-	ActionParams       map[string]any                `json:"action_params,omitempty" yaml:"action_params,omitempty"`
-	SendMode           string                        `json:"send_mode" yaml:"send_mode"`
-	FallbackText       string                        `json:"fallback_text" yaml:"fallback_text"`
+	PlanID               string                        `json:"plan_id" yaml:"plan_id"`
+	Intent               ReplyIntent                   `json:"intent" yaml:"intent"`
+	ReplyToMessageID     string                        `json:"reply_to_message_id" yaml:"reply_to_message_id"`
+	Bubbles              []string                      `json:"bubbles" yaml:"bubbles"`
+	PlannedActions       []policydomain.DecisionAction `json:"planned_actions" yaml:"planned_actions"`
+	ActionParams         map[string]any                `json:"action_params,omitempty" yaml:"action_params,omitempty"`
+	SendMode             string                        `json:"send_mode" yaml:"send_mode"`
+	FallbackText         string                        `json:"fallback_text" yaml:"fallback_text"`
+	ProposedPersonaFacts []PersonaFactCandidate        `json:"proposed_persona_facts,omitempty" yaml:"proposed_persona_facts,omitempty"`
 }
 
 // ThoughtRecord is the durable, user-independent summary of one deliberation.
@@ -84,4 +95,8 @@ type ActionReceipt struct {
 	DropReason   string          `json:"drop_reason,omitempty" yaml:"drop_reason,omitempty"`
 	StepReceipts []ActionReceipt `json:"step_receipts,omitempty" yaml:"step_receipts,omitempty"`
 	Partial      bool            `json:"partial,omitempty" yaml:"partial,omitempty"`
+	// DeliveredText is populated by the executor from the exact text segments
+	// handed to the outbound adapter. It is intentionally not trusted from the
+	// model's pre-guard plan.
+	DeliveredText string `json:"delivered_text,omitempty" yaml:"delivered_text,omitempty"`
 }

@@ -23,14 +23,15 @@ import (
 )
 
 var (
-	_ ports.MemoryStore               = (*Store)(nil)
-	_ ports.LearningStateStore        = (*Store)(nil)
-	_ ports.ThoughtStore              = (*Store)(nil)
-	_ ports.MemeStore                 = (*Store)(nil)
-	_ ports.ProfileStore              = (*Store)(nil)
-	_ ports.PersonaFactStore          = (*Store)(nil)
-	_ ports.OutboxStore               = (*Store)(nil)
-	_ ports.AtomicMemeProjectionStore = (*Store)(nil)
+	_ ports.MemoryStore                 = (*Store)(nil)
+	_ ports.LearningStateStore          = (*Store)(nil)
+	_ ports.ThoughtStore                = (*Store)(nil)
+	_ ports.MemeStore                   = (*Store)(nil)
+	_ ports.ProfileStore                = (*Store)(nil)
+	_ ports.PersonaFactStore            = (*Store)(nil)
+	_ ports.PersonaFactReservationStore = (*Store)(nil)
+	_ ports.OutboxStore                 = (*Store)(nil)
+	_ ports.AtomicMemeProjectionStore   = (*Store)(nil)
 )
 
 type Store struct {
@@ -220,11 +221,14 @@ func (s *Store) ArchiveEvent(ctx context.Context, event conversationdomain.Conve
 
 	_, err = s.db.ExecContext(ctx, `
 		INSERT INTO messages (
-			event_id, group_id, user_id, message_id, reply_to_message_id, kind, text_content,
+			event_id, group_id, user_id, sender_qq_nickname, sender_group_card,
+			message_id, reply_to_message_id, kind, text_content,
 			segments_json, attachments_json, mentioned_bot, named_bot, is_reply_to_bot,
 			occurred_at, created_at
-		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
 		ON CONFLICT (event_id) DO UPDATE SET
+			sender_qq_nickname = EXCLUDED.sender_qq_nickname,
+			sender_group_card = EXCLUDED.sender_group_card,
 			text_content = EXCLUDED.text_content,
 			segments_json = EXCLUDED.segments_json,
 			attachments_json = EXCLUDED.attachments_json,
@@ -232,8 +236,9 @@ func (s *Store) ArchiveEvent(ctx context.Context, event conversationdomain.Conve
 			named_bot = EXCLUDED.named_bot,
 			is_reply_to_bot = EXCLUDED.is_reply_to_bot,
 			occurred_at = EXCLUDED.occurred_at
-	`, event.EventID, event.GroupID, event.UserID, event.MessageID, nullableString(event.ReplyToMessageID), event.Kind,
-		event.Text, segmentsJSON, attachmentsJSON, event.MentionedBot, event.NamedBot, event.IsReplyToBot, occurredAt, time.Now())
+	`, event.EventID, event.GroupID, event.UserID, event.Sender.QQNickname, event.Sender.GroupCard,
+		event.MessageID, nullableString(event.ReplyToMessageID), event.Kind, event.Text, segmentsJSON, attachmentsJSON,
+		event.MentionedBot, event.NamedBot, event.IsReplyToBot, occurredAt, time.Now())
 	return err
 }
 
@@ -243,7 +248,8 @@ func (s *Store) RecentEvents(ctx context.Context, groupID int64, limit int) ([]c
 	}
 
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT event_id, group_id, user_id, message_id, reply_to_message_id, kind, text_content,
+		SELECT event_id, group_id, user_id, sender_qq_nickname, sender_group_card,
+		       message_id, reply_to_message_id, kind, text_content,
 		       segments_json, attachments_json, mentioned_bot, named_bot, is_reply_to_bot, occurred_at
 		FROM messages
 		WHERE group_id = $1
@@ -276,7 +282,8 @@ func (s *Store) EventsAfter(ctx context.Context, groupID int64, after time.Time,
 		limit = 200
 	}
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT event_id, group_id, user_id, message_id, reply_to_message_id, kind, text_content,
+		SELECT event_id, group_id, user_id, sender_qq_nickname, sender_group_card,
+		       message_id, reply_to_message_id, kind, text_content,
 		       segments_json, attachments_json, mentioned_bot, named_bot, is_reply_to_bot, occurred_at
 		FROM messages
 		WHERE group_id = $1 AND (occurred_at > $2 OR (occurred_at = $3 AND event_id > $4))
@@ -313,6 +320,8 @@ func scanEvent(rows *sql.Rows) (conversationdomain.ConversationEvent, error) {
 		&event.EventID,
 		&event.GroupID,
 		&event.UserID,
+		&event.Sender.QQNickname,
+		&event.Sender.GroupCard,
 		&event.MessageID,
 		&replyTo,
 		&kind,
@@ -327,6 +336,13 @@ func scanEvent(rows *sql.Rows) (conversationdomain.ConversationEvent, error) {
 		return conversationdomain.ConversationEvent{}, err
 	}
 	event.Kind = conversationdomain.EventKind(kind)
+	event.Sender.DisplayName = event.Sender.GroupCard
+	if event.Sender.DisplayName == "" {
+		event.Sender.DisplayName = event.Sender.QQNickname
+	}
+	if event.Sender.DisplayName == "" && event.UserID != 0 {
+		event.Sender.DisplayName = strconv.FormatInt(event.UserID, 10)
+	}
 	event.ReplyToMessageID = replyTo.String
 	event.TimestampUnix = occurredAt.Unix()
 	if err := json.Unmarshal(segmentsJSON, &event.Segments); err != nil {
@@ -523,11 +539,14 @@ func (s *Store) GetMemberProfile(ctx context.Context, groupID, userID int64) (pr
 	)
 
 	err := s.db.QueryRowContext(ctx, `
-		SELECT nickname, message_count, last_spoke_at, active_score, tags_json, common_phrases_json, interests_json, traits_json
+		SELECT nickname, qq_nickname, group_card, message_count, last_spoke_at, active_score,
+		       tags_json, common_phrases_json, interests_json, traits_json
 		FROM member_profiles
 		WHERE group_id = $1 AND user_id = $2
 	`, groupID, userID).Scan(
 		&profile.Stats.Nickname,
+		&profile.Stats.QQNickname,
+		&profile.Stats.GroupCard,
 		&profile.Stats.MessageCount,
 		&profile.Stats.LastSpokeAt,
 		&profile.Stats.ActiveScore,
@@ -559,11 +578,13 @@ func (s *Store) SaveMemberProfile(ctx context.Context, profile profiledomain.Mem
 
 	_, err := s.db.ExecContext(ctx, `
 		INSERT INTO member_profiles (
-			group_id, user_id, nickname, message_count, last_spoke_at, active_score,
+			group_id, user_id, nickname, qq_nickname, group_card, message_count, last_spoke_at, active_score,
 			tags_json, common_phrases_json, interests_json, traits_json, updated_at
-		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
 		ON CONFLICT (group_id, user_id) DO UPDATE SET
 			nickname = EXCLUDED.nickname,
+			qq_nickname = EXCLUDED.qq_nickname,
+			group_card = EXCLUDED.group_card,
 			message_count = EXCLUDED.message_count,
 			last_spoke_at = EXCLUDED.last_spoke_at,
 			active_score = EXCLUDED.active_score,
@@ -572,8 +593,9 @@ func (s *Store) SaveMemberProfile(ctx context.Context, profile profiledomain.Mem
 			interests_json = EXCLUDED.interests_json,
 			traits_json = EXCLUDED.traits_json,
 			updated_at = EXCLUDED.updated_at
-	`, profile.Stats.GroupID, profile.Stats.UserID, profile.Stats.Nickname, profile.Stats.MessageCount,
-		coalesceTime(profile.Stats.LastSpokeAt), profile.Stats.ActiveScore, tagsJSON, commonPhrasesJSON, interestsJSON, traitsJSON, time.Now())
+	`, profile.Stats.GroupID, profile.Stats.UserID, profile.Stats.Nickname, profile.Stats.QQNickname,
+		profile.Stats.GroupCard, profile.Stats.MessageCount, coalesceTime(profile.Stats.LastSpokeAt), profile.Stats.ActiveScore,
+		tagsJSON, commonPhrasesJSON, interestsJSON, traitsJSON, time.Now())
 	return err
 }
 
@@ -817,7 +839,6 @@ func (s *Store) SearchMemes(ctx context.Context, query ports.MemeQuery) ([]media
 	}
 	return results, nil
 }
-
 
 func (s *Store) GetMeme(ctx context.Context, memeID string) (mediadomain.MemeAsset, mediadomain.MemeDescriptor, error) {
 	var (

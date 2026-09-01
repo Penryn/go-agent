@@ -68,11 +68,46 @@ func TestCurrentPersonaFactsRuntimeVerifiedValueOverridesConfigSeed(t *testing.T
 	}); err != nil {
 		t.Fatal(err)
 	}
+	if err := store.AppendPersonaFact(stdcontext.Background(), personadomain.PersonaFact{
+		FactID:      "canon-ignored",
+		PersonaID:   "main",
+		Key:         "school_status",
+		Value:       "虚构状态",
+		Status:      personadomain.PersonaFactCanon,
+		SourceKind:  "self_generated",
+		EffectiveAt: runtimeAt.Add(time.Minute),
+		RecordedAt:  runtimeAt.Add(time.Minute),
+	}); err != nil {
+		t.Fatal(err)
+	}
 	facts, err := service.currentPersonaFacts(stdcontext.Background(), runtimeAt.Add(time.Hour))
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(facts) != 1 || facts[0].Value != "已经正式开课" || facts[0].SourceKind != "owner_statement" {
 		t.Fatalf("runtime fact did not override config seed: %+v", facts)
+	}
+}
+
+func TestCurrentPersonaFactsUsesCanonWhenNoVerifiedValueExists(t *testing.T) {
+	store := testsupport.NewStore(t)
+	now := time.Now().Truncate(time.Second)
+	service := &Service{
+		persona:      personadomain.PersonaConfig{ID: "main"},
+		personaFacts: store,
+	}
+	if err := store.AppendPersonaFact(stdcontext.Background(), personadomain.PersonaFact{
+		FactID: "canon-1", PersonaID: "main", Key: "education.high_school_major", Value: "文科",
+		Status: personadomain.PersonaFactCanon, SourceKind: "self_generated",
+		EffectiveAt: now, RecordedAt: now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	facts, err := service.currentPersonaFacts(stdcontext.Background(), now.Add(time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(facts) != 1 || facts[0].Status != personadomain.PersonaFactCanon || facts[0].Value != "文科" {
+		t.Fatalf("canon was not projected into the next context: %+v", facts)
 	}
 }

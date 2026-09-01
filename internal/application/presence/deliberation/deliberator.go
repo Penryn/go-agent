@@ -16,9 +16,10 @@ import (
 )
 
 type Input struct {
-	Envelope  conversationdomain.EventEnvelope
-	Candidate presencedomain.ThoughtCandidate
-	Memory    presencedomain.GroupWorkingMemory
+	Envelope        conversationdomain.EventEnvelope
+	Candidate       presencedomain.ThoughtCandidate
+	Memory          presencedomain.GroupWorkingMemory
+	PersonaFeedback []string
 }
 
 type Result struct {
@@ -52,6 +53,7 @@ func (a *Adapter) Deliberate(ctx context.Context, input Input) (Result, error) {
 	if err != nil {
 		return Result{}, err
 	}
+	snapshot.PersonaFeedback = append([]string(nil), input.PersonaFeedback...)
 	decision := decisionFor(input.Envelope, input.Candidate)
 	plan, err := a.planner.Plan(ctx, snapshot, decision)
 	if err != nil {

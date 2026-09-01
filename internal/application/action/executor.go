@@ -23,10 +23,10 @@ var errDropSend = errors.New("drop send: no text content")
 var errGuardSilenced = errors.New("drop send: guard silenced")
 
 type Service struct {
-	sender ports.OutboundSender
-	memes  *memesvc.Service
-	guard  *outputguardsvc.Guard // 可为 nil，nil 时跳过清洗
-	outbox ports.TaskSubmitter
+	sender    ports.OutboundSender
+	memes     *memesvc.Service
+	guard     *outputguardsvc.Guard // 可为 nil，nil 时跳过清洗
+	outbox    ports.TaskSubmitter
 	presence  PresenceObserver
 	selfID    int64
 	rhythmMu  sync.Mutex
@@ -183,6 +183,9 @@ func (s *Service) sendAndObserve(ctx context.Context, action replydomain.ActionE
 	if err != nil {
 		return replydomain.ActionReceipt{}, err
 	}
+	if receipt.Sent {
+		receipt.DeliveredText = actionText(action.Segments)
+	}
 	if !receipt.Sent || s.presence == nil || action.Kind == policydomain.ActionRecall {
 		return receipt, nil
 	}
@@ -235,6 +238,7 @@ func (s *Service) executeRepair(ctx context.Context, event conversationdomain.Co
 		PlatformMessageID: recallReceipt.PlatformMessageID,
 		Sent:              recallReceipt.Sent,
 		StepReceipts:      []replydomain.ActionReceipt{recallReceipt},
+		DeliveredText:     recallReceipt.DeliveredText,
 	}
 
 	correctedText, _ := plan.ActionParams["corrected_text"].(string)
@@ -282,6 +286,7 @@ func (s *Service) executeRepair(ctx context.Context, event conversationdomain.Co
 	}
 	aggregate.PlatformMessageID = replyReceipt.PlatformMessageID
 	aggregate.Sent = recallReceipt.Sent || replyReceipt.Sent
+	aggregate.DeliveredText += replyReceipt.DeliveredText
 	return aggregate, nil
 }
 
@@ -330,14 +335,16 @@ func (s *Service) executeRhythm(ctx context.Context, event conversationdomain.Co
 		cancel()
 	}()
 
-	var receipt replydomain.ActionReceipt
+	aggregate := replydomain.ActionReceipt{ActionID: decision.DecisionID}
 	for i, bubble := range plan.Bubbles {
 		if i > 0 {
 			timer := time.NewTimer(bubbleDelay)
 			select {
 			case <-rhythmCtx.Done():
 				timer.Stop()
-				return receipt, nil
+				aggregate.Partial = aggregate.Sent
+				aggregate.DropReason = "rhythm_cancelled"
+				return aggregate, nil
 			case <-timer.C:
 			}
 		}
@@ -346,13 +353,20 @@ func (s *Service) executeRhythm(ctx context.Context, event conversationdomain.Co
 		if i > 0 {
 			part.ReplyToMessageID = ""
 		}
-		var err error
-		receipt, err = s.Execute(rhythmCtx, event, decision, part)
+		partReceipt, err := s.Execute(rhythmCtx, event, decision, part)
+		aggregate.StepReceipts = append(aggregate.StepReceipts, partReceipt)
+		if partReceipt.Sent {
+			aggregate.Sent = true
+			aggregate.PlatformMessageID = partReceipt.PlatformMessageID
+		}
+		aggregate.DeliveredText += partReceipt.DeliveredText
 		if err != nil {
-			return receipt, err
+			aggregate.Partial = aggregate.Sent
+			aggregate.DropReason = "rhythm_partial_failed"
+			return aggregate, err
 		}
 	}
-	return receipt, nil
+	return aggregate, nil
 }
 
 func actionText(segments []conversationdomain.MessageSegment) string {

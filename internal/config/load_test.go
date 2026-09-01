@@ -4,6 +4,8 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	personadomain "github.com/phlin/go-agent/internal/domain/persona"
 )
 
 func TestLoadDoesNotOverrideYAMLSecretsFromEnvironment(t *testing.T) {
@@ -66,17 +68,17 @@ func TestExampleConfigLoads(t *testing.T) {
 		t.Fatalf("example persona runtime config not loaded: %+v", cfg.Persona)
 	}
 	seenGoal := false
-	for _, fact := range cfg.Persona.InitialFacts {
-		seenGoal = seenGoal || fact.Key == "current_goal"
+	for _, fact := range cfg.Persona.Facts {
+		seenGoal = seenGoal || fact.Key == "goal.current"
 	}
 	if !seenGoal {
-		t.Fatalf("example persona current goal not loaded: %+v", cfg.Persona.InitialFacts)
+		t.Fatalf("example persona current goal not loaded: %+v", cfg.Persona.Facts)
 	}
 }
 
 func TestValidateRejectsInvalidPersonaFactTimestamp(t *testing.T) {
 	cfg := Default()
-	cfg.Persona.InitialFacts[0].EffectiveAt = "tomorrow"
+	cfg.Persona.InitialFacts = []personadomain.PersonaFactSeed{{Key: "school_status", Value: "test", EffectiveAt: "tomorrow"}}
 	if err := Validate(cfg); err == nil {
 		t.Fatal("expected invalid persona fact timestamp to fail validation")
 	}

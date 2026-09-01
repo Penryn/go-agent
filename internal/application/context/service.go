@@ -5,12 +5,11 @@ import (
 	"fmt"
 	"log/slog"
 	"sort"
-	"strings"
 	"time"
 
-	groupactor "github.com/phlin/go-agent/internal/application/presence/group_actor"
 	policysvc "github.com/phlin/go-agent/internal/application/policy"
 	"github.com/phlin/go-agent/internal/application/ports"
+	groupactor "github.com/phlin/go-agent/internal/application/presence/group_actor"
 	retrievalsvc "github.com/phlin/go-agent/internal/application/retrieval"
 	conversationdomain "github.com/phlin/go-agent/internal/domain/conversation"
 	mediadomain "github.com/phlin/go-agent/internal/domain/media"
@@ -20,12 +19,13 @@ import (
 )
 
 type Service struct {
-	memoryStore ports.MemoryStore
+	memoryStore  ports.MemoryStore
 	profileStore ports.ProfileStore
-	stateStore  ports.RuntimeStateStore
-	policy      *policysvc.Service
-	persona     personadomain.PersonaConfig
-	memoryTopK  int
+	stateStore   ports.RuntimeStateStore
+	policy       *policysvc.Service
+	persona      personadomain.PersonaConfig
+	definition   personadomain.PersonaDefinition
+	memoryTopK   int
 	// workingMemory 供给快速群内会话状态;它已包含当前正处理的事件,
 	// 比持久 store 的 live tail 更适合做快照。
 	workingMemory *groupactor.Manager
@@ -57,12 +57,14 @@ func New(
 	if memoryTopK <= 0 {
 		memoryTopK = 4
 	}
+	definition, _ := personadomain.Compile(persona)
 	return &Service{
 		memoryStore:  memoryStore,
 		profileStore: profileStore,
 		stateStore:   stateStore,
 		policy:       policy,
 		persona:      persona,
+		definition:   definition,
 		retriever:    retriever,
 		memoryTopK:   memoryTopK,
 	}
@@ -128,7 +130,7 @@ func (s *Service) BuildSnapshot(ctx context.Context, envelope conversationdomain
 	if err != nil {
 		return conversationdomain.ContextSnapshot{}, fmt.Errorf("load persona state: %w", err)
 	}
-	personaFacts, err := s.currentPersonaFacts(ctx, time.Now())
+	personaView, err := s.currentPersonaView(ctx, time.Now())
 	if err != nil {
 		return conversationdomain.ContextSnapshot{}, fmt.Errorf("load persona facts: %w", err)
 	}
@@ -162,7 +164,8 @@ func (s *Service) BuildSnapshot(ctx context.Context, envelope conversationdomain
 		MemberProfile:     ensureMemberProfile(memberProfile, envelope.Event),
 		RelationshipState: relationship,
 		PersonaState:      personaState,
-		PersonaFacts:      append([]personadomain.PersonaFact(nil), personaFacts...),
+		PersonaView:       personaView,
+		PersonaFacts:      append(append([]personadomain.PersonaFact(nil), personaView.Facts...), personaView.ReportedFacts...),
 		GroupPolicy:       groupPolicy,
 		RuntimeState:      runtimeState,
 		DecisionHints:     buildDecisionHints(envelope.Event),
@@ -170,63 +173,30 @@ func (s *Service) BuildSnapshot(ctx context.Context, envelope conversationdomain
 }
 
 func (s *Service) currentPersonaFacts(ctx context.Context, now time.Time) ([]personadomain.PersonaFact, error) {
-	latest := make(map[string]personadomain.PersonaFact)
-	for _, seed := range s.persona.InitialFacts {
-		key := strings.TrimSpace(seed.Key)
-		value := strings.TrimSpace(seed.Value)
-		if key == "" || value == "" {
-			continue
-		}
-		effectiveAt, _ := time.Parse(time.RFC3339, strings.TrimSpace(seed.EffectiveAt))
-		fact := personadomain.PersonaFact{
-			FactID:      "config:" + s.persona.ID + ":" + key,
-			PersonaID:   s.persona.ID,
-			Key:         key,
-			Value:       value,
-			Status:      personadomain.PersonaFactVerified,
-			SourceKind:  "config",
-			Confidence:  1,
-			EffectiveAt: effectiveAt,
-			RecordedAt:  effectiveAt,
-		}
-		latest[key+"\x00"+fact.Status] = fact
+	view, err := s.currentPersonaView(ctx, now)
+	if err != nil {
+		return nil, err
 	}
-	if s.personaFacts != nil {
-		facts, err := s.personaFacts.CurrentPersonaFacts(ctx, s.persona.ID, now)
+	return append([]personadomain.PersonaFact(nil), view.Facts...), nil
+}
+
+func (s *Service) currentPersonaView(ctx context.Context, now time.Time) (personadomain.PersonaView, error) {
+	if s.definition.Config.ID == "" {
+		definition, err := personadomain.Compile(s.persona)
 		if err != nil {
-			return nil, err
+			return personadomain.PersonaView{}, err
 		}
-		for _, fact := range facts {
-			key := fact.Key + "\x00" + fact.Status
-			current, ok := latest[key]
-			if !ok || fact.EffectiveAt.After(current.EffectiveAt) ||
-				(fact.EffectiveAt.Equal(current.EffectiveAt) && fact.RecordedAt.After(current.RecordedAt)) {
-				latest[key] = fact
-			}
+		s.definition = definition
+	}
+	var facts []personadomain.PersonaFact
+	if s.personaFacts != nil {
+		var err error
+		facts, err = s.personaFacts.CurrentPersonaFacts(ctx, s.persona.ID, now)
+		if err != nil {
+			return personadomain.PersonaView{}, err
 		}
 	}
-	result := make([]personadomain.PersonaFact, 0, len(latest))
-	verifiedByKey := make(map[string]personadomain.PersonaFact)
-	for _, fact := range latest {
-		if fact.Status == personadomain.PersonaFactVerified {
-			verifiedByKey[fact.Key] = fact
-		}
-	}
-	for _, fact := range latest {
-		if fact.Status == personadomain.PersonaFactReported {
-			if verified, ok := verifiedByKey[fact.Key]; ok && !fact.EffectiveAt.After(verified.EffectiveAt) {
-				continue
-			}
-		}
-		result = append(result, fact)
-	}
-	sort.Slice(result, func(i, j int) bool {
-		if result[i].Status == result[j].Status {
-			return result[i].Key < result[j].Key
-		}
-		return result[i].Status == personadomain.PersonaFactVerified
-	})
-	return result, nil
+	return personadomain.ResolveView(s.definition, facts, now), nil
 }
 
 // recentThoughts 取该群最近几轮的判断摘要；失败静默（回看是增强不是依赖）。
@@ -286,6 +256,15 @@ func mergeRecentTurns(archived, live []conversationdomain.ConversationEvent, lim
 func ensureMemberProfile(profile profiledomain.MemberProfile, event conversationdomain.ConversationEvent) profiledomain.MemberProfile {
 	profile.Stats.GroupID = event.GroupID
 	profile.Stats.UserID = event.UserID
+	if event.Sender.QQNickname != "" {
+		profile.Stats.QQNickname = event.Sender.QQNickname
+	}
+	if event.Sender.GroupCard != "" {
+		profile.Stats.GroupCard = event.Sender.GroupCard
+	}
+	if event.Sender.DisplayName != "" {
+		profile.Stats.Nickname = event.Sender.DisplayName
+	}
 	if profile.Stats.LastSpokeAt.IsZero() {
 		profile.Stats.LastSpokeAt = time.Unix(event.TimestampUnix, 0)
 	}

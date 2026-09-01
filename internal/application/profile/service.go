@@ -30,6 +30,19 @@ func (s *Service) ObserveEvent(ctx context.Context, event conversationdomain.Con
 
 	profile.Stats.GroupID = event.GroupID
 	profile.Stats.UserID = event.UserID
+	if event.Sender.QQNickname != "" {
+		profile.Stats.QQNickname = event.Sender.QQNickname
+	}
+	if event.Sender.GroupCard != "" {
+		profile.Stats.GroupCard = event.Sender.GroupCard
+	}
+	if event.Sender.DisplayName != "" {
+		profile.Stats.Nickname = event.Sender.DisplayName
+	} else if profile.Stats.GroupCard != "" {
+		profile.Stats.Nickname = profile.Stats.GroupCard
+	} else if profile.Stats.QQNickname != "" {
+		profile.Stats.Nickname = profile.Stats.QQNickname
+	}
 	firstMessage := profile.Stats.MessageCount == 0
 	profile.Stats.MessageCount++
 	profile.Stats.LastSpokeAt = time.Unix(event.TimestampUnix, 0)

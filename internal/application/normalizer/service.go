@@ -39,6 +39,12 @@ type oneBotEvent struct {
 	MessageID   any             `json:"message_id"`
 	RawMessage  string          `json:"raw_message"`
 	Message     messageSegments `json:"message"`
+	Sender      oneBotSender    `json:"sender"`
+}
+
+type oneBotSender struct {
+	Nickname string `json:"nickname"`
+	Card     string `json:"card"`
 }
 
 type oneBotSegment struct {
@@ -148,6 +154,15 @@ func (s *Service) Normalize(payload []byte) (conversationdomain.EventEnvelope, e
 	}
 	messageID := normalizeID(raw.MessageID)
 	eventID := stableEventID(s.source, raw.GroupID, messageID, payload)
+	qqNickname := strings.TrimSpace(raw.Sender.Nickname)
+	groupCard := strings.TrimSpace(raw.Sender.Card)
+	displayName := groupCard
+	if displayName == "" {
+		displayName = qqNickname
+	}
+	if displayName == "" && raw.UserID != 0 {
+		displayName = strconv.FormatInt(raw.UserID, 10)
+	}
 
 	return conversationdomain.EventEnvelope{
 		Source:        s.source,
@@ -157,9 +172,14 @@ func (s *Service) Normalize(payload []byte) (conversationdomain.EventEnvelope, e
 		TraceID:       eventID,
 		CorrelationID: messageID,
 		Event: conversationdomain.ConversationEvent{
-			EventID:          eventID,
-			GroupID:          raw.GroupID,
-			UserID:           raw.UserID,
+			EventID: eventID,
+			GroupID: raw.GroupID,
+			UserID:  raw.UserID,
+			Sender: conversationdomain.SenderIdentity{
+				QQNickname:  qqNickname,
+				GroupCard:   groupCard,
+				DisplayName: displayName,
+			},
 			MessageID:        messageID,
 			ReplyToMessageID: replyToMessageID,
 			Kind:             kind,

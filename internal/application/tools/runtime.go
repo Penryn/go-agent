@@ -30,6 +30,7 @@ type Runtime struct {
 	profileStore      ports.ProfileStore
 	personaFacts      ports.PersonaFactStore
 	personaID         string
+	personaDefinition personadomain.PersonaDefinition
 	personaFactAdmins []int64
 	memSvc            *memsvc.Service
 	memeSvc           *memesvc.Service
@@ -56,6 +57,13 @@ func WithProfileStore(store ports.ProfileStore) Option {
 
 func WithPersonaID(id string) Option {
 	return func(rt *Runtime) { rt.personaID = id }
+}
+
+func WithPersonaDefinition(definition personadomain.PersonaDefinition) Option {
+	return func(rt *Runtime) {
+		rt.personaDefinition = definition
+		rt.personaID = definition.Config.ID
+	}
 }
 
 func WithPersonaFactStore(store ports.PersonaFactStore) Option {
@@ -215,7 +223,7 @@ func (r *Runtime) profileTools(session replydomain.ToolContext) []namedTool {
 		newMarkMemoryIntentTool(r.memSvc, session),
 		newUpdateAffinityTool(r.profileStore, session, r.personaID),
 		newUpdateMemberProfileTool(r.profileStore, session, r.personaID),
-		newUpdatePersonaFactTool(r.personaFacts, session, r.personaID, r.personaFactAdmins),
+		newUpdatePersonaFactTool(r.personaFacts, session, r.personaDefinition, r.personaFactAdmins),
 	}
 }
 
@@ -236,13 +244,14 @@ func ParseTerminalPlan(decisionID string, toolName string, raw string, session r
 			bubbles = []string{cleanedText}
 		}
 		return replydomain.ReplyPlan{
-			PlanID:           decisionID + "-plan",
-			Intent:           session.Intent,
-			ReplyToMessageID: result.ReplyToMessageID,
-			Bubbles:          bubbles,
-			PlannedActions:   []policydomain.DecisionAction{policydomain.ActionReply},
-			SendMode:         "group",
-			FallbackText:     cleanedText,
+			PlanID:               decisionID + "-plan",
+			Intent:               session.Intent,
+			ReplyToMessageID:     result.ReplyToMessageID,
+			Bubbles:              bubbles,
+			PlannedActions:       []policydomain.DecisionAction{policydomain.ActionReply},
+			SendMode:             "group",
+			FallbackText:         cleanedText,
+			ProposedPersonaFacts: append([]replydomain.PersonaFactCandidate(nil), result.SelfFacts...),
 		}, true, nil
 	case "stay_silent":
 		return replydomain.ReplyPlan{
@@ -287,23 +296,25 @@ func ParseTerminalPlan(decisionID string, toolName string, raw string, session r
 				"decision_id", decisionID,
 			)
 			return replydomain.ReplyPlan{
-				PlanID:         decisionID + "-plan",
-				Intent:         session.Intent,
-				Bubbles:        cleanedBubbles,
-				PlannedActions: []policydomain.DecisionAction{policydomain.ActionReply},
-				SendMode:       "group",
-				FallbackText:   cleanedText,
+				PlanID:               decisionID + "-plan",
+				Intent:               session.Intent,
+				Bubbles:              cleanedBubbles,
+				PlannedActions:       []policydomain.DecisionAction{policydomain.ActionReply},
+				SendMode:             "group",
+				FallbackText:         cleanedText,
+				ProposedPersonaFacts: append([]replydomain.PersonaFactCandidate(nil), result.SelfFacts...),
 			}, true, nil
 		}
 		return replydomain.ReplyPlan{
-			PlanID:           decisionID + "-plan",
-			Intent:           session.Intent,
-			ReplyToMessageID: result.ReplyToMessageID,
-			Bubbles:          cleanedBubbles,
-			PlannedActions:   []policydomain.DecisionAction{policydomain.ActionReply},
-			ActionParams:     map[string]any{"tool": "quote_reply"},
-			SendMode:         "group",
-			FallbackText:     cleanedText,
+			PlanID:               decisionID + "-plan",
+			Intent:               session.Intent,
+			ReplyToMessageID:     result.ReplyToMessageID,
+			Bubbles:              cleanedBubbles,
+			PlannedActions:       []policydomain.DecisionAction{policydomain.ActionReply},
+			ActionParams:         map[string]any{"tool": "quote_reply"},
+			SendMode:             "group",
+			FallbackText:         cleanedText,
+			ProposedPersonaFacts: append([]replydomain.PersonaFactCandidate(nil), result.SelfFacts...),
 		}, true, nil
 	case "send_meme":
 		var result sendMemeResult
@@ -369,16 +380,18 @@ type namedTool interface {
 type speakTextTool struct{}
 
 type speakTextArgs struct {
-	Text             string   `json:"text"`
-	Bubbles          []string `json:"bubbles"`
-	ReplyToMessageID string   `json:"reply_to_message_id"`
+	Text             string                             `json:"text"`
+	Bubbles          []string                           `json:"bubbles"`
+	ReplyToMessageID string                             `json:"reply_to_message_id"`
+	SelfFacts        []replydomain.PersonaFactCandidate `json:"self_facts"`
 }
 
 type speakTextResult struct {
-	Tool             string   `json:"tool"`
-	Text             string   `json:"text"`
-	Bubbles          []string `json:"bubbles"`
-	ReplyToMessageID string   `json:"reply_to_message_id"`
+	Tool             string                             `json:"tool"`
+	Text             string                             `json:"text"`
+	Bubbles          []string                           `json:"bubbles"`
+	ReplyToMessageID string                             `json:"reply_to_message_id"`
+	SelfFacts        []replydomain.PersonaFactCandidate `json:"self_facts"`
 }
 
 func newSpeakTextTool() *speakTextTool { return &speakTextTool{} }
@@ -393,6 +406,7 @@ func (t *speakTextTool) Info(_ context.Context) (*schema.ToolInfo, error) {
 			"text":                {Type: schema.String, Required: true, Desc: "Primary reply text."},
 			"bubbles":             {Type: schema.Array, Desc: "Optional split bubbles, at most two."},
 			"reply_to_message_id": {Type: schema.String, Desc: "Optional message ID to quote-reply."},
+			"self_facts":          selfFactsParameter(),
 		}),
 	}, nil
 }
@@ -415,6 +429,7 @@ func (t *speakTextTool) InvokableRun(_ context.Context, argumentsInJSON string, 
 		Text:             strings.TrimSpace(args.Text),
 		Bubbles:          compactStrings(args.Bubbles, 2),
 		ReplyToMessageID: args.ReplyToMessageID,
+		SelfFacts:        append([]replydomain.PersonaFactCandidate(nil), args.SelfFacts...),
 	}
 	return marshal(result)
 }
@@ -657,15 +672,17 @@ func (t *sendMemeTool) InvokableRun(ctx context.Context, argumentsInJSON string,
 
 type quoteReplyTool struct{}
 type quoteReplyArgs struct {
-	ReplyToMessageID string   `json:"reply_to_message_id"`
-	Text             string   `json:"text"`
-	Bubbles          []string `json:"bubbles"`
+	ReplyToMessageID string                             `json:"reply_to_message_id"`
+	Text             string                             `json:"text"`
+	Bubbles          []string                           `json:"bubbles"`
+	SelfFacts        []replydomain.PersonaFactCandidate `json:"self_facts"`
 }
 type quoteReplyResult struct {
-	Tool             string   `json:"tool"`
-	ReplyToMessageID string   `json:"reply_to_message_id"`
-	Text             string   `json:"text"`
-	Bubbles          []string `json:"bubbles"`
+	Tool             string                             `json:"tool"`
+	ReplyToMessageID string                             `json:"reply_to_message_id"`
+	Text             string                             `json:"text"`
+	Bubbles          []string                           `json:"bubbles"`
+	SelfFacts        []replydomain.PersonaFactCandidate `json:"self_facts"`
 }
 
 func newQuoteReplyTool() *quoteReplyTool { return &quoteReplyTool{} }
@@ -678,6 +695,7 @@ func (t *quoteReplyTool) Info(_ context.Context) (*schema.ToolInfo, error) {
 			"reply_to_message_id": {Type: schema.String, Desc: "Message ID to quote; if omitted the reply is sent without quoting."},
 			"text":                {Type: schema.String, Required: true, Desc: "Reply text."},
 			"bubbles":             {Type: schema.Array, Desc: "Optional split bubbles."},
+			"self_facts":          selfFactsParameter(),
 		}),
 	}, nil
 }
@@ -686,7 +704,23 @@ func (t *quoteReplyTool) InvokableRun(_ context.Context, argumentsInJSON string,
 	if err := json.Unmarshal([]byte(argumentsInJSON), &args); err != nil {
 		return "", err
 	}
-	return marshal(quoteReplyResult{Tool: t.Name(), ReplyToMessageID: args.ReplyToMessageID, Text: strings.TrimSpace(args.Text), Bubbles: compactStrings(args.Bubbles, 2)})
+	return marshal(quoteReplyResult{Tool: t.Name(), ReplyToMessageID: args.ReplyToMessageID, Text: strings.TrimSpace(args.Text), Bubbles: compactStrings(args.Bubbles, 2), SelfFacts: append([]replydomain.PersonaFactCandidate(nil), args.SelfFacts...)})
+}
+
+func selfFactsParameter() *schema.ParameterInfo {
+	return &schema.ParameterInfo{
+		Type: schema.Array,
+		Desc: "New fictional first-person facts explicitly stated in this exact reply. Leave empty when no new self fact is introduced.",
+		ElemInfo: &schema.ParameterInfo{
+			Type: schema.Object,
+			SubParams: map[string]*schema.ParameterInfo{
+				"key":           {Type: schema.String, Required: true, Desc: "Stable namespaced key such as education.high_school_major."},
+				"value":         {Type: schema.String, Required: true, Desc: "Concise canonical value."},
+				"evidence_text": {Type: schema.String, Required: true, Desc: "Exact first-person phrase present in the final reply."},
+				"correction":    {Type: schema.Boolean, Desc: "True only when the reply explicitly corrects an earlier canon fact."},
+			},
+		},
+	}
 }
 
 type queryMemberProfileTool struct {
@@ -1110,10 +1144,10 @@ func (t *updateMemberProfileTool) InvokableRun(ctx context.Context, argumentsInJ
 // update_persona_fact tool
 
 type updatePersonaFactTool struct {
-	store     ports.PersonaFactStore
-	session   replydomain.ToolContext
-	personaID string
-	admins    []int64
+	store      ports.PersonaFactStore
+	session    replydomain.ToolContext
+	definition personadomain.PersonaDefinition
+	admins     []int64
 }
 
 type updatePersonaFactArgs struct {
@@ -1125,16 +1159,8 @@ type updatePersonaFactArgs struct {
 	TTLHours        int     `json:"ttl_hours"`
 }
 
-var mutablePersonaFactKeys = map[string]bool{
-	"school_status":      true,
-	"school_familiarity": true,
-	"course_status":      true,
-	"current_routine":    true,
-	"recent_experience":  true,
-}
-
-func newUpdatePersonaFactTool(store ports.PersonaFactStore, session replydomain.ToolContext, personaID string, admins []int64) *updatePersonaFactTool {
-	return &updatePersonaFactTool{store: store, session: session, personaID: personaID, admins: append([]int64(nil), admins...)}
+func newUpdatePersonaFactTool(store ports.PersonaFactStore, session replydomain.ToolContext, definition personadomain.PersonaDefinition, admins []int64) *updatePersonaFactTool {
+	return &updatePersonaFactTool{store: store, session: session, definition: definition, admins: append([]int64(nil), admins...)}
 }
 
 func (t *updatePersonaFactTool) Name() string { return "update_persona_fact" }
@@ -1142,9 +1168,9 @@ func (t *updatePersonaFactTool) Name() string { return "update_persona_fact" }
 func (t *updatePersonaFactTool) Info(_ context.Context) (*schema.ToolInfo, error) {
 	return &schema.ToolInfo{
 		Name: t.Name(),
-		Desc: "Record a real change in your own current life. Admin statements become verified facts; group reports and web search stay short-lived and unverified. Never use for stable identity or every turn.",
+		Desc: "Record a sourced change in the unified persona fact model. The configured fact policy decides whether an operator update is permitted.",
 		ParamsOneOf: schema.NewParamsOneOfByParams(map[string]*schema.ParameterInfo{
-			"key":               {Type: schema.String, Required: true, Desc: "One of: school_status, school_familiarity, course_status, current_routine, recent_experience."},
+			"key":               {Type: schema.String, Required: true, Desc: "A registered canonical persona fact key or configured legacy alias."},
 			"value":             {Type: schema.String, Required: true, Desc: "Concise current fact, without roleplay or speculation."},
 			"source_kind":       {Type: schema.String, Required: true, Desc: "One of: owner_statement, group_report, web_search."},
 			"evidence_event_id": {Type: schema.String, Required: true, Desc: "Current event ID supporting the update."},
@@ -1168,12 +1194,16 @@ func (t *updatePersonaFactTool) InvokableRun(ctx context.Context, argumentsInJSO
 	if err := json.Unmarshal([]byte(argumentsInJSON), &args); err != nil {
 		return "", fmt.Errorf("decode update_persona_fact args: %w", err)
 	}
-	args.Key = strings.TrimSpace(args.Key)
+	args.Key = t.definition.CanonicalKey(args.Key)
 	args.Value = strings.TrimSpace(args.Value)
 	args.SourceKind = strings.TrimSpace(args.SourceKind)
 	args.EvidenceEventID = strings.TrimSpace(args.EvidenceEventID)
-	if !mutablePersonaFactKeys[args.Key] {
-		return marshal(map[string]any{"accepted": false, "reason": "key_not_mutable"})
+	rule, registered := t.definition.Rule(args.Key)
+	if !registered {
+		return marshal(map[string]any{"accepted": false, "reason": "key_not_registered"})
+	}
+	if rule.Policy == personadomain.FactPolicyLocked || rule.Policy == personadomain.FactPolicyForbidden {
+		return marshal(map[string]any{"accepted": false, "reason": "policy_rejects_update", "policy": rule.Policy})
 	}
 	if args.Value == "" || len([]rune(args.Value)) > 240 {
 		return marshal(map[string]any{"accepted": false, "reason": "invalid_value"})
@@ -1188,15 +1218,17 @@ func (t *updatePersonaFactTool) InvokableRun(ctx context.Context, argumentsInJSO
 		effectiveAt = time.Unix(t.session.TriggerTimestampUnix, 0)
 	}
 	fact := personadomain.PersonaFact{
-		PersonaID:     t.personaID,
-		Key:           args.Key,
-		Value:         args.Value,
-		SourceKind:    args.SourceKind,
-		SourceGroupID: t.session.GroupID,
-		SourceUserID:  t.session.UserID,
-		SourceEventID: args.EvidenceEventID,
-		EffectiveAt:   effectiveAt,
-		RecordedAt:    now,
+		PersonaID:       t.definition.Config.ID,
+		Key:             args.Key,
+		Value:           args.Value,
+		SourceKind:      args.SourceKind,
+		SourceGroupID:   t.session.GroupID,
+		SourceUserID:    t.session.UserID,
+		SourceEventID:   args.EvidenceEventID,
+		EffectiveAt:     effectiveAt,
+		RecordedAt:      now,
+		DefinitionHash:  t.definition.Hash,
+		ResolutionState: personadomain.FactResolutionActive,
 	}
 	switch args.SourceKind {
 	case "owner_statement":

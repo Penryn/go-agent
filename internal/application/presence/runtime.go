@@ -14,6 +14,7 @@ import (
 
 	"github.com/phlin/go-agent/internal/application/action"
 	normalizersvc "github.com/phlin/go-agent/internal/application/normalizer"
+	personasvc "github.com/phlin/go-agent/internal/application/persona"
 	"github.com/phlin/go-agent/internal/application/ports"
 	"github.com/phlin/go-agent/internal/application/presence/deliberation"
 	groupactor "github.com/phlin/go-agent/internal/application/presence/group_actor"
@@ -93,6 +94,7 @@ type Runtime struct {
 	perception    PerceptionSubmitter
 	confirmations ConfirmationObserver
 	turns         TurnObserver
+	canon         *personasvc.CanonService
 	executor      *action.Service
 	thoughts      ports.ThoughtStore
 	// memories 供主动开口时从长期记忆挑旧梗；nil 时跳过。
@@ -107,9 +109,9 @@ type Runtime struct {
 	lastProactive          map[int64]time.Time
 	proactiveMu            sync.Mutex
 
-	ctx       context.Context
-	cancel    context.CancelFunc
-	wg        sync.WaitGroup
+	ctx    context.Context
+	cancel context.CancelFunc
+	wg     sync.WaitGroup
 }
 
 // SetThoughtStore enables durable, concise deliberation records. It is
@@ -121,6 +123,10 @@ func (r *Runtime) SetThoughtStore(store ports.ThoughtStore) { r.thoughts = store
 func (r *Runtime) SetMemoryStore(store ports.MemoryStore) { r.memories = store }
 
 func (r *Runtime) SetConfirmationObserver(observer ConfirmationObserver) { r.confirmations = observer }
+
+// SetCanonService enables post-delivery persistence for fictional persona
+// facts declared in terminal reply tools.
+func (r *Runtime) SetCanonService(service *personasvc.CanonService) { r.canon = service }
 
 func (r *Runtime) AddEventObserver(observer EventObserverFunc) {
 	if observer != nil {
@@ -463,9 +469,74 @@ func (r *Runtime) processWithValidation(ctx context.Context, envelope conversati
 			decision.ReasonCodes = append(decision.ReasonCodes, "output_rate_limited")
 		}
 	}
+	var canonProposal personasvc.CanonProposal
+	if decision.Action != policydomain.ActionSilent && r.canon != nil && len(plan.ProposedPersonaFacts) > 0 {
+		personaView := snapshot.PersonaView
+		if personaView.PersonaID == "" {
+			personaView, err = r.canon.View(ctx, time.Now())
+			if err != nil {
+				return Outcome{}, fmt.Errorf("load persona view: %w", err)
+			}
+		}
+		canonProposal, err = r.canon.PreparePlan(ctx, personaView, plan.ProposedPersonaFacts, plannedReplyText(plan), decision.DecisionID)
+		if err != nil {
+			slog.Info("human runtime: regenerating reply after persona conflict",
+				"group_id", envelope.Event.GroupID, "decision_id", decision.DecisionID, "err", err)
+			retry, retryErr := r.deliberator.Deliberate(ctx, deliberation.Input{
+				Envelope: envelope, Candidate: candidate, Memory: memory, PersonaFeedback: []string{err.Error()},
+			})
+			if retryErr == nil {
+				result = retry
+				snapshot, decision, plan = retry.Snapshot, retry.Decision, retry.Plan
+				if decision.Action != policydomain.ActionSilent && len(plan.ProposedPersonaFacts) > 0 {
+					personaView := snapshot.PersonaView
+					if personaView.PersonaID == "" {
+						personaView, err = r.canon.View(ctx, time.Now())
+						if err != nil {
+							retryErr = err
+						}
+					}
+					if retryErr == nil {
+						canonProposal, err = r.canon.PreparePlan(ctx, personaView, plan.ProposedPersonaFacts, plannedReplyText(plan), decision.DecisionID+"-retry")
+					}
+				} else {
+					err = nil
+				}
+			}
+			if retryErr != nil || err != nil {
+				decision.Action = policydomain.ActionSilent
+				decision.ReasonCodes = append(decision.ReasonCodes, "persona_fact_conflict")
+				plan.ProposedPersonaFacts = nil
+				slog.Warn("human runtime: persona conflict remained after regeneration",
+					"group_id", envelope.Event.GroupID, "decision_id", decision.DecisionID, "err", errors.Join(err, retryErr))
+			}
+		}
+		plan.ProposedPersonaFacts = append([]replydomain.PersonaFactCandidate(nil), canonProposal.Candidates...)
+	}
 	receipt, err := r.executor.Execute(ctx, envelope.Event, decision, plan)
+	if receipt.Sent && r.canon != nil && strings.TrimSpace(receipt.DeliveredText) != "" {
+		sourceEventID := "outbound-" + decision.DecisionID + "-action"
+		if receipt.PlatformMessageID != "" {
+			sourceEventID = "outbound:" + receipt.PlatformMessageID
+		}
+		if canonErr := r.canon.AfterDelivery(ctx, canonProposal, personasvc.CanonDelivery{
+			GroupID:       envelope.Event.GroupID,
+			SelfID:        r.selfID,
+			SourceEventID: sourceEventID,
+			Text:          receipt.DeliveredText,
+		}); canonErr != nil {
+			// The QQ send already succeeded, so persistence failure is observable
+			// but cannot turn the realized action into a failed send.
+			slog.Warn("human runtime: persist delivered persona canon failed",
+				"group_id", envelope.Event.GroupID, "decision_id", decision.DecisionID, "err", canonErr)
+		}
+	} else if r.canon != nil {
+		if abortErr := r.canon.AbortProposal(ctx, canonProposal); abortErr != nil {
+			slog.Warn("human runtime: release persona reservation failed", "decision_id", decision.DecisionID, "err", abortErr)
+		}
+	}
 	if err != nil {
-		return Outcome{}, fmt.Errorf("realize response: %w", err)
+		return Outcome{Envelope: envelope, Snapshot: snapshot, Candidate: candidate, Decision: decision, Plan: plan, Receipt: receipt}, fmt.Errorf("realize response: %w", err)
 	}
 	if r.thoughts != nil {
 		outcome := "silent"
@@ -499,6 +570,16 @@ func (r *Runtime) processWithValidation(ctx context.Context, envelope conversati
 		}
 	}
 	return Outcome{Envelope: envelope, Snapshot: snapshot, Candidate: candidate, Decision: decision, Plan: plan, Receipt: receipt}, nil
+}
+
+func plannedReplyText(plan replydomain.ReplyPlan) string {
+	if len(plan.Bubbles) > 0 {
+		return strings.Join(plan.Bubbles, "")
+	}
+	if corrected, _ := plan.ActionParams["corrected_text"].(string); corrected != "" {
+		return corrected
+	}
+	return plan.FallbackText
 }
 
 func (r *Runtime) observeEvent(ctx context.Context, event conversationdomain.ConversationEvent) {

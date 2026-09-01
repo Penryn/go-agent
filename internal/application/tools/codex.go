@@ -323,4 +323,3 @@ func stopProcess(cmd *exec.Cmd, stdin io.Closer) {
 	}
 	_ = cmd.Wait()
 }
-

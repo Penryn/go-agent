@@ -25,10 +25,20 @@ type MessageSegment struct {
 	Data map[string]any `json:"data" yaml:"data"`
 }
 
+// SenderIdentity preserves both platform-level names. GroupCard is scoped to
+// one QQ group while QQNickname is the account nickname. DisplayName is a
+// deterministic convenience projection and must not replace either source.
+type SenderIdentity struct {
+	QQNickname  string `json:"qq_nickname,omitempty" yaml:"qq_nickname,omitempty"`
+	GroupCard   string `json:"group_card,omitempty" yaml:"group_card,omitempty"`
+	DisplayName string `json:"display_name,omitempty" yaml:"display_name,omitempty"`
+}
+
 type ConversationEvent struct {
 	EventID          string                             `json:"event_id" yaml:"event_id"`
 	GroupID          int64                              `json:"group_id" yaml:"group_id"`
 	UserID           int64                              `json:"user_id" yaml:"user_id"`
+	Sender           SenderIdentity                     `json:"sender,omitempty" yaml:"sender,omitempty"`
 	MessageID        string                             `json:"message_id" yaml:"message_id"`
 	ReplyToMessageID string                             `json:"reply_to_message_id,omitempty" yaml:"reply_to_message_id,omitempty"`
 	Kind             EventKind                          `json:"kind" yaml:"kind"`
@@ -76,10 +86,12 @@ type ContextSnapshot struct {
 	MemberProfile     profiledomain.MemberProfile     `json:"member_profile" yaml:"member_profile"`
 	RelationshipState profiledomain.RelationshipState `json:"relationship_state" yaml:"relationship_state"`
 	PersonaState      personadomain.PersonaState      `json:"persona_state" yaml:"persona_state"`
+	PersonaView       personadomain.PersonaView       `json:"persona_view" yaml:"persona_view"`
 	PersonaFacts      []personadomain.PersonaFact     `json:"persona_facts,omitempty" yaml:"persona_facts,omitempty"`
 	GroupPolicy       policydomain.GroupPolicy        `json:"group_policy" yaml:"group_policy"`
 	RuntimeState      policydomain.RuntimeState       `json:"runtime_state" yaml:"runtime_state"`
 	DecisionHints     []string                        `json:"decision_hints" yaml:"decision_hints"`
+	PersonaFeedback   []string                        `json:"persona_feedback,omitempty" yaml:"persona_feedback,omitempty"`
 }
 
 // ContextCursor identifies the last archived fact included in a snapshot.

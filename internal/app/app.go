@@ -24,7 +24,6 @@ import (
 	outputguardsvc "github.com/phlin/go-agent/internal/application/outputguard"
 	personasvc "github.com/phlin/go-agent/internal/application/persona"
 	policysvc "github.com/phlin/go-agent/internal/application/policy"
-	"github.com/phlin/go-agent/internal/application/textutil"
 	"github.com/phlin/go-agent/internal/application/ports"
 	presenceruntime "github.com/phlin/go-agent/internal/application/presence"
 	presencedeliberation "github.com/phlin/go-agent/internal/application/presence/deliberation"
@@ -37,10 +36,12 @@ import (
 	retrievalsvc "github.com/phlin/go-agent/internal/application/retrieval"
 	outboxruntime "github.com/phlin/go-agent/internal/application/runtime/outbox"
 	"github.com/phlin/go-agent/internal/application/runtime/scheduler"
+	"github.com/phlin/go-agent/internal/application/textutil"
 	toolsvc "github.com/phlin/go-agent/internal/application/tools"
 	"github.com/phlin/go-agent/internal/config"
 	conversationdomain "github.com/phlin/go-agent/internal/domain/conversation"
 	memorydomain "github.com/phlin/go-agent/internal/domain/memory"
+	personadomain "github.com/phlin/go-agent/internal/domain/persona"
 	presencedomain "github.com/phlin/go-agent/internal/domain/presence"
 	replydomain "github.com/phlin/go-agent/internal/domain/reply"
 )
@@ -61,6 +62,11 @@ func New(ctx context.Context, cfg config.Config) (*App, error) {
 	stores, err := newStoreBundle(ctx, cfg)
 	if err != nil {
 		return nil, err
+	}
+	personaDefinition, err := personadomain.Compile(cfg.Persona)
+	if err != nil {
+		_ = stores.Close()
+		return nil, fmt.Errorf("compile persona definition: %w", err)
 	}
 
 	var sender ports.OutboundSender = inmemory.NewSender()
@@ -100,6 +106,34 @@ func New(ctx context.Context, cfg config.Config) (*App, error) {
 	durableOutbox := outboxruntime.New(context.WithoutCancel(ctx), stores.outbox, outboxruntime.Config{
 		WorkerCount: cfg.Runtime.WorkerCount,
 	})
+	canonService := personasvc.NewCanonService(
+		stores.personaFacts,
+		personaDefinition,
+		modelFactory,
+		personasvc.WithCanonOutbox(durableOutbox),
+	)
+	if err := durableOutbox.Register(personasvc.CanonExtractionTaskKind(), func(jobCtx context.Context, payload []byte) error {
+		var task personasvc.CanonExtractionTask
+		if err := json.Unmarshal(payload, &task); err != nil {
+			return fmt.Errorf("decode persona canon extraction task: %w", err)
+		}
+		return canonService.ProcessExtraction(jobCtx, task)
+	}); err != nil {
+		_ = durableOutbox.Close()
+		_ = stores.Close()
+		return nil, fmt.Errorf("register persona canon outbox handler: %w", err)
+	}
+	if err := durableOutbox.Register(personasvc.CanonFinalizeTaskKind(), func(jobCtx context.Context, payload []byte) error {
+		var task personasvc.CanonFinalizeTask
+		if err := json.Unmarshal(payload, &task); err != nil {
+			return fmt.Errorf("decode persona canon finalize task: %w", err)
+		}
+		return canonService.ProcessFinalize(jobCtx, task)
+	}); err != nil {
+		_ = durableOutbox.Close()
+		_ = stores.Close()
+		return nil, fmt.Errorf("register persona canon finalize handler: %w", err)
+	}
 
 	// memorySvc：有向量存储时注入 WithVectorStore；同时注入差异化 TTL 配置
 	memOpts := []memsvc.Option{}
@@ -171,7 +205,7 @@ func New(ctx context.Context, cfg config.Config) (*App, error) {
 	writeApprovals := toolsvc.NewWriteApprovalStore(10 * time.Minute)
 	toolRuntime := toolsvc.NewRuntime(stores.meme,
 		toolsvc.WithProfileStore(stores.profile),
-		toolsvc.WithPersonaID(cfg.Persona.ID),
+		toolsvc.WithPersonaDefinition(personaDefinition),
 		toolsvc.WithPersonaFactStore(stores.personaFacts),
 		toolsvc.WithPersonaFactAdmins(cfg.Persona.FactUpdateUserWhitelist),
 		toolsvc.WithMemoryService(memorySvc),
@@ -244,6 +278,7 @@ func New(ctx context.Context, cfg config.Config) (*App, error) {
 		ProactiveScoreThreshold:  cfg.Autonomy.ProactiveScoreThreshold,
 	})
 	humanRuntime.SetConfirmationObserver(writeApprovals)
+	humanRuntime.SetCanonService(canonService)
 	if thoughtStore, ok := stores.memory.(ports.ThoughtStore); ok {
 		humanRuntime.SetThoughtStore(thoughtStore)
 		contextService.WithThoughtStore(thoughtStore)
@@ -406,4 +441,3 @@ func (a *App) handleHealth(w http.ResponseWriter, r *http.Request) {
 
 	_, _ = w.Write([]byte(`{"ok":true}`))
 }
-

@@ -103,9 +103,12 @@ func TestEventsAndMemories(t *testing.T) {
 	store := NewStore(db)
 
 	event := conversationdomain.ConversationEvent{
-		EventID:       fmt.Sprintf("event-%d", time.Now().UnixNano()),
-		GroupID:       1,
-		UserID:        2,
+		EventID: fmt.Sprintf("event-%d", time.Now().UnixNano()),
+		GroupID: 1,
+		UserID:  2,
+		Sender: conversationdomain.SenderIdentity{
+			QQNickname: "alice-qq", GroupCard: "alice-card", DisplayName: "alice-card",
+		},
 		MessageID:     "m-1",
 		Kind:          conversationdomain.EventMessage,
 		Text:          "hello",
@@ -125,6 +128,9 @@ func TestEventsAndMemories(t *testing.T) {
 	}
 	if len(events) != 1 {
 		t.Fatalf("expected 1 event, got %d", len(events))
+	}
+	if events[0].Sender.QQNickname != "alice-qq" || events[0].Sender.GroupCard != "alice-card" {
+		t.Fatalf("sender identity did not roundtrip: %+v", events[0].Sender)
 	}
 	after, err := store.EventsAfter(ctx, 1, time.Now().Add(-time.Hour), "", 10)
 	if err != nil {
@@ -164,7 +170,7 @@ func TestProfiles(t *testing.T) {
 
 	profile := profiledomain.MemberProfile{
 		Stats: profiledomain.MemberStats{
-			GroupID: 1, UserID: 2, Nickname: "alice",
+			GroupID: 1, UserID: 2, Nickname: "alice", QQNickname: "alice-qq", GroupCard: "alice-card",
 			MessageCount: 7, LastSpokeAt: time.Now(), ActiveScore: 0.8,
 		},
 		Tags: []string{"老群友"},
@@ -176,7 +182,7 @@ func TestProfiles(t *testing.T) {
 	if err != nil {
 		t.Fatalf("get profile: %v", err)
 	}
-	if saved.Stats.Nickname != "alice" || len(saved.Tags) != 1 {
+	if saved.Stats.Nickname != "alice" || saved.Stats.QQNickname != "alice-qq" || saved.Stats.GroupCard != "alice-card" || len(saved.Tags) != 1 {
 		t.Fatalf("unexpected profile: %+v", saved)
 	}
 
@@ -410,7 +416,7 @@ func TestPersonaFactsRoundtripAndExpiry(t *testing.T) {
 		{
 			FactID: "persona-fact-new", PersonaID: "main", Key: "school_status", Value: "已经开课",
 			Status: personadomain.PersonaFactVerified, SourceKind: "owner_statement", Confidence: 1,
-			EffectiveAt: now, RecordedAt: now,
+			EffectiveAt: now, RecordedAt: now, SupersedesFactID: "persona-fact-old",
 		},
 		{
 			FactID: "persona-fact-expired", PersonaID: "main", Key: "school_familiarity", Value: "听说已经很熟",
@@ -427,7 +433,7 @@ func TestPersonaFactsRoundtripAndExpiry(t *testing.T) {
 	if err != nil {
 		t.Fatalf("current persona facts: %v", err)
 	}
-	if len(current) != 1 || current[0].FactID != "persona-fact-new" {
+	if len(current) != 1 || current[0].FactID != "persona-fact-new" || current[0].SupersedesFactID != "persona-fact-old" {
 		t.Fatalf("unexpected current facts: %+v", current)
 	}
 }

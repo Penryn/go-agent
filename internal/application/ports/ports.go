@@ -150,6 +150,15 @@ type PersonaFactStore interface {
 	CurrentPersonaFacts(ctx context.Context, personaID string, now time.Time) ([]personadomain.PersonaFact, error)
 }
 
+// PersonaFactReservationStore serializes first-time self-completion across
+// groups and application instances. A reservation is invisible to prompts
+// until a successfully delivered message finalizes it.
+type PersonaFactReservationStore interface {
+	ReservePersonaFacts(ctx context.Context, reservation personadomain.PersonaFactReservation) error
+	FinalizePersonaFacts(ctx context.Context, reservationID string, facts []personadomain.PersonaFact) error
+	ReleasePersonaFacts(ctx context.Context, reservationID string) error
+}
+
 // VectorMemoryStore 是语义记忆检索的 port。
 // 实现方：postgresstore.VectorStore；未配置时传 nil，调用方自行跳过向量路径。
 type VectorMemoryStore interface {

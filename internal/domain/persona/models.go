@@ -31,8 +31,33 @@ type PersonaFactSeed struct {
 	EffectiveAt string `json:"effective_at,omitempty" yaml:"effective_at,omitempty"`
 }
 
+type PersonaFactPolicy string
+
+const (
+	FactPolicyLocked           PersonaFactPolicy = "locked"
+	FactPolicyOperatorManaged  PersonaFactPolicy = "operator_managed"
+	FactPolicySelfCompleteOnce PersonaFactPolicy = "self_complete_once"
+	FactPolicySelfMutable      PersonaFactPolicy = "self_mutable"
+	FactPolicyForbidden        PersonaFactPolicy = "forbidden"
+)
+
+// PersonaFactDefinition declares one canonical fact slot. Keys ending in .*
+// are namespace policies and do not carry a value themselves.
+type PersonaFactDefinition struct {
+	Key           string            `json:"key" yaml:"key"`
+	Value         string            `json:"value,omitempty" yaml:"value,omitempty"`
+	Policy        PersonaFactPolicy `json:"policy" yaml:"policy"`
+	Aliases       []string          `json:"aliases,omitempty" yaml:"aliases,omitempty"`
+	Description   string            `json:"description,omitempty" yaml:"description,omitempty"`
+	AllowedValues []string          `json:"allowed_values,omitempty" yaml:"allowed_values,omitempty"`
+}
+
 const (
 	PersonaFactVerified = "verified"
+	// PersonaFactCanon is a fictional fact the persona has publicly established
+	// through a successfully delivered message. It is continuity, not a claim
+	// about the real world.
+	PersonaFactCanon    = "canon"
 	PersonaFactReported = "reported"
 )
 
@@ -40,19 +65,39 @@ const (
 // current life. Verified facts may override config seeds; reported facts are
 // injected only as hearsay and normally expire.
 type PersonaFact struct {
-	FactID        string    `json:"fact_id" yaml:"fact_id"`
-	PersonaID     string    `json:"persona_id" yaml:"persona_id"`
-	Key           string    `json:"key" yaml:"key"`
-	Value         string    `json:"value" yaml:"value"`
-	Status        string    `json:"status" yaml:"status"`
-	SourceKind    string    `json:"source_kind" yaml:"source_kind"`
-	SourceGroupID int64     `json:"source_group_id" yaml:"source_group_id"`
-	SourceUserID  int64     `json:"source_user_id" yaml:"source_user_id"`
-	SourceEventID string    `json:"source_event_id" yaml:"source_event_id"`
-	Confidence    float64   `json:"confidence" yaml:"confidence"`
-	EffectiveAt   time.Time `json:"effective_at" yaml:"effective_at"`
-	ExpiresAt     time.Time `json:"expires_at,omitempty" yaml:"expires_at,omitempty"`
-	RecordedAt    time.Time `json:"recorded_at" yaml:"recorded_at"`
+	FactID        string `json:"fact_id" yaml:"fact_id"`
+	PersonaID     string `json:"persona_id" yaml:"persona_id"`
+	Key           string `json:"key" yaml:"key"`
+	Value         string `json:"value" yaml:"value"`
+	Status        string `json:"status" yaml:"status"`
+	SourceKind    string `json:"source_kind" yaml:"source_kind"`
+	SourceGroupID int64  `json:"source_group_id" yaml:"source_group_id"`
+	SourceUserID  int64  `json:"source_user_id" yaml:"source_user_id"`
+	SourceEventID string `json:"source_event_id" yaml:"source_event_id"`
+	// SupersedesFactID is set only for an explicit self-correction. Facts remain
+	// append-only so prior public claims can still be audited.
+	SupersedesFactID string            `json:"supersedes_fact_id,omitempty" yaml:"supersedes_fact_id,omitempty"`
+	DefinitionHash   string            `json:"definition_hash,omitempty" yaml:"definition_hash,omitempty"`
+	ResolutionState  string            `json:"resolution_state,omitempty" yaml:"resolution_state,omitempty"`
+	Policy           PersonaFactPolicy `json:"policy,omitempty" yaml:"policy,omitempty"`
+	Confidence       float64           `json:"confidence" yaml:"confidence"`
+	EffectiveAt      time.Time         `json:"effective_at" yaml:"effective_at"`
+	ExpiresAt        time.Time         `json:"expires_at,omitempty" yaml:"expires_at,omitempty"`
+	RecordedAt       time.Time         `json:"recorded_at" yaml:"recorded_at"`
+}
+
+type PersonaFactReservationItem struct {
+	Key            string `json:"key" yaml:"key"`
+	Value          string `json:"value" yaml:"value"`
+	ExpectedFactID string `json:"expected_fact_id,omitempty" yaml:"expected_fact_id,omitempty"`
+}
+
+type PersonaFactReservation struct {
+	ReservationID  string                       `json:"reservation_id" yaml:"reservation_id"`
+	PersonaID      string                       `json:"persona_id" yaml:"persona_id"`
+	DefinitionHash string                       `json:"definition_hash" yaml:"definition_hash"`
+	Items          []PersonaFactReservationItem `json:"items" yaml:"items"`
+	ExpiresAt      time.Time                    `json:"expires_at" yaml:"expires_at"`
 }
 
 // SpeechPatterns 描述角色的口头习惯、禁忌用语和表情包频率。
@@ -87,16 +132,15 @@ type PersonaConfig struct {
 	// FactUpdateUserWhitelist lists QQ users allowed to turn a direct statement
 	// into a durable verified persona fact. Other users may only contribute
 	// short-lived reported facts.
-	FactUpdateUserWhitelist []int64            `json:"-" yaml:"fact_update_user_whitelist,omitempty"`
-	InitialFacts            []PersonaFactSeed  `json:"initial_facts,omitempty" yaml:"initial_facts,omitempty"`
-	ResponseScenarios       []ResponseScenario `json:"response_scenarios,omitempty" yaml:"response_scenarios,omitempty"`
+	FactUpdateUserWhitelist []int64                 `json:"-" yaml:"fact_update_user_whitelist,omitempty"`
+	Facts                   []PersonaFactDefinition `json:"facts,omitempty" yaml:"facts,omitempty"`
+	InitialFacts            []PersonaFactSeed       `json:"initial_facts,omitempty" yaml:"initial_facts,omitempty"`
+	ResponseScenarios       []ResponseScenario      `json:"response_scenarios,omitempty" yaml:"response_scenarios,omitempty"`
 	// Traits 是性格特征列表，如 ["直率", "爱开玩笑"]。
 	Traits     []string       `json:"traits" yaml:"traits"`
 	Background Background     `json:"background" yaml:"background"`
 	Speech     SpeechPatterns `json:"speech" yaml:"speech"`
 }
-
-
 
 type PersonaState struct {
 	PersonaID string    `json:"persona_id" yaml:"persona_id"`
