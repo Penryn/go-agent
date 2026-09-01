@@ -15,7 +15,6 @@ import (
 func Default() Config {
 	return Config{
 		App: AppConfig{
-			Name: "qq-group-bot",
 			Mode: "dev",
 		},
 		Server: ServerConfig{
@@ -53,7 +52,6 @@ func Default() Config {
 			PreferMemes:       false,
 		},
 		DefaultPolicy: policydomain.GroupPolicy{
-			PresenceLevel:     "balanced",
 			ToolAllowlist:     nil,
 			MaxConsecutiveBot: 1,
 		},

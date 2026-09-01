@@ -24,7 +24,6 @@ const (
 
 type GroupPolicy struct {
 	GroupID           int64          `json:"group_id" yaml:"group_id"`
-	PresenceLevel     string         `json:"presence_level" yaml:"presence_level"`
 	ToolAllowlist     []string       `json:"tool_allowlist" yaml:"tool_allowlist"`
 	MaxConsecutiveBot int            `json:"max_consecutive_bot" yaml:"max_consecutive_bot"`
 }

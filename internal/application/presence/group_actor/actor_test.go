@@ -16,7 +16,7 @@ import (
 func TestManagerMergesShortBurstAndKeepsOutboundEvent(t *testing.T) {
 	log := ingress.NewMemoryEventLog()
 	store := testsupport.NewStore(t)
-	manager := NewManager(log, WithTailSize(4), WithArchive(store))
+	manager := NewManager(log, WithArchive(store))
 	defer manager.Close()
 
 	base := time.Unix(100, 0)
@@ -101,7 +101,7 @@ func TestManagerEnrichesMediaOnlyForRecentEvent(t *testing.T) {
 	if memory.Candidates[0].Status != presencedomain.CandidateDeferred {
 		t.Fatalf("media candidate should wait for perception: %+v", memory.Candidates[0])
 	}
-	if _, ok, err := manager.ClaimDue(context.Background(), 1, base.Add(20*time.Second), 0.5); err != nil || ok {
+	if _, ok, err := manager.ClaimDue(context.Background(), 1, base.Add(20*time.Second)); err != nil || ok {
 		t.Fatalf("media candidate claimed before enrichment: ok=%v err=%v", ok, err)
 	}
 	if err := manager.EnrichMedia(context.Background(), 1, "media-1", []mediadomain.MediaDescriptor{{AttachmentID: "sticker-1", Kind: mediadomain.MediaSticker, Summary: "开心小狗"}}); err != nil {
@@ -117,7 +117,7 @@ func TestManagerEnrichesMediaOnlyForRecentEvent(t *testing.T) {
 	if memory.Candidates[0].Status != presencedomain.CandidatePending {
 		t.Fatalf("media candidate was not released: %+v", memory.Candidates[0])
 	}
-	if _, ok, err := manager.ClaimDue(context.Background(), 1, base.Add(20*time.Second), 0.5); err != nil || !ok {
+	if _, ok, err := manager.ClaimDue(context.Background(), 1, base.Add(20*time.Second)); err != nil || !ok {
 		t.Fatalf("released media candidate not claimable: ok=%v err=%v", ok, err)
 	}
 	if err := manager.EnrichMedia(context.Background(), 1, "missing", []mediadomain.MediaDescriptor{{Summary: "ignored"}}); err != nil {
@@ -152,7 +152,7 @@ func TestManagerEnqueuesProactiveCandidateThroughActor(t *testing.T) {
 	if err := manager.EnqueueCandidate(context.Background(), 9, candidate); err == nil {
 		t.Fatal("duplicate candidate should be rejected")
 	}
-	selected, ok, err := manager.ClaimDue(context.Background(), 9, due.Add(time.Second), 0.5)
+	selected, ok, err := manager.ClaimDue(context.Background(), 9, due.Add(time.Second))
 	if err != nil || !ok {
 		t.Fatalf("claim enqueued candidate: candidate=%+v ok=%v err=%v", selected, ok, err)
 	}
@@ -284,7 +284,7 @@ func TestPokeEventProducesHighUrgencyCandidate(t *testing.T) {
 		t.Fatalf("poke should not join the conversation burst: %+v", memory.CurrentBurst)
 	}
 	// 到期后可被 claim（DueAt = poke 时刻 + 1.2~3s 抖动）
-	claimed, ok, err := manager.ClaimDue(context.Background(), 1, time.Unix(105, 0), 0.5)
+	claimed, ok, err := manager.ClaimDue(context.Background(), 1, time.Unix(105, 0))
 	if err != nil || !ok || claimed.Intent != "poke_reply" {
 		t.Fatalf("poke candidate should be claimable: ok=%v err=%v intent=%s", ok, err, claimed.Intent)
 	}
@@ -309,7 +309,7 @@ func TestGroupIncreaseProducesWelcomeCandidate(t *testing.T) {
 		t.Fatalf("unexpected join candidate: %+v", candidate)
 	}
 	// 招呼时间窗有限：过期后不再可领
-	if _, ok, _ := manager.ClaimDue(context.Background(), 1, time.Unix(200, 0), 0.5); ok {
+	if _, ok, _ := manager.ClaimDue(context.Background(), 1, time.Unix(200, 0)); ok {
 		t.Fatal("join candidate should have expired after its window")
 	}
 }

@@ -29,9 +29,6 @@ func (s *Service) EffectiveGroupPolicy(groupID int64) policydomain.GroupPolicy {
 	policy.GroupID = groupID
 
 	if override, ok := s.overrides[groupID]; ok {
-		if override.PresenceLevel != "" {
-			policy.PresenceLevel = override.PresenceLevel
-		}
 		if override.ToolAllowlist != nil {
 			policy.ToolAllowlist = override.ToolAllowlist
 		}

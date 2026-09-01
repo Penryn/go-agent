@@ -133,12 +133,9 @@ func (c *Composer) instruction(snapshot conversationdomain.ContextSnapshot, deci
 	}
 
 	// ── 当前群策略层 ────────────────────────────────────────────────────────
-	sections = append(sections,
-		"",
-		"当前群策略层:",
-		fmt.Sprintf("本群存在感=%s。允许工具=%s。", snapshot.GroupPolicy.PresenceLevel, strings.Join(snapshot.GroupPolicy.ToolAllowlist, ",")),
-		"夜间和高频场景要更克制。",
-	)
+	if tools := strings.Join(snapshot.GroupPolicy.ToolAllowlist, ","); tools != "" {
+		sections = append(sections, "", "当前群策略层:", "允许工具="+tools+".", "夜间和高频场景要更克制。")
+	}
 
 	// ── 当前回合任务层 ──────────────────────────────────────────────────────
 	taskLines := []string{

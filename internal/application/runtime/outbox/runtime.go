@@ -22,19 +22,22 @@ type Handler func(context.Context, []byte) error
 type Config struct {
 	WorkerCount  int
 	PollInterval time.Duration
-	Lease        time.Duration
 	TaskTimeout  time.Duration
 	MaxAttempts  int
-	WorkerID     string
 }
 
 func DefaultConfig() Config {
-	return Config{WorkerCount: 1, PollInterval: 500 * time.Millisecond, Lease: time.Minute, TaskTimeout: 30 * time.Second, MaxAttempts: 5}
+	return Config{WorkerCount: 1, PollInterval: 500 * time.Millisecond, TaskTimeout: 30 * time.Second, MaxAttempts: 5}
 }
+
+// workerLease 是任务认领后的租期;单进程部署下足够,多实例部署时按
+// TaskTimeout 同步放宽即可。workerID 进程内唯一即可标识认领方。
+const workerLease = time.Minute
 
 type Runtime struct {
 	store    ports.OutboxStore
 	cfg      Config
+	workerID string
 	ctx      context.Context
 	cancel   context.CancelFunc
 	wg       sync.WaitGroup
@@ -50,20 +53,15 @@ func New(parent context.Context, store ports.OutboxStore, cfg Config) *Runtime {
 	if cfg.PollInterval <= 0 {
 		cfg.PollInterval = defaults.PollInterval
 	}
-	if cfg.Lease <= 0 {
-		cfg.Lease = defaults.Lease
-	}
 	if cfg.TaskTimeout <= 0 {
 		cfg.TaskTimeout = defaults.TaskTimeout
 	}
 	if cfg.MaxAttempts <= 0 {
 		cfg.MaxAttempts = defaults.MaxAttempts
 	}
-	if cfg.WorkerID == "" {
-		cfg.WorkerID = fmt.Sprintf("worker-%d", time.Now().UnixNano())
-	}
+	workerID := fmt.Sprintf("worker-%d", time.Now().UnixNano())
 	ctx, cancel := context.WithCancel(parent)
-	r := &Runtime{store: store, cfg: cfg, ctx: ctx, cancel: cancel, handlers: make(map[string]Handler)}
+	r := &Runtime{store: store, cfg: cfg, workerID: workerID, ctx: ctx, cancel: cancel, handlers: make(map[string]Handler)}
 	for i := 0; i < cfg.WorkerCount; i++ {
 		r.wg.Add(1)
 		go r.worker(i)
@@ -112,7 +110,7 @@ func TaskID(kind, idempotencyKey string) string {
 
 func (r *Runtime) worker(index int) {
 	defer r.wg.Done()
-	workerID := fmt.Sprintf("%s-%d", r.cfg.WorkerID, index)
+	workerID := fmt.Sprintf("%s-%d", r.workerID, index)
 	ticker := time.NewTicker(r.cfg.PollInterval)
 	defer ticker.Stop()
 	for {
@@ -129,7 +127,7 @@ func (r *Runtime) processBatch(workerID string, now time.Time) {
 	if r.store == nil {
 		return
 	}
-	tasks, err := r.store.ClaimOutbox(r.ctx, workerID, now, r.cfg.Lease, r.cfg.WorkerCount)
+	tasks, err := r.store.ClaimOutbox(r.ctx, workerID, now, workerLease, r.cfg.WorkerCount)
 	if err != nil {
 		slog.Warn("outbox: claim failed", "worker", workerID, "error", err)
 		return

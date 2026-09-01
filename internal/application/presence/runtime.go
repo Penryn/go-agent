@@ -24,7 +24,6 @@ import (
 )
 
 type Config struct {
-	PollInterval   time.Duration
 	JobTimeout     time.Duration
 	GroupWhitelist []int64
 	SelfID         int64
@@ -58,8 +57,11 @@ type TurnObserver interface {
 	AfterTurn(context.Context, conversationdomain.ContextSnapshot, policydomain.AutonomyDecision, replydomain.ActionReceipt) error
 }
 
+// pollInterval 是调度循环周期;100ms 足够即时,再快只会空转。
+const pollInterval = 100 * time.Millisecond
+
 func DefaultConfig() Config {
-	return Config{PollInterval: 100 * time.Millisecond, JobTimeout: 120 * time.Second}
+	return Config{JobTimeout: 120 * time.Second}
 }
 
 // 主动开口的触发条件：群冷场超过该时长，且群里有未接上的话题（OpenLoops）
@@ -134,9 +136,6 @@ func (r *Runtime) AddCompletedTurnObserver(observer CompletedTurnObserverFunc) {
 
 func New(parent context.Context, normalizer *normalizersvc.Service, working *groupactor.Manager, deliberator deliberation.Deliberator, perception PerceptionSubmitter, turns TurnObserver, executor *action.Service, cfg Config) *Runtime {
 	defaults := DefaultConfig()
-	if cfg.PollInterval <= 0 {
-		cfg.PollInterval = defaults.PollInterval
-	}
 	if cfg.JobTimeout <= 0 {
 		cfg.JobTimeout = defaults.JobTimeout
 	}
@@ -161,7 +160,7 @@ func New(parent context.Context, normalizer *normalizersvc.Service, working *gro
 		r.whitelist[groupID] = struct{}{}
 	}
 	r.wg.Add(1)
-	go r.loop(cfg.PollInterval, cfg.JobTimeout)
+	go r.loop(pollInterval, cfg.JobTimeout)
 	if r.proactiveInterval > 0 && r.proactiveProbability > 0 {
 		r.wg.Add(1)
 		go r.proactiveLoop()
@@ -254,7 +253,7 @@ func (r *Runtime) loop(interval, timeout time.Duration) {
 		case now := <-ticker.C:
 			r.working.PruneIdle(r.ctx, now)
 			for _, groupID := range r.working.GroupIDs() {
-				candidate, ok, err := r.working.ClaimDue(r.ctx, groupID, now, 0)
+				candidate, ok, err := r.working.ClaimDue(r.ctx, groupID, now)
 				if err != nil || !ok {
 					continue
 				}

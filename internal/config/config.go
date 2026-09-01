@@ -28,7 +28,6 @@ type Config struct {
 }
 
 type AppConfig struct {
-	Name     string `yaml:"name"`
 	Mode     string `yaml:"mode"`
 	LogLevel string `yaml:"log_level"` // debug / info / warn / error，默认 info
 }

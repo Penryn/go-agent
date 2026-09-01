@@ -44,14 +44,6 @@ type WorkingMemoryStore interface {
 	SaveWorkingMemory(context.Context, presencedomain.GroupWorkingMemory) error
 }
 
-func WithTailSize(size int) Option {
-	return func(m *Manager) {
-		if size > 0 {
-			m.tailSize = size
-		}
-	}
-}
-
 // WithArchive mirrors every observed event into the durable conversation
 // store. The event log remains the fast perception path; archive failures are
 // returned so callers can retry without losing the in-memory observation.
@@ -159,12 +151,12 @@ func (m *Manager) save(ctx context.Context, memory presencedomain.GroupWorkingMe
 	return m.state.SaveWorkingMemory(ctx, memory)
 }
 
-func (m *Manager) ClaimDue(ctx context.Context, groupID int64, now time.Time, minScore float64) (presencedomain.ThoughtCandidate, bool, error) {
+func (m *Manager) ClaimDue(ctx context.Context, groupID int64, now time.Time) (presencedomain.ThoughtCandidate, bool, error) {
 	a, err := m.actor(ctx, groupID)
 	if err != nil {
 		return presencedomain.ThoughtCandidate{}, false, err
 	}
-	candidate, memory := a.claim(now, minScore)
+	candidate, memory := a.claim(now)
 	if candidate == nil {
 		return presencedomain.ThoughtCandidate{}, false, nil
 	}
@@ -367,11 +359,11 @@ func (a *actor) observe(record presencedomain.EventRecord) presencedomain.GroupW
 	return cloneMemory(a.memory)
 }
 
-func (a *actor) claim(now time.Time, minScore float64) (*presencedomain.ThoughtCandidate, presencedomain.GroupWorkingMemory) {
+func (a *actor) claim(now time.Time) (*presencedomain.ThoughtCandidate, presencedomain.GroupWorkingMemory) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	a.touch()
-	candidate := claimCandidate(&a.memory, now, minScore)
+	candidate := claimCandidate(&a.memory, now)
 	pruneCandidates(&a.memory, a.maxCandidates)
 	return candidate, cloneMemory(a.memory)
 }
@@ -711,7 +703,7 @@ func appendUnique(items []string, value string) []string {
 	return append(items, value)
 }
 
-func claimCandidate(memory *presencedomain.GroupWorkingMemory, now time.Time, minScore float64) *presencedomain.ThoughtCandidate {
+func claimCandidate(memory *presencedomain.GroupWorkingMemory, now time.Time) *presencedomain.ThoughtCandidate {
 	var selected *presencedomain.ThoughtCandidate
 	for i := range memory.Candidates {
 		candidate := &memory.Candidates[i]
@@ -724,7 +716,7 @@ func claimCandidate(memory *presencedomain.GroupWorkingMemory, now time.Time, mi
 		if candidate.Status != presencedomain.CandidatePending {
 			continue
 		}
-		if candidate.Score < minScore || now.Before(candidate.DueAt) {
+		if now.Before(candidate.DueAt) {
 			continue
 		}
 		if !now.Before(candidate.ExpiresAt) {

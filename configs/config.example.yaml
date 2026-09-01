@@ -3,8 +3,6 @@
 # config.yaml 已被 Git 忽略，请勿将真实密钥提交到仓库。
 
 app:
-  # 应用名，仅用于日志和运行标识。
-  name: qq-bot
   # 运行模式：dev / prod。
   mode: dev
   # 终端日志级别：debug / info / warn / error，默认 info。
@@ -200,8 +198,6 @@ persona:
 
 # 默认群策略。未命中 group_policies 时使用这里。
 default_policy:
-  # 可选：low_key / balanced / active，当前逻辑主要消费是否保守回复。
-  presence_level: balanced
   # Agent 可调用工具白名单。留空表示全部注册工具均可用。
   tool_allowlist: []
   # 连续 bot 发言上限。

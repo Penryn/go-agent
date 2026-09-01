@@ -177,7 +177,7 @@ func TestProcessCandidateCompletesAfterDeliberationError(t *testing.T) {
 	if err := working.EnqueueCandidate(ctx, 7, candidateInput); err != nil {
 		t.Fatalf("enqueue: %v", err)
 	}
-	candidate, ok, err := working.ClaimDue(ctx, 7, time.Now(), 0)
+	candidate, ok, err := working.ClaimDue(ctx, 7, time.Now())
 	if err != nil || !ok {
 		t.Fatalf("claim: candidate=%+v ok=%v err=%v", candidate, ok, err)
 	}

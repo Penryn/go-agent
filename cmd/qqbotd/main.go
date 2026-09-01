@@ -39,7 +39,7 @@ func main() {
 	} else {
 		slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: logLevel})))
 	}
-	slog.Info("starting", "app", cfg.App.Name, "mode", cfg.App.Mode, "log_level", logLevel)
+	slog.Info("starting", "mode", cfg.App.Mode, "log_level", logLevel)
 
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
