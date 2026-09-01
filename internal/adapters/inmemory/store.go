@@ -3,7 +3,6 @@ package inmemory
 import (
 	"context"
 	"errors"
-	"fmt"
 	"slices"
 	"sort"
 	"strconv"
@@ -12,6 +11,8 @@ import (
 	"time"
 
 	"github.com/phlin/go-agent/internal/core/ports"
+	searchcore "github.com/phlin/go-agent/internal/core/search"
+	"github.com/phlin/go-agent/internal/core/search/bm25"
 	conversationdomain "github.com/phlin/go-agent/internal/domain/conversation"
 	mediadomain "github.com/phlin/go-agent/internal/domain/media"
 	memorydomain "github.com/phlin/go-agent/internal/domain/memory"
@@ -349,12 +350,15 @@ func (s *Store) QueryMemories(_ context.Context, query ports.MemoryQuery) ([]mem
 
 	now := time.Now()
 	result := make([]memorydomain.MemoryRecord, 0, len(s.memories))
-	needle := strings.ToLower(strings.TrimSpace(query.Query))
+	needle := strings.TrimSpace(query.Query)
 	for _, record := range s.memories {
-		if query.Scope == "" && !memoryVisible(record.Scope, query.GroupID, query.UserID) {
+		if query.Scope == "" && !searchcore.MemoryScopeVisible(record.Scope, query.GroupID, query.UserID) {
 			continue
 		}
 		if query.Scope != "" && record.Scope != query.Scope {
+			continue
+		}
+		if query.Scope != "" && !searchcore.MemoryScopeVisible(record.Scope, query.GroupID, query.UserID) {
 			continue
 		}
 		if len(query.Types) > 0 && !slices.Contains(query.Types, record.Type) {
@@ -364,17 +368,27 @@ func (s *Store) QueryMemories(_ context.Context, query ports.MemoryQuery) ([]mem
 		if record.ExpiresAt != nil && record.ExpiresAt.Before(now) {
 			continue
 		}
-		if needle != "" && !strings.Contains(strings.ToLower(record.Content), needle) && !strings.Contains(strings.ToLower(record.Subject), needle) {
-			continue
-		}
 		result = append(result, record)
 	}
 
-	// 遗忘：重要性随时间贴现——真人记忆里旧事除非特别重要，否则淡出。
-	// 排序键 = Importance / (1 + 天数/7)，一周龄的记忆权重减半。
-	sort.Slice(result, func(i, j int) bool {
-		return memoryRecallScore(result[i], now) > memoryRecallScore(result[j], now)
-	})
+	if needle != "" {
+		documents := make([]bm25.Document, len(result))
+		byID := make(map[string]memorydomain.MemoryRecord, len(result))
+		for i, record := range result {
+			documents[i] = bm25.Document{ID: record.MemoryID, Text: record.Subject + "\n" + record.Content}
+			byID[record.MemoryID] = record
+		}
+		ranked := bm25.Rank(needle, documents, query.TopK)
+		result = result[:0]
+		for _, item := range ranked {
+			result = append(result, byID[item.ID])
+		}
+	} else {
+		// 遗忘：重要性随时间贴现——真人记忆里旧事除非特别重要，否则淡出。
+		sort.Slice(result, func(i, j int) bool {
+			return memoryRecallScore(result[i], now) > memoryRecallScore(result[j], now)
+		})
+	}
 
 	if query.TopK > 0 && len(result) > query.TopK {
 		result = result[:query.TopK]
@@ -383,15 +397,12 @@ func (s *Store) QueryMemories(_ context.Context, query ports.MemoryQuery) ([]mem
 	return result, nil
 }
 
-func memoryVisible(scope string, groupID, userID int64) bool {
-	if groupID == 0 {
-		return scope == "global"
-	}
-	groupScope := fmt.Sprintf("group:%d", groupID)
-	if scope == "global" || scope == groupScope {
-		return true
-	}
-	return userID != 0 && scope == fmt.Sprintf("group:%d:user:%d", groupID, userID)
+// ListMemories returns the filtered corpus for the independent lexical
+// adapter. QueryMemories remains the compatibility query API.
+func (s *Store) ListMemories(ctx context.Context, query ports.MemoryQuery) ([]memorydomain.MemoryRecord, error) {
+	query.Query = ""
+	query.TopK = 0
+	return s.QueryMemories(ctx, query)
 }
 
 // memoryRecallScore 是记忆的召回优先级：重要性按时间贴现，但高重要性的
@@ -409,6 +420,9 @@ func memoryRecallScore(record memorydomain.MemoryRecord, now time.Time) float64 
 func (s *Store) UpsertMeme(_ context.Context, asset mediadomain.MemeAsset, descriptor mediadomain.MemeDescriptor) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if asset.Revision <= 0 {
+		asset.Revision = time.Now().UnixNano()
+	}
 	s.memeAssets[asset.MemeID] = asset
 	s.memeDesc[descriptor.MemeID] = descriptor
 	return nil
@@ -418,7 +432,7 @@ func (s *Store) SearchMemes(_ context.Context, query ports.MemeQuery) ([]mediado
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	needle := strings.ToLower(strings.TrimSpace(query.Query))
+	needle := strings.TrimSpace(query.Query)
 	result := make([]mediadomain.MemeSearchResult, 0, len(s.memeDesc))
 	for memeID, descriptor := range s.memeDesc {
 		if query.GroupID != 0 {
@@ -426,42 +440,54 @@ func (s *Store) SearchMemes(_ context.Context, query ports.MemeQuery) ([]mediado
 			if !ok || asset.Status != "approved" || (asset.GroupID != query.GroupID && asset.GroupID != 0) {
 				continue
 			}
-		} else if asset, ok := s.memeAssets[memeID]; !ok || asset.Status != "approved" {
+		} else if asset, ok := s.memeAssets[memeID]; !ok || asset.Status != "approved" || asset.GroupID != 0 {
 			continue
 		}
 
-		score := 0.0
-		terms := []string{}
-		if needle == "" {
-			score = 0.5
-		}
-		if strings.Contains(strings.ToLower(descriptor.Summary), needle) {
-			score += 0.6
-			terms = append(terms, descriptor.Summary)
-		}
-		for _, keyword := range descriptor.Keywords {
-			if strings.Contains(strings.ToLower(keyword), needle) {
-				score += 0.4
-				terms = append(terms, keyword)
-			}
-		}
-		if score == 0 && needle != "" {
-			continue
-		}
 		result = append(result, mediadomain.MemeSearchResult{
 			MemeID:       memeID,
-			Score:        score,
+			Score:        0.5,
 			MatchType:    "keyword",
-			MatchedTerms: terms,
+			MatchedTerms: descriptor.Keywords,
 			Descriptor:   descriptor,
 		})
 	}
 
-	sort.Slice(result, func(i, j int) bool { return result[i].Score > result[j].Score })
+	if needle != "" {
+		documents := make([]bm25.Document, len(result))
+		for i, item := range result {
+			documents[i] = bm25.Document{ID: item.MemeID, Text: memeSearchText(item.Descriptor)}
+		}
+		ranked := bm25.Rank(needle, documents, query.TopK)
+		byID := make(map[string]mediadomain.MemeSearchResult, len(result))
+		for _, item := range result {
+			byID[item.MemeID] = item
+		}
+		result = result[:0]
+		for _, item := range ranked {
+			found := byID[item.ID]
+			found.Score = item.Score
+			result = append(result, found)
+		}
+	} else {
+		sort.Slice(result, func(i, j int) bool { return result[i].Score > result[j].Score })
+	}
 	if query.TopK > 0 && len(result) > query.TopK {
 		result = result[:query.TopK]
 	}
 	return result, nil
+}
+
+// ListMemes returns the approved, visible corpus for the independent lexical
+// adapter. SearchMemes remains the compatibility query API.
+func (s *Store) ListMemes(ctx context.Context, query ports.MemeQuery) ([]mediadomain.MemeSearchResult, error) {
+	query.Query = ""
+	query.TopK = 0
+	return s.SearchMemes(ctx, query)
+}
+
+func memeSearchText(descriptor mediadomain.MemeDescriptor) string {
+	return strings.Join([]string{descriptor.Title, descriptor.Summary, strings.Join(descriptor.Keywords, " "), strings.Join(descriptor.EmotionTags, " "), strings.Join(descriptor.SceneTags, " "), strings.Join(descriptor.UsageHints, " ")}, "\n")
 }
 
 func (s *Store) GetMeme(_ context.Context, memeID string) (mediadomain.MemeAsset, mediadomain.MemeDescriptor, error) {

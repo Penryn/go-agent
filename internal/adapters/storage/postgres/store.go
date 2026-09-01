@@ -14,6 +14,8 @@ import (
 	_ "github.com/jackc/pgx/v5/stdlib"
 
 	"github.com/phlin/go-agent/internal/core/ports"
+	searchcore "github.com/phlin/go-agent/internal/core/search"
+	"github.com/phlin/go-agent/internal/core/search/bm25"
 	conversationdomain "github.com/phlin/go-agent/internal/domain/conversation"
 	mediadomain "github.com/phlin/go-agent/internal/domain/media"
 	memorydomain "github.com/phlin/go-agent/internal/domain/memory"
@@ -21,12 +23,15 @@ import (
 )
 
 var (
-	_ ports.MemoryStore        = (*Store)(nil)
-	_ ports.LearningStateStore = (*Store)(nil)
-	_ ports.ThoughtStore       = (*Store)(nil)
-	_ ports.MemeStore          = (*Store)(nil)
-	_ ports.ProfileStore       = (*Store)(nil)
-	_ ports.OutboxStore        = (*Store)(nil)
+	_ ports.MemoryStore               = (*Store)(nil)
+	_ ports.LearningStateStore        = (*Store)(nil)
+	_ ports.ThoughtStore              = (*Store)(nil)
+	_ ports.MemeStore                 = (*Store)(nil)
+	_ ports.ProfileStore              = (*Store)(nil)
+	_ ports.OutboxStore               = (*Store)(nil)
+	_ ports.MemoryCorpusReader        = (*Store)(nil)
+	_ ports.MemeCorpusReader          = (*Store)(nil)
+	_ ports.AtomicMemeProjectionStore = (*Store)(nil)
 )
 
 type Store struct {
@@ -416,7 +421,11 @@ func (s *Store) QueryMemories(ctx context.Context, query ports.MemoryQuery) ([]m
 		WHERE 1=1
 	`
 	args := []any{}
+	trimmedQuery := strings.TrimSpace(query.Query)
 	if query.Scope != "" {
+		if !searchcore.MemoryScopeVisible(query.Scope, query.GroupID, query.UserID) {
+			return []memorydomain.MemoryRecord{}, nil
+		}
 		base += " AND scope = $" + strconv.Itoa(len(args)+1)
 		args = append(args, query.Scope)
 	} else if query.GroupID != 0 {
@@ -433,18 +442,15 @@ func (s *Store) QueryMemories(ctx context.Context, query ports.MemoryQuery) ([]m
 		}
 		base += " AND type IN (" + strings.Join(phs, ",") + ")"
 	}
-	if trimmed := strings.TrimSpace(query.Query); trimmed != "" {
-		like := "%" + trimmed + "%"
-		base += " AND (subject LIKE $" + strconv.Itoa(len(args)+1) + " OR content LIKE $" + strconv.Itoa(len(args)+2) + ")"
-		args = append(args, like, like)
-	}
 	// 遗忘：过期记忆不再召回；重要性按时间贴现（高重要性衰减更慢，
 	// 半衰 = importance*30 天）——重要旧事压过无聊近事，无聊近事先淡出。
 	base += " AND (expires_at IS NULL OR expires_at > NOW())"
-	base += " ORDER BY importance / (1 + EXTRACT(EPOCH FROM (NOW() - created_at)) / 86400.0 / (GREATEST(importance, 0.1) * 30.0)) DESC, created_at DESC"
-	if query.TopK > 0 {
-		base += " LIMIT $" + strconv.Itoa(len(args)+1)
-		args = append(args, query.TopK)
+	if trimmedQuery == "" {
+		base += " ORDER BY importance / (1 + EXTRACT(EPOCH FROM (NOW() - created_at)) / 86400.0 / (GREATEST(importance, 0.1) * 30.0)) DESC, created_at DESC"
+		if query.TopK > 0 {
+			base += " LIMIT $" + strconv.Itoa(len(args)+1)
+			args = append(args, query.TopK)
+		}
 	}
 
 	rows, err := s.db.QueryContext(ctx, base, args...)
@@ -480,7 +486,32 @@ func (s *Store) QueryMemories(ctx context.Context, query ports.MemoryQuery) ([]m
 		}
 		records = append(records, record)
 	}
-	return records, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	if trimmedQuery == "" || len(records) == 0 {
+		return records, nil
+	}
+	documents := make([]bm25.Document, len(records))
+	byID := make(map[string]memorydomain.MemoryRecord, len(records))
+	for i, record := range records {
+		documents[i] = bm25.Document{ID: record.MemoryID, Text: record.Subject + "\n" + record.Content}
+		byID[record.MemoryID] = record
+	}
+	ranked := bm25.Rank(trimmedQuery, documents, query.TopK)
+	result := make([]memorydomain.MemoryRecord, 0, len(ranked))
+	for _, item := range ranked {
+		result = append(result, byID[item.ID])
+	}
+	return result, nil
+}
+
+// ListMemories returns the filtered authoritative corpus for the lexical
+// adapter. QueryMemories remains the compatibility query API.
+func (s *Store) ListMemories(ctx context.Context, query ports.MemoryQuery) ([]memorydomain.MemoryRecord, error) {
+	query.Query = ""
+	query.TopK = 0
+	return s.QueryMemories(ctx, query)
 }
 
 func (s *Store) GetMemberProfile(ctx context.Context, groupID, userID int64) (profiledomain.MemberProfile, error) {
@@ -602,11 +633,66 @@ func (s *Store) UpsertMeme(ctx context.Context, asset mediadomain.MemeAsset, des
 		}
 	}()
 
-	_, err = tx.ExecContext(ctx, `
+	if err = upsertMemeExec(ctx, tx, asset, descriptor); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+// UpsertMemeAndEnqueueVector makes the meme fact and its vector projection
+// task durable together. The outbox task is replayable if embedding is down.
+func (s *Store) UpsertMemeAndEnqueueVector(ctx context.Context, asset mediadomain.MemeAsset, descriptor mediadomain.MemeDescriptor, task ports.OutboxTask) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if err := upsertMemeExec(ctx, tx, asset, descriptor); err != nil {
+		return err
+	}
+	if task.Status == "" {
+		task.Status = ports.OutboxPending
+	}
+	if task.AvailableAt.IsZero() {
+		task.AvailableAt = time.Now()
+	}
+	if task.MaxAttempts <= 0 {
+		task.MaxAttempts = 5
+	}
+	if task.CreatedAt.IsZero() {
+		task.CreatedAt = time.Now()
+	}
+	if task.UpdatedAt.IsZero() {
+		task.UpdatedAt = task.CreatedAt
+	}
+	if _, err := tx.ExecContext(ctx, `
+		INSERT INTO async_outbox (
+			task_id, kind, idempotency_key, payload_json, status, attempts, max_attempts,
+			available_at, locked_until, locked_by, last_error, created_at, updated_at
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NULL, NULL, NULL, $9, $10)
+		ON CONFLICT (kind, idempotency_key) DO UPDATE SET
+			payload_json = EXCLUDED.payload_json,
+			status = CASE WHEN async_outbox.status = $11 THEN async_outbox.status ELSE EXCLUDED.status END,
+			available_at = CASE WHEN async_outbox.status = $11 THEN async_outbox.available_at ELSE EXCLUDED.available_at END,
+			updated_at = EXCLUDED.updated_at
+	`, task.ID, task.Kind, task.IdempotencyKey, task.Payload, task.Status, task.Attempts, task.MaxAttempts,
+		task.AvailableAt, task.CreatedAt, task.UpdatedAt, ports.OutboxRunning); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+func upsertMemeExec(ctx context.Context, execer sqlExecer, asset mediadomain.MemeAsset, descriptor mediadomain.MemeDescriptor) error {
+	createdAt := coalesceTime(asset.CreatedAt)
+	revision := asset.Revision
+	if revision <= 0 {
+		revision = createdAt.UnixNano()
+	}
+	if _, err := execer.ExecContext(ctx, `
 		INSERT INTO meme_assets (
 			meme_id, group_id, source_event_id, object_key, file_ext, content_hash, perceptual_hash,
-			width, height, animated, status, created_at
-		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+			width, height, animated, status, revision, created_at
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
 		ON CONFLICT (meme_id) DO UPDATE SET
 			group_id = EXCLUDED.group_id,
 			source_event_id = EXCLUDED.source_event_id,
@@ -617,10 +703,10 @@ func (s *Store) UpsertMeme(ctx context.Context, asset mediadomain.MemeAsset, des
 			width = EXCLUDED.width,
 			height = EXCLUDED.height,
 			animated = EXCLUDED.animated,
-			status = EXCLUDED.status
+			status = EXCLUDED.status,
+			revision = EXCLUDED.revision
 	`, asset.MemeID, asset.GroupID, asset.SourceEventID, asset.ObjectKey, asset.FileExt, asset.ContentHash, asset.PerceptualHash,
-		asset.Width, asset.Height, asset.Animated, asset.Status, coalesceTime(asset.CreatedAt))
-	if err != nil {
+		asset.Width, asset.Height, asset.Animated, asset.Status, revision, createdAt); err != nil {
 		return err
 	}
 
@@ -628,7 +714,7 @@ func (s *Store) UpsertMeme(ctx context.Context, asset mediadomain.MemeAsset, des
 	emotionJSON, _ := json.Marshal(descriptor.EmotionTags)
 	sceneJSON, _ := json.Marshal(descriptor.SceneTags)
 	usageJSON, _ := json.Marshal(descriptor.UsageHints)
-	_, err = tx.ExecContext(ctx, `
+	if _, err := execer.ExecContext(ctx, `
 		INSERT INTO meme_descriptors (
 			meme_id, title, summary, keywords_json, emotion_tags_json, scene_tags_json,
 			usage_hints_json, language, confidence, reviewed, updated_at
@@ -645,35 +731,36 @@ func (s *Store) UpsertMeme(ctx context.Context, asset mediadomain.MemeAsset, des
 			reviewed = EXCLUDED.reviewed,
 			updated_at = EXCLUDED.updated_at
 	`, descriptor.MemeID, descriptor.Title, descriptor.Summary, keywordsJSON, emotionJSON, sceneJSON,
-		usageJSON, descriptor.Language, descriptor.Confidence, descriptor.Reviewed, coalesceTime(descriptor.UpdatedAt))
-	if err != nil {
+		usageJSON, descriptor.Language, descriptor.Confidence, descriptor.Reviewed, coalesceTime(descriptor.UpdatedAt)); err != nil {
 		return err
 	}
-
-	return tx.Commit()
+	return nil
 }
 
 func (s *Store) SearchMemes(ctx context.Context, query ports.MemeQuery) ([]mediadomain.MemeSearchResult, error) {
-	like := "%" + strings.TrimSpace(query.Query) + "%"
-	if like == "%%" {
-		like = "%"
-	}
+	return s.searchMemes(ctx, query, true)
+}
+
+func (s *Store) searchMemes(ctx context.Context, query ports.MemeQuery, limitResults bool) ([]mediadomain.MemeSearchResult, error) {
+	trimmedQuery := strings.TrimSpace(query.Query)
 	limit := query.TopK
 	if limit <= 0 {
 		limit = 5
 	}
 
-	rows, err := s.db.QueryContext(ctx, `
+	base := `
 		SELECT a.meme_id, d.title, d.summary, d.keywords_json, d.emotion_tags_json, d.scene_tags_json,
 		       d.usage_hints_json, d.language, d.confidence, d.reviewed
 		FROM meme_assets a
 		JOIN meme_descriptors d ON d.meme_id = a.meme_id
 		WHERE a.status = 'approved'
-		  AND (a.group_id = $1 OR a.group_id = 0)
-		  AND (d.title LIKE $2 OR d.summary LIKE $3 OR d.keywords_json::text LIKE $4)
-		ORDER BY a.send_count DESC, d.updated_at DESC
-		LIMIT $5
-	`, query.GroupID, like, like, like, limit)
+		  AND (a.group_id = $1 OR a.group_id = 0)`
+	args := []any{query.GroupID}
+	if trimmedQuery == "" && limitResults {
+		base += " ORDER BY a.send_count DESC, d.updated_at DESC LIMIT $2"
+		args = append(args, limit)
+	}
+	rows, err := s.db.QueryContext(ctx, base, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -714,7 +801,38 @@ func (s *Store) SearchMemes(ctx context.Context, query ports.MemeQuery) ([]media
 		result.Descriptor = descriptor
 		results = append(results, result)
 	}
-	return results, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	if trimmedQuery == "" || len(results) == 0 {
+		return results, nil
+	}
+	documents := make([]bm25.Document, len(results))
+	byID := make(map[string]mediadomain.MemeSearchResult, len(results))
+	for i, result := range results {
+		documents[i] = bm25.Document{ID: result.MemeID, Text: memeDescriptorText(result.Descriptor)}
+		byID[result.MemeID] = result
+	}
+	ranked := bm25.Rank(trimmedQuery, documents, limit)
+	results = results[:0]
+	for _, item := range ranked {
+		result := byID[item.ID]
+		result.Score = item.Score
+		results = append(results, result)
+	}
+	return results, nil
+}
+
+// ListMemes returns the approved, visible authoritative corpus for the
+// lexical adapter. SearchMemes remains the compatibility query API.
+func (s *Store) ListMemes(ctx context.Context, query ports.MemeQuery) ([]mediadomain.MemeSearchResult, error) {
+	query.Query = ""
+	query.TopK = 0
+	return s.searchMemes(ctx, query, false)
+}
+
+func memeDescriptorText(descriptor mediadomain.MemeDescriptor) string {
+	return strings.Join([]string{descriptor.Title, descriptor.Summary, strings.Join(descriptor.Keywords, " "), strings.Join(descriptor.EmotionTags, " "), strings.Join(descriptor.SceneTags, " "), strings.Join(descriptor.UsageHints, " ")}, "\n")
 }
 
 func (s *Store) GetMeme(ctx context.Context, memeID string) (mediadomain.MemeAsset, mediadomain.MemeDescriptor, error) {
@@ -730,7 +848,7 @@ func (s *Store) GetMeme(ctx context.Context, memeID string) (mediadomain.MemeAss
 
 	err := s.db.QueryRowContext(ctx, `
 		SELECT a.meme_id, a.group_id, a.source_event_id, a.object_key, a.file_ext, a.content_hash,
-		       a.perceptual_hash, a.width, a.height, a.animated, a.status, a.created_at, a.last_sent_at,
+		       a.perceptual_hash, a.width, a.height, a.animated, a.status, a.revision, a.created_at, a.last_sent_at,
 		       a.send_count, a.dud_count,
 		       d.title, d.summary, d.keywords_json, d.emotion_tags_json, d.scene_tags_json,
 		       d.usage_hints_json, d.language, d.confidence, d.reviewed, d.updated_at
@@ -739,7 +857,7 @@ func (s *Store) GetMeme(ctx context.Context, memeID string) (mediadomain.MemeAss
 		WHERE a.meme_id = $1
 	`, memeID).Scan(
 		&asset.MemeID, &asset.GroupID, &asset.SourceEventID, &asset.ObjectKey, &asset.FileExt, &asset.ContentHash,
-		&asset.PerceptualHash, &asset.Width, &asset.Height, &asset.Animated, &asset.Status, &asset.CreatedAt, &lastSentAt,
+		&asset.PerceptualHash, &asset.Width, &asset.Height, &asset.Animated, &asset.Status, &asset.Revision, &asset.CreatedAt, &lastSentAt,
 		&asset.SendCount, &asset.DudCount,
 		&descriptor.Title, &descriptor.Summary, &keywordsJSON, &emotionJSON, &sceneJSON,
 		&usageJSON, &descriptor.Language, &descriptor.Confidence, &descriptor.Reviewed, &descriptor.UpdatedAt,

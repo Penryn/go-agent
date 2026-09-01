@@ -18,6 +18,7 @@ import (
 	profiledomain "github.com/phlin/go-agent/internal/domain/profile"
 	humandomain "github.com/phlin/go-agent/internal/humanbot/domain"
 	policysvc "github.com/phlin/go-agent/internal/services/policy"
+	retrievalsvc "github.com/phlin/go-agent/internal/services/retrieval"
 )
 
 // WorkingMemoryReader supplies the fast, per-group conversation state. It is
@@ -38,6 +39,7 @@ type Service struct {
 	semanticThreshold float64
 	workingMemory     WorkingMemoryReader
 	thoughts          ports.ThoughtStore
+	retriever         *retrievalsvc.Service
 }
 
 // WithThoughtStore 启用「回看上次判断」；不注入时快照不带 RecentThoughts。
@@ -45,6 +47,10 @@ func (s *Service) WithThoughtStore(store ports.ThoughtStore) { s.thoughts = stor
 
 func (s *Service) WithWorkingMemory(reader WorkingMemoryReader) {
 	s.workingMemory = reader
+}
+
+func (s *Service) WithRetriever(retriever *retrievalsvc.Service) {
+	s.retriever = retriever
 }
 
 func New(
@@ -245,6 +251,9 @@ func mergeRecentTurns(archived, live []conversationdomain.ConversationEvent, lim
 // queryMemoriesDualTrack 并发执行结构化关键词检索 + 语义向量检索，
 // 对结果去重合并后返回。向量检索失败时降级为纯关键词结果（fail-open）。
 func (s *Service) queryMemoriesDualTrack(ctx context.Context, groupID, userID int64, queryText string) ([]memorydomain.MemoryRecord, error) {
+	if s.retriever != nil {
+		return s.retriever.SearchMemories(ctx, ports.MemoryQuery{GroupID: groupID, UserID: userID, Query: queryText, TopK: max(s.semanticTopK, 4)})
+	}
 	const structuredTopK = 4
 
 	var (

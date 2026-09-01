@@ -15,6 +15,7 @@ import (
 	outboundnapcat "github.com/phlin/go-agent/internal/adapters/outbound/napcat"
 	"github.com/phlin/go-agent/internal/config"
 	"github.com/phlin/go-agent/internal/core/ports"
+	lexicalsearch "github.com/phlin/go-agent/internal/core/search/lexical"
 	conversationdomain "github.com/phlin/go-agent/internal/domain/conversation"
 	memorydomain "github.com/phlin/go-agent/internal/domain/memory"
 	replydomain "github.com/phlin/go-agent/internal/domain/reply"
@@ -41,6 +42,7 @@ import (
 	policysvc "github.com/phlin/go-agent/internal/services/policy"
 	profilesvc "github.com/phlin/go-agent/internal/services/profile"
 	promptingsvc "github.com/phlin/go-agent/internal/services/prompting"
+	retrievalsvc "github.com/phlin/go-agent/internal/services/retrieval"
 	toolsvc "github.com/phlin/go-agent/internal/services/tools"
 )
 
@@ -79,6 +81,23 @@ func NewApp(ctx context.Context, cfg config.Config) (*App, error) {
 	vectorGraph := buildVectorGraph(ctx, cfg, modelFactory, stores)
 	vectorMemoryStore := vectorGraph.memory
 	memeVectorStore := vectorGraph.meme
+	var memoryLexical ports.LexicalMemoryStore
+	if source, ok := stores.memory.(ports.MemoryCorpusReader); ok {
+		memoryLexical = lexicalsearch.NewMemoryAdapter(source)
+	}
+	var memeLexical ports.LexicalMemeStore
+	if source, ok := stores.meme.(ports.MemeCorpusReader); ok {
+		memeLexical = lexicalsearch.NewMemeAdapter(source)
+	}
+	hybridRetrieval := retrievalsvc.New(stores.memory, stores.meme, vectorMemoryStore, memeVectorStore, retrievalsvc.Config{
+		MemoryCandidateK: max(cfg.Memory.TopK*5, 20),
+		MemeCandidateK:   max(cfg.Meme.SearchTopK*5, 20),
+		MemoryThreshold:  cfg.Memory.SemanticThreshold,
+		MemeThreshold:    cfg.Meme.SemanticThreshold,
+	}, retrievalsvc.WithLexicalAdapters(
+		memoryLexical,
+		memeLexical,
+	))
 
 	// contextService 需要 VectorMemoryStore（无向量存储时为 nil，调用方跳过语义检索）
 	var vectorStore ports.VectorMemoryStore
@@ -86,6 +105,7 @@ func NewApp(ctx context.Context, cfg config.Config) (*App, error) {
 		vectorStore = vectorMemoryStore
 	}
 	contextService := contextsvc.New(stores.memory, vectorStore, stores.profile, stores.state, policyService, cfg.Persona)
+	contextService.WithRetriever(hybridRetrieval)
 	eventLog := humaningress.NewMemoryEventLog()
 	actorOptions := []humanactor.Option{
 		humanactor.WithArchive(stores.memory),
@@ -143,6 +163,7 @@ func NewApp(ctx context.Context, cfg config.Config) (*App, error) {
 	}
 	memeOpts := []memesvc.Option{
 		memesvc.WithVectorStore(memeVectorStore),
+		memesvc.WithRetriever(hybridRetrieval),
 		memesvc.WithBackgroundRuntime(backgroundRuntime),
 	}
 	if durableOutbox != nil {
@@ -202,6 +223,7 @@ func NewApp(ctx context.Context, cfg config.Config) (*App, error) {
 		toolsvc.WithPersonaID(cfg.Persona.ID),
 		toolsvc.WithMemoryService(memorySvc),
 		toolsvc.WithMemeService(memeService),
+		toolsvc.WithMemoryRetriever(hybridRetrieval),
 		toolsvc.WithWriteApprovalStore(writeApprovals),
 	)
 	if err := toolRuntime.RegisterTools(ctx, mcpTools.Tools...); err != nil {

@@ -54,6 +54,7 @@ type MemeAsset struct {
 	Height         int        `json:"height" yaml:"height"`
 	Animated       bool       `json:"animated" yaml:"animated"`
 	Status         string     `json:"status" yaml:"status"`
+	Revision       int64      `json:"revision" yaml:"revision"`
 	CreatedAt      time.Time  `json:"created_at" yaml:"created_at"`
 	LastSentAt     *time.Time `json:"last_sent_at,omitempty" yaml:"last_sent_at,omitempty"`
 	// SendCount 是累计发送次数；DudCount 是发送后群里持续冷场的次数。

@@ -11,6 +11,7 @@ import (
 	"github.com/phlin/go-agent/internal/core/ports"
 	conversationdomain "github.com/phlin/go-agent/internal/domain/conversation"
 	mediadomain "github.com/phlin/go-agent/internal/domain/media"
+	retrievalsvc "github.com/phlin/go-agent/internal/services/retrieval"
 )
 
 func TestObserveEventAndBuildSendSegments(t *testing.T) {
@@ -208,6 +209,43 @@ func TestObserveEventUsesOutboxForVectorIndex(t *testing.T) {
 type recordingMemeOutbox struct {
 	kind, key string
 	body      []byte
+}
+
+type fallbackMemeStore struct {
+	*inmemory.Store
+	calls int
+}
+
+func (s *fallbackMemeStore) SearchMemes(ctx context.Context, query ports.MemeQuery) ([]mediadomain.MemeSearchResult, error) {
+	s.calls++
+	if s.calls == 1 {
+		return nil, nil
+	}
+	return s.Store.SearchMemes(ctx, query)
+}
+
+type missingVectorMeme struct{}
+
+func (missingVectorMeme) IndexMeme(context.Context, string, string, int64) error { return nil }
+func (missingVectorMeme) SearchMemes(context.Context, int64, string, int, float64) ([]mediadomain.MemeSearchResult, error) {
+	return []mediadomain.MemeSearchResult{{MemeID: "missing-vector-result"}}, nil
+}
+func (missingVectorMeme) DeleteMeme(context.Context, string) error { return nil }
+
+func TestSearchFallsBackToBM25AfterHybridCandidatesAreFiltered(t *testing.T) {
+	base := inmemory.NewStore()
+	if err := base.UpsertMeme(context.Background(), mediadomain.MemeAsset{
+		MemeID: "keyword-hit", GroupID: 1, ObjectKey: "keyword.webp", Status: "approved",
+	}, mediadomain.MemeDescriptor{MemeID: "keyword-hit", Summary: "可用关键词结果", Keywords: []string{"关键词"}}); err != nil {
+		t.Fatal(err)
+	}
+	store := &fallbackMemeStore{Store: base}
+	retriever := retrievalsvc.New(store, store, nil, missingVectorMeme{}, retrievalsvc.Config{MemeCandidateK: 1})
+	svc := New(store, config.MemeConfig{SearchTopK: 1}, WithRetriever(retriever))
+	results, err := svc.Search(context.Background(), ports.MemeQuery{GroupID: 1, Query: "关键词", TopK: 1})
+	if err != nil || len(results) != 1 || results[0].MemeID != "keyword-hit" || store.calls < 2 {
+		t.Fatalf("expected BM25 fallback, results=%+v calls=%d err=%v", results, store.calls, err)
+	}
 }
 
 func (o *recordingMemeOutbox) Enqueue(_ context.Context, kind, key string, body []byte) error {

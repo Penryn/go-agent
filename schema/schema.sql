@@ -75,6 +75,7 @@ CREATE TABLE IF NOT EXISTS meme_assets (
   height INT NOT NULL,
   animated BOOLEAN NOT NULL DEFAULT FALSE,
   status VARCHAR(32) NOT NULL,
+  revision BIGINT NOT NULL DEFAULT 1,
   send_count BIGINT NOT NULL DEFAULT 0,
   dud_count BIGINT NOT NULL DEFAULT 0,
   last_sent_at TIMESTAMPTZ NULL,
@@ -82,6 +83,7 @@ CREATE TABLE IF NOT EXISTS meme_assets (
 );
 CREATE INDEX IF NOT EXISTS idx_meme_assets_group ON meme_assets (group_id);
 CREATE UNIQUE INDEX IF NOT EXISTS uniq_meme_content_hash ON meme_assets (content_hash);
+ALTER TABLE meme_assets ADD COLUMN IF NOT EXISTS revision BIGINT NOT NULL DEFAULT 1;
 
 CREATE TABLE IF NOT EXISTS meme_descriptors (
   meme_id VARCHAR(128) PRIMARY KEY,

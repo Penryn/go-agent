@@ -18,6 +18,7 @@ import (
 	conversationdomain "github.com/phlin/go-agent/internal/domain/conversation"
 	mediadomain "github.com/phlin/go-agent/internal/domain/media"
 	backgroundruntime "github.com/phlin/go-agent/internal/runtime/background"
+	retrievalsvc "github.com/phlin/go-agent/internal/services/retrieval"
 )
 
 type Service struct {
@@ -25,6 +26,7 @@ type Service struct {
 	vectorStore ports.VectorMemeStore
 	cfg         config.MemeConfig
 	background  backgroundSubmitter
+	retriever   *retrievalsvc.Service
 	outbox      interface {
 		Enqueue(context.Context, string, string, []byte) error
 	}
@@ -113,6 +115,10 @@ func WithVectorStore(vs ports.VectorMemeStore) Option {
 	return func(s *Service) { s.vectorStore = vs }
 }
 
+func WithRetriever(retriever *retrievalsvc.Service) Option {
+	return func(s *Service) { s.retriever = retriever }
+}
+
 func WithOutbox(runtime interface {
 	Enqueue(context.Context, string, string, []byte) error
 }) Option {
@@ -161,7 +167,7 @@ func (s *Service) ObserveEvent(ctx context.Context, event conversationdomain.Con
 
 		memeID := buildMemeID(attachment)
 		memeDescriptor := buildMemeDescriptor(memeID, attachment, []mediadomain.MediaDescriptor{descriptor}, s.cfg.CandidateThreshold)
-		err := s.store.UpsertMeme(ctx, mediadomain.MemeAsset{
+		memeAsset := mediadomain.MemeAsset{
 			MemeID:         memeID,
 			GroupID:        event.GroupID,
 			SourceEventID:  event.EventID,
@@ -174,9 +180,6 @@ func (s *Service) ObserveEvent(ctx context.Context, event conversationdomain.Con
 			Animated:       strings.EqualFold(fileExt(attachment.ObjectKey), ".gif"),
 			Status:         "approved",
 			CreatedAt:      time.Now(),
-		}, memeDescriptor)
-		if err != nil {
-			return err
 		}
 
 		// Vector indexing is background work; the runtime owns its timeout and
@@ -186,9 +189,24 @@ func (s *Service) ObserveEvent(ctx context.Context, event conversationdomain.Con
 			groupID := event.GroupID
 			if s.outbox != nil {
 				revision := time.Now().UnixNano()
+				memeAsset.Revision = revision
+				idempotencyKey := fmt.Sprintf("%s:%d", memeID, revision)
 				payload, marshalErr := json.Marshal(VectorIndexTask{MemeID: memeID, Text: indexText, GroupID: groupID, Revision: revision})
 				if marshalErr == nil {
-					if enqueueErr := s.outbox.Enqueue(ctx, "meme_vector_index", fmt.Sprintf("%s:%d", memeID, revision), payload); enqueueErr == nil {
+					if atomicStore, ok := s.store.(ports.AtomicMemeProjectionStore); ok {
+						if atomicErr := atomicStore.UpsertMemeAndEnqueueVector(ctx, memeAsset, memeDescriptor, ports.OutboxTask{
+							ID: "meme-vector-" + idempotencyKey, Kind: "meme_vector_index",
+							IdempotencyKey: idempotencyKey, Payload: payload,
+						}); atomicErr == nil {
+							continue
+						} else {
+							marshalErr = atomicErr
+						}
+					}
+					if enqueueErr := s.outbox.Enqueue(ctx, "meme_vector_index", idempotencyKey, payload); enqueueErr == nil {
+						if err := s.store.UpsertMeme(ctx, memeAsset, memeDescriptor); err != nil {
+							return err
+						}
 						continue
 					} else {
 						marshalErr = enqueueErr
@@ -210,6 +228,9 @@ func (s *Service) ObserveEvent(ctx context.Context, event conversationdomain.Con
 			} else {
 				backgroundruntime.RunInline(ctx, job)
 			}
+		}
+		if err := s.store.UpsertMeme(ctx, memeAsset, memeDescriptor); err != nil {
+			return err
 		}
 	}
 	return nil
@@ -235,6 +256,23 @@ func (s *Service) Search(ctx context.Context, query ports.MemeQuery) ([]mediadom
 	}
 	if query.TopK <= 0 {
 		query.TopK = 5
+	}
+	if s.retriever != nil {
+		results, err := s.retriever.SearchMemes(ctx, query)
+		if err != nil {
+			return nil, err
+		}
+		filtered, err := s.rankAndFilter(ctx, results, query)
+		if err != nil {
+			return nil, err
+		}
+		if len(filtered) == 0 && strings.TrimSpace(query.Query) != "" {
+			fallback, fallbackErr := s.retriever.SearchMemesLexical(ctx, query)
+			if fallbackErr == nil {
+				return s.rankAndFilter(ctx, fallback, query)
+			}
+		}
+		return filtered, nil
 	}
 
 	// ponytail: bounded overfetch keeps tag filtering local; push filters into

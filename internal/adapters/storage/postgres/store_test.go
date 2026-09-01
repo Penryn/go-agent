@@ -255,6 +255,36 @@ func TestMemes(t *testing.T) {
 	}
 }
 
+func TestAtomicMemeProjection(t *testing.T) {
+	ctx := context.Background()
+	db := setupPostgres(t)
+	store := NewStore(db)
+	memeID := fmt.Sprintf("meme-atomic-%d", time.Now().UnixNano())
+	revision := time.Now().UnixNano()
+	if err := store.UpsertMemeAndEnqueueVector(ctx, mediadomain.MemeAsset{
+		MemeID: memeID, GroupID: 1, ObjectKey: "atomic.webp", Status: "approved", Revision: revision,
+	}, mediadomain.MemeDescriptor{MemeID: memeID, Summary: "atomic"}, ports.OutboxTask{
+		ID: "task-" + memeID, Kind: "meme_vector_index", IdempotencyKey: memeID,
+		Payload: []byte(`{"meme_id":"` + memeID + `"}`),
+	}); err != nil {
+		t.Fatalf("atomic upsert: %v", err)
+	}
+	asset, _, err := store.GetMeme(ctx, memeID)
+	if err != nil {
+		t.Fatalf("get atomic meme: %v", err)
+	}
+	if asset.Revision != revision {
+		t.Fatalf("revision = %d, want %d", asset.Revision, revision)
+	}
+	claimed, err := store.ClaimOutbox(ctx, "atomic-test-worker", time.Now(), time.Minute, 10)
+	if err != nil {
+		t.Fatalf("claim atomic task: %v", err)
+	}
+	if len(claimed) != 1 || claimed[0].Kind != "meme_vector_index" {
+		t.Fatalf("unexpected atomic tasks: %+v", claimed)
+	}
+}
+
 func TestWatermarksAndThoughts(t *testing.T) {
 	ctx := context.Background()
 	db := setupPostgres(t)
@@ -385,9 +415,9 @@ func TestMemoryForgetting(t *testing.T) {
 		Importance: 0.9, CreatedAt: time.Now().AddDate(0, 0, -30),
 	}
 	expired := memorydomain.MemoryRecord{
-		MemoryID:  fmt.Sprintf("exp-%d", time.Now().UnixNano()),
-		Scope:     "group:1", Type: "preference",
-		Subject:   "过期", Content: "已过期的记忆",
+		MemoryID: fmt.Sprintf("exp-%d", time.Now().UnixNano()),
+		Scope:    "group:1", Type: "preference",
+		Subject: "过期", Content: "已过期的记忆",
 		Importance: 0.95, CreatedAt: time.Now().Add(-time.Hour),
 		ExpiresAt: &[]time.Time{time.Now().Add(-time.Minute)}[0],
 	}

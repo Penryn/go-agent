@@ -54,6 +54,19 @@ type MemoryStore interface {
 	QueryMemories(ctx context.Context, query MemoryQuery) ([]memorydomain.MemoryRecord, error)
 }
 
+// MemoryCorpusReader exposes the filtered authoritative corpus to a lexical
+// adapter. It deliberately does not accept a text query: ranking belongs to
+// the lexical adapter, while scope, type, and expiry filtering stay with the
+// authoritative store.
+type MemoryCorpusReader interface {
+	ListMemories(ctx context.Context, query MemoryQuery) ([]memorydomain.MemoryRecord, error)
+}
+
+// LexicalMemoryStore is the BM25 candidate retrieval port.
+type LexicalMemoryStore interface {
+	SearchMemoriesLexical(ctx context.Context, query MemoryQuery) ([]memorydomain.MemoryRecord, error)
+}
+
 // AtomicMemoryProjectionStore commits the authoritative memory and its durable
 // vector projection task in one database transaction.
 type AtomicMemoryProjectionStore interface {
@@ -121,6 +134,23 @@ type MemeStore interface {
 	MarkMemeDud(ctx context.Context, memeID string) error
 	CountMemesByGroup(ctx context.Context, groupID int64) (int, error)
 	DeleteOldestMemes(ctx context.Context, groupID int64, deleteCount int) error
+}
+
+// AtomicMemeProjectionStore commits a meme fact and its durable vector task
+// in one transaction, closing the crash window between the two writes.
+type AtomicMemeProjectionStore interface {
+	UpsertMemeAndEnqueueVector(ctx context.Context, asset mediadomain.MemeAsset, descriptor mediadomain.MemeDescriptor, task OutboxTask) error
+}
+
+// MemeCorpusReader exposes approved, visible meme descriptors to a lexical
+// adapter. The authoritative store still owns status and group filtering.
+type MemeCorpusReader interface {
+	ListMemes(ctx context.Context, query MemeQuery) ([]mediadomain.MemeSearchResult, error)
+}
+
+// LexicalMemeStore is the BM25 candidate retrieval port for meme search.
+type LexicalMemeStore interface {
+	SearchMemesLexical(ctx context.Context, query MemeQuery) ([]mediadomain.MemeSearchResult, error)
 }
 
 type ProfileStore interface {

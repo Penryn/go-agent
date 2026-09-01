@@ -15,11 +15,13 @@ import (
 
 	"github.com/phlin/go-agent/internal/core/ports"
 	mediadomain "github.com/phlin/go-agent/internal/domain/media"
+	memorydomain "github.com/phlin/go-agent/internal/domain/memory"
 	policydomain "github.com/phlin/go-agent/internal/domain/policy"
 	profiledomain "github.com/phlin/go-agent/internal/domain/profile"
 	replydomain "github.com/phlin/go-agent/internal/domain/reply"
 	memesvc "github.com/phlin/go-agent/internal/services/meme"
 	memsvc "github.com/phlin/go-agent/internal/services/memory"
+	retrievalsvc "github.com/phlin/go-agent/internal/services/retrieval"
 	"github.com/phlin/go-agent/internal/services/textutil"
 )
 
@@ -30,6 +32,7 @@ type Runtime struct {
 	personaID    string
 	memSvc       *memsvc.Service
 	memeSvc      *memesvc.Service
+	retriever    *retrievalsvc.Service
 	external     []registeredTool
 	approvals    *WriteApprovalStore
 }
@@ -61,6 +64,10 @@ func WithMemoryService(svc *memsvc.Service) Option {
 
 func WithMemeService(svc *memesvc.Service) Option {
 	return func(rt *Runtime) { rt.memeSvc = svc }
+}
+
+func WithMemoryRetriever(retriever *retrievalsvc.Service) Option {
+	return func(rt *Runtime) { rt.retriever = retriever }
 }
 
 func WithWriteApprovalStore(store *WriteApprovalStore) Option {
@@ -164,7 +171,7 @@ func (r *Runtime) replyTools() []namedTool {
 
 func (r *Runtime) knowledgeTools(session replydomain.ToolContext) []namedTool {
 	return []namedTool{
-		newQueryMemoryTool(r.memoryStore, session),
+		newQueryMemoryTool(r.memoryStore, r.retriever, session),
 		newSearchMemeTool(r.memeStore, r.memeSvc, session),
 	}
 }
@@ -448,8 +455,9 @@ func (t *reactEmojiTool) InvokableRun(_ context.Context, argumentsInJSON string,
 }
 
 type queryMemoryTool struct {
-	store   ports.MemoryStore
-	session replydomain.ToolContext
+	store     ports.MemoryStore
+	retriever *retrievalsvc.Service
+	session   replydomain.ToolContext
 }
 
 type queryMemoryArgs struct {
@@ -459,8 +467,8 @@ type queryMemoryArgs struct {
 	MemoryTypes []string `json:"memory_types"`
 }
 
-func newQueryMemoryTool(store ports.MemoryStore, session replydomain.ToolContext) *queryMemoryTool {
-	return &queryMemoryTool{store: store, session: session}
+func newQueryMemoryTool(store ports.MemoryStore, retriever *retrievalsvc.Service, session replydomain.ToolContext) *queryMemoryTool {
+	return &queryMemoryTool{store: store, retriever: retriever, session: session}
 }
 
 func (t *queryMemoryTool) Name() string { return "query_memory" }
@@ -484,14 +492,21 @@ func (t *queryMemoryTool) InvokableRun(ctx context.Context, argumentsInJSON stri
 		return "", fmt.Errorf("decode query_memory args: %w", err)
 	}
 	slog.Debug("tool: query_memory", "query", args.Query, "scope", args.Scope, "top_k", args.TopK)
-	records, err := t.store.QueryMemories(ctx, ports.MemoryQuery{
+	query := ports.MemoryQuery{
 		GroupID: t.session.GroupID,
 		UserID:  t.session.UserID,
 		Query:   args.Query,
 		TopK:    clamp(args.TopK, 1, 5),
 		Scope:   args.Scope,
 		Types:   args.MemoryTypes,
-	})
+	}
+	var records []memorydomain.MemoryRecord
+	var err error
+	if t.retriever != nil {
+		records, err = t.retriever.SearchMemories(ctx, query)
+	} else {
+		records, err = t.store.QueryMemories(ctx, query)
+	}
 	if err != nil {
 		return "", err
 	}
