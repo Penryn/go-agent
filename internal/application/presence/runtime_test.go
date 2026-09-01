@@ -55,7 +55,6 @@ func TestProcessRawEventUsesCandidateRuntime(t *testing.T) {
 	ctx := context.Background()
 	cfg := config.Default()
 	cfg.QQ.SelfID = 123456
-	cfg.DefaultPolicy.QuietHours = nil
 	store := inmemory.NewStore()
 	policy := policysvc.New(cfg)
 	normalizer := normalizer.New("onebot", cfg.QQ.SelfID, cfg.Persona.Aliases)
@@ -88,7 +87,6 @@ func TestProcessRawEventSendsOrdinaryContentToPlanner(t *testing.T) {
 	ctx := context.Background()
 	cfg := config.Default()
 	cfg.QQ.SelfID = 123456
-	cfg.DefaultPolicy.QuietHours = nil
 	store := inmemory.NewStore()
 	policy := policysvc.New(cfg)
 	normalizer := normalizer.New("onebot", cfg.QQ.SelfID, cfg.Persona.Aliases)

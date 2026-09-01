@@ -26,7 +26,6 @@ type GroupPolicy struct {
 	PresenceLevel     string         `json:"presence_level" yaml:"presence_level"`
 	PersonaOverlay    map[string]any `json:"persona_overlay" yaml:"persona_overlay"`
 	ToolAllowlist     []string       `json:"tool_allowlist" yaml:"tool_allowlist"`
-	QuietHours        []string       `json:"quiet_hours" yaml:"quiet_hours"`
 	MaxConsecutiveBot int            `json:"max_consecutive_bot" yaml:"max_consecutive_bot"`
 }
 

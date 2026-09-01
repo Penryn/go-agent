@@ -17,14 +17,13 @@ type TurnObserver struct {
 	states   ports.RuntimeStateStore
 	persona  *personasvc.Service
 	cooldown time.Duration
-	// policies 解析当前群的 GroupPolicy（静默时段、连续发言上限）。
+	// policies 解析当前群的 GroupPolicy（连续发言上限）。
 	policies PolicyResolver
 }
 
 // PolicyResolver 是 CanDeliberate 输出规则闸门需要的群策略视图。
 type PolicyResolver interface {
 	EffectiveGroupPolicy(groupID int64) policydomain.GroupPolicy
-	QuietHourActive(now time.Time, policy policydomain.GroupPolicy) bool
 }
 
 func New(states ports.RuntimeStateStore, persona *personasvc.Service, cooldown time.Duration, policies PolicyResolver) *TurnObserver {
@@ -47,10 +46,6 @@ func (o *TurnObserver) CanDeliberate(ctx context.Context, groupID int64, now tim
 	}
 	if o.policies != nil {
 		policy := o.policies.EffectiveGroupPolicy(groupID)
-		// 安静时段：夜里不主动出声，也不接话（被 @ 也在闸内，真人半夜也不回）。
-		if o.policies.QuietHourActive(now, policy) {
-			return false, nil
-		}
 		// 防刷屏：连续发言超过群策略上限后，等待一次自然的群消息间隔。
 		if maxConsecutive := policy.MaxConsecutiveBot; maxConsecutive > 0 && state.ConsecutiveBotTurns >= maxConsecutive {
 			return false, nil

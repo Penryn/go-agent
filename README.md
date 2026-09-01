@@ -174,7 +174,7 @@ go run ./cmd/qqbotd -config configs/config.yaml
 | `server` | HTTP 监听地址、读写超时 |
 | `models` | 主模型 / Vision / Embedding 的 provider、model、base_url |
 | `persona` | 人设名、别名、说话风格、约束、回复字数上限 |
-| `default_policy` | 默认群策略（存在感级别、安静时段、连续发言上限等） |
+| `default_policy` | 默认群策略（存在感级别、连续发言上限等） |
 | `group_policies` | 按群号覆写策略 |
 | `autonomy` | Presence Runtime 的观察窗口、主动概率和限流参数 |
 | `tools` | Agent 工具白名单、超时、预算 |

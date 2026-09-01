@@ -165,9 +165,6 @@ default_policy:
   presence_level: balanced
   # Agent 可调用工具白名单。留空表示全部注册工具均可用。
   tool_allowlist: []
-  # 可选的安静时段，格式 HH:MM-HH:MM，支持跨午夜（如 23:00-06:00）。
-  # 留空表示全天正常说话。配置后时段内 bot 不主动出声也不接话，包括被 @。
-  quiet_hours: []
   # 连续 bot 发言上限。
   max_consecutive_bot: 3
 
