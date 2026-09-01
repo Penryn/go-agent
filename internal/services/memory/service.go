@@ -11,7 +11,6 @@ import (
 
 	"github.com/phlin/go-agent/internal/core/ports"
 	memorydomain "github.com/phlin/go-agent/internal/domain/memory"
-	backgroundruntime "github.com/phlin/go-agent/internal/runtime/background"
 )
 
 type WriteIntent struct {
@@ -50,20 +49,9 @@ type Service struct {
 	vectorStore ports.VectorMemoryStore // 可为 nil，nil 时跳过向量写入
 	typeTTL     map[string]string       // 按类型差异化 TTL，可为 nil
 	defaultTTL  string                  // 全局默认 TTL（如 "720h"），空时不设过期
-	background  backgroundSubmitter
 	outbox      interface {
 		Enqueue(context.Context, string, string, []byte) error
 	}
-}
-
-type backgroundSubmitter interface {
-	Submit(backgroundruntime.Job) bool
-}
-
-// WithBackgroundRuntime routes vector synchronization through the application
-// job owner instead of creating an untracked goroutine.
-func WithBackgroundRuntime(runtime backgroundSubmitter) Option {
-	return func(s *Service) { s.background = runtime }
 }
 
 func WithOutbox(runtime interface {
@@ -128,34 +116,21 @@ func (s *Service) MarkIntent(ctx context.Context, intent WriteIntent) (memorydom
 		return memorydomain.MemoryRecord{}, err
 	}
 
-	// Step 2: submit vector synchronization as background work (副存储，失败只打日志，不影响主流程)
+	// Step 2: submit vector synchronization through the durable outbox.
 	if s.vectorStore != nil {
-		vs := s.vectorStore
-		r := record
 		if s.outbox != nil {
-			payload, marshalErr := json.Marshal(r)
+			payload, marshalErr := json.Marshal(record)
 			if marshalErr == nil {
-				if enqueueErr := s.outbox.Enqueue(ctx, "memory_vector_index", projectionKey(r.MemoryID, r.Revision), payload); enqueueErr == nil {
+				if enqueueErr := s.outbox.Enqueue(ctx, "memory_vector_index", projectionKey(record.MemoryID, record.Revision), payload); enqueueErr == nil {
 					return record, nil
 				} else {
 					marshalErr = enqueueErr
 				}
 			}
-			slog.Warn("memory: outbox enqueue failed, using process-local queue", "memory_id", r.MemoryID, "err", marshalErr)
+			slog.Warn("memory: outbox enqueue failed, indexing synchronously", "memory_id", record.MemoryID, "err", marshalErr)
 		}
-		job := backgroundruntime.Job{
-			Name:    "vector_store_memory",
-			Timeout: 10 * time.Second,
-			Run: func(ctx context.Context) error {
-				return vs.StoreMemory(ctx, r)
-			},
-		}
-		if s.background != nil {
-			if !s.background.Submit(job) {
-				slog.Warn("memory: vector sync job dropped", "memory_id", r.MemoryID)
-			}
-		} else {
-			backgroundruntime.RunInline(ctx, job)
+		if err := s.vectorStore.StoreMemory(ctx, record); err != nil {
+			slog.Warn("memory: vector sync failed", "memory_id", record.MemoryID, "err", err)
 		}
 	}
 

@@ -5,6 +5,7 @@ import (
 	"crypto/sha1"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"path"
@@ -17,7 +18,6 @@ import (
 	"github.com/phlin/go-agent/internal/core/ports"
 	conversationdomain "github.com/phlin/go-agent/internal/domain/conversation"
 	mediadomain "github.com/phlin/go-agent/internal/domain/media"
-	backgroundruntime "github.com/phlin/go-agent/internal/runtime/background"
 	retrievalsvc "github.com/phlin/go-agent/internal/services/retrieval"
 )
 
@@ -25,7 +25,6 @@ type Service struct {
 	store       ports.MemeStore
 	vectorStore ports.VectorMemeStore
 	cfg         config.MemeConfig
-	background  backgroundSubmitter
 	retriever   *retrievalsvc.Service
 	outbox      interface {
 		Enqueue(context.Context, string, string, []byte) error
@@ -98,16 +97,6 @@ func New(store ports.MemeStore, cfg config.MemeConfig, opts ...Option) *Service 
 
 // Option 是 MemeService 的可选配置函数。
 type Option func(*Service)
-
-type backgroundSubmitter interface {
-	Submit(backgroundruntime.Job) bool
-}
-
-// WithBackgroundRuntime routes vector indexing through the application job
-// owner instead of creating an untracked goroutine.
-func WithBackgroundRuntime(runtime backgroundSubmitter) Option {
-	return func(s *Service) { s.background = runtime }
-}
 
 // WithVectorStore 注入 VectorMemeStore，启用语义向量搜索。
 // 未注入时降级为纯关键词搜索。
@@ -182,8 +171,7 @@ func (s *Service) ObserveEvent(ctx context.Context, event conversationdomain.Con
 			CreatedAt:      time.Now(),
 		}
 
-		// Vector indexing is background work; the runtime owns its timeout and
-		// lifecycle. The inline path keeps standalone service tests deterministic.
+		// Vector indexing is durable background work when an outbox is configured.
 		if s.vectorStore != nil {
 			indexText := buildIndexText(memeDescriptor)
 			groupID := event.GroupID
@@ -194,40 +182,32 @@ func (s *Service) ObserveEvent(ctx context.Context, event conversationdomain.Con
 				payload, marshalErr := json.Marshal(VectorIndexTask{MemeID: memeID, Text: indexText, GroupID: groupID, Revision: revision})
 				if marshalErr == nil {
 					if atomicStore, ok := s.store.(ports.AtomicMemeProjectionStore); ok {
-						if atomicErr := atomicStore.UpsertMemeAndEnqueueVector(ctx, memeAsset, memeDescriptor, ports.OutboxTask{
+						if err := atomicStore.UpsertMemeAndEnqueueVector(ctx, memeAsset, memeDescriptor, ports.OutboxTask{
 							ID: "meme-vector-" + idempotencyKey, Kind: "meme_vector_index",
 							IdempotencyKey: idempotencyKey, Payload: payload,
-						}); atomicErr == nil {
-							continue
-						} else {
-							marshalErr = atomicErr
-						}
-					}
-					if enqueueErr := s.outbox.Enqueue(ctx, "meme_vector_index", idempotencyKey, payload); enqueueErr == nil {
-						if err := s.store.UpsertMeme(ctx, memeAsset, memeDescriptor); err != nil {
+						}); err != nil {
 							return err
 						}
+						continue
+					}
+					if err := s.store.UpsertMeme(ctx, memeAsset, memeDescriptor); err != nil {
+						return err
+					}
+					if enqueueErr := s.outbox.Enqueue(ctx, "meme_vector_index", idempotencyKey, payload); enqueueErr == nil {
 						continue
 					} else {
 						marshalErr = enqueueErr
 					}
 				}
-				slog.Warn("meme: outbox enqueue failed, using process-local queue", "meme_id", memeID, "err", marshalErr)
+				return fmt.Errorf("enqueue meme vector index: %w", marshalErr)
 			}
-			job := backgroundruntime.Job{
-				Name:    "meme_vector_index",
-				Timeout: 10 * time.Second,
-				Run: func(ctx context.Context) error {
-					return s.vectorStore.IndexMeme(ctx, memeID, indexText, groupID)
-				},
+			if err := s.store.UpsertMeme(ctx, memeAsset, memeDescriptor); err != nil {
+				return err
 			}
-			if s.background != nil {
-				if !s.background.Submit(job) {
-					slog.Warn("meme: vector index job dropped", "meme_id", memeID)
-				}
-			} else {
-				backgroundruntime.RunInline(ctx, job)
+			if err := s.vectorStore.IndexMeme(ctx, memeID, indexText, groupID); err != nil {
+				slog.Warn("meme: vector index failed", "meme_id", memeID, "err", err)
 			}
+			continue
 		}
 		if err := s.store.UpsertMeme(ctx, memeAsset, memeDescriptor); err != nil {
 			return err
@@ -257,73 +237,24 @@ func (s *Service) Search(ctx context.Context, query ports.MemeQuery) ([]mediadom
 	if query.TopK <= 0 {
 		query.TopK = 5
 	}
-	if s.retriever != nil {
-		results, err := s.retriever.SearchMemes(ctx, query)
-		if err != nil {
-			return nil, err
-		}
-		filtered, err := s.rankAndFilter(ctx, results, query)
-		if err != nil {
-			return nil, err
-		}
-		if len(filtered) == 0 && strings.TrimSpace(query.Query) != "" {
-			fallback, fallbackErr := s.retriever.SearchMemesLexical(ctx, query)
-			if fallbackErr == nil {
-				return s.rankAndFilter(ctx, fallback, query)
-			}
-		}
-		return filtered, nil
+	if s.retriever == nil {
+		return nil, errors.New("meme: retriever is not configured")
 	}
-
-	// ponytail: bounded overfetch keeps tag filtering local; push filters into
-	// adapters only if large meme libraries make this measurably inaccurate.
-	retrieve := query
-	retrieve.TopK = max(query.TopK*4, 20)
-	var results []mediadomain.MemeSearchResult
-
-	if s.vectorStore != nil && s.cfg.SemanticTopK > 0 && strings.TrimSpace(query.Query) != "" {
-		vectorTopK := max(s.cfg.SemanticTopK, retrieve.TopK)
-		vectorResults, err := s.vectorStore.SearchMemes(ctx, query.GroupID, query.Query, vectorTopK, s.cfg.SemanticThreshold)
-		if err != nil {
-			slog.Warn("meme.Search: vector search failed, fallback to keyword", "group_id", query.GroupID, "err", err)
-		} else if len(vectorResults) > 0 {
-			results = vectorResults
-			if query.GroupID != 0 {
-				global, globalErr := s.vectorStore.SearchMemes(ctx, 0, query.Query, vectorTopK, s.cfg.SemanticThreshold)
-				if globalErr == nil {
-					results = appendUniqueResults(results, global...)
-				}
-			}
-		}
-		if len(results) == 0 && query.GroupID != 0 {
-			if global, globalErr := s.vectorStore.SearchMemes(ctx, 0, query.Query, vectorTopK, s.cfg.SemanticThreshold); globalErr == nil {
-				results = global
-			}
-		}
+	results, err := s.retriever.SearchMemes(ctx, query)
+	if err != nil {
+		return nil, err
 	}
-	if len(results) == 0 {
-		var err error
-		results, err = s.store.SearchMemes(ctx, retrieve)
-		if err != nil {
-			return nil, err
-		}
+	filtered, err := s.rankAndFilter(ctx, results, query)
+	if err != nil || len(filtered) > 0 || strings.TrimSpace(query.Query) == "" {
+		return filtered, err
+	}
+	fallback := query
+	fallback.TopK = max(query.TopK*5, 20)
+	results, err = s.store.SearchMemes(ctx, fallback)
+	if err != nil {
+		return nil, err
 	}
 	return s.rankAndFilter(ctx, results, query)
-}
-
-func appendUniqueResults(results []mediadomain.MemeSearchResult, additions ...mediadomain.MemeSearchResult) []mediadomain.MemeSearchResult {
-	seen := make(map[string]struct{}, len(results)+len(additions))
-	for _, result := range results {
-		seen[result.MemeID] = struct{}{}
-	}
-	for _, result := range additions {
-		if _, ok := seen[result.MemeID]; ok {
-			continue
-		}
-		seen[result.MemeID] = struct{}{}
-		results = append(results, result)
-	}
-	return results
 }
 
 type rankedMeme struct {

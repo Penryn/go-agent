@@ -14,6 +14,7 @@ import (
 	memorydomain "github.com/phlin/go-agent/internal/domain/memory"
 	personadomain "github.com/phlin/go-agent/internal/domain/persona"
 	policydomain "github.com/phlin/go-agent/internal/domain/policy"
+	retrievalsvc "github.com/phlin/go-agent/internal/services/retrieval"
 	toolsvc "github.com/phlin/go-agent/internal/services/tools"
 )
 
@@ -50,7 +51,7 @@ func TestAgentPlannerToolLoop(t *testing.T) {
 
 	planner := NewAgentPlanner(
 		modeladapter.StaticFactory{MainModel: mockModel},
-		toolsvc.NewRuntime(store, store),
+		toolsvc.NewRuntime(store, store, toolsvc.WithMemoryRetriever(retrievalsvc.New(store, store, nil, nil, retrievalsvc.Config{}))),
 		NewComposer(defaultPersona()),
 		NewDeterministicPlanner(defaultPersona()),
 	)

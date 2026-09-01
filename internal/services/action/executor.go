@@ -15,7 +15,6 @@ import (
 	policydomain "github.com/phlin/go-agent/internal/domain/policy"
 	replydomain "github.com/phlin/go-agent/internal/domain/reply"
 	humandomain "github.com/phlin/go-agent/internal/humanbot/domain"
-	backgroundruntime "github.com/phlin/go-agent/internal/runtime/background"
 	memesvc "github.com/phlin/go-agent/internal/services/meme"
 	outputguardsvc "github.com/phlin/go-agent/internal/services/outputguard"
 )
@@ -24,11 +23,10 @@ var errDropSend = errors.New("drop send: no text content")
 var errGuardSilenced = errors.New("drop send: guard silenced")
 
 type Service struct {
-	sender     ports.OutboundSender
-	memes      *memesvc.Service
-	guard      *outputguardsvc.Guard // 可为 nil，nil 时跳过清洗
-	background backgroundSubmitter
-	outbox     interface {
+	sender ports.OutboundSender
+	memes  *memesvc.Service
+	guard  *outputguardsvc.Guard // 可为 nil，nil 时跳过清洗
+	outbox interface {
 		Enqueue(context.Context, string, string, []byte) error
 	}
 	presence  PresenceObserver
@@ -45,16 +43,6 @@ type rhythmEntry struct {
 
 type PresenceObserver interface {
 	Observe(context.Context, humandomain.EventRecord) (humandomain.GroupWorkingMemory, error)
-}
-
-type backgroundSubmitter interface {
-	Submit(backgroundruntime.Job) bool
-}
-
-// WithBackgroundRuntime routes post-send work through the application job
-// owner instead of creating an untracked goroutine.
-func WithBackgroundRuntime(runtime backgroundSubmitter) Option {
-	return func(s *Service) { s.background = runtime }
 }
 
 func WithOutbox(runtime interface {
@@ -203,22 +191,10 @@ func (s *Service) Execute(ctx context.Context, event conversationdomain.Conversa
 						marshalErr = enqueueErr
 					}
 				}
-				slog.Warn("executor: outbox enqueue failed, using process-local queue", "meme_id", memeID, "err", marshalErr)
+				slog.Warn("executor: outbox enqueue failed, marking synchronously", "meme_id", memeID, "err", marshalErr)
 			}
-			memes := s.memes
-			job := backgroundruntime.Job{
-				Name:    "meme_mark_sent",
-				Timeout: 10 * time.Second,
-				Run: func(jobCtx context.Context) error {
-					return memes.MarkSent(jobCtx, memeID)
-				},
-			}
-			if s.background != nil {
-				if !s.background.Submit(job) {
-					slog.Warn("executor: MarkSent job dropped", "meme_id", memeID)
-				}
-			} else {
-				backgroundruntime.RunInline(bgCtx, job)
+			if err := s.memes.MarkSent(bgCtx, memeID); err != nil {
+				slog.Warn("executor: MarkSent failed", "meme_id", memeID, "err", err)
 			}
 		}
 	}

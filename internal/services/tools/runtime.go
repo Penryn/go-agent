@@ -14,8 +14,6 @@ import (
 	"github.com/cloudwego/eino/schema"
 
 	"github.com/phlin/go-agent/internal/core/ports"
-	mediadomain "github.com/phlin/go-agent/internal/domain/media"
-	memorydomain "github.com/phlin/go-agent/internal/domain/memory"
 	policydomain "github.com/phlin/go-agent/internal/domain/policy"
 	profiledomain "github.com/phlin/go-agent/internal/domain/profile"
 	replydomain "github.com/phlin/go-agent/internal/domain/reply"
@@ -171,8 +169,8 @@ func (r *Runtime) replyTools() []namedTool {
 
 func (r *Runtime) knowledgeTools(session replydomain.ToolContext) []namedTool {
 	return []namedTool{
-		newQueryMemoryTool(r.memoryStore, r.retriever, session),
-		newSearchMemeTool(r.memeStore, r.memeSvc, session),
+		newQueryMemoryTool(r.retriever, session),
+		newSearchMemeTool(r.memeSvc, session),
 	}
 }
 
@@ -455,7 +453,6 @@ func (t *reactEmojiTool) InvokableRun(_ context.Context, argumentsInJSON string,
 }
 
 type queryMemoryTool struct {
-	store     ports.MemoryStore
 	retriever *retrievalsvc.Service
 	session   replydomain.ToolContext
 }
@@ -467,8 +464,8 @@ type queryMemoryArgs struct {
 	MemoryTypes []string `json:"memory_types"`
 }
 
-func newQueryMemoryTool(store ports.MemoryStore, retriever *retrievalsvc.Service, session replydomain.ToolContext) *queryMemoryTool {
-	return &queryMemoryTool{store: store, retriever: retriever, session: session}
+func newQueryMemoryTool(retriever *retrievalsvc.Service, session replydomain.ToolContext) *queryMemoryTool {
+	return &queryMemoryTool{retriever: retriever, session: session}
 }
 
 func (t *queryMemoryTool) Name() string { return "query_memory" }
@@ -500,13 +497,10 @@ func (t *queryMemoryTool) InvokableRun(ctx context.Context, argumentsInJSON stri
 		Scope:   args.Scope,
 		Types:   args.MemoryTypes,
 	}
-	var records []memorydomain.MemoryRecord
-	var err error
-	if t.retriever != nil {
-		records, err = t.retriever.SearchMemories(ctx, query)
-	} else {
-		records, err = t.store.QueryMemories(ctx, query)
+	if t.retriever == nil {
+		return "", errors.New("query_memory: retriever is not configured")
 	}
+	records, err := t.retriever.SearchMemories(ctx, query)
 	if err != nil {
 		return "", err
 	}
@@ -515,7 +509,6 @@ func (t *queryMemoryTool) InvokableRun(ctx context.Context, argumentsInJSON stri
 }
 
 type searchMemeTool struct {
-	store   ports.MemeStore
 	memeSvc *memesvc.Service
 	session replydomain.ToolContext
 }
@@ -528,8 +521,8 @@ type searchMemeArgs struct {
 	ExcludeRecent bool   `json:"exclude_recent"`
 }
 
-func newSearchMemeTool(store ports.MemeStore, svc *memesvc.Service, session replydomain.ToolContext) *searchMemeTool {
-	return &searchMemeTool{store: store, memeSvc: svc, session: session}
+func newSearchMemeTool(svc *memesvc.Service, session replydomain.ToolContext) *searchMemeTool {
+	return &searchMemeTool{memeSvc: svc, session: session}
 }
 
 func (t *searchMemeTool) Name() string { return "search_meme" }
@@ -564,15 +557,10 @@ func (t *searchMemeTool) InvokableRun(ctx context.Context, argumentsInJSON strin
 	if args.TopK > 0 {
 		query.TopK = clamp(args.TopK, 1, 5)
 	}
-	var (
-		results []mediadomain.MemeSearchResult
-		err     error
-	)
-	if t.memeSvc != nil {
-		results, err = t.memeSvc.Search(ctx, query)
-	} else {
-		results, err = t.store.SearchMemes(ctx, query)
+	if t.memeSvc == nil {
+		return "", errors.New("search_meme: service is not configured")
 	}
+	results, err := t.memeSvc.Search(ctx, query)
 	if err != nil {
 		return "", err
 	}

@@ -32,29 +32,6 @@ func (f vectorMemeFake) SearchMemes(context.Context, int64, string, int, float64
 }
 func (f vectorMemeFake) DeleteMeme(context.Context, string) error { return nil }
 
-type lexicalMemoryFake struct {
-	records []memorydomain.MemoryRecord
-	calls   int
-}
-
-func (f *lexicalMemoryFake) SearchMemoriesLexical(context.Context, ports.MemoryQuery) ([]memorydomain.MemoryRecord, error) {
-	f.calls++
-	return f.records, nil
-}
-
-func TestSearchUsesExplicitLexicalAdapter(t *testing.T) {
-	store := inmemory.NewStore()
-	lexical := &lexicalMemoryFake{records: []memorydomain.MemoryRecord{{MemoryID: "from-index", Scope: "group:1", Content: "indexed"}}}
-	retriever := New(store, store, nil, nil, Config{}, WithLexicalAdapters(lexical, nil))
-	results, err := retriever.SearchMemories(context.Background(), ports.MemoryQuery{GroupID: 1, Query: "query", TopK: 1})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if lexical.calls != 1 || len(results) != 1 || results[0].MemoryID != "from-index" {
-		t.Fatalf("lexical adapter was not used: calls=%d results=%+v", lexical.calls, results)
-	}
-}
-
 func TestSearchMemoriesUsesBM25AndVectorWithRRF(t *testing.T) {
 	store := inmemory.NewStore()
 	ctx := context.Background()

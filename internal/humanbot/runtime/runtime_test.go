@@ -20,6 +20,7 @@ import (
 	"github.com/phlin/go-agent/internal/services/normalizer"
 	policysvc "github.com/phlin/go-agent/internal/services/policy"
 	promptingsvc "github.com/phlin/go-agent/internal/services/prompting"
+	retrievalsvc "github.com/phlin/go-agent/internal/services/retrieval"
 )
 
 type failingDeliberator struct{}
@@ -61,7 +62,8 @@ func TestProcessRawEventUsesCandidateRuntime(t *testing.T) {
 	eventLog := ingress.NewMemoryEventLog()
 	working := group_actor.NewManager(eventLog)
 	defer working.Close()
-	contextService := contextsvc.New(store, nil, store, store, policy, cfg.Persona)
+	retriever := retrievalsvc.New(store, store, nil, nil, retrievalsvc.Config{})
+	contextService := contextsvc.New(store, store, store, policy, cfg.Persona, retriever, cfg.Memory.TopK)
 	contextService.WithWorkingMemory(working)
 	planner := promptingsvc.NewDeterministicPlanner(cfg.Persona)
 	sender := inmemory.NewSender()
@@ -93,7 +95,8 @@ func TestProcessRawEventSendsOrdinaryContentToPlanner(t *testing.T) {
 	eventLog := ingress.NewMemoryEventLog()
 	working := group_actor.NewManager(eventLog)
 	defer working.Close()
-	contextService := contextsvc.New(store, nil, store, store, policy, cfg.Persona)
+	retriever := retrievalsvc.New(store, store, nil, nil, retrievalsvc.Config{})
+	contextService := contextsvc.New(store, store, store, policy, cfg.Persona, retriever, cfg.Memory.TopK)
 	contextService.WithWorkingMemory(working)
 	planner := promptingsvc.NewDeterministicPlanner(cfg.Persona)
 	sender := inmemory.NewSender()

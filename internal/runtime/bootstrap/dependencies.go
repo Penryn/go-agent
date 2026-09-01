@@ -22,6 +22,7 @@ type storeBundle struct {
 	profile  ports.ProfileStore
 	state    ports.RuntimeStateStore
 	learning ports.LearningStateStore
+	outbox   ports.OutboxStore
 	closeFn  []func() error
 	probeFn  []func(context.Context) error
 }
@@ -35,6 +36,7 @@ func newStoreBundle(ctx context.Context, cfg config.Config) (*storeBundle, error
 			profile:  store,
 			state:    store,
 			learning: store,
+			outbox:   store,
 		}, nil
 	}
 
@@ -58,6 +60,7 @@ func newStoreBundle(ctx context.Context, cfg config.Config) (*storeBundle, error
 	bundle.learning = persistentStore
 	bundle.meme = persistentStore
 	bundle.profile = persistentStore
+	bundle.outbox = persistentStore
 	bundle.probeFn = append(bundle.probeFn, func(ctx context.Context) error {
 		if err := db.PingContext(ctx); err != nil {
 			return fmt.Errorf("postgres: %w", err)

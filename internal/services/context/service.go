@@ -8,12 +8,9 @@ import (
 	"strings"
 	"time"
 
-	"golang.org/x/sync/errgroup"
-
 	"github.com/phlin/go-agent/internal/core/ports"
 	conversationdomain "github.com/phlin/go-agent/internal/domain/conversation"
 	mediadomain "github.com/phlin/go-agent/internal/domain/media"
-	memorydomain "github.com/phlin/go-agent/internal/domain/memory"
 	personadomain "github.com/phlin/go-agent/internal/domain/persona"
 	profiledomain "github.com/phlin/go-agent/internal/domain/profile"
 	humandomain "github.com/phlin/go-agent/internal/humanbot/domain"
@@ -29,17 +26,15 @@ type WorkingMemoryReader interface {
 }
 
 type Service struct {
-	memoryStore       ports.MemoryStore
-	vectorStore       ports.VectorMemoryStore // 可为 nil，nil 时跳过语义检索副轨
-	profileStore      ports.ProfileStore
-	stateStore        ports.RuntimeStateStore
-	policy            *policysvc.Service
-	persona           personadomain.PersonaConfig
-	semanticTopK      int
-	semanticThreshold float64
-	workingMemory     WorkingMemoryReader
-	thoughts          ports.ThoughtStore
-	retriever         *retrievalsvc.Service
+	memoryStore   ports.MemoryStore
+	profileStore  ports.ProfileStore
+	stateStore    ports.RuntimeStateStore
+	policy        *policysvc.Service
+	persona       personadomain.PersonaConfig
+	memoryTopK    int
+	workingMemory WorkingMemoryReader
+	thoughts      ports.ThoughtStore
+	retriever     *retrievalsvc.Service
 }
 
 // WithThoughtStore 启用「回看上次判断」；不注入时快照不带 RecentThoughts。
@@ -49,37 +44,26 @@ func (s *Service) WithWorkingMemory(reader WorkingMemoryReader) {
 	s.workingMemory = reader
 }
 
-func (s *Service) WithRetriever(retriever *retrievalsvc.Service) {
-	s.retriever = retriever
-}
-
 func New(
 	memoryStore ports.MemoryStore,
-	vectorStore ports.VectorMemoryStore,
 	profileStore ports.ProfileStore,
 	stateStore ports.RuntimeStateStore,
 	policy *policysvc.Service,
 	persona personadomain.PersonaConfig,
+	retriever *retrievalsvc.Service,
+	memoryTopK int,
 ) *Service {
+	if memoryTopK <= 0 {
+		memoryTopK = 4
+	}
 	return &Service{
-		memoryStore:       memoryStore,
-		vectorStore:       vectorStore,
-		profileStore:      profileStore,
-		stateStore:        stateStore,
-		policy:            policy,
-		persona:           persona,
-		semanticTopK:      6,
-		semanticThreshold: 0.75,
-	}
-}
-
-// WithSemanticConfig 允许覆盖语义检索参数（供 app.go 注入 config 值）。
-func (s *Service) WithSemanticConfig(topK int, threshold float64) {
-	if topK > 0 {
-		s.semanticTopK = topK
-	}
-	if threshold > 0 {
-		s.semanticThreshold = threshold
+		memoryStore:  memoryStore,
+		profileStore: profileStore,
+		stateStore:   stateStore,
+		policy:       policy,
+		persona:      persona,
+		retriever:    retriever,
+		memoryTopK:   memoryTopK,
 	}
 }
 
@@ -112,7 +96,12 @@ func (s *Service) BuildSnapshot(ctx context.Context, envelope conversationdomain
 		}
 	}
 
-	relevantMemories, err := s.queryMemoriesDualTrack(ctx, envelope.Event.GroupID, envelope.Event.UserID, envelope.Event.Text)
+	relevantMemories, err := s.retriever.SearchMemories(ctx, ports.MemoryQuery{
+		GroupID: envelope.Event.GroupID,
+		UserID:  envelope.Event.UserID,
+		Query:   envelope.Event.Text,
+		TopK:    s.memoryTopK,
+	})
 	if err != nil {
 		return conversationdomain.ContextSnapshot{}, fmt.Errorf("query memories: %w", err)
 	}
@@ -246,112 +235,6 @@ func mergeRecentTurns(archived, live []conversationdomain.ConversationEvent, lim
 		merged = merged[len(merged)-limit:]
 	}
 	return merged
-}
-
-// queryMemoriesDualTrack 并发执行结构化关键词检索 + 语义向量检索，
-// 对结果去重合并后返回。向量检索失败时降级为纯关键词结果（fail-open）。
-func (s *Service) queryMemoriesDualTrack(ctx context.Context, groupID, userID int64, queryText string) ([]memorydomain.MemoryRecord, error) {
-	if s.retriever != nil {
-		return s.retriever.SearchMemories(ctx, ports.MemoryQuery{GroupID: groupID, UserID: userID, Query: queryText, TopK: max(s.semanticTopK, 4)})
-	}
-	const structuredTopK = 4
-
-	var (
-		structuredRecords []memorydomain.MemoryRecord
-		vectorRecords     []memorydomain.MemoryRecord
-	)
-
-	g, gCtx := errgroup.WithContext(ctx)
-
-	// Track 1: 结构化关键词检索（主轨，失败则整体失败）
-	g.Go(func() error {
-		var err error
-		structuredRecords, err = s.memoryStore.QueryMemories(gCtx, ports.MemoryQuery{
-			GroupID: groupID,
-			UserID:  userID,
-			Query:   queryText,
-			TopK:    structuredTopK,
-		})
-		return err
-	})
-
-	// Track 2: 语义向量检索（副轨，失败时降级，不影响主流程）
-	g.Go(func() error {
-		if queryText == "" || s.vectorStore == nil {
-			return nil
-		}
-		var err error
-		vectorRecords, err = s.vectorStore.SearchMemories(gCtx, queryText, groupID, userID, s.semanticTopK, s.semanticThreshold)
-		if err != nil {
-			slog.WarnContext(gCtx, "dual-track memory: vector semantic search failed, degraded to structured only",
-				"err", err,
-				"group_id", groupID,
-			)
-		}
-		return nil // 始终返回 nil，不让 errgroup 取消关键词检索轨道
-	})
-
-	if err := g.Wait(); err != nil {
-		return nil, err
-	}
-
-	limit := structuredTopK
-	if s.semanticTopK > limit {
-		limit = s.semanticTopK
-	}
-	return mergeMemoryResults(structuredRecords, vectorRecords, limit), nil
-}
-
-// mergeMemoryResults 将结构化检索和向量检索的结果去重合并。
-// 结构化结果作为主数据源（字段完整），向量检索补充语义相关但关键词未命中的记录。
-func mergeMemoryResults(structuredRecords, vectorRecords []memorydomain.MemoryRecord, limit int) []memorydomain.MemoryRecord {
-	// Reciprocal rank fusion keeps exact lexical hits and semantic neighbours
-	// comparable without pretending the two providers share a score scale.
-	const k = 60.0
-	type ranked struct {
-		record memorydomain.MemoryRecord
-		score  float64
-		order  int
-	}
-	byID := make(map[string]*ranked, len(structuredRecords)+len(vectorRecords))
-	add := func(records []memorydomain.MemoryRecord) {
-		for rank, record := range records {
-			id := record.MemoryID
-			if id == "" {
-				id = record.Scope + "\x00" + record.Subject + "\x00" + record.Content
-			}
-			item := byID[id]
-			if item == nil {
-				item = &ranked{record: record, order: len(byID)}
-				byID[id] = item
-			}
-			item.score += 1 / (k + float64(rank+1))
-			// Lexical storage is authoritative for complete fields.
-			if item.record.Content == "" && record.Content != "" {
-				item.record = record
-			}
-		}
-	}
-	add(structuredRecords)
-	add(vectorRecords)
-	merged := make([]ranked, 0, len(byID))
-	for _, item := range byID {
-		merged = append(merged, *item)
-	}
-	sort.SliceStable(merged, func(i, j int) bool {
-		if merged[i].score == merged[j].score {
-			return merged[i].order < merged[j].order
-		}
-		return merged[i].score > merged[j].score
-	})
-	result := make([]memorydomain.MemoryRecord, 0, len(merged))
-	for _, item := range merged {
-		result = append(result, item.record)
-		if limit > 0 && len(result) >= limit {
-			break
-		}
-	}
-	return result
 }
 
 func attachmentsAsDescriptors(attachments []mediadomain.MultimodalAttachment) []mediadomain.MediaDescriptor {

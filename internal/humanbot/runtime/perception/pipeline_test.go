@@ -13,16 +13,8 @@ import (
 	humandomain "github.com/phlin/go-agent/internal/humanbot/domain"
 	groupactor "github.com/phlin/go-agent/internal/humanbot/runtime/group_actor"
 	"github.com/phlin/go-agent/internal/humanbot/runtime/ingress"
-	backgroundruntime "github.com/phlin/go-agent/internal/runtime/background"
 	memesvc "github.com/phlin/go-agent/internal/services/meme"
 )
-
-type inlineBackground struct{}
-
-func (inlineBackground) Submit(job backgroundruntime.Job) bool {
-	backgroundruntime.RunInline(context.Background(), job)
-	return true
-}
 
 type recordingOutbox struct {
 	kind string
@@ -39,7 +31,7 @@ func TestPipelineEnqueuesDurablePerceptionTask(t *testing.T) {
 	working := groupactor.NewManager(ingress.NewMemoryEventLog())
 	defer working.Close()
 	outbox := &recordingOutbox{}
-	pipeline := New(nil, nil, working, inlineBackground{}, WithOutbox(outbox))
+	pipeline := New(nil, nil, working, WithOutbox(outbox))
 	record := humandomain.EventRecord{
 		EventID: "durable-event", GroupID: 42, Origin: humandomain.OriginInbound,
 		Event: conversationdomain.ConversationEvent{
@@ -64,7 +56,7 @@ func TestPipelineFallsBackToPlatformHintAndCollectsSticker(t *testing.T) {
 	store := inmemory.NewStore()
 	working := groupactor.NewManager(ingress.NewMemoryEventLog())
 	defer working.Close()
-	pipeline := New(nil, memesvc.New(store, config.MemeConfig{AutoCollect: true}), working, inlineBackground{})
+	pipeline := New(nil, memesvc.New(store, config.MemeConfig{AutoCollect: true}), working)
 
 	record := humandomain.EventRecord{
 		EventID:   "event-1",
@@ -90,7 +82,9 @@ func TestPipelineFallsBackToPlatformHintAndCollectsSticker(t *testing.T) {
 		t.Fatalf("observe event: %v", err)
 	}
 
-	pipeline.Submit(record)
+	if err := pipeline.Process(context.Background(), record); err != nil {
+		t.Fatalf("process: %v", err)
+	}
 
 	memory, err := working.Snapshot(context.Background(), record.GroupID)
 	if err != nil {

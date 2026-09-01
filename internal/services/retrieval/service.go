@@ -17,26 +17,21 @@ import (
 
 var ErrScopeForbidden = errors.New("memory scope is not visible in the current session")
 
+const rrfK = 60.0
+
 type Config struct {
 	MemoryCandidateK int
 	MemeCandidateK   int
-	RRFK             float64
-	// MemoryWeight is a compatibility alias for LexicalWeight.
-	MemoryWeight    float64
-	LexicalWeight   float64
-	VectorWeight    float64
-	MemoryThreshold float64
-	MemeThreshold   float64
+	MemoryThreshold  float64
+	MemeThreshold    float64
 }
 
 type Service struct {
-	memoryStore   ports.MemoryStore
-	memeStore     ports.MemeStore
-	memoryVector  ports.VectorMemoryStore
-	memeVector    ports.VectorMemeStore
-	memoryLexical ports.LexicalMemoryStore
-	memeLexical   ports.LexicalMemeStore
-	cfg           Config
+	memoryStore  ports.MemoryStore
+	memeStore    ports.MemeStore
+	memoryVector ports.VectorMemoryStore
+	memeVector   ports.VectorMemeStore
+	cfg          Config
 }
 
 type rankedMemory struct {
@@ -45,42 +40,14 @@ type rankedMemory struct {
 	order  int
 }
 
-type Option func(*Service)
-
-// WithLexicalAdapters injects the BM25/index implementation explicitly. This
-// keeps retrieval independent from how authoritative stores build the lexical
-// projection and avoids runtime type assertions on store implementations.
-func WithLexicalAdapters(memory ports.LexicalMemoryStore, meme ports.LexicalMemeStore) Option {
-	return func(s *Service) {
-		s.memoryLexical = memory
-		s.memeLexical = meme
-	}
-}
-
-func New(memoryStore ports.MemoryStore, memeStore ports.MemeStore, memoryVector ports.VectorMemoryStore, memeVector ports.VectorMemeStore, cfg Config, opts ...Option) *Service {
+func New(memoryStore ports.MemoryStore, memeStore ports.MemeStore, memoryVector ports.VectorMemoryStore, memeVector ports.VectorMemeStore, cfg Config) *Service {
 	if cfg.MemoryCandidateK <= 0 {
 		cfg.MemoryCandidateK = 30
 	}
 	if cfg.MemeCandidateK <= 0 {
 		cfg.MemeCandidateK = 30
 	}
-	if cfg.RRFK <= 0 {
-		cfg.RRFK = 60
-	}
-	if cfg.LexicalWeight <= 0 {
-		cfg.LexicalWeight = cfg.MemoryWeight
-	}
-	if cfg.LexicalWeight <= 0 {
-		cfg.LexicalWeight = 1
-	}
-	if cfg.VectorWeight <= 0 {
-		cfg.VectorWeight = 1
-	}
-	svc := &Service{memoryStore: memoryStore, memeStore: memeStore, memoryVector: memoryVector, memeVector: memeVector, cfg: cfg}
-	for _, opt := range opts {
-		opt(svc)
-	}
-	return svc
+	return &Service{memoryStore: memoryStore, memeStore: memeStore, memoryVector: memoryVector, memeVector: memeVector, cfg: cfg}
 }
 
 func (s *Service) SearchMemories(ctx context.Context, query ports.MemoryQuery) ([]memorydomain.MemoryRecord, error) {
@@ -99,11 +66,7 @@ func (s *Service) SearchMemories(ctx context.Context, query ports.MemoryQuery) (
 		var err error
 		q := query
 		q.TopK = candidateK
-		if s.memoryLexical != nil {
-			lexical, err = s.memoryLexical.SearchMemoriesLexical(gctx, q)
-		} else {
-			lexical, err = s.memoryStore.QueryMemories(gctx, q)
-		}
+		lexical, err = s.memoryStore.QueryMemories(gctx, q)
 		return err
 	})
 	g.Go(func() error {
@@ -120,7 +83,7 @@ func (s *Service) SearchMemories(ctx context.Context, query ports.MemoryQuery) (
 	if err := g.Wait(); err != nil {
 		return nil, err
 	}
-	return mergeMemoryResults(lexical, semantic, query.TopK, s.cfg.LexicalWeight, s.cfg.VectorWeight, s.cfg.RRFK), nil
+	return mergeMemoryResults(lexical, semantic, query.TopK), nil
 }
 
 func (s *Service) SearchMemes(ctx context.Context, query ports.MemeQuery) ([]mediadomain.MemeSearchResult, error) {
@@ -137,11 +100,7 @@ func (s *Service) SearchMemes(ctx context.Context, query ports.MemeQuery) ([]med
 		var err error
 		q := query
 		q.TopK = candidateK
-		if s.memeLexical != nil {
-			lexical, err = s.memeLexical.SearchMemesLexical(gctx, q)
-		} else {
-			lexical, err = s.memeStore.SearchMemes(gctx, q)
-		}
+		lexical, err = s.memeStore.SearchMemes(gctx, q)
 		return err
 	})
 	if s.memeVector != nil && query.Query != "" {
@@ -168,18 +127,7 @@ func (s *Service) SearchMemes(ctx context.Context, query ports.MemeQuery) ([]med
 		return nil, err
 	}
 	semantic := mergeVectorMemeCandidates(groupSemantic, globalSemantic)
-	return mergeMemeResults(lexical, semantic, candidateK, s.cfg.LexicalWeight, s.cfg.VectorWeight, s.cfg.RRFK), nil
-}
-
-func (s *Service) SearchMemesLexical(ctx context.Context, query ports.MemeQuery) ([]mediadomain.MemeSearchResult, error) {
-	if query.TopK <= 0 {
-		query.TopK = 5
-	}
-	query.TopK = max(query.TopK*5, s.cfg.MemeCandidateK)
-	if s.memeLexical != nil {
-		return s.memeLexical.SearchMemesLexical(ctx, query)
-	}
-	return s.memeStore.SearchMemes(ctx, query)
+	return mergeMemeResults(lexical, semantic, candidateK), nil
 }
 
 func mergeVectorMemeCandidates(group, global []mediadomain.MemeSearchResult) []mediadomain.MemeSearchResult {
@@ -203,9 +151,9 @@ func mergeVectorMemeCandidates(group, global []mediadomain.MemeSearchResult) []m
 	return results
 }
 
-func mergeMemoryResults(lexical, semantic []memorydomain.MemoryRecord, limit int, lexicalWeight, vectorWeight, rrfK float64) []memorydomain.MemoryRecord {
+func mergeMemoryResults(lexical, semantic []memorydomain.MemoryRecord, limit int) []memorydomain.MemoryRecord {
 	byID := make(map[string]*rankedMemory, len(lexical)+len(semantic))
-	add := func(records []memorydomain.MemoryRecord, weight float64) {
+	add := func(records []memorydomain.MemoryRecord) {
 		for rank, record := range records {
 			id := record.MemoryID
 			if id == "" {
@@ -216,14 +164,14 @@ func mergeMemoryResults(lexical, semantic []memorydomain.MemoryRecord, limit int
 				item = &rankedMemory{record: record, order: len(byID)}
 				byID[id] = item
 			}
-			item.score += weight / (rrfK + float64(rank+1))
+			item.score += 1 / (rrfK + float64(rank+1))
 			if item.record.Content == "" && record.Content != "" {
 				item.record = record
 			}
 		}
 	}
-	add(lexical, lexicalWeight)
-	add(semantic, vectorWeight)
+	add(lexical)
+	add(semantic)
 	items := make([]rankedMemory, 0, len(byID))
 	for _, item := range byID {
 		items = append(items, *item)
@@ -244,11 +192,7 @@ func mergeMemoryResults(lexical, semantic []memorydomain.MemoryRecord, limit int
 	return results
 }
 
-func MergeMemoryResults(lexical, semantic []memorydomain.MemoryRecord, limit int) []memorydomain.MemoryRecord {
-	return mergeMemoryResults(lexical, semantic, limit, 1, 1, 60)
-}
-
-func mergeMemeResults(lexical, semantic []mediadomain.MemeSearchResult, limit int, lexicalWeight, vectorWeight, rrfK float64) []mediadomain.MemeSearchResult {
+func mergeMemeResults(lexical, semantic []mediadomain.MemeSearchResult, limit int) []mediadomain.MemeSearchResult {
 	type ranked struct {
 		result  mediadomain.MemeSearchResult
 		score   float64
@@ -257,14 +201,14 @@ func mergeMemeResults(lexical, semantic []mediadomain.MemeSearchResult, limit in
 		vector  bool
 	}
 	byID := make(map[string]*ranked, len(lexical)+len(semantic))
-	add := func(results []mediadomain.MemeSearchResult, weight float64, isLexical bool) {
+	add := func(results []mediadomain.MemeSearchResult, isLexical bool) {
 		for rank, result := range results {
 			item := byID[result.MemeID]
 			if item == nil {
 				item = &ranked{result: result, order: len(byID)}
 				byID[result.MemeID] = item
 			}
-			item.score += weight / (rrfK + float64(rank+1))
+			item.score += 1 / (rrfK + float64(rank+1))
 			if isLexical {
 				item.lexical = true
 			} else {
@@ -275,8 +219,8 @@ func mergeMemeResults(lexical, semantic []mediadomain.MemeSearchResult, limit in
 			}
 		}
 	}
-	add(lexical, lexicalWeight, true)
-	add(semantic, vectorWeight, false)
+	add(lexical, true)
+	add(semantic, false)
 	items := make([]ranked, 0, len(byID))
 	for _, item := range byID {
 		item.result.Score = item.score
@@ -304,11 +248,4 @@ func mergeMemeResults(lexical, semantic []mediadomain.MemeSearchResult, limit in
 		results[i] = items[i].result
 	}
 	return results
-}
-
-func max(left, right int) int {
-	if left > right {
-		return left
-	}
-	return right
 }

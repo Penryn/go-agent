@@ -5,7 +5,6 @@ import (
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
-	"log/slog"
 	"math"
 	"strings"
 	"time"
@@ -86,22 +85,18 @@ func (s *Service) RegisterJobs(sched *scheduler.Scheduler, groupIDs []int64) {
 func (s *Service) learnAllGroups(groupIDs []int64) func(ctx context.Context) error {
 	return func(ctx context.Context) error {
 		for _, gid := range groupIDs {
-			if s.outbox != nil {
-				payload, marshalErr := json.Marshal(struct {
-					GroupID int64 `json:"group_id"`
-				}{GroupID: gid})
-				key := fmt.Sprintf("%d-%d", gid, time.Now().Unix()/(6*60*60))
-				if marshalErr == nil {
-					if enqueueErr := s.outbox.Enqueue(ctx, "learning_extract", key, payload); enqueueErr == nil {
-						continue
-					} else {
-						marshalErr = enqueueErr
-					}
-				}
-				slog.Warn("learning: outbox enqueue failed, running inline", "group_id", gid, "err", marshalErr)
+			if s.outbox == nil {
+				return fmt.Errorf("learning: outbox is not configured")
 			}
-			if err := s.learnGroup(ctx, gid); err != nil {
-				slog.Warn("learning: group failed", "group_id", gid, "err", err)
+			payload, err := json.Marshal(struct {
+				GroupID int64 `json:"group_id"`
+			}{GroupID: gid})
+			if err != nil {
+				return err
+			}
+			key := fmt.Sprintf("%d-%d", gid, time.Now().Unix()/(6*60*60))
+			if err := s.outbox.Enqueue(ctx, "learning_extract", key, payload); err != nil {
+				return err
 			}
 		}
 		return nil

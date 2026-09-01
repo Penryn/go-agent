@@ -1,42 +1,27 @@
 package curator
 
 import (
-	"context"
 	"fmt"
 	"strings"
 
 	conversationdomain "github.com/phlin/go-agent/internal/domain/conversation"
-	profiledomain "github.com/phlin/go-agent/internal/domain/profile"
 	memsvc "github.com/phlin/go-agent/internal/services/memory"
 )
 
-type Input struct {
-	Snapshot conversationdomain.ContextSnapshot
-}
-
-type Output struct {
-	MemoryIntents   []memsvc.WriteIntent
-	TraitCandidates []profiledomain.MemberTrait
-}
-
-// Service 从一轮对话快照里提取群聊亮点。两个阈值：extract 的 confidence=0.8
+// Extract 从一轮对话快照里提取群聊亮点。confidence=0.8
 // 恒大于 review 的过滤线 0.7，所以整条链等价于「短文本直接入库」。
-type Service struct{}
-
-func New(_ context.Context) (*Service, error) { return &Service{}, nil }
-
-func (s *Service) Run(_ context.Context, input Input) (Output, error) {
-	text := strings.TrimSpace(input.Snapshot.Event.Text)
+func Extract(snapshot conversationdomain.ContextSnapshot) []memsvc.WriteIntent {
+	text := strings.TrimSpace(snapshot.Event.Text)
 	if text == "" || len([]rune(text)) > 24 {
-		return Output{}, nil
+		return nil
 	}
-	return Output{MemoryIntents: []memsvc.WriteIntent{{
-		Scope:         fmt.Sprintf("group:%d", input.Snapshot.Event.GroupID),
+	return []memsvc.WriteIntent{{
+		Scope:         fmt.Sprintf("group:%d", snapshot.Event.GroupID),
 		MemoryType:    "conversation_highlight",
 		Subject:       "event",
 		Content:       text,
-		SourceEventID: input.Snapshot.Event.EventID,
+		SourceEventID: snapshot.Event.EventID,
 		Importance:    0.7,
 		Confidence:    0.8,
-	}}}, nil
+	}}
 }

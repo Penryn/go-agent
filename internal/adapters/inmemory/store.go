@@ -397,14 +397,6 @@ func (s *Store) QueryMemories(_ context.Context, query ports.MemoryQuery) ([]mem
 	return result, nil
 }
 
-// ListMemories returns the filtered corpus for the independent lexical
-// adapter. QueryMemories remains the compatibility query API.
-func (s *Store) ListMemories(ctx context.Context, query ports.MemoryQuery) ([]memorydomain.MemoryRecord, error) {
-	query.Query = ""
-	query.TopK = 0
-	return s.QueryMemories(ctx, query)
-}
-
 // memoryRecallScore 是记忆的召回优先级：重要性按时间贴现，但高重要性的
 // 旧事仍应压过低分新事——真人记得「重要旧事」，淡忘的是「无聊近事」。
 // 贴现用 age/(importance*30) 的形态：0.9 重要性 30 天龄 ≈ 减半，0.3 的 3 天就减半。
@@ -476,14 +468,6 @@ func (s *Store) SearchMemes(_ context.Context, query ports.MemeQuery) ([]mediado
 		result = result[:query.TopK]
 	}
 	return result, nil
-}
-
-// ListMemes returns the approved, visible corpus for the independent lexical
-// adapter. SearchMemes remains the compatibility query API.
-func (s *Store) ListMemes(ctx context.Context, query ports.MemeQuery) ([]mediadomain.MemeSearchResult, error) {
-	query.Query = ""
-	query.TopK = 0
-	return s.SearchMemes(ctx, query)
 }
 
 func memeSearchText(descriptor mediadomain.MemeDescriptor) string {

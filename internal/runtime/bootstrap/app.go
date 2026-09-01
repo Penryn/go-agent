@@ -15,7 +15,6 @@ import (
 	outboundnapcat "github.com/phlin/go-agent/internal/adapters/outbound/napcat"
 	"github.com/phlin/go-agent/internal/config"
 	"github.com/phlin/go-agent/internal/core/ports"
-	lexicalsearch "github.com/phlin/go-agent/internal/core/search/lexical"
 	conversationdomain "github.com/phlin/go-agent/internal/domain/conversation"
 	memorydomain "github.com/phlin/go-agent/internal/domain/memory"
 	replydomain "github.com/phlin/go-agent/internal/domain/reply"
@@ -26,7 +25,6 @@ import (
 	humaningress "github.com/phlin/go-agent/internal/humanbot/runtime/ingress"
 	humanperception "github.com/phlin/go-agent/internal/humanbot/runtime/perception"
 	humanreflection "github.com/phlin/go-agent/internal/humanbot/runtime/reflection"
-	backgroundruntime "github.com/phlin/go-agent/internal/runtime/background"
 	outboxruntime "github.com/phlin/go-agent/internal/runtime/outbox"
 	"github.com/phlin/go-agent/internal/runtime/scheduler"
 	actionsvc "github.com/phlin/go-agent/internal/services/action"
@@ -49,8 +47,6 @@ import (
 type App struct {
 	cfg          config.Config
 	humanRuntime *humanruntime.Runtime
-	background   *backgroundruntime.Runtime
-	outbox       *outboxruntime.Runtime
 	inbound      ports.InboundSource
 	server       *http.Server
 	sched        *scheduler.Scheduler
@@ -81,31 +77,14 @@ func NewApp(ctx context.Context, cfg config.Config) (*App, error) {
 	vectorGraph := buildVectorGraph(ctx, cfg, modelFactory, stores)
 	vectorMemoryStore := vectorGraph.memory
 	memeVectorStore := vectorGraph.meme
-	var memoryLexical ports.LexicalMemoryStore
-	if source, ok := stores.memory.(ports.MemoryCorpusReader); ok {
-		memoryLexical = lexicalsearch.NewMemoryAdapter(source)
-	}
-	var memeLexical ports.LexicalMemeStore
-	if source, ok := stores.meme.(ports.MemeCorpusReader); ok {
-		memeLexical = lexicalsearch.NewMemeAdapter(source)
-	}
 	hybridRetrieval := retrievalsvc.New(stores.memory, stores.meme, vectorMemoryStore, memeVectorStore, retrievalsvc.Config{
 		MemoryCandidateK: max(cfg.Memory.TopK*5, 20),
 		MemeCandidateK:   max(cfg.Meme.SearchTopK*5, 20),
 		MemoryThreshold:  cfg.Memory.SemanticThreshold,
 		MemeThreshold:    cfg.Meme.SemanticThreshold,
-	}, retrievalsvc.WithLexicalAdapters(
-		memoryLexical,
-		memeLexical,
-	))
+	})
 
-	// contextService 需要 VectorMemoryStore（无向量存储时为 nil，调用方跳过语义检索）
-	var vectorStore ports.VectorMemoryStore
-	if vectorMemoryStore != nil {
-		vectorStore = vectorMemoryStore
-	}
-	contextService := contextsvc.New(stores.memory, vectorStore, stores.profile, stores.state, policyService, cfg.Persona)
-	contextService.WithRetriever(hybridRetrieval)
+	contextService := contextsvc.New(stores.memory, stores.profile, stores.state, policyService, cfg.Persona, hybridRetrieval, cfg.Memory.TopK)
 	eventLog := humaningress.NewMemoryEventLog()
 	actorOptions := []humanactor.Option{
 		humanactor.WithArchive(stores.memory),
@@ -116,20 +95,9 @@ func NewApp(ctx context.Context, cfg config.Config) (*App, error) {
 	}
 	presenceManager := humanactor.NewManager(eventLog, actorOptions...)
 	contextService.WithWorkingMemory(presenceManager)
-	if cfg.Memory.SemanticTopK > 0 || cfg.Memory.SemanticThreshold > 0 {
-		contextService.WithSemanticConfig(cfg.Memory.SemanticTopK, cfg.Memory.SemanticThreshold)
-	}
-
-	backgroundRuntime := backgroundruntime.New(context.WithoutCancel(ctx), backgroundruntime.Config{
-		QueueSize:   cfg.Runtime.QueueLength,
+	durableOutbox := outboxruntime.New(context.WithoutCancel(ctx), stores.outbox, outboxruntime.Config{
 		WorkerCount: cfg.Runtime.WorkerCount,
 	})
-	var durableOutbox *outboxruntime.Runtime
-	if outboxStore, ok := stores.memory.(ports.OutboxStore); ok {
-		durableOutbox = outboxruntime.New(context.WithoutCancel(ctx), outboxStore, outboxruntime.Config{
-			WorkerCount: cfg.Runtime.WorkerCount,
-		})
-	}
 
 	// memorySvc：有向量存储时注入 WithVectorStore；同时注入差异化 TTL 配置
 	memOpts := []memsvc.Option{}
@@ -139,75 +107,56 @@ func NewApp(ctx context.Context, cfg config.Config) (*App, error) {
 	if len(cfg.Memory.TypeTTL) > 0 || cfg.Memory.DefaultTTL != "" {
 		memOpts = append(memOpts, memsvc.WithTypeTTL(cfg.Memory.TypeTTL, cfg.Memory.DefaultTTL))
 	}
-	memOpts = append(memOpts, memsvc.WithBackgroundRuntime(backgroundRuntime))
-	if durableOutbox != nil {
-		memOpts = append(memOpts, memsvc.WithOutbox(durableOutbox))
-		if atomicStore, ok := stores.memory.(ports.AtomicMemoryProjectionStore); ok {
-			memOpts = append(memOpts, memsvc.WithAtomicProjectionStore(atomicStore))
-		}
+	memOpts = append(memOpts, memsvc.WithOutbox(durableOutbox))
+	if atomicStore, ok := stores.memory.(ports.AtomicMemoryProjectionStore); ok {
+		memOpts = append(memOpts, memsvc.WithAtomicProjectionStore(atomicStore))
 	}
 	memorySvc := memsvc.New(stores.memory, memOpts...)
-	if durableOutbox != nil {
-		if err := durableOutbox.Register("memory_vector_index", func(jobCtx context.Context, payload []byte) error {
-			var record memorydomain.MemoryRecord
-			if err := json.Unmarshal(payload, &record); err != nil {
-				return fmt.Errorf("decode memory vector task: %w", err)
-			}
-			return memorySvc.ProcessVectorIndex(jobCtx, record)
-		}); err != nil {
-			_ = durableOutbox.Close()
-			_ = backgroundRuntime.Close(context.Background())
-			_ = stores.Close()
-			return nil, fmt.Errorf("register memory outbox handler: %w", err)
+	if err := durableOutbox.Register("memory_vector_index", func(jobCtx context.Context, payload []byte) error {
+		var record memorydomain.MemoryRecord
+		if err := json.Unmarshal(payload, &record); err != nil {
+			return fmt.Errorf("decode memory vector task: %w", err)
 		}
+		return memorySvc.ProcessVectorIndex(jobCtx, record)
+	}); err != nil {
+		_ = durableOutbox.Close()
+		_ = stores.Close()
+		return nil, fmt.Errorf("register memory outbox handler: %w", err)
 	}
 	memeOpts := []memesvc.Option{
 		memesvc.WithVectorStore(memeVectorStore),
 		memesvc.WithRetriever(hybridRetrieval),
-		memesvc.WithBackgroundRuntime(backgroundRuntime),
-	}
-	if durableOutbox != nil {
-		memeOpts = append(memeOpts, memesvc.WithOutbox(durableOutbox))
+		memesvc.WithOutbox(durableOutbox),
 	}
 	memeService := memesvc.New(stores.meme, cfg.Meme, memeOpts...)
-	if durableOutbox != nil {
-		if err := durableOutbox.Register("meme_vector_index", func(jobCtx context.Context, payload []byte) error {
-			var task memesvc.VectorIndexTask
-			if err := json.Unmarshal(payload, &task); err != nil {
-				return fmt.Errorf("decode meme vector task: %w", err)
-			}
-			return memeService.ProcessVectorIndex(jobCtx, task)
-		}); err != nil {
-			_ = durableOutbox.Close()
-			_ = backgroundRuntime.Close(context.Background())
-			_ = stores.Close()
-			return nil, fmt.Errorf("register meme outbox handler: %w", err)
+	if err := durableOutbox.Register("meme_vector_index", func(jobCtx context.Context, payload []byte) error {
+		var task memesvc.VectorIndexTask
+		if err := json.Unmarshal(payload, &task); err != nil {
+			return fmt.Errorf("decode meme vector task: %w", err)
 		}
+		return memeService.ProcessVectorIndex(jobCtx, task)
+	}); err != nil {
+		_ = durableOutbox.Close()
+		_ = stores.Close()
+		return nil, fmt.Errorf("register meme outbox handler: %w", err)
 	}
 	visionService := multimodalsvc.New(modelFactory, cfg.Multimodal)
-	perceptionOpts := []humanperception.Option{}
-	if durableOutbox != nil {
-		perceptionOpts = append(perceptionOpts, humanperception.WithOutbox(durableOutbox))
-	}
-	perceptionPipeline := humanperception.New(visionService, memeService, presenceManager, backgroundRuntime, perceptionOpts...)
-	if durableOutbox != nil {
-		if err := durableOutbox.Register("perception_event", func(jobCtx context.Context, payload []byte) error {
-			var record humandomain.EventRecord
-			if err := json.Unmarshal(payload, &record); err != nil {
-				return fmt.Errorf("decode perception event: %w", err)
-			}
-			return perceptionPipeline.Process(jobCtx, record)
-		}); err != nil {
-			_ = durableOutbox.Close()
-			_ = backgroundRuntime.Close(context.Background())
-			_ = stores.Close()
-			return nil, fmt.Errorf("register perception outbox handler: %w", err)
+	perceptionPipeline := humanperception.New(visionService, memeService, presenceManager, humanperception.WithOutbox(durableOutbox))
+	if err := durableOutbox.Register("perception_event", func(jobCtx context.Context, payload []byte) error {
+		var record humandomain.EventRecord
+		if err := json.Unmarshal(payload, &record); err != nil {
+			return fmt.Errorf("decode perception event: %w", err)
 		}
+		return perceptionPipeline.Process(jobCtx, record)
+	}); err != nil {
+		_ = durableOutbox.Close()
+		_ = stores.Close()
+		return nil, fmt.Errorf("register perception outbox handler: %w", err)
 	}
 
 	mcpTools, err := toolsvc.ConnectMCP(ctx, cfg.Tools.MCPServers)
 	if err != nil {
-		_ = backgroundRuntime.Close(context.Background())
+		_ = durableOutbox.Close()
 		_ = stores.Close()
 		return nil, err
 	}
@@ -228,14 +177,14 @@ func NewApp(ctx context.Context, cfg config.Config) (*App, error) {
 	)
 	if err := toolRuntime.RegisterTools(ctx, mcpTools.Tools...); err != nil {
 		_ = mcpTools.Close()
-		_ = backgroundRuntime.Close(context.Background())
+		_ = durableOutbox.Close()
 		_ = stores.Close()
 		return nil, fmt.Errorf("register MCP tools: %w", err)
 	}
 	if codexTool := toolsvc.NewCodexToolWithApproval(cfg.Tools.Codex, writeApprovals, cfg.Tools.Codex.WriteUserWhitelist); codexTool != nil {
 		if err := toolRuntime.RegisterTools(ctx, codexTool); err != nil {
 			_ = mcpTools.Close()
-			_ = backgroundRuntime.Close(context.Background())
+			_ = durableOutbox.Close()
 			_ = stores.Close()
 			return nil, fmt.Errorf("register Codex tool: %w", err)
 		}
@@ -252,27 +201,21 @@ func NewApp(ctx context.Context, cfg config.Config) (*App, error) {
 	// F1 OutputGuard：从 persona 配置读取截断阈值
 	guard := outputguardsvc.New(cfg.Persona.ReplyMaxChars*2, cfg.Persona.ReplyMaxSentences+1)
 	actionOpts := []actionsvc.Option{
-		actionsvc.WithBackgroundRuntime(backgroundRuntime),
 		actionsvc.WithPresenceObserver(presenceManager),
 		actionsvc.WithSelfID(cfg.QQ.SelfID),
-	}
-	if durableOutbox != nil {
-		actionOpts = append(actionOpts, actionsvc.WithOutbox(durableOutbox))
+		actionsvc.WithOutbox(durableOutbox),
 	}
 	executor := actionsvc.New(sender, memeService, guard, actionOpts...)
-	if durableOutbox != nil {
-		if err := durableOutbox.Register("meme_mark_sent", func(jobCtx context.Context, payload []byte) error {
-			var task actionsvc.MarkMemeSentTask
-			if err := json.Unmarshal(payload, &task); err != nil {
-				return fmt.Errorf("decode meme mark-sent task: %w", err)
-			}
-			return memeService.MarkSent(jobCtx, task.MemeID)
-		}); err != nil {
-			_ = durableOutbox.Close()
-			_ = backgroundRuntime.Close(context.Background())
-			_ = stores.Close()
-			return nil, fmt.Errorf("register meme sent outbox handler: %w", err)
+	if err := durableOutbox.Register("meme_mark_sent", func(jobCtx context.Context, payload []byte) error {
+		var task actionsvc.MarkMemeSentTask
+		if err := json.Unmarshal(payload, &task); err != nil {
+			return fmt.Errorf("decode meme mark-sent task: %w", err)
 		}
+		return memeService.MarkSent(jobCtx, task.MemeID)
+	}); err != nil {
+		_ = durableOutbox.Close()
+		_ = stores.Close()
+		return nil, fmt.Errorf("register meme sent outbox handler: %w", err)
 	}
 
 	// F2 PersonaService：情绪状态动态驱动
@@ -310,12 +253,6 @@ func NewApp(ctx context.Context, cfg config.Config) (*App, error) {
 
 	// learning service：接入运行时，每 6 小时对白名单群跑一次增量学习
 	profileService := profilesvc.New(stores.profile, cfg.Persona.ID)
-	curatorService, curatorErr := curatorsvc.New(ctx)
-	if curatorErr != nil {
-		_ = backgroundRuntime.Close(context.Background())
-		_ = stores.Close()
-		return nil, fmt.Errorf("curator service init: %w", curatorErr)
-	}
 	// applyCurator 把 curator 提取的亮点写入长期记忆（置信度阈值过滤）。
 	applyCurator := func(jobCtx context.Context, intents []memsvc.WriteIntent) error {
 		for _, intent := range intents {
@@ -328,97 +265,56 @@ func NewApp(ctx context.Context, cfg config.Config) (*App, error) {
 		}
 		return nil
 	}
-	if durableOutbox != nil {
-		if err := durableOutbox.Register("curator_turn", func(jobCtx context.Context, payload []byte) error {
-			var snapshot conversationdomain.ContextSnapshot
-			if err := json.Unmarshal(payload, &snapshot); err != nil {
-				return fmt.Errorf("decode curator snapshot: %w", err)
-			}
-			out, err := curatorService.Run(jobCtx, curatorsvc.Input{Snapshot: snapshot})
-			if err != nil {
-				return err
-			}
-			return applyCurator(jobCtx, out.MemoryIntents)
-		}); err != nil {
-			_ = durableOutbox.Close()
-			_ = backgroundRuntime.Close(context.Background())
-			_ = stores.Close()
-			return nil, fmt.Errorf("register curator outbox handler: %w", err)
+	if err := durableOutbox.Register("curator_turn", func(jobCtx context.Context, payload []byte) error {
+		var snapshot conversationdomain.ContextSnapshot
+		if err := json.Unmarshal(payload, &snapshot); err != nil {
+			return fmt.Errorf("decode curator snapshot: %w", err)
 		}
+		return applyCurator(jobCtx, curatorsvc.Extract(snapshot))
+	}); err != nil {
+		_ = durableOutbox.Close()
+		_ = stores.Close()
+		return nil, fmt.Errorf("register curator outbox handler: %w", err)
 	}
 	humanRuntime.AddEventObserver(profileService.ObserveEvent)
-	humanRuntime.AddCompletedTurnObserver(humanruntime.CompletedTurnObserverFunc(func(turnCtx context.Context, snapshot conversationdomain.ContextSnapshot, receipt replydomain.ActionReceipt) error {
-		if durableOutbox != nil {
-			payload, err := json.Marshal(snapshot)
-			if err != nil {
-				return fmt.Errorf("encode curator snapshot: %w", err)
-			}
-			key := snapshot.SnapshotID
-			if key == "" {
-				key = snapshot.Event.EventID
-			}
-			return durableOutbox.Enqueue(turnCtx, "curator_turn", key, payload)
+	humanRuntime.AddCompletedTurnObserver(humanruntime.CompletedTurnObserverFunc(func(turnCtx context.Context, snapshot conversationdomain.ContextSnapshot, _ replydomain.ActionReceipt) error {
+		payload, err := json.Marshal(snapshot)
+		if err != nil {
+			return fmt.Errorf("encode curator snapshot: %w", err)
 		}
-		ok := backgroundRuntime.Submit(backgroundruntime.Job{
-			Name:    "curator_turn",
-			Timeout: 30 * time.Second,
-			Run: func(jobCtx context.Context) error {
-				out, err := curatorService.Run(jobCtx, curatorsvc.Input{Snapshot: snapshot})
-				if err != nil {
-					return err
-				}
-				if err := applyCurator(jobCtx, out.MemoryIntents); err != nil {
-					return err
-				}
-				_ = receipt
-				return nil
-			},
-		})
-		if !ok {
-			return fmt.Errorf("curator job queue is full")
+		key := snapshot.SnapshotID
+		if key == "" {
+			key = snapshot.Event.EventID
 		}
-		return nil
+		return durableOutbox.Enqueue(turnCtx, "curator_turn", key, payload)
 	}))
-	learningOpts := []learningsvc.Option{}
-	if durableOutbox != nil {
-		learningOpts = append(learningOpts, learningsvc.WithOutbox(durableOutbox))
-	}
-	learningSvc, learnErr := learningsvc.New(ctx, stores.memory, stores.learning, memorySvc, learningOpts...)
+	learningSvc, learnErr := learningsvc.New(ctx, stores.memory, stores.learning, memorySvc, learningsvc.WithOutbox(durableOutbox))
 	if learnErr != nil {
-		_ = backgroundRuntime.Close(context.Background())
+		_ = durableOutbox.Close()
 		_ = stores.Close()
 		return nil, fmt.Errorf("learning service init: %w", learnErr)
 	}
-	if durableOutbox != nil {
-		if err := durableOutbox.Register("learning_extract", func(jobCtx context.Context, payload []byte) error {
-			var task struct {
-				GroupID int64 `json:"group_id"`
-			}
-			if err := json.Unmarshal(payload, &task); err != nil {
-				return fmt.Errorf("decode learning task: %w", err)
-			}
-			return learningSvc.ProcessGroup(jobCtx, task.GroupID)
-		}); err != nil {
-			_ = durableOutbox.Close()
-			_ = backgroundRuntime.Close(context.Background())
-			_ = stores.Close()
-			return nil, fmt.Errorf("register learning outbox handler: %w", err)
+	if err := durableOutbox.Register("learning_extract", func(jobCtx context.Context, payload []byte) error {
+		var task struct {
+			GroupID int64 `json:"group_id"`
 		}
+		if err := json.Unmarshal(payload, &task); err != nil {
+			return fmt.Errorf("decode learning task: %w", err)
+		}
+		return learningSvc.ProcessGroup(jobCtx, task.GroupID)
+	}); err != nil {
+		_ = durableOutbox.Close()
+		_ = stores.Close()
+		return nil, fmt.Errorf("register learning outbox handler: %w", err)
 	}
 	learningSvc.RegisterJobs(sched, cfg.QQ.GroupWhitelist)
 
 	app := &App{
 		cfg:          cfg,
 		humanRuntime: humanRuntime,
-		background:   backgroundRuntime,
-		outbox:       durableOutbox,
 		sched:        sched,
 		cleanup: func() error {
-			var outboxErr error
-			if durableOutbox != nil {
-				outboxErr = durableOutbox.Close()
-			}
-			return errors.Join(outboxErr, humanRuntime.Close(), presenceManager.Close(), mcpTools.Close(), stores.Close())
+			return errors.Join(durableOutbox.Close(), humanRuntime.Close(), presenceManager.Close(), mcpTools.Close(), stores.Close())
 		},
 		healthCheck: stores.HealthCheck,
 	}
@@ -480,11 +376,6 @@ func (a *App) Close() error {
 		if a.sched != nil {
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			a.closeErr = errors.Join(a.closeErr, a.sched.Close(ctx))
-			cancel()
-		}
-		if a.background != nil {
-			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-			a.closeErr = errors.Join(a.closeErr, a.background.Close(ctx))
 			cancel()
 		}
 		if a.cleanup != nil {

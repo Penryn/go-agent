@@ -35,10 +35,8 @@ BM25 和向量只负责候选召回。RRF 只比较 rank，不直接相加 BM25 
 - 失败降级和结果来源标记
 - 将完整字段回查交给权威 store
 
-生产装配通过 `WithLexicalAdapters` 显式注入 lexical adapter；retrieval 不再
-通过类型断言猜测 store 是否支持 BM25。当前 adapter 是全量加载语料后在进程
-内计算 BM25 的过渡实现，适合验证行为和小规模语料，不应直接当作大规模生产
-倒排索引。
+当前 Store 直接对可见语料执行进程内 BM25，适合验证行为和小规模语料，
+不应直接当作大规模生产倒排索引。
 
 memory、meme 和 `query_memory` 只能提供领域查询条件，不再各自复制混合召回骨架。
 
@@ -66,7 +64,7 @@ memory、meme 和 `query_memory` 只能提供领域查询条件，不再各自�
 
 ## 中文 BM25 部署决策
 
-当前 `pgvector/pg17` 镜像只保证向量能力，不自动提供严格 BM25 或中文分词。第一阶段使用 lexical adapter seam 和 Go implementation 验证检索行为；生产部署前需要用真实中文 query 比较：
+当前 `pgvector/pg17` 镜像只保证向量能力，不自动提供严格 BM25 或中文分词。第一阶段使用 Store 内的 Go implementation 验证检索行为；生产部署前需要用真实中文 query 比较：
 
 1. PostgreSQL-compatible BM25 extension + Chinese analyzer
 2. 独立或嵌入式 lexical index
@@ -78,7 +76,7 @@ memory、meme 和 `query_memory` 只能提供领域查询条件，不再各自�
 
 1. [x] 修复 scope 可见性，统一 `query_memory` 和自动上下文的 memory 查询；补充 meme 过滤后 fallback。
 2. [x] 接入 `retrieval` module，替换 context、meme 和 tool 的重复编排。
-3. [x] 将现有关键词查询替换为独立 BM25 lexical adapter，增加 BM25/vector/RRF 测试。
+3. [x] 将现有关键词查询替换为 BM25，增加 BM25/vector/RRF 测试。
 4. [x] 为 memory/meme projection 增加 revision 和可用的原子 outbox 路径。
 5. [ ] 增加 retrieval trace 和中文 golden set，校准 candidate-k、RRF 权重、threshold 和上下文预算。
 6. [ ] 按 golden set 结果选择 PostgreSQL BM25 extension、独立 lexical index 或 FTS 过渡方案，并实现 durable lexical projection。

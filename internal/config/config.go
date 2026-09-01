@@ -39,7 +39,6 @@ type ServerConfig struct {
 
 type RuntimeConfig struct {
 	WorkerCount  int    `yaml:"worker_count"`
-	QueueLength  int    `yaml:"queue_length"`
 	ActorIdleTTL string `yaml:"actor_idle_ttl"`
 }
 
@@ -66,29 +65,21 @@ type MemoryConfig struct {
 	// TypeTTL 按记忆类型指定差异化 TTL，覆盖 DefaultTTL。
 	// 例：topic_keyword: 168h, reaction_pattern: 360h, group_slang: 720h, user_catchphrase: 2160h
 	TypeTTL           map[string]string `yaml:"type_ttl"`
-	WriteThreshold    float64           `yaml:"write_threshold"`
-	SemanticTopK      int               `yaml:"semantic_top_k"`     // 语义检索返回数量，0 时使用 TopK 值
 	SemanticThreshold float64           `yaml:"semantic_threshold"` // 向量相似度过滤阈值，低于此值的结果被丢弃
 }
 
 type MemeConfig struct {
 	AutoCollect        bool    `yaml:"auto_collect"`
 	CandidateThreshold float64 `yaml:"candidate_threshold"`
-	// DedupThreshold is retained for config compatibility; precise perceptual
-	// deduplication is not implemented until real media bytes are available.
-	DedupThreshold    float64 `yaml:"dedup_threshold"`
-	PerGroupLimit     int     `yaml:"per_group_limit"`
-	SearchTopK        int     `yaml:"search_top_k"`
-	RepeatCooldown    string  `yaml:"repeat_cooldown"`
-	PreferGroupScoped bool    `yaml:"prefer_group_scoped"`
-	SemanticTopK      int     `yaml:"semantic_top_k"`     // 向量搜索返回数量，0 时禁用向量搜索
-	SemanticThreshold float64 `yaml:"semantic_threshold"` // 向量相似度过滤阈值，低于此值的结果被丢弃
+	PerGroupLimit      int     `yaml:"per_group_limit"`
+	SearchTopK         int     `yaml:"search_top_k"`
+	RepeatCooldown     string  `yaml:"repeat_cooldown"`
+	PreferGroupScoped  bool    `yaml:"prefer_group_scoped"`
+	SemanticThreshold  float64 `yaml:"semantic_threshold"` // 向量相似度过滤阈值，低于此值的结果被丢弃
 }
 
 type MultimodalConfig struct {
 	DownloadTimeout string `yaml:"download_timeout"`
-	MaxVideoBytes   int64  `yaml:"max_video_bytes"`
-	MaxVideoSeconds int    `yaml:"max_video_seconds"`
 }
 
 type ToolsConfig struct {

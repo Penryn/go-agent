@@ -29,8 +29,6 @@ var (
 	_ ports.MemeStore                 = (*Store)(nil)
 	_ ports.ProfileStore              = (*Store)(nil)
 	_ ports.OutboxStore               = (*Store)(nil)
-	_ ports.MemoryCorpusReader        = (*Store)(nil)
-	_ ports.MemeCorpusReader          = (*Store)(nil)
 	_ ports.AtomicMemeProjectionStore = (*Store)(nil)
 )
 
@@ -506,14 +504,6 @@ func (s *Store) QueryMemories(ctx context.Context, query ports.MemoryQuery) ([]m
 	return result, nil
 }
 
-// ListMemories returns the filtered authoritative corpus for the lexical
-// adapter. QueryMemories remains the compatibility query API.
-func (s *Store) ListMemories(ctx context.Context, query ports.MemoryQuery) ([]memorydomain.MemoryRecord, error) {
-	query.Query = ""
-	query.TopK = 0
-	return s.QueryMemories(ctx, query)
-}
-
 func (s *Store) GetMemberProfile(ctx context.Context, groupID, userID int64) (profiledomain.MemberProfile, error) {
 	var (
 		profile           profiledomain.MemberProfile
@@ -738,10 +728,6 @@ func upsertMemeExec(ctx context.Context, execer sqlExecer, asset mediadomain.Mem
 }
 
 func (s *Store) SearchMemes(ctx context.Context, query ports.MemeQuery) ([]mediadomain.MemeSearchResult, error) {
-	return s.searchMemes(ctx, query, true)
-}
-
-func (s *Store) searchMemes(ctx context.Context, query ports.MemeQuery, limitResults bool) ([]mediadomain.MemeSearchResult, error) {
 	trimmedQuery := strings.TrimSpace(query.Query)
 	limit := query.TopK
 	if limit <= 0 {
@@ -756,7 +742,7 @@ func (s *Store) searchMemes(ctx context.Context, query ports.MemeQuery, limitRes
 		WHERE a.status = 'approved'
 		  AND (a.group_id = $1 OR a.group_id = 0)`
 	args := []any{query.GroupID}
-	if trimmedQuery == "" && limitResults {
+	if trimmedQuery == "" {
 		base += " ORDER BY a.send_count DESC, d.updated_at DESC LIMIT $2"
 		args = append(args, limit)
 	}
@@ -821,14 +807,6 @@ func (s *Store) searchMemes(ctx context.Context, query ports.MemeQuery, limitRes
 		results = append(results, result)
 	}
 	return results, nil
-}
-
-// ListMemes returns the approved, visible authoritative corpus for the
-// lexical adapter. SearchMemes remains the compatibility query API.
-func (s *Store) ListMemes(ctx context.Context, query ports.MemeQuery) ([]mediadomain.MemeSearchResult, error) {
-	query.Query = ""
-	query.TopK = 0
-	return s.searchMemes(ctx, query, false)
 }
 
 func memeDescriptorText(descriptor mediadomain.MemeDescriptor) string {

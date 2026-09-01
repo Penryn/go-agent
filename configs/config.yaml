@@ -15,10 +15,8 @@ server:
   http_listen: ":8088"
 
 runtime:
-  # 预留的运行时 worker 数。
+  # 运行时 worker 数。
   worker_count: 2
-  # 预留的事件队列长度。
-  queue_length: 128
   # 长期无活动群的 Actor 回收时间。
   actor_idle_ttl: 30m
 
@@ -210,10 +208,7 @@ memory:
     reaction_pattern: 360h      # 互动套路 15 天
     group_slang: 720h           # 群流行词 30 天
     user_catchphrase: 2160h     # 个人口癖 90 天
-  # 达到该阈值后才写入长期记忆。
-  write_threshold: 0.65
-  # 语义检索配置（F3 双轨记忆），向量检索由 storage.postgres 提供。
-  semantic_top_k: 6
+  # 语义检索阈值，向量检索由 storage.postgres 提供。
   semantic_threshold: 0.75
 
 meme:
@@ -225,15 +220,12 @@ meme:
   # 同一张表情包重复发送冷却。
   repeat_cooldown: 10m
   prefer_group_scoped: true
-  # 表情包语义向量搜索配置，向量检索由 storage.postgres 提供。
-  semantic_top_k: 5
+  # 表情包语义向量搜索阈值。
   semantic_threshold: 0.72
 
 multimodal:
   # 拉取图片/视频资源的超时。
   download_timeout: 10s
-  max_video_bytes: 52428800
-  max_video_seconds: 60
 
 tools:
   # Eino 直接加载 MCP tools。工具会以 mcp_<server>_<tool> 暴露给主模型。

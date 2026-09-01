@@ -24,7 +24,6 @@ func Default() Config {
 		},
 		Runtime: RuntimeConfig{
 			WorkerCount:  2,
-			QueueLength:  128,
 			ActorIdleTTL: "30m",
 		},
 		Models: ModelsConfig{
@@ -64,9 +63,8 @@ func Default() Config {
 			BotDominanceSuppressSec:  60,
 		},
 		Memory: MemoryConfig{
-			TopK:           6,
-			DefaultTTL:     "720h",
-			WriteThreshold: 0.65,
+			TopK:       6,
+			DefaultTTL: "720h",
 		},
 		Meme: MemeConfig{
 			AutoCollect:        true,
@@ -78,8 +76,6 @@ func Default() Config {
 		},
 		Multimodal: MultimodalConfig{
 			DownloadTimeout: "10s",
-			MaxVideoBytes:   50 << 20,
-			MaxVideoSeconds: 60,
 		},
 		Tools: ToolsConfig{Codex: CodexConfig{
 			Binary:         "codex",

@@ -16,7 +16,7 @@ import (
 
 func TestObserveEventAndBuildSendSegments(t *testing.T) {
 	store := inmemory.NewStore()
-	service := New(store, config.MemeConfig{AutoCollect: true})
+	service := New(store, config.MemeConfig{AutoCollect: true}, WithRetriever(retrievalsvc.New(store, store, nil, nil, retrievalsvc.Config{})))
 
 	err := service.ObserveEvent(context.Background(), conversationdomain.ConversationEvent{
 		EventID: "e1",
@@ -56,7 +56,7 @@ func TestObserveEventAndBuildSendSegments(t *testing.T) {
 func TestDudFeedbackSinksColdMemes(t *testing.T) {
 	store := inmemory.NewStore()
 	ctx := context.Background()
-	svc := New(store, config.MemeConfig{AutoCollect: true, RepeatCooldown: "10m"})
+	svc := New(store, config.MemeConfig{AutoCollect: true, RepeatCooldown: "10m"}, WithRetriever(retrievalsvc.New(store, store, nil, nil, retrievalsvc.Config{})))
 
 	// 收两张表情
 	for i, text := range []string{"好图", "烂图"} {
@@ -115,7 +115,7 @@ func TestDudFeedbackSinksColdMemes(t *testing.T) {
 
 func TestCollectsOnlySafeConfidentMemeCandidates(t *testing.T) {
 	store := inmemory.NewStore()
-	svc := New(store, config.MemeConfig{AutoCollect: true, CandidateThreshold: 0.6})
+	svc := New(store, config.MemeConfig{AutoCollect: true, CandidateThreshold: 0.6}, WithRetriever(retrievalsvc.New(store, store, nil, nil, retrievalsvc.Config{})))
 	event := conversationdomain.ConversationEvent{EventID: "e1", GroupID: 1, Attachments: []mediadomain.MultimodalAttachment{
 		{AttachmentID: "safe", Kind: mediadomain.MediaImage, ObjectKey: "safe.jpg"},
 		{AttachmentID: "unsafe", Kind: mediadomain.MediaSticker, ObjectKey: "unsafe.webp"},
@@ -150,7 +150,7 @@ func TestSearchAppliesTagsDefaultsScopeAndStrictCooldown(t *testing.T) {
 	seed("global", 0, "happy")
 	seed("local", 1, "happy")
 	seed("wrong-emotion", 1, "sad")
-	svc := New(store, config.MemeConfig{SearchTopK: 2, RepeatCooldown: "10m", PreferGroupScoped: true})
+	svc := New(store, config.MemeConfig{SearchTopK: 2, RepeatCooldown: "10m", PreferGroupScoped: true}, WithRetriever(retrievalsvc.New(store, store, nil, nil, retrievalsvc.Config{})))
 
 	results, err := svc.Search(context.Background(), ports.MemeQuery{GroupID: 1, Emotion: "happy", Scene: "chat"})
 	if err != nil || len(results) != 2 || results[0].MemeID != "local" {

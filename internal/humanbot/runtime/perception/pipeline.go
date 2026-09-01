@@ -7,29 +7,21 @@ import (
 	"encoding/json"
 	"log/slog"
 	"strings"
-	"time"
 
 	mediadomain "github.com/phlin/go-agent/internal/domain/media"
 	humandomain "github.com/phlin/go-agent/internal/humanbot/domain"
 	groupactor "github.com/phlin/go-agent/internal/humanbot/runtime/group_actor"
-	backgroundruntime "github.com/phlin/go-agent/internal/runtime/background"
 	memesvc "github.com/phlin/go-agent/internal/services/meme"
 	multimodalsvc "github.com/phlin/go-agent/internal/services/multimodal"
 )
 
-type backgroundSubmitter interface {
-	Submit(backgroundruntime.Job) bool
-}
-
 type Pipeline struct {
-	vision     *multimodalsvc.Service
-	memes      *memesvc.Service
-	working    *groupactor.Manager
-	background backgroundSubmitter
-	outbox     interface {
+	vision  *multimodalsvc.Service
+	memes   *memesvc.Service
+	working *groupactor.Manager
+	outbox  interface {
 		Enqueue(context.Context, string, string, []byte) error
 	}
-	timeout time.Duration
 }
 
 type Option func(*Pipeline)
@@ -40,8 +32,8 @@ func WithOutbox(submitter interface {
 	return func(p *Pipeline) { p.outbox = submitter }
 }
 
-func New(vision *multimodalsvc.Service, memes *memesvc.Service, working *groupactor.Manager, background backgroundSubmitter, opts ...Option) *Pipeline {
-	p := &Pipeline{vision: vision, memes: memes, working: working, background: background, timeout: 45 * time.Second}
+func New(vision *multimodalsvc.Service, memes *memesvc.Service, working *groupactor.Manager, opts ...Option) *Pipeline {
+	p := &Pipeline{vision: vision, memes: memes, working: working}
 	for _, opt := range opts {
 		opt(p)
 	}
@@ -51,29 +43,16 @@ func New(vision *multimodalsvc.Service, memes *memesvc.Service, working *groupac
 // Submit never blocks message ingress. Queue pressure can defer media
 // understanding, but the original event has already been persisted by Actor.
 func (p *Pipeline) Submit(record humandomain.EventRecord) {
-	if p == nil || p.background == nil || p.working == nil || record.Origin != humandomain.OriginInbound || len(record.Event.Attachments) == 0 {
+	if p == nil || p.outbox == nil || p.working == nil || record.Origin != humandomain.OriginInbound || len(record.Event.Attachments) == 0 {
 		return
 	}
 	record.RawPayload = nil
-	if p.outbox != nil {
-		payload, err := json.Marshal(record)
-		if err == nil {
-			if enqueueErr := p.outbox.Enqueue(context.Background(), "perception_event", record.EventID, payload); enqueueErr == nil {
-				return
-			} else {
-				err = enqueueErr
-			}
-		}
-		slog.Warn("perception: outbox enqueue failed, using process-local queue", "event_id", record.EventID, "err", err)
+	payload, err := json.Marshal(record)
+	if err == nil {
+		err = p.outbox.Enqueue(context.Background(), "perception_event", record.EventID, payload)
 	}
-	if !p.background.Submit(backgroundruntime.Job{
-		Name:    "media_perception",
-		Timeout: p.timeout,
-		Run: func(ctx context.Context) error {
-			return p.process(ctx, record)
-		},
-	}) {
-		slog.Warn("perception: job dropped", "group_id", record.GroupID, "event_id", record.EventID)
+	if err != nil {
+		slog.Warn("perception: outbox enqueue failed", "event_id", record.EventID, "err", err)
 	}
 }
 
