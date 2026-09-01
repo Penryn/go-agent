@@ -24,6 +24,7 @@ import (
 	outputguardsvc "github.com/phlin/go-agent/internal/application/outputguard"
 	personasvc "github.com/phlin/go-agent/internal/application/persona"
 	policysvc "github.com/phlin/go-agent/internal/application/policy"
+	"github.com/phlin/go-agent/internal/application/textutil"
 	"github.com/phlin/go-agent/internal/application/ports"
 	presenceruntime "github.com/phlin/go-agent/internal/application/presence"
 	presencedeliberation "github.com/phlin/go-agent/internal/application/presence/deliberation"
@@ -89,7 +90,7 @@ func New(ctx context.Context, cfg config.Config) (*App, error) {
 	eventLog := presenceingress.NewMemoryEventLog()
 	actorOptions := []presenceactor.Option{
 		presenceactor.WithArchive(stores.memory),
-		presenceactor.WithIdleTTL(mustDuration(cfg.Runtime.ActorIdleTTL, 30*time.Minute)),
+		presenceactor.WithIdleTTL(textutil.ParseDurationOr(cfg.Runtime.ActorIdleTTL, 30*time.Minute)),
 	}
 	if stateStore, ok := stores.memory.(presenceactor.WorkingMemoryStore); ok {
 		actorOptions = append(actorOptions, presenceactor.WithStateStore(stateStore))
@@ -231,7 +232,7 @@ func New(ctx context.Context, cfg config.Config) (*App, error) {
 	deliberator := presencedeliberation.NewAdapter(contextService, planner)
 	jobTimeout := 120 * time.Second
 	if cfg.Tools.Codex.Enabled {
-		jobTimeout = max(jobTimeout, mustDuration(cfg.Tools.Codex.Timeout, jobTimeout))
+		jobTimeout = max(jobTimeout, textutil.ParseDurationOr(cfg.Tools.Codex.Timeout, jobTimeout))
 	}
 	humanRuntime := presenceruntime.New(ctx, normalizer, presenceManager, deliberator, perceptionPipeline, turnObserver, executor, presenceruntime.Config{
 		GroupWhitelist:    cfg.QQ.GroupWhitelist,
@@ -406,13 +407,3 @@ func (a *App) handleHealth(w http.ResponseWriter, r *http.Request) {
 	_, _ = w.Write([]byte(`{"ok":true}`))
 }
 
-func mustDuration(raw string, fallback time.Duration) time.Duration {
-	if raw == "" {
-		return fallback
-	}
-	value, err := time.ParseDuration(raw)
-	if err != nil {
-		return fallback
-	}
-	return value
-}

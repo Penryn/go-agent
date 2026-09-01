@@ -186,6 +186,16 @@ func (s *Store) FailOutbox(ctx context.Context, id string, taskErr error, retryA
 	return err
 }
 
+// argBuilder 顺序追加参数并返回 $N 占位符,免手工维护编号。
+type argBuilder struct {
+	args []any
+}
+
+func (b *argBuilder) add(value any) string {
+	b.args = append(b.args, value)
+	return "$" + strconv.Itoa(len(b.args))
+}
+
 func nullableError(err error) any {
 	if err == nil {
 		return nil
@@ -419,25 +429,24 @@ func (s *Store) QueryMemories(ctx context.Context, query ports.MemoryQuery) ([]m
 		FROM memories
 		WHERE 1=1
 	`
-	args := []any{}
 	trimmedQuery := strings.TrimSpace(query.Query)
+	args := &argBuilder{}
 	if query.Scope != "" {
 		if !searchcore.MemoryScopeVisible(query.Scope, query.GroupID, query.UserID) {
 			return []memorydomain.MemoryRecord{}, nil
 		}
-		base += " AND scope = $" + strconv.Itoa(len(args)+1)
-		args = append(args, query.Scope)
+		base += " AND scope = " + args.add(query.Scope)
 	} else if query.GroupID != 0 {
-		base += " AND (scope = $" + strconv.Itoa(len(args)+1) + " OR scope = $" + strconv.Itoa(len(args)+2) + " OR scope = 'global')"
-		args = append(args, fmt.Sprintf("group:%d", query.GroupID), fmt.Sprintf("group:%d:user:%d", query.GroupID, query.UserID))
+		groupScope := args.add(fmt.Sprintf("group:%d", query.GroupID))
+		userScope := args.add(fmt.Sprintf("group:%d:user:%d", query.GroupID, query.UserID))
+		base += " AND (scope = 'global' OR scope = " + groupScope + " OR scope = " + userScope + ")"
 	} else {
 		base += " AND scope = 'global'"
 	}
 	if len(query.Types) > 0 {
 		phs := make([]string, 0, len(query.Types))
 		for _, memoryType := range query.Types {
-			args = append(args, memoryType)
-			phs = append(phs, "$"+strconv.Itoa(len(args)))
+			phs = append(phs, args.add(memoryType))
 		}
 		base += " AND type IN (" + strings.Join(phs, ",") + ")"
 	}
@@ -447,12 +456,11 @@ func (s *Store) QueryMemories(ctx context.Context, query ports.MemoryQuery) ([]m
 	if trimmedQuery == "" {
 		base += " ORDER BY importance / (1 + EXTRACT(EPOCH FROM (NOW() - created_at)) / 86400.0 / (GREATEST(importance, 0.1) * 30.0)) DESC, created_at DESC"
 		if query.TopK > 0 {
-			base += " LIMIT $" + strconv.Itoa(len(args)+1)
-			args = append(args, query.TopK)
+			base += " LIMIT " + args.add(query.TopK)
 		}
 	}
 
-	rows, err := s.db.QueryContext(ctx, base, args...)
+	rows, err := s.db.QueryContext(ctx, base, args.args...)
 	if err != nil {
 		return nil, err
 	}
@@ -797,7 +805,7 @@ func (s *Store) SearchMemes(ctx context.Context, query ports.MemeQuery) ([]media
 	documents := make([]bm25.Document, len(results))
 	byID := make(map[string]mediadomain.MemeSearchResult, len(results))
 	for i, result := range results {
-		documents[i] = bm25.Document{ID: result.MemeID, Text: memeDescriptorText(result.Descriptor)}
+		documents[i] = bm25.Document{ID: result.MemeID, Text: result.Descriptor.IndexText()}
 		byID[result.MemeID] = result
 	}
 	ranked := bm25.Rank(trimmedQuery, documents, limit)
@@ -810,9 +818,6 @@ func (s *Store) SearchMemes(ctx context.Context, query ports.MemeQuery) ([]media
 	return results, nil
 }
 
-func memeDescriptorText(descriptor mediadomain.MemeDescriptor) string {
-	return strings.Join([]string{descriptor.Title, descriptor.Summary, strings.Join(descriptor.Keywords, " "), strings.Join(descriptor.EmotionTags, " "), strings.Join(descriptor.SceneTags, " "), strings.Join(descriptor.UsageHints, " ")}, "\n")
-}
 
 func (s *Store) GetMeme(ctx context.Context, memeID string) (mediadomain.MemeAsset, mediadomain.MemeDescriptor, error) {
 	var (

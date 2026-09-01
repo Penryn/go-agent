@@ -170,7 +170,7 @@ func (s *Service) ObserveEvent(ctx context.Context, event conversationdomain.Con
 
 		// Vector indexing is durable background work when an outbox is configured.
 		if s.vectorStore != nil {
-			indexText := buildIndexText(memeDescriptor)
+			indexText := memeDescriptor.IndexText()
 			groupID := event.GroupID
 			if s.outbox != nil {
 				revision := time.Now().UnixNano()
@@ -481,26 +481,3 @@ func coalesce(primary, fallback string) string {
 	return fallback
 }
 
-// buildIndexText 将 MemeDescriptor 的文字字段拼接为向量索引文本。
-func buildIndexText(d mediadomain.MemeDescriptor) string {
-	parts := make([]string, 0, 6)
-	if d.Title != "" {
-		parts = append(parts, d.Title)
-	}
-	if d.Summary != "" {
-		parts = append(parts, d.Summary)
-	}
-	if len(d.Keywords) > 0 {
-		parts = append(parts, strings.Join(d.Keywords, " "))
-	}
-	if len(d.EmotionTags) > 0 {
-		parts = append(parts, strings.Join(d.EmotionTags, " "))
-	}
-	if len(d.SceneTags) > 0 {
-		parts = append(parts, strings.Join(d.SceneTags, " "))
-	}
-	if len(d.UsageHints) > 0 {
-		parts = append(parts, strings.Join(d.UsageHints, " "))
-	}
-	return strings.Join(parts, "\n")
-}

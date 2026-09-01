@@ -4,7 +4,6 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
-	"strconv"
 	"strings"
 
 	"github.com/cloudwego/eino/components/embedding"
@@ -98,11 +97,8 @@ func (s *VectorStore) SearchMemories(ctx context.Context, query ports.MemoryQuer
 		FROM memory_vectors v
 		JOIN memories m ON m.memory_id = v.memory_id
 		WHERE (m.expires_at IS NULL OR m.expires_at > NOW())`
-	args := []any{vec}
-	addArg := func(value any) string {
-		args = append(args, value)
-		return "$" + strconv.Itoa(len(args))
-	}
+	args := &argBuilder{args: []any{vec}}
+	addArg := args.add
 	if query.Scope != "" {
 		statement += " AND m.scope = " + addArg(query.Scope)
 	} else if query.GroupID != 0 {
@@ -122,7 +118,7 @@ func (s *VectorStore) SearchMemories(ctx context.Context, query ports.MemoryQuer
 	statement += " AND 1 - (v.embedding <=> $1) >= " + addArg(threshold)
 	statement += " ORDER BY v.embedding <=> $1 LIMIT " + addArg(query.TopK)
 
-	rows, err := s.db.QueryContext(ctx, statement, args...)
+	rows, err := s.db.QueryContext(ctx, statement, args.args...)
 	if err != nil {
 		return nil, err
 	}

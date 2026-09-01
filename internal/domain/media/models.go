@@ -1,6 +1,9 @@
 package media
 
-import "time"
+import (
+	"strings"
+	"time"
+)
 
 type MediaKind string
 
@@ -70,6 +73,17 @@ type MemeDescriptor struct {
 	Confidence  float64   `json:"confidence" yaml:"confidence"`
 	Reviewed    bool      `json:"reviewed" yaml:"reviewed"`
 	UpdatedAt   time.Time `json:"updated_at" yaml:"updated_at"`
+}
+
+// IndexText 将描述符的文字字段拼为向量索引/检索文本。
+func (d MemeDescriptor) IndexText() string {
+	parts := make([]string, 0, 6)
+	for _, part := range []string{d.Title, d.Summary, strings.Join(d.Keywords, " "), strings.Join(d.EmotionTags, " "), strings.Join(d.SceneTags, " "), strings.Join(d.UsageHints, " ")} {
+		if part != "" {
+			parts = append(parts, part)
+		}
+	}
+	return strings.Join(parts, "\n")
 }
 
 type MemeSearchResult struct {

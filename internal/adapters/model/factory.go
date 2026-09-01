@@ -14,6 +14,7 @@ import (
 	modelcomponent "github.com/cloudwego/eino/components/model"
 	arkruntime "github.com/volcengine/volcengine-go-sdk/service/arkruntime/model"
 
+	"github.com/phlin/go-agent/internal/application/textutil"
 	"github.com/phlin/go-agent/internal/config"
 )
 
@@ -102,7 +103,7 @@ func (f *Factory) newChatModel(ctx context.Context, cfg config.ModelProviderConf
 
 	switch normalizeProvider(cfg.Provider) {
 	case "ark":
-		timeout := parseTimeout(cfg.Timeout, 30*time.Second)
+		timeout := textutil.ParseDurationOr(cfg.Timeout, 30*time.Second)
 		return arkmodel.NewChatModel(ctx, &arkmodel.ChatModelConfig{
 			APIKey:   cfg.APIKey,
 			Model:    cfg.Model,
@@ -141,7 +142,7 @@ func (f *Factory) newEmbeddingModel(ctx context.Context, cfg config.ModelProvide
 
 	switch normalizeProvider(cfg.Provider) {
 	case "ark":
-		timeout := parseTimeout(cfg.Timeout, 15*time.Second)
+		timeout := textutil.ParseDurationOr(cfg.Timeout, 15*time.Second)
 		embCfg := &arkemb.EmbeddingConfig{
 			APIKey:  cfg.APIKey,
 			Model:   cfg.Model,
@@ -172,16 +173,6 @@ func normalizeProvider(provider string) string {
 	return provider
 }
 
-func parseTimeout(raw string, fallback time.Duration) time.Duration {
-	if strings.TrimSpace(raw) == "" {
-		return fallback
-	}
-	timeout, err := time.ParseDuration(raw)
-	if err != nil || timeout <= 0 {
-		return fallback
-	}
-	return timeout
-}
 
 func durationPtr(value time.Duration) *time.Duration {
 	return &value
