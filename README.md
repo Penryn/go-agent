@@ -1,76 +1,45 @@
 # QQ 群友 AI Bot
 
-一个像真正群友一样参与群聊的 AI 机器人。基于 Go + [Eino](https://github.com/cloudwego/eino) 构建，通过 [NapCat](https://github.com/NapNeko/NapCatQQ)（OneBot 11 协议）接入 QQ。
+一个会观察群聊氛围、选择合适时机参与对话的 QQ Bot。项目使用 Go + [Eino](https://github.com/cloudwego/eino) 构建，通过 [NapCat](https://github.com/NapNeko/NapCatQQ)（OneBot 11）接入 QQ。
 
-Bot 会自动判断何时该说话、何时沉默，用短句和表情包自然接话——不做客服、不做话痨。
+它的目标不是逐条应答，而是像普通群友一样：该接话时简短回应，也可以发表情、发梗图或保持沉默。
 
-## 特性
+## 核心能力
 
-- 🧠 **Presence Runtime** — 持续感知群聊，按候选、时机和认知负载决定是否参与
-- 🎭 **人格系统** — 可配置说话风格、心情、精力，按群独立覆写策略
-- 👀 **多模态理解** — 图片 / 视频 / 梗图自动识别，Vision Agent 提取摘要
-- 🃏 **表情包库** — 自动收藏群内表情包，语义检索精准复用，去重 + 冷却
-- 📝 **长期记忆** — 记住群友偏好与关系，PostgreSQL + pgvector 向量检索与结构化存储
-- 👤 **群友画像** — 跟踪活跃度、常用短语、亲密度，动态调整互动方式
-- 🔄 **后台学习** — 从持久化事件归档中异步提炼群聊黑话和高频表达
-- 🔌 **类型安全的 NapCat 接入** — 使用 [`zjutjh/napcat-sdk`](https://github.com/zjutjh/napcat-sdk) 统一处理 WebSocket 事件、HTTP action 与协议错误
+- 自主参与：结合上下文、时机和频率决定回复、回应或沉默
+- 可配置人格：支持说话风格、情绪状态和按群覆盖策略
+- 多模态理解：识别图片、视频和梗图，为回复提供摘要
+- 表情包复用：自动收藏、语义检索、去重并限制重复发送
+- 长期记忆：保存群聊事实、群友画像、兴趣和关系状态
+- 异步处理：通过持久化 Outbox 执行视觉分析和向量索引任务
+- 外部工具：可选接入 MCP，以及将复杂本地任务委派给 Codex
 
-## 架构
+## 工作方式
 
-```
-NapCat / OneBot 11
-        │ inbound event
-        ▼
-Normalize → Event Log + durable archive
-        ▼
-Group Presence Actor
-  ├─ Working Memory / burst 合并
-  ├─ Topic / open loop
-  └─ Thought Candidate
-        ▼
-Presence Scheduler
-        ▼
-Deliberator → Context Projection → Persona Planner
-        ▼
-Action Executor → NapCat outbound
-        │
-        └── origin=outbound self event → Reflection / Learning
+```text
+NapCat 事件
+    ↓
+归一化、去重与持久化
+    ↓
+群聊状态与候选回复
+    ↓
+时机判断与人格规划
+    ↓
+文本 / 引用 / 表情 / 表情包 / 戳一戳 / 沉默
 ```
 
-Runtime 的核心原则是：所有消息都被感知，但不是所有消息都值得回复。回复是候选经过调度和思考后的副作用，不是入站消息的必然结果。
-
-| 模块 | 职责 | 实现方式 |
-|------|------|---------|
-| **Group Presence Actor** | 串行维护每群 working memory、burst、话题和候选 | Go mailbox |
-| **Presence Scheduler** | 按 due time、urgency、过期时间和认知负载选择候选 | 确定性规则 |
-| **Deliberator** | 为候选构建窄上下文，并选择 reply/react/meme/silent | Runtime seam + Eino Planner |
-| **Main Persona** | 生成自然短句、引用和工具调用 | Eino ADK `ChatModelAgent` |
-| **Vision** | 图片 / 视频内容理解 | 多模态 `ChatModel`，异步接入 |
-| **Curator / Learning** | 从归档事件提炼记忆、画像和群聊表达 | `compose.Graph/Workflow` |
-
-## 一条群消息的链路
-
-1. NapCat 通过 WebSocket 或 HTTP 将 OneBot 事件交给 Bot。
-2. Normalizer 生成统一的 `EventEnvelope`，并按事件 ID 去重。
-3. Group Actor 写入 Event Log 和 PostgreSQL 消息归档，再更新群的 working memory。
-4. Actor 将消息转成可延迟、可取消、可过期的 `ThoughtCandidate`。
-5. Presence Scheduler 在合适的时间 claim 候选，避免每条消息都立即触发模型。
-6. Deliberator 读取窄上下文，选择回复、表情回应、表情包或保持沉默。
-7. Action Executor 做输出约束和平台动作校验，然后调用 NapCat。
-8. 发送成功后主动写入 Bot 自己的 `origin=outbound` 事件，供下一轮上下文和学习使用。
+所有消息都会被感知，但不会触发必然回复。详细设计见 [架构说明](docs/ARCHITECTURE.md)。
 
 ## 环境要求
 
-| 依赖 | 版本 | 用途 |
-|------|------|------|
-| Go | 1.25.8+ | 编译运行 |
-| Docker & Docker Compose | — | 运行基础设施和 NapCat |
-| LLM API Key | — | 支持火山方舟（Ark）或 OpenAI 兼容接口 |
-| QQ 号 | — | 作为机器人身份登录 NapCat |
+- Go 1.25.8+
+- Docker 与 Docker Compose
+- 一个 QQ Bot 账号
+- 火山方舟或 OpenAI 兼容模型的 API Key
 
 ## 快速开始
 
-### 1. 克隆并启动
+### 1. 启动依赖
 
 ```bash
 git clone https://github.com/Penryn/go-agent.git
@@ -78,167 +47,128 @@ cd go-agent
 docker compose up -d
 ```
 
-启动 PostgreSQL、NapCat 两个服务。
+这会启动 PostgreSQL（含 pgvector）和 NapCat。运行数据保存在 `data/`，不会提交到 Git。
 
-### 2. 登录 QQ
+### 2. 登录并配置 NapCat
 
-访问 NapCat 管理页面 **http://127.0.0.1:6099**，使用 QQ 扫码完成登录。
+打开 [http://127.0.0.1:6099](http://127.0.0.1:6099)，扫码登录 QQ，然后在“网络配置”中启用：
 
-> 登录状态会持久化到 `data/napcat/`，后续重启通常不需要重新登录。
+| 服务 | 端口 | 用途 |
+|------|------|------|
+| HTTP | `3000` | Bot 发送 OneBot 动作 |
+| 正向 WebSocket | `3001` | Bot 接收群事件 |
 
-### 3. 配置 NapCat 网页端
+为两个服务设置同一个 Access Token，并保存应用配置。
 
-在 NapCat 管理页面（`http://127.0.0.1:6099`）的 **网络配置** 中完成以下设置：
-
-| 步骤 | 配置项 | 值 | 说明 |
-|------|--------|-----|------|
-| ① | 启用 HTTP 服务 | ✅ 开启 | Bot 通过 HTTP 发送消息 |
-| ② | HTTP 监听端口 | `3000` | 对应 `qq.outbound_url` |
-| ③ | 启用正向 WebSocket | ✅ 开启 | Bot 通过 WS 接收事件 |
-| ④ | WebSocket 端口 | `3001` | 对应 `qq.event_ws_url` |
-| ⑤ | Access Token | 自定义一个值 | 和 `configs/config.yaml` 中 `qq.access_token` 保持一致 |
-
-设置完成后点击 **保存并应用**，必要时重启 NapCat。
-
-> **通信链路**：NapCat WS (`:3001`) → Bot 收事件 → Bot HTTP (`:3000`) → NapCat 发动作 → QQ
-
-### 4. 配置应用
-
-先复制示例配置，再编辑 `configs/config.yaml`，启用 QQ 并填写模型信息与密钥：
+### 3. 配置 Bot
 
 ```bash
 cp configs/config.example.yaml configs/config.yaml
 ```
 
-```yaml
-qq:
-  enabled: true
-  self_id: 你的机器人QQ号          # 必填
-  access_token: 你在NapCat网页里设置的Token
+至少填写以下内容：
 
+```yaml
 models:
   main:
-    provider: ark                  # 或 openai_compat
-    model: 你的模型端点ID
-    api_key: 你的LLM-API-Key
+    provider: ark            # 或 openai_compat
+    model: 你的模型名称或端点 ID
+    api_key: 你的 API Key
+
+qq:
+  enabled: true
+  self_id: 你的机器人 QQ 号
+  access_token: NapCat 中设置的 Token
+  outbound_url: http://127.0.0.1:3000
+  event_ws_url: ws://127.0.0.1:3001
 ```
 
-> 完整配置项说明见 [`configs/config.example.yaml`](configs/config.example.yaml) 中的注释。真实 `config.yaml` 可能包含密钥，已被 Git 忽略。
+完整配置和说明见 [configs/config.example.yaml](configs/config.example.yaml)。`configs/config.yaml` 已被 Git 忽略，请勿提交真实密钥。
 
-NapCat 正向 WebSocket、事件解析、HTTP action 调用和协议错误由 `github.com/zjutjh/napcat-sdk` 统一处理；断线后应用会自动重连，原始事件 JSON 仍会进入领域归一化层。
-
-### 5. 验证 & 启动
+### 4. 启动
 
 ```bash
-# 不接 QQ，用本地测试事件跑通全链路
-go run ./cmd/qqbotd -config configs/config.yaml -once-event tests/testdata/mention_event.json
-
-# 正式启动
 go run ./cmd/qqbotd -config configs/config.yaml
 ```
 
-启动后 Bot 自动通过 WebSocket 连接 NapCat 接收群消息。
+应用启动时会自动执行幂等的 PostgreSQL Schema 迁移。健康检查：
 
-| 端点 | 用途 |
+```bash
+curl http://127.0.0.1:8088/healthz
+```
+
+预期返回：
+
+```json
+{"ok":true}
+```
+
+## 本地事件验证
+
+将 `qq.enabled` 临时设为 `false`，可在不连接 QQ、也不发送真实 OneBot 动作的情况下处理单条测试事件：
+
+```bash
+go run ./cmd/qqbotd \
+  -config configs/config.yaml \
+  -once-event tests/testdata/mention_event.json
+```
+
+## Bot 工具
+
+内置工具默认可用；配置非空 `tool_allowlist` 后，只向该群开放列出的内置工具。
+
+| 类型 | 工具 |
 |------|------|
-| `GET /healthz` | 健康检查 |
+| 最终动作 | `speak_text`、`quote_reply`、`send_meme`、`react_emoji`、`recall_recent_message`、`poke_member`、`stay_silent` |
+| 信息读取 | `query_memory`、`search_meme`、`query_member_profile` |
+| 状态更新 | `mark_memory_intent`、`update_affinity`、`update_member_profile` |
 
-## 配置参考
+可选扩展：
 
-**优先级**：内置默认值 → `configs/config.yaml`
+- MCP：启动时加载，工具名统一为 `mcp_<server>_<tool>`
+- Codex：通过 `delegate_codex_task` 执行复杂本地任务，默认只读
 
-| 文件 | 用途 |
-|------|------|
-| [`configs/config.example.yaml`](configs/config.example.yaml) | 可提交的完整配置模板，不包含真实密钥 |
-| `configs/config.yaml` | 本地运行配置，统一保存普通配置与密钥，已被 Git 忽略 |
+外部 MCP/Codex 工具即使已启用，也必须显式加入目标群的 `tool_allowlist`。Codex 写任务还受 QQ 用户白名单、工作目录和危险操作确认约束；联网默认关闭。
 
-<details>
-<summary>密钥配置一览</summary>
+## 常用配置
 
-| YAML 配置项 | 说明 |
-|------|------|
-| `qq.access_token` | NapCat Access Token |
-| `models.main.api_key` | 主模型 API Key |
-| `models.vision.api_key` | Vision 模型 Key（可选） |
-| `models.embedding.api_key` | Embedding 模型 Key（预留） |
-| `storage.postgres.password` | PostgreSQL 密码 |
-
-</details>
-
-<details>
-<summary>配置段一览</summary>
-
-| 配置段 | 说明 |
+| 配置段 | 作用 |
 |--------|------|
-| `app` | 应用名、运行模式（dev / prod） |
-| `server` | HTTP 监听地址、读写超时 |
-| `models` | 主模型 / Vision / Embedding 的 provider、model、base_url |
-| `persona` | 人设名、别名、说话风格、约束、回复字数上限 |
-| `default_policy` | 默认群策略（存在感级别、连续发言上限等） |
-| `group_policies` | 按群号覆写策略 |
-| `autonomy` | Presence Runtime 的观察窗口、主动概率和限流参数 |
-| `tools` | Agent 工具白名单、超时、预算 |
-| `memory` | 长期记忆 top_k、TTL、写入阈值 |
-| `meme` | 表情包收藏、去重阈值、发送冷却 |
-| `multimodal` | 图片 / 视频下载超时、抽帧数、视觉预算 |
-| `storage` | PostgreSQL 连接信息 |
-| `qq` | QQ 开关、自身 ID、出入站地址、群白名单 |
-
-</details>
-
-## 出站动作
-
-| 动作 | OneBot 端点 | 说明 |
-|------|------------|------|
-| `reply` | `/send_group_msg` | 文本回复（含引用） |
-| `meme_only` | `/send_group_msg` | 表情包发送 |
-| `recall` | `/delete_msg` | 撤回消息 |
-| `poke_back` | `/group_poke` | 戳一戳 |
-| `react` | `/set_msg_emoji_like` | 消息表情回应（NapCat 扩展） |
-| `silent` | — | 不执行任何动作 |
+| `models` | 主模型、视觉模型和 Embedding 模型 |
+| `persona` | 人格、语气、输出长度和按群覆盖 |
+| `default_policy` / `group_policies` | 默认及群级策略、工具白名单 |
+| `autonomy` | 主动参与概率、观察窗口和限流 |
+| `memory` / `meme` | 记忆检索与表情包策略 |
+| `tools` | MCP、Codex、超时和权限 |
+| `storage` | PostgreSQL 连接和向量维度 |
+| `qq` | NapCat 地址、Token 和群白名单 |
 
 ## 项目结构
 
-```
-go-agent/
-├── cmd/qqbotd/                  # 启动入口
-├── configs/config.example.yaml  # 完整配置模板
-├── docs/                        # 架构、ADR 与专项设计
-├── schema/                      # PostgreSQL 幂等 schema
-├── tests/testdata/              # 跨包测试数据
-├── internal/
-│   ├── app/                     # 依赖组装、启停与健康检查
-│   ├── config/                  # 配置加载与校验
-│   ├── domain/                  # 纯领域状态和值对象
-│   │   └── presence/            # Working memory 与 thought candidate
-│   ├── application/             # 用例与业务编排
-│   │   ├── ports/               # 外部能力接口
-│   │   ├── presence/            # 主消息生命周期
-│   │   ├── runtime/             # Outbox 与后台调度
-│   │   └── <capability>/         # memory、meme、prompting、tools 等
-│   ├── adapters/                # NapCat、模型与存储实现
-│   └── search/                  # 无 I/O 的检索算法内核
-└── docker-compose.yml           # 基础设施编排
+```text
+cmd/qqbotd/           启动入口
+configs/              配置模板
+internal/app/         依赖组装与生命周期
+internal/domain/      领域模型
+internal/application/ 业务编排与运行时
+internal/adapters/    NapCat、模型和 PostgreSQL 适配器
+internal/search/      无 I/O 的检索算法
+schema/               PostgreSQL Schema
+docs/                 架构、ADR 和专项设计
+tests/testdata/       测试事件
 ```
 
-完整目录职责、依赖规则和变更入口见 [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)。
-
-## 数据库迁移
-
-PostgreSQL 建表脚本在 [`schema/schema.sql`](schema/schema.sql)，由应用启动时自动执行（含 pgvector 扩展、关系表与向量表），全部语句幂等，可重复执行。
-
-## 开发
+## 开发验证
 
 ```bash
-go mod tidy        # 依赖整理
-go build ./...     # 编译
-go test ./...      # 全量测试
-go test -race ./... # 竞态检测
-docker compose config  # 验证 compose 配置
+go build ./...
+go test ./...
+go test -race ./...
+docker compose config
 ```
 
-事件生命周期与异步可靠性决策见 [`docs/adr/0001-runtime-lifecycle-and-outbox.md`](docs/adr/0001-runtime-lifecycle-and-outbox.md)。
+更多资料：
 
-## License
-
-详见项目授权。
+- [架构与依赖规则](docs/ARCHITECTURE.md)
+- [运行时生命周期与 Outbox ADR](docs/adr/0001-runtime-lifecycle-and-outbox.md)
+- [RAG 重构说明](docs/RAG_REFACTOR.md)
