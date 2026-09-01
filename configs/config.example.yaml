@@ -48,6 +48,8 @@ models:
     timeout: 15s
     # doubao-embedding-vision 系列须使用多模态接口。
     api_type: multimodal
+    # 必须与 storage.postgres.vector_dim 一致。
+    dimensions: 2048
 
 persona:
   # 人设主键。

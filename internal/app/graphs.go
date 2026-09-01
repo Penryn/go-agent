@@ -29,10 +29,27 @@ func buildVectorGraph(ctx context.Context, cfg config.Config, factory *modeladap
 		slog.Warn("app: embedding model unavailable, skipping vector store init", "err", err)
 		return graph
 	}
+	probe, err := embedder.EmbedStrings(ctx, []string{"embedding health check"})
+	if err != nil {
+		slog.Warn("app: embedding probe failed, skipping vector store init", "err", err)
+		return graph
+	}
+	if len(probe) != 1 || len(probe[0]) != dim {
+		slog.Warn("app: embedding dimension mismatch, skipping vector store init",
+			"expected_dim", dim, "actual_dim", embeddingDimension(probe))
+		return graph
+	}
 	// 向量库与关系库共用 *sql.DB:同一 PG 实例、同一连接池。
 	// VectorStore 同时实现 VectorMemoryStore 与 VectorMemeStore。
 	vectorStore := postgresstore.NewVectorStore(stores.db, embedder, dim)
 	graph.memory = vectorStore
 	graph.meme = vectorStore
 	return graph
+}
+
+func embeddingDimension(vectors [][]float64) int {
+	if len(vectors) != 1 {
+		return 0
+	}
+	return len(vectors[0])
 }

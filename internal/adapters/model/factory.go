@@ -149,6 +149,10 @@ func (f *Factory) newEmbeddingModel(ctx context.Context, cfg config.ModelProvide
 			BaseURL: strings.TrimSpace(cfg.BaseURL),
 			Timeout: durationPtr(timeout),
 		}
+		if cfg.Dimensions > 0 {
+			dimensions := cfg.Dimensions
+			embCfg.Dimensions = &dimensions
+		}
 		if strings.ToLower(strings.TrimSpace(cfg.APIType)) == "multimodal" {
 			apiType := arkemb.APITypeMultiModal
 			embCfg.APIType = &apiType
@@ -172,7 +176,6 @@ func normalizeProvider(provider string) string {
 	}
 	return provider
 }
-
 
 func durationPtr(value time.Duration) *time.Duration {
 	return &value

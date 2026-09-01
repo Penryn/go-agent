@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	personadomain "github.com/phlin/go-agent/internal/domain/persona"
@@ -98,6 +99,36 @@ func TestDefaultGroupWhitelistEmpty(t *testing.T) {
 	cfg := Default()
 	if cfg.QQ.GroupWhitelist != nil {
 		t.Fatalf("expected nil group_whitelist by default, got %v", cfg.QQ.GroupWhitelist)
+	}
+}
+
+func TestDefaultEmbeddingDimensionsMatchVectorSchema(t *testing.T) {
+	cfg := Default()
+	if got, want := cfg.Models.Embedding.Dimensions, cfg.Storage.Postgres.VectorDim; got != want {
+		t.Fatalf("embedding dimensions mismatch: got %d want %d", got, want)
+	}
+}
+
+func TestValidateRejectsEmbeddingDimensionMismatch(t *testing.T) {
+	cfg := Default()
+	cfg.Models.Embedding.Model = "embedding-endpoint"
+	cfg.Models.Embedding.APIKey = "test-key"
+	cfg.Models.Embedding.Dimensions = 1024
+
+	err := Validate(cfg)
+	if err == nil || !strings.Contains(err.Error(), "models.embedding.dimensions must match") {
+		t.Fatalf("expected embedding dimension mismatch, got %v", err)
+	}
+}
+
+func TestValidateAllowsDisabledVectorStore(t *testing.T) {
+	cfg := Default()
+	cfg.Storage.Postgres.VectorDim = 0
+	cfg.Models.Embedding.Model = "embedding-endpoint"
+	cfg.Models.Embedding.APIKey = "test-key"
+
+	if err := Validate(cfg); err != nil {
+		t.Fatalf("disabled vector store should not require embedding dimension match: %v", err)
 	}
 }
 

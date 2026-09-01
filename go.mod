@@ -4,7 +4,7 @@ go 1.25.8
 
 require (
 	github.com/cloudwego/eino v0.9.18
-	github.com/cloudwego/eino-ext/components/embedding/ark v0.1.1
+	github.com/cloudwego/eino-ext/components/embedding/ark v0.1.2
 	github.com/cloudwego/eino-ext/components/model/ark v0.1.69
 	github.com/cloudwego/eino-ext/components/tool/mcp/officialmcp v0.1.1
 	github.com/jackc/pgx/v5 v5.10.0

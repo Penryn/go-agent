@@ -27,7 +27,7 @@ func Default() Config {
 		Models: ModelsConfig{
 			Main:      ModelProviderConfig{Provider: "ark", Timeout: "20s"},
 			Vision:    ModelProviderConfig{Provider: "ark", Timeout: "15s"},
-			Embedding: ModelProviderConfig{Provider: "ark", Timeout: "15s"},
+			Embedding: ModelProviderConfig{Provider: "ark", Timeout: "15s", Dimensions: 2048},
 		},
 		Persona: personadomain.PersonaConfig{
 			ID:          "main",
@@ -140,6 +140,12 @@ func Load(path string) (Config, error) {
 func Validate(cfg Config) error {
 	if cfg.Storage.Postgres.VectorDim > 0 && cfg.Storage.Postgres.VectorDim != 2048 {
 		return errors.New("storage.postgres.vector_dim must be 2048 for the configured halfvec schema")
+	}
+	embeddingConfigured := strings.TrimSpace(cfg.Models.Embedding.Model) != "" ||
+		strings.TrimSpace(cfg.Models.Embedding.APIKey) != "" ||
+		strings.TrimSpace(cfg.Models.Embedding.BaseURL) != ""
+	if cfg.Storage.Postgres.VectorDim > 0 && embeddingConfigured && cfg.Models.Embedding.Dimensions != cfg.Storage.Postgres.VectorDim {
+		return fmt.Errorf("models.embedding.dimensions must match storage.postgres.vector_dim (%d)", cfg.Storage.Postgres.VectorDim)
 	}
 	if strings.TrimSpace(cfg.Persona.ID) == "" {
 		return errors.New("persona.id is required")

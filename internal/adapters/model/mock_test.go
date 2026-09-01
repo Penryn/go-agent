@@ -2,7 +2,10 @@ package model
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 
 	"github.com/phlin/go-agent/internal/config"
@@ -34,7 +37,6 @@ func TestFactoryBuildsArkModelByDefault(t *testing.T) {
 		t.Fatal("expected cached model instance")
 	}
 }
-
 
 func TestFactoryReturnsUnavailableWhenModelConfigMissing(t *testing.T) {
 	factory := NewFactory(config.ModelsConfig{})
@@ -110,6 +112,52 @@ func TestFactoryBuildsArkEmbeddingModelByDefault(t *testing.T) {
 	}
 }
 
+func TestFactoryPassesEmbeddingDimensionsToArk(t *testing.T) {
+	var request struct {
+		Model      string `json:"model"`
+		Dimensions int    `json:"dimensions"`
+		Input      []struct {
+			Type string `json:"type"`
+			Text string `json:"text"`
+		} `json:"input"`
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/embeddings/multimodal" {
+			t.Errorf("unexpected request path: %s", r.URL.Path)
+		}
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			t.Errorf("decode embedding request: %v", err)
+			http.Error(w, "bad request", http.StatusBadRequest)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"probe","model":"embedding-endpoint","object":"list","data":{"object":"embedding","embedding":[0.1,0.2]},"usage":{"prompt_tokens":1,"total_tokens":1,"prompt_tokens_details":{"text_tokens":1,"image_tokens":0}}}`))
+	}))
+	defer server.Close()
+
+	factory := NewFactory(config.ModelsConfig{Embedding: config.ModelProviderConfig{
+		Provider:   "ark",
+		Model:      "embedding-endpoint",
+		BaseURL:    server.URL,
+		APIKey:     "test-key",
+		APIType:    "multimodal",
+		Dimensions: 2048,
+	}})
+	embedder, err := factory.EmbeddingModel(context.Background())
+	if err != nil {
+		t.Fatalf("embedding model: %v", err)
+	}
+	if _, err := embedder.EmbedStrings(context.Background(), []string{"dimension probe"}); err != nil {
+		t.Fatalf("embed probe: %v", err)
+	}
+
+	if request.Model != "embedding-endpoint" || request.Dimensions != 2048 {
+		t.Fatalf("unexpected embedding request: %+v", request)
+	}
+	if len(request.Input) != 1 || request.Input[0].Type != "text" || request.Input[0].Text != "dimension probe" {
+		t.Fatalf("unexpected embedding input: %+v", request.Input)
+	}
+}
 
 func TestFactoryReturnsUnavailableWhenEmbeddingConfigMissing(t *testing.T) {
 	factory := NewFactory(config.ModelsConfig{})

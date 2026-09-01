@@ -50,6 +50,8 @@ type ModelProviderConfig struct {
 	// APIType 仅对 embedding 模型生效：text（默认）或 multimodal。
 	// doubao-embedding-vision 系列多模态模型须设为 multimodal。
 	APIType string `yaml:"api_type"`
+	// Dimensions 仅对 embedding 模型生效；0 表示使用模型默认维度。
+	Dimensions int `yaml:"dimensions"`
 }
 
 type ModelsConfig struct {
