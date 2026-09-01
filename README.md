@@ -71,7 +71,7 @@ cp configs/config.example.yaml configs/config.yaml
 ```yaml
 models:
   main:
-    provider: ark            # 或 openai_compat
+    provider: ark            # 或 openai
     model: 你的模型名称或端点 ID
     api_key: 你的 API Key
 

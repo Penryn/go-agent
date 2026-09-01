@@ -21,11 +21,11 @@ runtime:
 models:
   # Main Persona Agent 使用的主模型。
   main:
-    # 未指定 provider 时运行时默认按 ark 处理（当前仅支持 ark）。
+    # 未指定 provider 时运行时默认按 ark 处理；也可使用 openai 接入 OpenAI 兼容 API。
     provider: ark
     # 模型名。留空时 bot 无法生成文本回复（保持沉默，仅保留 poke/react/表情包动作）。
     model: ""
-    # 可选 provider base URL。
+    # 可选 provider base URL；使用 openai 接入兼容服务时通常填写 /v1 地址。
     base_url: "https://ark.cn-beijing.volces.com/api/v3"
     # 模型 API Key；请在本地 config.yaml 中填写。
     api_key: ""

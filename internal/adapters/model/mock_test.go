@@ -38,6 +38,26 @@ func TestFactoryBuildsArkModelByDefault(t *testing.T) {
 	}
 }
 
+func TestFactoryBuildsOpenAIModel(t *testing.T) {
+	factory := NewFactory(config.ModelsConfig{
+		Main: config.ModelProviderConfig{
+			Provider: "openai",
+			Model:    "gpt-4o-mini",
+			BaseURL:  "http://127.0.0.1:18080/v1",
+			APIKey:   "test-key",
+			Timeout:  "2s",
+		},
+	})
+
+	model, err := factory.MainChatModel(context.Background())
+	if err != nil {
+		t.Fatalf("main chat model: %v", err)
+	}
+	if model == nil {
+		t.Fatal("expected non-nil model")
+	}
+}
+
 func TestFactoryReturnsUnavailableWhenModelConfigMissing(t *testing.T) {
 	factory := NewFactory(config.ModelsConfig{})
 
@@ -109,6 +129,41 @@ func TestFactoryBuildsArkEmbeddingModelByDefault(t *testing.T) {
 	}
 	if second != embedder {
 		t.Fatal("expected cached embedder instance")
+	}
+}
+
+func TestFactoryBuildsOpenAIEmbeddingModel(t *testing.T) {
+	factory := NewFactory(config.ModelsConfig{
+		Embedding: config.ModelProviderConfig{
+			Provider: "openai",
+			Model:    "text-embedding-3-small",
+			BaseURL:  "http://127.0.0.1:18080/v1",
+			APIKey:   "test-key",
+			Timeout:  "2s",
+		},
+	})
+
+	embedder, err := factory.EmbeddingModel(context.Background())
+	if err != nil {
+		t.Fatalf("embedding model: %v", err)
+	}
+	if embedder == nil {
+		t.Fatal("expected non-nil embedder")
+	}
+}
+
+func TestNormalizeProvider(t *testing.T) {
+	for _, test := range []struct {
+		provider string
+		want     string
+	}{
+		{provider: "", want: "ark"},
+		{provider: "ARK", want: "ark"},
+		{provider: " openai ", want: "openai"},
+	} {
+		if got := normalizeProvider(test.provider); got != test.want {
+			t.Fatalf("normalizeProvider(%q) = %q, want %q", test.provider, got, test.want)
+		}
 	}
 }
 
