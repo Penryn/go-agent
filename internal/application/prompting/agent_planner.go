@@ -115,7 +115,6 @@ func (p *AgentPlanner) Plan(ctx context.Context, snapshot conversationdomain.Con
 		assistantText   string
 		terminalName    string
 		terminalContent string
-		plannedTools    []string
 	)
 	for {
 		event, ok := iter.Next()
@@ -133,7 +132,6 @@ func (p *AgentPlanner) Plan(ctx context.Context, snapshot conversationdomain.Con
 
 		if event.Output.MessageOutput.Role == schema.Tool {
 			toolName := event.Output.MessageOutput.ToolName
-			plannedTools = append(plannedTools, toolName)
 			if returnDirectly[toolName] && terminalName == "" && !toolResultFailed(msg.Content) {
 				terminalName = toolName
 				terminalContent = msg.Content
@@ -157,7 +155,6 @@ func (p *AgentPlanner) Plan(ctx context.Context, snapshot conversationdomain.Con
 	}
 
 	if plan, ok, err := toolsvc.ParseTerminalPlan(decision.DecisionID, terminalName, terminalContent, toolContext); err == nil && ok {
-		plan.PlannedTools = append([]string(nil), plannedTools...)
 		slog.Info("planner: terminal tool", "tool", terminalName, "trace_id", snapshot.SnapshotID, "bubbles", len(plan.Bubbles))
 		return plan, nil
 	}
@@ -171,7 +168,6 @@ func (p *AgentPlanner) Plan(ctx context.Context, snapshot conversationdomain.Con
 			PlannedActions: []policydomain.DecisionAction{policydomain.ActionReply},
 			SendMode:       "group",
 			FallbackText:   assistantText,
-			PlannedTools:   append([]string(nil), plannedTools...),
 		}, nil
 	}
 

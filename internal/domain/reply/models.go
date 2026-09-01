@@ -24,10 +24,8 @@ type ReplyPlan struct {
 	Intent             ReplyIntent                   `json:"intent" yaml:"intent"`
 	ReplyToMessageID   string                        `json:"reply_to_message_id" yaml:"reply_to_message_id"`
 	Bubbles            []string                      `json:"bubbles" yaml:"bubbles"`
-	PlannedTools       []string                      `json:"planned_tools" yaml:"planned_tools"`
 	PlannedActions     []policydomain.DecisionAction `json:"planned_actions" yaml:"planned_actions"`
 	ActionParams       map[string]any                `json:"action_params,omitempty" yaml:"action_params,omitempty"`
-	MemoryWriteIntents []string                      `json:"memory_write_intents" yaml:"memory_write_intents"`
 	SendMode           string                        `json:"send_mode" yaml:"send_mode"`
 	FallbackText       string                        `json:"fallback_text" yaml:"fallback_text"`
 }

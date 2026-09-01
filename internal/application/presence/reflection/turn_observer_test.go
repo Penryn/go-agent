@@ -8,7 +8,6 @@ import (
 	personasvc "github.com/phlin/go-agent/internal/application/persona"
 	postgresstore "github.com/phlin/go-agent/internal/adapters/storage/postgres"
 	conversationdomain "github.com/phlin/go-agent/internal/domain/conversation"
-	personadomain "github.com/phlin/go-agent/internal/domain/persona"
 	policydomain "github.com/phlin/go-agent/internal/domain/policy"
 	replydomain "github.com/phlin/go-agent/internal/domain/reply"
 	"github.com/phlin/go-agent/internal/testsupport"
@@ -19,9 +18,8 @@ func TestTurnObserverPersistsCooldownAndPersonaFeedback(t *testing.T) {
 	states := postgresstore.NewStateStore(db)
 	observer := New(states, personasvc.New(states, "persona-1"), time.Minute, nil)
 	snapshot := conversationdomain.ContextSnapshot{
-		Event:          conversationdomain.ConversationEvent{GroupID: 1, MentionedBot: true},
-		ActiveTopic:    "今晚开黑",
-		PersonaProfile: personadomain.PersonaProfile{PersonaID: "persona-1"},
+		Event:       conversationdomain.ConversationEvent{GroupID: 1, MentionedBot: true},
+		ActiveTopic: "今晚开黑",
 	}
 	if err := observer.AfterTurn(context.Background(), snapshot, policydomain.AutonomyDecision{Action: policydomain.ActionReply}, replydomain.ActionReceipt{Sent: true}); err != nil {
 		t.Fatalf("after turn: %v", err)
@@ -30,7 +28,7 @@ func TestTurnObserverPersistsCooldownAndPersonaFeedback(t *testing.T) {
 	if err != nil {
 		t.Fatalf("get runtime state: %v", err)
 	}
-	if state.State != policydomain.StateCooldown || state.CooldownUntil.Before(time.Now()) || state.CurrentTopic != "今晚开黑" || state.LastDirectedAt.IsZero() {
+	if state.State != policydomain.StateCooldown || state.CooldownUntil.Before(time.Now()) || state.LastDirectedAt.IsZero() {
 		t.Fatalf("unexpected runtime state: %+v", state)
 	}
 	if allowed, err := observer.CanDeliberate(context.Background(), 1, time.Now()); err != nil || allowed {

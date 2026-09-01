@@ -26,7 +26,7 @@ func TestToolSchemas(t *testing.T) {
 	_ = store.SaveMemberProfile(context.Background(), profiledomain.MemberProfile{
 		Stats: profiledomain.MemberStats{GroupID: 1, UserID: 2, Nickname: "alice"},
 	})
-	runtime := NewRuntime(store, store, WithProfileStore(store))
+	runtime := NewRuntime(store, WithProfileStore(store))
 	tools := runtime.Tools(replydomain.ToolContext{
 		GroupID:              1,
 		UserID:               2,
@@ -52,7 +52,7 @@ func TestToolSchemas(t *testing.T) {
 }
 
 func TestContextualTerminalTools(t *testing.T) {
-	runtime := NewRuntime(testsupport.NewStore(t), testsupport.NewStore(t))
+	runtime := NewRuntime(testsupport.NewStore(t))
 	base := runtime.TerminalTools(replydomain.ToolContext{})
 	if base["poke_member"] || base["repair_message"] {
 		t.Fatalf("contextual tools leaked into a normal turn: %#v", base)
@@ -92,7 +92,7 @@ func TestTerminalPlan(t *testing.T) {
 }
 
 func TestExternalToolsRequireExplicitAllowlist(t *testing.T) {
-	runtime := NewRuntime(testsupport.NewStore(t), testsupport.NewStore(t))
+	runtime := NewRuntime(testsupport.NewStore(t))
 	if err := runtime.RegisterTools(context.Background(), externalTestTool{}); err != nil {
 		t.Fatal(err)
 	}

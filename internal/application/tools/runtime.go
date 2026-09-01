@@ -26,7 +26,6 @@ import (
 )
 
 type Runtime struct {
-	memoryStore       ports.MemoryStore
 	memeStore         ports.MemeStore
 	profileStore      ports.ProfileStore
 	personaFacts      ports.PersonaFactStore
@@ -41,10 +40,9 @@ type Runtime struct {
 
 type Option func(*Runtime)
 
-func NewRuntime(memoryStore ports.MemoryStore, memeStore ports.MemeStore, opts ...Option) *Runtime {
+func NewRuntime(memeStore ports.MemeStore, opts ...Option) *Runtime {
 	rt := &Runtime{
-		memoryStore: memoryStore,
-		memeStore:   memeStore,
+		memeStore: memeStore,
 	}
 	for _, opt := range opts {
 		opt(rt)
@@ -82,12 +80,6 @@ func WithMemoryRetriever(retriever *retrievalsvc.Service) Option {
 
 func WithWriteApprovalStore(store *WriteApprovalStore) Option {
 	return func(rt *Runtime) { rt.approvals = store }
-}
-
-func (r *Runtime) ObserveConfirmation(groupID, userID int64, text string, at time.Time) {
-	if r != nil && r.approvals != nil {
-		r.approvals.ObserveConfirmation(groupID, userID, text, at)
-	}
 }
 
 func (r *Runtime) ToolContext(ctx context.Context, groupID, userID int64) context.Context {
@@ -390,7 +382,6 @@ type speakTextArgs struct {
 	Text             string   `json:"text"`
 	Bubbles          []string `json:"bubbles"`
 	ReplyToMessageID string   `json:"reply_to_message_id"`
-	MentionUserIDs   []int64  `json:"mention_user_ids"`
 }
 
 type speakTextResult struct {

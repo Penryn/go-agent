@@ -29,6 +29,9 @@ func New(store ports.RuntimeStateStore, personaID string) *Service {
 	return &Service{store: store, personaID: personaID}
 }
 
+// PersonaID 返回该服务实例绑定的人设 ID。
+func (s *Service) PersonaID() string { return s.personaID }
+
 // RegisterJobs 向 Scheduler 注册情绪衰减定时任务。
 // groupIDs 来自 cfg.QQ.GroupWhitelist，用于遍历所有已知群。
 func (s *Service) RegisterJobs(sched *scheduler.Scheduler, groupIDs []int64) {

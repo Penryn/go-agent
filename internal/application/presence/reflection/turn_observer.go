@@ -70,7 +70,6 @@ func (o *TurnObserver) AfterTurn(ctx context.Context, snapshot conversationdomai
 	}
 	now := time.Now()
 	state.GroupID = snapshot.Event.GroupID
-	state.CurrentTopic = snapshot.ActiveTopic
 	state.State = policydomain.StateObserving
 	if receipt.Sent {
 		state.State = policydomain.StateCooldown
@@ -81,15 +80,6 @@ func (o *TurnObserver) AfterTurn(ctx context.Context, snapshot conversationdomai
 	}
 	if snapshot.Event.MentionedBot || snapshot.Event.NamedBot || snapshot.Event.IsReplyToBot {
 		state.LastDirectedAt = now
-	}
-	if o.persona != nil {
-		// persona 状态全局单槽（GroupID=0），与 context/persona 服务一致
-		personaState, getErr := o.states.GetPersonaState(ctx, snapshot.PersonaProfile.PersonaID, 0)
-		if getErr != nil {
-			return getErr
-		}
-		state.CurrentMood = personaState.Mood
-		state.CurrentEnergy = personaState.Energy
 	}
 	return o.states.SaveRuntimeState(ctx, state)
 }

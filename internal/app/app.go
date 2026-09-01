@@ -168,7 +168,7 @@ func New(ctx context.Context, cfg config.Config) (*App, error) {
 		}
 	}()
 	writeApprovals := toolsvc.NewWriteApprovalStore(10 * time.Minute)
-	toolRuntime := toolsvc.NewRuntime(stores.memory, stores.meme,
+	toolRuntime := toolsvc.NewRuntime(stores.meme,
 		toolsvc.WithProfileStore(stores.profile),
 		toolsvc.WithPersonaID(cfg.Persona.ID),
 		toolsvc.WithPersonaFactStore(stores.personaFacts),
@@ -242,7 +242,7 @@ func New(ctx context.Context, cfg config.Config) (*App, error) {
 		ProactiveBaseProbability: cfg.Autonomy.ProactiveBaseProbability,
 		ProactiveScoreThreshold:  cfg.Autonomy.ProactiveScoreThreshold,
 	})
-	humanRuntime.SetConfirmationObserver(toolRuntime)
+	humanRuntime.SetConfirmationObserver(writeApprovals)
 	if thoughtStore, ok := stores.memory.(ports.ThoughtStore); ok {
 		humanRuntime.SetThoughtStore(thoughtStore)
 		contextService.WithThoughtStore(thoughtStore)

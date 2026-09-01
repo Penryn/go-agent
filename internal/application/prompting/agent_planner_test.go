@@ -52,7 +52,7 @@ func TestAgentPlannerToolLoop(t *testing.T) {
 
 	planner := NewAgentPlanner(
 		modeladapter.StaticFactory{MainModel: mockModel},
-		toolsvc.NewRuntime(store, store, toolsvc.WithMemoryRetriever(retrievalsvc.New(store, store, nil, nil, retrievalsvc.Config{}))),
+		toolsvc.NewRuntime(store, toolsvc.WithMemoryRetriever(retrievalsvc.New(store, store, nil, nil, retrievalsvc.Config{}))),
 		NewComposer(defaultPersona()),
 		NewDeterministicPlanner(defaultPersona()),
 	)
@@ -67,9 +67,6 @@ func TestAgentPlannerToolLoop(t *testing.T) {
 	}
 	if len(plan.PlannedActions) == 0 || plan.PlannedActions[0] != policydomain.ActionReply {
 		t.Fatalf("unexpected actions: %#v", plan.PlannedActions)
-	}
-	if !slices.Equal(plan.PlannedTools, []string{"query_memory", "speak_text"}) {
-		t.Fatalf("unexpected tool trace: %#v", plan.PlannedTools)
 	}
 }
 
@@ -87,7 +84,7 @@ func TestAgentPlannerStaySilent(t *testing.T) {
 
 	planner := NewAgentPlanner(
 		modeladapter.StaticFactory{MainModel: mockModel},
-		toolsvc.NewRuntime(testsupport.NewStore(t), testsupport.NewStore(t)),
+		toolsvc.NewRuntime(testsupport.NewStore(t)),
 		NewComposer(defaultPersona()),
 		NewDeterministicPlanner(defaultPersona()),
 	)
@@ -111,7 +108,7 @@ func TestAgentPlannerCanReplyWhenRuleBaselineWasSilent(t *testing.T) {
 	)
 	planner := NewAgentPlanner(
 		modeladapter.StaticFactory{MainModel: mockModel},
-		toolsvc.NewRuntime(testsupport.NewStore(t), testsupport.NewStore(t)),
+		toolsvc.NewRuntime(testsupport.NewStore(t)),
 		NewComposer(defaultPersona()), NewDeterministicPlanner(defaultPersona()),
 	)
 	decision := sampleDecision()
@@ -139,7 +136,7 @@ func TestAgentPlannerSendMemeReturnsDirectly(t *testing.T) {
 	}}))
 	planner := NewAgentPlanner(
 		modeladapter.StaticFactory{MainModel: mockModel},
-		toolsvc.NewRuntime(store, store),
+		toolsvc.NewRuntime(store),
 		NewComposer(defaultPersona()),
 		NewDeterministicPlanner(defaultPersona()),
 	)
@@ -177,7 +174,7 @@ func TestAgentPlannerRepairsRecentBotMessage(t *testing.T) {
 	}}))
 	planner := NewAgentPlanner(
 		modeladapter.StaticFactory{MainModel: mockModel},
-		toolsvc.NewRuntime(testsupport.NewStore(t), testsupport.NewStore(t)),
+		toolsvc.NewRuntime(testsupport.NewStore(t)),
 		NewComposer(defaultPersona()),
 		NewDeterministicPlanner(defaultPersona()),
 	)
@@ -187,9 +184,6 @@ func TestAgentPlannerRepairsRecentBotMessage(t *testing.T) {
 	}
 	if len(plan.PlannedActions) != 1 || plan.PlannedActions[0] != policydomain.ActionRepair {
 		t.Fatalf("unexpected repair actions: %#v", plan.PlannedActions)
-	}
-	if !slices.Equal(plan.PlannedTools, []string{"repair_message"}) {
-		t.Fatalf("unexpected repair tool trace: %#v", plan.PlannedTools)
 	}
 }
 

@@ -41,15 +41,10 @@ type RuntimeState struct {
 	GroupID             int64         `json:"group_id" yaml:"group_id"`
 	State               AutonomyState `json:"state" yaml:"state"`
 	CooldownUntil       time.Time     `json:"cooldown_until" yaml:"cooldown_until"`
-	SuppressedUntil     time.Time     `json:"suppressed_until" yaml:"suppressed_until"`
 	LastBotSpeakAt      time.Time     `json:"last_bot_speak_at" yaml:"last_bot_speak_at"`
 	LastDirectedAt      time.Time     `json:"last_directed_at" yaml:"last_directed_at"`
-	LastProactiveAt     time.Time     `json:"last_proactive_at" yaml:"last_proactive_at"`
 	ConsecutiveBotTurns int           `json:"consecutive_bot_turns" yaml:"consecutive_bot_turns"`
 	RepliesLast10Min    int           `json:"replies_last_10min" yaml:"replies_last_10min"`
-	CurrentMood         string        `json:"current_mood" yaml:"current_mood"`
-	CurrentEnergy       string        `json:"current_energy" yaml:"current_energy"`
-	CurrentTopic        string        `json:"current_topic" yaml:"current_topic"`
 }
 
 type AutonomyDecision struct {

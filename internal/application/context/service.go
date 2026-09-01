@@ -144,25 +144,9 @@ func (s *Service) BuildSnapshot(ctx context.Context, envelope conversationdomain
 	// 模型看到的媒体描述要么是真实理解，要么没有。
 	groupPolicy := s.policy.EffectiveGroupPolicy(envelope.Event.GroupID)
 	resolvedPersona := personadomain.Resolve(s.persona, envelope.Event.GroupID, groupPolicy.PersonaOverlay)
-	personaConfig := resolvedPersona.Config
 	if resolvedPersona.ToolAllowlist != nil {
 		groupPolicy.ToolAllowlist = append([]string(nil), resolvedPersona.ToolAllowlist...)
 	}
-	personaProfile := personadomain.PersonaProfile{
-		PersonaID:       personaConfig.ID,
-		DisplayName:     personaConfig.Name,
-		Version:         resolvedPersona.Version,
-		Hash:            resolvedPersona.Hash,
-		Config:          personaConfig,
-		StableTraits:    []string{personaConfig.SpeechStyle, personaConfig.Description},
-		StyleRules:      []string{"像真人，不像客服", "优先短句"},
-		AutonomyBias:    map[string]float64{"prefer_memes": boolFloat(personaConfig.PreferMemes), "allow_teasing": boolFloat(personaConfig.AllowTeasing)},
-		OutputRules:     []string{fmt.Sprintf("最大 %d 字", personaConfig.ReplyMaxChars), fmt.Sprintf("最大 %d 句", personaConfig.ReplyMaxSentences)},
-		ToolAllowlist:   append([]string(nil), resolvedPersona.ToolAllowlist...),
-		FewShotExamples: append([]personadomain.FewShotExample(nil), resolvedPersona.FewShotExamples...),
-		CurrentFacts:    append([]personadomain.PersonaFact(nil), personaFacts...),
-	}
-
 	projection := conversationdomain.ProjectionMetadata{
 		Name:     "group_working_memory+archive",
 		Version:  working.Version,
@@ -185,7 +169,6 @@ func (s *Service) BuildSnapshot(ctx context.Context, envelope conversationdomain
 		OpenLoops:         append([]string(nil), working.OpenLoops...),
 		MemberProfile:     ensureMemberProfile(memberProfile, envelope.Event),
 		RelationshipState: relationship,
-		PersonaProfile:    personaProfile,
 		PersonaState:      personaState,
 		PersonaFacts:      append([]personadomain.PersonaFact(nil), personaFacts...),
 		GroupPolicy:       groupPolicy,
@@ -332,11 +315,4 @@ func buildDecisionHints(event conversationdomain.ConversationEvent) []string {
 		hints = append(hints, "media_hook")
 	}
 	return hints
-}
-
-func boolFloat(value bool) float64 {
-	if value {
-		return 1
-	}
-	return 0
 }

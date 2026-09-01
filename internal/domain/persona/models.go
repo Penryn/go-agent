@@ -120,24 +120,6 @@ type PersonaOverride struct {
 	FewShotExamples   []FewShotExample `json:"few_shot_examples,omitempty" yaml:"few_shot_examples,omitempty"`
 }
 
-type PersonaProfile struct {
-	PersonaID   string `json:"persona_id" yaml:"persona_id"`
-	DisplayName string `json:"display_name" yaml:"display_name"`
-	Version     string `json:"version" yaml:"version"`
-	Hash        string `json:"hash" yaml:"hash"`
-	// Config is the immutable resolved definition for this group turn. It is
-	// deliberately separate from PersonaState, which carries mutable mood and
-	// energy and is persisted by the runtime state store.
-	Config          PersonaConfig      `json:"config,omitempty" yaml:"config,omitempty"`
-	StableTraits    []string           `json:"stable_traits" yaml:"stable_traits"`
-	StyleRules      []string           `json:"style_rules" yaml:"style_rules"`
-	AutonomyBias    map[string]float64 `json:"autonomy_bias" yaml:"autonomy_bias"`
-	InteractionMap  map[string]string  `json:"interaction_map" yaml:"interaction_map"`
-	OutputRules     []string           `json:"output_rules" yaml:"output_rules"`
-	ToolAllowlist   []string           `json:"tool_allowlist" yaml:"tool_allowlist"`
-	FewShotExamples []FewShotExample   `json:"few_shot_examples" yaml:"few_shot_examples"`
-	CurrentFacts    []PersonaFact      `json:"current_facts,omitempty" yaml:"current_facts,omitempty"`
-}
 
 type PersonaState struct {
 	PersonaID string    `json:"persona_id" yaml:"persona_id"`
