@@ -152,7 +152,7 @@ func TestAgentPlannerSendMemeReturnsDirectly(t *testing.T) {
 	}
 }
 
-func TestAgentPlannerWithoutToolRuntimeFallsBack(t *testing.T) {
+func TestAgentPlannerWithoutToolRuntimeStaysSilent(t *testing.T) {
 	planner := NewAgentPlanner(
 		modeladapter.StaticFactory{MainModel: modeladapter.NewMockChatModel()},
 		nil,
@@ -163,8 +163,9 @@ func TestAgentPlannerWithoutToolRuntimeFallsBack(t *testing.T) {
 	if err != nil {
 		t.Fatalf("planner fallback: %v", err)
 	}
-	if len(plan.Bubbles) == 0 {
-		t.Fatalf("expected deterministic fallback plan, got %+v", plan)
+	// 模型不可用时保持沉默，不降级到模板话术
+	if len(plan.PlannedActions) != 1 || plan.PlannedActions[0] != policydomain.ActionSilent {
+		t.Fatalf("expected silent plan, got %+v", plan)
 	}
 }
 

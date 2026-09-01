@@ -84,12 +84,6 @@ func cloneConfig(config PersonaConfig) PersonaConfig {
 	config.Speech.Catchphrases = append([]string(nil), config.Speech.Catchphrases...)
 	config.Speech.Avoidances = append([]string(nil), config.Speech.Avoidances...)
 	config.Speech.FewShotExamples = append([]FewShotExample(nil), config.Speech.FewShotExamples...)
-	if config.Speech.Fallbacks != nil {
-		config.Speech.Fallbacks = make(map[string][]string, len(config.Speech.Fallbacks))
-		for intent, responses := range config.Speech.Fallbacks {
-			config.Speech.Fallbacks[intent] = append([]string(nil), responses...)
-		}
-	}
 	if config.GroupOverrides != nil {
 		config.GroupOverrides = make(map[int64]PersonaOverride, len(config.GroupOverrides))
 		for groupID, override := range config.GroupOverrides {

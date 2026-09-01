@@ -25,8 +25,7 @@ type SpeechPatterns struct {
 	// EmojiFrequency 控制表情包使用频率，取值：frequent/moderate/rare/none。
 	EmojiFrequency string `json:"emoji_frequency" yaml:"emoji_frequency"`
 	// FewShotExamples 是少样本对话示例。
-	FewShotExamples []FewShotExample    `json:"few_shot_examples" yaml:"few_shot_examples"`
-	Fallbacks       map[string][]string `json:"fallbacks" yaml:"fallbacks"`
+	FewShotExamples []FewShotExample `json:"few_shot_examples" yaml:"few_shot_examples"`
 }
 
 type PersonaConfig struct {

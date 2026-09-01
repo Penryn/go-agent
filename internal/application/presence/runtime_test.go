@@ -14,7 +14,6 @@ import (
 	"github.com/phlin/go-agent/internal/application/presence/deliberation"
 	"github.com/phlin/go-agent/internal/application/presence/group_actor"
 	"github.com/phlin/go-agent/internal/application/presence/ingress"
-	promptingsvc "github.com/phlin/go-agent/internal/application/prompting"
 	retrievalsvc "github.com/phlin/go-agent/internal/application/retrieval"
 	"github.com/phlin/go-agent/internal/config"
 	conversationdomain "github.com/phlin/go-agent/internal/domain/conversation"
@@ -27,6 +26,15 @@ type failingDeliberator struct{}
 
 func (failingDeliberator) Deliberate(context.Context, deliberation.Input) (deliberation.Result, error) {
 	return deliberation.Result{}, errors.New("deliberation failed")
+}
+
+// recordingPlanner 记录 Plan 被调用,返回固定回复——测试"消息走到 planner 并被执行",
+// 不依赖确定性 planner 的话术内容。
+type recordingPlanner struct{ calls int }
+
+func (p *recordingPlanner) Plan(_ context.Context, _ conversationdomain.ContextSnapshot, _ policydomain.AutonomyDecision) (replydomain.ReplyPlan, error) {
+	p.calls++
+	return replydomain.ReplyPlan{Bubbles: []string{"planner considered this"}, PlannedActions: []policydomain.DecisionAction{policydomain.ActionReply}, SendMode: "group"}, nil
 }
 
 type recordingDeliberator struct{ calls int }
@@ -64,7 +72,9 @@ func TestProcessRawEventUsesCandidateRuntime(t *testing.T) {
 	retriever := retrievalsvc.New(store, store, nil, nil, retrievalsvc.Config{})
 	contextService := contextsvc.New(store, store, store, policy, cfg.Persona, retriever, cfg.Memory.TopK)
 	contextService.WithWorkingMemory(working)
-	planner := promptingsvc.NewDeterministicPlanner(cfg.Persona)
+	// 用 recordingDeliberator 断言消息走到 deliberation 并被执行,
+	// 不依赖确定性 planner 的话术内容
+	planner := &recordingPlanner{}
 	sender := inmemory.NewSender()
 	executor := action.New(sender, nil, nil, action.WithPresenceObserver(working), action.WithSelfID(cfg.QQ.SelfID))
 	runtime := New(ctx, normalizer, working, deliberation.NewAdapter(contextService, planner), nil, nil, executor, Config{SelfID: cfg.QQ.SelfID})
@@ -96,7 +106,7 @@ func TestProcessRawEventSendsOrdinaryContentToPlanner(t *testing.T) {
 	retriever := retrievalsvc.New(store, store, nil, nil, retrievalsvc.Config{})
 	contextService := contextsvc.New(store, store, store, policy, cfg.Persona, retriever, cfg.Memory.TopK)
 	contextService.WithWorkingMemory(working)
-	planner := promptingsvc.NewDeterministicPlanner(cfg.Persona)
+	planner := &recordingPlanner{}
 	sender := inmemory.NewSender()
 	executor := action.New(sender, nil, nil, action.WithPresenceObserver(working), action.WithSelfID(cfg.QQ.SelfID))
 	runtime := New(ctx, normalizer, working, deliberation.NewAdapter(contextService, planner), nil, nil, executor, Config{SelfID: cfg.QQ.SelfID})

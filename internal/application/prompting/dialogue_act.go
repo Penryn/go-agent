@@ -1,8 +1,6 @@
 package prompting
 
 import (
-	"strings"
-
 	conversationdomain "github.com/phlin/go-agent/internal/domain/conversation"
 	personadomain "github.com/phlin/go-agent/internal/domain/persona"
 )
@@ -53,31 +51,4 @@ func replyBudget(persona personadomain.PersonaConfig, snapshot conversationdomai
 		sentences = min(sentences, 2)
 	}
 	return max(chars, 40), max(sentences, 1)
-}
-
-func fallbackExpression(persona personadomain.PersonaConfig, trigger string) string {
-	if configured := persona.Speech.Fallbacks[trigger]; len(configured) > 0 {
-		for _, response := range configured {
-			if response = strings.TrimSpace(response); response != "" {
-				return response
-			}
-		}
-	}
-	switch trigger {
-	case "request_help":
-		return "把具体需求发来，我先看看。"
-	case "support":
-		return "我在。愿意的话就慢慢说。"
-	case "gratitude":
-		return "不用这么客气。"
-	case "banter":
-		return "看来确实挺有意思。"
-	case "question":
-		return "把具体情况说清楚些，我来看看。"
-	default:
-		if persona.Name != "" {
-			return persona.Name + "在。你继续说。"
-		}
-		return "我在。你继续说。"
-	}
 }

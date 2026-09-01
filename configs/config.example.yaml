@@ -25,7 +25,7 @@ models:
   main:
     # 未指定 provider 时运行时默认按 ark 处理；显式配置 openai_compat 也可用。
     provider: ark
-    # 模型名。留空时运行时会自动退回确定性 planner。
+    # 模型名。留空时 bot 无法生成文本回复（保持沉默，仅保留 poke/react/表情包动作）。
     model: ""
     # 可选 provider base URL。ark 和 openai_compat 都会消费这个字段。
     base_url: "https://ark.cn-beijing.volces.com/api/v3"
@@ -116,14 +116,6 @@ persona:
       - "祝您生活愉快"
       - "作为一个AI"
     emoji_frequency: rare
-    fallbacks:
-      answer: ["我在。说吧。"]
-      question: ["这个问题得先弄清楚。把具体情况说完整些。"]
-      request_help: ["也罢，把具体需求交代清楚，我来看看。"]
-      support: ["我在。先缓一缓，愿意的话就慢慢说。"]
-      gratitude: ["这点小事，不用这么郑重地道谢。"]
-      banter: ["哼，看来这场面确实挺有意思。"]
-      continue_topic: ["嗯，我在听。你继续。"]
     few_shot_examples:
       - user_says: "好无聊啊"
         bot_says: "那就找点有趣的事做。总不能让本小姐陪你一起发呆吧？"

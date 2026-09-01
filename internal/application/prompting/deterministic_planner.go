@@ -2,7 +2,6 @@ package prompting
 
 import (
 	"context"
-	"math/rand"
 
 	conversationdomain "github.com/phlin/go-agent/internal/domain/conversation"
 	personadomain "github.com/phlin/go-agent/internal/domain/persona"
@@ -10,15 +9,9 @@ import (
 	replydomain "github.com/phlin/go-agent/internal/domain/reply"
 )
 
-// pokeReplyFallbacks 是 ActionPokeReply LLM 失败时的通用降级气泡候选。
-var pokeReplyFallbacks = []string{
-	"？",
-	"嗯？",
-	"怎么了？",
-	"……",
-	"有事吗？",
-}
-
+// DeterministicPlanner 只处理不需要 LLM 的动作（poke_back / react / meme_only /
+// silent）。需要语言的回复一律依赖模型：模型不可用时保持沉默，本轮放弃，
+// 下一轮消息再自然尝试——不说模板话术装作正常。
 type DeterministicPlanner struct {
 	persona personadomain.PersonaConfig
 }
@@ -28,16 +21,12 @@ func NewDeterministicPlanner(persona personadomain.PersonaConfig) *Deterministic
 }
 
 func (p *DeterministicPlanner) Plan(_ context.Context, snapshot conversationdomain.ContextSnapshot, decision policydomain.AutonomyDecision) (replydomain.ReplyPlan, error) {
-	maxChars, _ := replyBudget(p.persona, snapshot, decision.TriggerType)
-	fallbackText := fallbackExpression(p.persona, decision.TriggerType)
 	plan := replydomain.ReplyPlan{
 		PlanID:       decision.DecisionID + "-plan",
 		SendMode:     "group",
-		FallbackText: fallbackText,
+		PlannedActions: []policydomain.DecisionAction{policydomain.ActionSilent},
 	}
-
 	if decision.Action == policydomain.ActionSilent {
-		plan.PlannedActions = []policydomain.DecisionAction{policydomain.ActionSilent}
 		return plan, nil
 	}
 
@@ -66,30 +55,6 @@ func (p *DeterministicPlanner) Plan(_ context.Context, snapshot conversationdoma
 		return plan, nil
 	}
 
-	// ActionPokeReply：被戳后用对话回复，LLM 失败时随机选一条降级气泡
-	if decision.Action == policydomain.ActionPokeReply {
-		plan.PlannedActions = []policydomain.DecisionAction{policydomain.ActionPokeReply}
-		plan.Bubbles = []string{pokeReplyFallbacks[rand.Intn(len(pokeReplyFallbacks))]}
-		plan.Intent = replydomain.ReplyIntent{
-			Kind:            "chat",
-			Goal:            "自然回应被戳",
-			TargetUserIDs:   []int64{snapshot.Event.UserID},
-			PreferShortText: true,
-			MaxChars:        maxChars,
-		}
-		return plan, nil
-	}
-
-	plan.Intent = replydomain.ReplyIntent{
-		Kind:            "chat",
-		Goal:            dialogueGoal(decision.TriggerType),
-		TargetUserIDs:   []int64{snapshot.Event.UserID},
-		PreferShortText: true,
-		MaxChars:        maxChars,
-	}
-	plan.PlannedActions = []policydomain.DecisionAction{policydomain.ActionReply}
-
-	plan.Bubbles = []string{fallbackText}
-
+	// reply / poke_reply 等语言动作：模型缺席时沉默，不降级到模板话术。
 	return plan, nil
 }

@@ -96,15 +96,11 @@ func TestInstructionSelectsTurnRelevantPersonaContext(t *testing.T) {
 	}
 }
 
-func TestFallbackExpressionAndReplyBudgetFollowDialogueAct(t *testing.T) {
+func TestReplyBudgetFollowsDialogueAct(t *testing.T) {
 	persona := defaultPersona()
 	persona.Name = "芙宁娜"
 	persona.ReplyMaxChars = 100
 	persona.ReplyMaxSentences = 2
-	persona.Speech.Fallbacks = map[string][]string{"support": {"我在，慢慢说。"}}
-	if got := fallbackExpression(persona, "support"); got != "我在，慢慢说。" {
-		t.Fatalf("fallback = %q", got)
-	}
 	shortChars, shortSentences := replyBudget(persona, conversationdomain.ContextSnapshot{}, "banter")
 	questionChars, questionSentences := replyBudget(persona, conversationdomain.ContextSnapshot{}, "question")
 	if shortChars >= questionChars || shortSentences >= questionSentences {
