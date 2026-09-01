@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	groupactor "github.com/phlin/go-agent/internal/application/presence/group_actor"
 	policysvc "github.com/phlin/go-agent/internal/application/policy"
 	"github.com/phlin/go-agent/internal/application/ports"
 	retrievalsvc "github.com/phlin/go-agent/internal/application/retrieval"
@@ -18,21 +19,16 @@ import (
 	profiledomain "github.com/phlin/go-agent/internal/domain/profile"
 )
 
-// WorkingMemoryReader supplies the fast, per-group conversation state. It is
-// preferred over the durable store for the live tail because it already
-// contains the event currently being processed.
-type WorkingMemoryReader interface {
-	Snapshot(context.Context, int64) (presencedomain.GroupWorkingMemory, error)
-}
-
 type Service struct {
-	memoryStore   ports.MemoryStore
-	profileStore  ports.ProfileStore
-	stateStore    ports.RuntimeStateStore
-	policy        *policysvc.Service
-	persona       personadomain.PersonaConfig
-	memoryTopK    int
-	workingMemory WorkingMemoryReader
+	memoryStore ports.MemoryStore
+	profileStore ports.ProfileStore
+	stateStore  ports.RuntimeStateStore
+	policy      *policysvc.Service
+	persona     personadomain.PersonaConfig
+	memoryTopK  int
+	// workingMemory 供给快速群内会话状态;它已包含当前正处理的事件,
+	// 比持久 store 的 live tail 更适合做快照。
+	workingMemory *groupactor.Manager
 	thoughts      ports.ThoughtStore
 	personaFacts  ports.PersonaFactStore
 	retriever     *retrievalsvc.Service
@@ -41,8 +37,8 @@ type Service struct {
 // WithThoughtStore 启用「回看上次判断」；不注入时快照不带 RecentThoughts。
 func (s *Service) WithThoughtStore(store ports.ThoughtStore) { s.thoughts = store }
 
-func (s *Service) WithWorkingMemory(reader WorkingMemoryReader) {
-	s.workingMemory = reader
+func (s *Service) WithWorkingMemory(manager *groupactor.Manager) {
+	s.workingMemory = manager
 }
 
 func (s *Service) WithPersonaFactStore(store ports.PersonaFactStore) {
