@@ -139,7 +139,8 @@ func (c PostgresConfig) DSN() string {
 type QQConfig struct {
 	Enabled        bool    `yaml:"enabled"`
 	SelfID         int64   `yaml:"self_id"`
-	AccessToken    string  `yaml:"access_token"`
+	OutboundToken  string  `yaml:"outbound_token"`
+	EventWSToken   string  `yaml:"event_ws_token"`
 	OutboundURL    string  `yaml:"outbound_url"`
 	EventWSURL     string  `yaml:"event_ws_url"`
 	GroupWhitelist []int64 `yaml:"group_whitelist"`

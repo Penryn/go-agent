@@ -78,7 +78,8 @@ models:
 qq:
   enabled: true
   self_id: 你的机器人 QQ 号
-  access_token: NapCat 中设置的 Token
+  outbound_token: OneBot HTTP 服务中设置的 Token
+  event_ws_token: OneBot 正向 WebSocket 服务中设置的 Token
   outbound_url: http://127.0.0.1:3000
   event_ws_url: ws://127.0.0.1:3001
 ```

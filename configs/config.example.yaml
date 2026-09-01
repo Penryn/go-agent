@@ -316,8 +316,10 @@ qq:
   enabled: false
   # 机器人自身 QQ 号，用于过滤自己发出的事件和别名触发判断。
   self_id:
-  # 与 NapCat 网页端配置的 Access Token 保持一致。
-  access_token: ""
+  # NapCat OneBot HTTP 服务的 token（对应 outbound_url）。
+  outbound_token: ""
+  # NapCat 正向 WebSocket 服务的 token（对应 event_ws_url）。
+  event_ws_token: ""
   # 出站 HTTP API 地址，例如 http://127.0.0.1:3000 。
   outbound_url: http://127.0.0.1:3000
   # 默认使用正向 WebSocket /event 收事件。

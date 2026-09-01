@@ -71,7 +71,7 @@ func New(ctx context.Context, cfg config.Config) (*App, error) {
 
 	var sender ports.OutboundSender = inmemory.NewSender()
 	if cfg.QQ.Enabled && cfg.QQ.OutboundURL != "" {
-		sender = outboundnapcat.NewSender(cfg.QQ.OutboundURL, cfg.QQ.AccessToken, nil)
+		sender = outboundnapcat.NewSender(cfg.QQ.OutboundURL, cfg.QQ.OutboundToken, nil)
 	}
 
 	policyService := policysvc.New(cfg)
@@ -360,7 +360,7 @@ func New(ctx context.Context, cfg config.Config) (*App, error) {
 		healthCheck: stores.HealthCheck,
 	}
 	if cfg.QQ.Enabled && cfg.QQ.EventWSURL != "" {
-		app.inbound = inboundnapcat.NewWSReceiver(cfg.QQ.EventWSURL, cfg.QQ.AccessToken)
+		app.inbound = inboundnapcat.NewWSReceiver(cfg.QQ.EventWSURL, cfg.QQ.EventWSToken)
 	}
 
 	mux := http.NewServeMux()

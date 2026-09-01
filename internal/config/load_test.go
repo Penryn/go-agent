@@ -9,14 +9,14 @@ import (
 )
 
 func TestLoadDoesNotOverrideYAMLSecretsFromEnvironment(t *testing.T) {
-	t.Setenv("QQBOT_QQ_ACCESS_TOKEN", "env-qq-secret")
+	t.Setenv("QQBOT_QQ_OUTBOUND_TOKEN", "env-http-secret")
 	t.Setenv("QQBOT_MAIN_MODEL_API_KEY", "env-model-secret")
 	t.Setenv("QQBOT_STORAGE_POSTGRES_PASSWORD", "env-db-secret")
 
 	dir := t.TempDir()
 
 	path := filepath.Join(dir, "config.yaml")
-	content := "app:\n  mode: test\nmodels:\n  main:\n    api_key: model-secret\npersona:\n  id: test\n  name: Test Bot\nstorage:\n  postgres:\n    password: db-secret\nqq:\n  access_token: qq-secret\n"
+	content := "app:\n  mode: test\nmodels:\n  main:\n    api_key: model-secret\npersona:\n  id: test\n  name: Test Bot\nstorage:\n  postgres:\n    password: db-secret\nqq:\n  outbound_token: http-secret\n  event_ws_token: ws-secret\n"
 	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
 		t.Fatalf("write config: %v", err)
 	}
@@ -26,8 +26,11 @@ func TestLoadDoesNotOverrideYAMLSecretsFromEnvironment(t *testing.T) {
 		t.Fatalf("load config: %v", err)
 	}
 
-	if got, want := cfg.QQ.AccessToken, "qq-secret"; got != want {
-		t.Fatalf("qq access token mismatch: got %q want %q", got, want)
+	if got, want := cfg.QQ.OutboundToken, "http-secret"; got != want {
+		t.Fatalf("qq outbound token mismatch: got %q want %q", got, want)
+	}
+	if got, want := cfg.QQ.EventWSToken, "ws-secret"; got != want {
+		t.Fatalf("qq event websocket token mismatch: got %q want %q", got, want)
 	}
 	if got, want := cfg.Models.Main.APIKey, "model-secret"; got != want {
 		t.Fatalf("main model api key mismatch: got %q want %q", got, want)
