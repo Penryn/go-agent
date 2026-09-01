@@ -241,7 +241,7 @@ func ParseTerminalPlan(decisionID string, toolName string, raw string, session r
 		}
 		bubbles := cleanedBubbles
 		if len(bubbles) == 0 && strings.TrimSpace(cleanedText) != "" {
-			bubbles = []string{cleanedText}
+			bubbles = textutil.SplitNaturalBubbles(cleanedText, 2)
 		}
 		return replydomain.ReplyPlan{
 			PlanID:               decisionID + "-plan",
@@ -289,6 +289,9 @@ func ParseTerminalPlan(decisionID string, toolName string, raw string, session r
 		cleanedBubbles := make([]string, 0, len(rawBubbles))
 		for _, b := range rawBubbles {
 			cleanedBubbles = append(cleanedBubbles, textutil.StripThinkBlocks(b))
+		}
+		if len(cleanedBubbles) == 0 && cleanedText != "" {
+			cleanedBubbles = textutil.SplitNaturalBubbles(cleanedText, 2)
 		}
 		if result.ReplyToMessageID == "" {
 			// LLM 未提供引用 ID，降级为普通发言，不设置 ActionParams["tool"]

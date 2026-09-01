@@ -6,6 +6,50 @@ import (
 	"time"
 )
 
+// SplitNaturalBubbles turns a model's single long reply into at most max
+// sentence-based chat bubbles. Existing newlines are treated as hard breaks;
+// sentence punctuation keeps its trailing mark in the preceding bubble.
+func SplitNaturalBubbles(s string, max int) []string {
+	s = strings.TrimSpace(strings.ReplaceAll(s, "\r\n", "\n"))
+	if s == "" {
+		return nil
+	}
+	if max <= 0 {
+		max = 2
+	}
+
+	parts := make([]string, 0, max)
+	flush := func(value string) {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			return
+		}
+		if len(parts) >= max {
+			parts[len(parts)-1] += value
+			return
+		}
+		parts = append(parts, value)
+	}
+
+	for _, paragraph := range strings.Split(s, "\n") {
+		paragraph = strings.TrimSpace(paragraph)
+		if paragraph == "" {
+			continue
+		}
+		start := 0
+		runes := []rune(paragraph)
+		for i, r := range runes {
+			if r != '。' && r != '！' && r != '？' && r != '!' && r != '?' {
+				continue
+			}
+			flush(string(runes[start : i+1]))
+			start = i + 1
+		}
+		flush(string(runes[start:]))
+	}
+	return parts
+}
+
 // StripThinkBlocks removes model reasoning blocks from text. Some providers
 // return a complete <think>...</think> pair while others strip the opening tag
 // and leave only </think>; both forms are treated as non-user-facing content.

@@ -111,6 +111,20 @@ func TestTerminalPlanCarriesDeclaredPersonaFacts(t *testing.T) {
 	}
 }
 
+func TestParseTerminalPlanSplitsLongSpeakTextIntoBubbles(t *testing.T) {
+	raw := `{"tool":"speak_text","text":"我刚报到还没正式上课呢。等开课以后应该会忙一点。"}`
+	plan, ok, err := ParseTerminalPlan("decision-1", "speak_text", raw, replydomain.ToolContext{})
+	if err != nil || !ok {
+		t.Fatalf("parse terminal plan: ok=%v err=%v", ok, err)
+	}
+	if len(plan.Bubbles) != 2 {
+		t.Fatalf("expected long text to split into two bubbles, got %d: %#v", len(plan.Bubbles), plan.Bubbles)
+	}
+	if plan.Bubbles[0] != "我刚报到还没正式上课呢。" || plan.Bubbles[1] != "等开课以后应该会忙一点。" {
+		t.Fatalf("unexpected split bubbles: %#v", plan.Bubbles)
+	}
+}
+
 func TestExternalToolsRequireExplicitAllowlist(t *testing.T) {
 	runtime := NewRuntime(testsupport.NewStore(t))
 	if err := runtime.RegisterTools(context.Background(), externalTestTool{}); err != nil {

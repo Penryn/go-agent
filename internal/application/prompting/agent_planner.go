@@ -7,8 +7,8 @@ import (
 	"strings"
 	"time"
 
-	modelcomponent "github.com/cloudwego/eino/components/model"
 	"github.com/cloudwego/eino/adk"
+	modelcomponent "github.com/cloudwego/eino/components/model"
 	"github.com/cloudwego/eino/compose"
 	"github.com/cloudwego/eino/schema"
 
@@ -166,10 +166,11 @@ func (p *AgentPlanner) Plan(ctx context.Context, snapshot conversationdomain.Con
 
 	if strings.TrimSpace(assistantText) != "" {
 		slog.Info("planner: using raw assistant text", "trace_id", snapshot.SnapshotID)
+		bubbles := textutil.SplitNaturalBubbles(assistantText, 2)
 		return replydomain.ReplyPlan{
 			PlanID:         decision.DecisionID + "-plan",
 			Intent:         toolContext.Intent,
-			Bubbles:        []string{assistantText},
+			Bubbles:        bubbles,
 			PlannedActions: []policydomain.DecisionAction{policydomain.ActionReply},
 			SendMode:       "group",
 			FallbackText:   assistantText,

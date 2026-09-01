@@ -25,6 +25,18 @@ func TestStripThinkBlocks(t *testing.T) {
 	}
 }
 
+func TestSplitNaturalBubbles(t *testing.T) {
+	if got := SplitNaturalBubbles("我刚报到还没正式上课呢。等开课以后应该会忙一点。", 2); len(got) != 2 || got[0] != "我刚报到还没正式上课呢。" || got[1] != "等开课以后应该会忙一点。" {
+		t.Fatalf("unexpected sentence split: %#v", got)
+	}
+	if got := SplitNaturalBubbles("第一段\n\n第二段", 2); len(got) != 2 || got[0] != "第一段" || got[1] != "第二段" {
+		t.Fatalf("unexpected paragraph split: %#v", got)
+	}
+	if got := SplitNaturalBubbles("一句话", 2); len(got) != 1 || got[0] != "一句话" {
+		t.Fatalf("single sentence should remain one bubble: %#v", got)
+	}
+}
+
 func TestBackoff(t *testing.T) {
 	min, max := time.Second, 30*time.Second
 	tests := []struct {
