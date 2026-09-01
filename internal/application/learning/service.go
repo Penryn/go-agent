@@ -48,16 +48,12 @@ type Service struct {
 	store  ports.MemoryStore
 	state  ports.LearningStateStore
 	mem    *memsvc.Service
-	outbox interface {
-		Enqueue(context.Context, string, string, []byte) error
-	}
+	outbox ports.TaskSubmitter
 }
 
 type Option func(*Service)
 
-func WithOutbox(runtime interface {
-	Enqueue(context.Context, string, string, []byte) error
-}) Option {
+func WithOutbox(runtime ports.TaskSubmitter) Option {
 	return func(s *Service) { s.outbox = runtime }
 }
 

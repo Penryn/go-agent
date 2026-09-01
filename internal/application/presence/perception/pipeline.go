@@ -9,6 +9,7 @@ import (
 
 	memesvc "github.com/phlin/go-agent/internal/application/meme"
 	multimodalsvc "github.com/phlin/go-agent/internal/application/multimodal"
+	"github.com/phlin/go-agent/internal/application/ports"
 	groupactor "github.com/phlin/go-agent/internal/application/presence/group_actor"
 	mediadomain "github.com/phlin/go-agent/internal/domain/media"
 	presencedomain "github.com/phlin/go-agent/internal/domain/presence"
@@ -25,9 +26,7 @@ type Pipeline struct {
 
 type Option func(*Pipeline)
 
-func WithOutbox(submitter interface {
-	Enqueue(context.Context, string, string, []byte) error
-}) Option {
+func WithOutbox(submitter ports.TaskSubmitter) Option {
 	return func(p *Pipeline) { p.outbox = submitter }
 }
 

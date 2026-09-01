@@ -26,9 +26,7 @@ type Service struct {
 	sender ports.OutboundSender
 	memes  *memesvc.Service
 	guard  *outputguardsvc.Guard // 可为 nil，nil 时跳过清洗
-	outbox interface {
-		Enqueue(context.Context, string, string, []byte) error
-	}
+	outbox ports.TaskSubmitter
 	presence  PresenceObserver
 	selfID    int64
 	rhythmMu  sync.Mutex
@@ -45,9 +43,7 @@ type PresenceObserver interface {
 	Observe(context.Context, presencedomain.EventRecord) (presencedomain.GroupWorkingMemory, error)
 }
 
-func WithOutbox(runtime interface {
-	Enqueue(context.Context, string, string, []byte) error
-}) Option {
+func WithOutbox(runtime ports.TaskSubmitter) Option {
 	return func(s *Service) { s.outbox = runtime }
 }
 

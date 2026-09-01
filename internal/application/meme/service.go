@@ -27,9 +27,7 @@ type Service struct {
 	vectorStore ports.VectorMemeStore
 	cfg         config.MemeConfig
 	retriever   *retrievalsvc.Service
-	outbox      interface {
-		Enqueue(context.Context, string, string, []byte) error
-	}
+	outbox      ports.TaskSubmitter
 	// 质量反馈：发送后记录观察起点，群消息到达时判定该表情是否哑弹
 	pendingMu    sync.Mutex
 	pendingWatch map[string]time.Time // memeID -> 发送时刻
@@ -109,9 +107,7 @@ func WithRetriever(retriever *retrievalsvc.Service) Option {
 	return func(s *Service) { s.retriever = retriever }
 }
 
-func WithOutbox(runtime interface {
-	Enqueue(context.Context, string, string, []byte) error
-}) Option {
+func WithOutbox(runtime ports.TaskSubmitter) Option {
 	return func(s *Service) { s.outbox = runtime }
 }
 

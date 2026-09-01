@@ -91,6 +91,12 @@ const (
 	OutboxDeadLetter = "dead_letter"
 )
 
+// TaskSubmitter 是各服务向 outbox 投递异步任务的最小依赖面。
+// 实现方:runtime/outbox.Runtime。
+type TaskSubmitter interface {
+	Enqueue(ctx context.Context, kind, idempotencyKey string, payload []byte) error
+}
+
 // OutboxStore is the persistence seam for replayable background tasks.
 type OutboxStore interface {
 	EnqueueOutbox(ctx context.Context, task OutboxTask) error

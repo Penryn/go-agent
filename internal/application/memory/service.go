@@ -47,14 +47,10 @@ type Service struct {
 	vectorStore ports.VectorMemoryStore // 可为 nil，nil 时跳过向量写入
 	typeTTL     map[string]string       // 按类型差异化 TTL，可为 nil
 	defaultTTL  string                  // 全局默认 TTL（如 "720h"），空时不设过期
-	outbox      interface {
-		Enqueue(context.Context, string, string, []byte) error
-	}
+	outbox      ports.TaskSubmitter
 }
 
-func WithOutbox(runtime interface {
-	Enqueue(context.Context, string, string, []byte) error
-}) Option {
+func WithOutbox(runtime ports.TaskSubmitter) Option {
 	return func(s *Service) { s.outbox = runtime }
 }
 
