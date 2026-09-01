@@ -10,7 +10,7 @@
 query + session visibility
         -> normalize
         -> BM25 candidates || vector candidates
-        -> weighted RRF
+        -> RRF
         -> hard filter + authoritative hydrate
         -> domain ranking
         -> context/tool result
@@ -31,7 +31,7 @@ BM25 和向量只负责候选召回。RRF 只比较 rank，不直接相加 BM25 
 - 规范化 query 和候选数量
 - 从 session 派生 memory visibility
 - 并行调用 BM25 和 vector adapter
-- weighted RRF、去重和候选排序
+- RRF、去重和候选排序
 - 失败降级和结果来源标记
 - 将完整字段回查交给权威 store
 
@@ -50,7 +50,7 @@ memory、meme 和 `query_memory` 只能提供领域查询条件，不再各自�
 
 - hard filter：global/current group/current user、type、expiry
 - candidate：BM25 + vector，各取最终 top-k 的 4 到 10 倍
-- fusion：weighted RRF
+- fusion：RRF
 - soft rank：importance、confidence、time decay
 - prompt：只注入最终预算内的结果，并保留来源元数据供 trace 使用
 
@@ -58,7 +58,7 @@ memory、meme 和 `query_memory` 只能提供领域查询条件，不再各自�
 
 - hard filter：approved、group/global、emotion/scene
 - candidate：BM25 + vector，不能因为 vector 返回候选就跳过 BM25
-- fusion：weighted RRF
+- fusion：RRF
 - soft rank：group preference、cooldown、dud rate
 - 过滤后为空时扩大候选或执行 lexical fallback
 

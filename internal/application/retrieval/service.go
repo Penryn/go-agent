@@ -3,6 +3,7 @@ package retrieval
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"sort"
 	"strings"
@@ -55,29 +56,44 @@ func (s *Service) SearchMemories(ctx context.Context, query ports.MemoryQuery) (
 	candidateK := max(query.TopK*5, s.cfg.MemoryCandidateK)
 	var lexical []memorydomain.MemoryRecord
 	var semantic []memorydomain.MemoryRecord
-	g, gctx := errgroup.WithContext(ctx)
+	var lexicalErr error
+	var semanticErr error
+	vectorEnabled := s.memoryVector != nil && query.Query != ""
+	var g errgroup.Group
 	g.Go(func() error {
-		var err error
 		q := query
 		q.TopK = candidateK
-		lexical, err = s.memoryStore.QueryMemories(gctx, q)
-		return err
-	})
-	g.Go(func() error {
-		if s.memoryVector == nil || query.Query == "" {
-			return nil
-		}
-		var err error
-		semantic, err = s.memoryVector.SearchMemories(gctx, query.Query, query.GroupID, query.UserID, candidateK, s.cfg.MemoryThreshold)
-		if err != nil {
-			slog.WarnContext(gctx, "retrieval: memory vector search failed, using BM25 only", "err", err)
-		}
+		lexical, lexicalErr = s.memoryStore.QueryMemories(ctx, q)
 		return nil
 	})
-	if err := g.Wait(); err != nil {
-		return nil, err
+	if vectorEnabled {
+		g.Go(func() error {
+			q := query
+			q.TopK = candidateK
+			semantic, semanticErr = s.memoryVector.SearchMemories(ctx, q, s.cfg.MemoryThreshold)
+			return nil
+		})
 	}
-	return mergeMemoryResults(lexical, semantic, query.TopK), nil
+	_ = g.Wait()
+	if lexicalErr != nil {
+		slog.WarnContext(ctx, "retrieval: memory lexical search failed", "err", lexicalErr)
+	}
+	if semanticErr != nil {
+		slog.WarnContext(ctx, "retrieval: memory vector search failed", "err", semanticErr)
+	}
+	if lexicalErr != nil && (!vectorEnabled || semanticErr != nil) {
+		return nil, errors.Join(wrapTrackError("memory lexical search", lexicalErr), wrapTrackError("memory vector search", semanticErr))
+	}
+	results := mergeMemoryResults(lexical, semantic, query.TopK)
+	slog.DebugContext(ctx, "retrieval: memory search completed",
+		"candidate_k", candidateK,
+		"lexical_candidates", len(lexical),
+		"semantic_candidates", len(semantic),
+		"result_count", len(results),
+		"vector_degraded", semanticErr != nil,
+		"lexical_degraded", lexicalErr != nil,
+	)
+	return results, nil
 }
 
 func (s *Service) SearchMemes(ctx context.Context, query ports.MemeQuery) ([]mediadomain.MemeSearchResult, error) {
@@ -89,39 +105,67 @@ func (s *Service) SearchMemes(ctx context.Context, query ports.MemeQuery) ([]med
 	var lexical []mediadomain.MemeSearchResult
 	var groupSemantic []mediadomain.MemeSearchResult
 	var globalSemantic []mediadomain.MemeSearchResult
-	g, gctx := errgroup.WithContext(ctx)
+	var lexicalErr error
+	var groupSemanticErr error
+	var globalSemanticErr error
+	vectorEnabled := s.memeVector != nil && query.Query != ""
+	globalVectorEnabled := vectorEnabled && query.GroupID != 0
+	var g errgroup.Group
 	g.Go(func() error {
-		var err error
 		q := query
 		q.TopK = candidateK
-		lexical, err = s.memeStore.SearchMemes(gctx, q)
-		return err
+		lexical, lexicalErr = s.memeStore.SearchMemes(ctx, q)
+		return nil
 	})
-	if s.memeVector != nil && query.Query != "" {
+	if vectorEnabled {
 		g.Go(func() error {
-			var err error
-			groupSemantic, err = s.memeVector.SearchMemes(gctx, query.GroupID, query.Query, candidateK, s.cfg.MemeThreshold)
-			if err != nil {
-				slog.WarnContext(gctx, "retrieval: meme group vector search failed, using lexical candidates", "err", err)
-			}
+			groupSemantic, groupSemanticErr = s.memeVector.SearchMemes(ctx, query.GroupID, query.Query, candidateK, s.cfg.MemeThreshold)
 			return nil
 		})
-		if query.GroupID != 0 {
+		if globalVectorEnabled {
 			g.Go(func() error {
-				var err error
-				globalSemantic, err = s.memeVector.SearchMemes(gctx, 0, query.Query, candidateK, s.cfg.MemeThreshold)
-				if err != nil {
-					slog.WarnContext(gctx, "retrieval: meme global vector search failed", "err", err)
-				}
+				globalSemantic, globalSemanticErr = s.memeVector.SearchMemes(ctx, 0, query.Query, candidateK, s.cfg.MemeThreshold)
 				return nil
 			})
 		}
 	}
-	if err := g.Wait(); err != nil {
-		return nil, err
+	_ = g.Wait()
+	if lexicalErr != nil {
+		slog.WarnContext(ctx, "retrieval: meme lexical search failed", "err", lexicalErr)
+	}
+	if groupSemanticErr != nil {
+		slog.WarnContext(ctx, "retrieval: meme group vector search failed", "err", groupSemanticErr)
+	}
+	if globalSemanticErr != nil {
+		slog.WarnContext(ctx, "retrieval: meme global vector search failed", "err", globalSemanticErr)
+	}
+	semanticAvailable := (vectorEnabled && groupSemanticErr == nil) || (globalVectorEnabled && globalSemanticErr == nil)
+	if lexicalErr != nil && !semanticAvailable {
+		return nil, errors.Join(
+			wrapTrackError("meme lexical search", lexicalErr),
+			wrapTrackError("meme group vector search", groupSemanticErr),
+			wrapTrackError("meme global vector search", globalSemanticErr),
+		)
 	}
 	semantic := mergeVectorMemeCandidates(groupSemantic, globalSemantic)
-	return mergeMemeResults(lexical, semantic, candidateK), nil
+	results := mergeMemeResults(lexical, semantic, candidateK)
+	slog.DebugContext(ctx, "retrieval: meme search completed",
+		"candidate_k", candidateK,
+		"lexical_candidates", len(lexical),
+		"group_semantic_candidates", len(groupSemantic),
+		"global_semantic_candidates", len(globalSemantic),
+		"result_count", len(results),
+		"vector_degraded", groupSemanticErr != nil || globalSemanticErr != nil,
+		"lexical_degraded", lexicalErr != nil,
+	)
+	return results, nil
+}
+
+func wrapTrackError(track string, err error) error {
+	if err == nil {
+		return nil
+	}
+	return fmt.Errorf("%s: %w", track, err)
 }
 
 func mergeVectorMemeCandidates(group, global []mediadomain.MemeSearchResult) []mediadomain.MemeSearchResult {

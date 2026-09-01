@@ -29,7 +29,7 @@ func (s *recordingVectorStore) StoreMemory(_ context.Context, record memorydomai
 	return nil
 }
 
-func (s *recordingVectorStore) SearchMemories(context.Context, string, int64, int64, int, float64) ([]memorydomain.MemoryRecord, error) {
+func (s *recordingVectorStore) SearchMemories(context.Context, ports.MemoryQuery, float64) ([]memorydomain.MemoryRecord, error) {
 	return nil, nil
 }
 

@@ -149,8 +149,8 @@ type ChatModelFactory interface {
 type VectorMemoryStore interface {
 	// StoreMemory 将一条记忆向量化后存入向量库。
 	StoreMemory(ctx context.Context, record memorydomain.MemoryRecord) error
-	// SearchMemories 执行语义检索，返回相似度 >= threshold 的记录。
-	SearchMemories(ctx context.Context, query string, groupID, userID int64, topK int, threshold float64) ([]memorydomain.MemoryRecord, error)
+	// SearchMemories 执行语义检索，并遵守与词法检索相同的 scope、type、expiry 和 TopK 约束。
+	SearchMemories(ctx context.Context, query MemoryQuery, threshold float64) ([]memorydomain.MemoryRecord, error)
 }
 
 // VectorMemeStore 是表情包语义向量检索的 port。

@@ -78,7 +78,7 @@ func TestVectorMemoryAcceptsConfiguredEmbeddingDimension(t *testing.T) {
 	if err := store.StoreMemory(ctx, record); err != nil {
 		t.Fatalf("store memory: %v", err)
 	}
-	results, err := store.SearchMemories(ctx, "截断", 0, 0, 5, 0.0)
+	results, err := store.SearchMemories(ctx, ports.MemoryQuery{Query: "截断", TopK: 5}, 0.0)
 	if err != nil {
 		t.Fatalf("search memories: %v", err)
 	}
@@ -109,7 +109,7 @@ func TestVectorMemoryRoundtrip(t *testing.T) {
 		t.Fatalf("idempotent store: %v", err)
 	}
 
-	results, err := store.SearchMemories(ctx, "旧梗", 0, 0, 5, 0.0)
+	results, err := store.SearchMemories(ctx, ports.MemoryQuery{Query: "旧梗", TopK: 5}, 0.0)
 	if err != nil {
 		t.Fatalf("search memories: %v", err)
 	}
@@ -121,7 +121,7 @@ func TestVectorMemoryRoundtrip(t *testing.T) {
 	}
 
 	// threshold=2.0(不可能达到的相似度)应过滤掉全部结果
-	none, err := store.SearchMemories(ctx, "旧梗", 0, 0, 5, 2.0)
+	none, err := store.SearchMemories(ctx, ports.MemoryQuery{Query: "旧梗", TopK: 5}, 2.0)
 	if err != nil {
 		t.Fatalf("search with high threshold: %v", err)
 	}
@@ -163,11 +163,11 @@ func TestVectorMemoryFiltersScopeAndExpiry(t *testing.T) {
 	store := NewVectorStore(db, fakeEmbedder{}, 2048)
 	now := time.Now()
 	records := []memorydomain.MemoryRecord{
-		{MemoryID: "vector-global", Scope: "global", Subject: "scope", Content: "shared", CreatedAt: now},
-		{MemoryID: "vector-group-1", Scope: "group:1", Subject: "scope", Content: "group one", CreatedAt: now},
-		{MemoryID: "vector-user-7", Scope: "group:1:user:7", Subject: "scope", Content: "user seven", CreatedAt: now},
-		{MemoryID: "vector-group-2", Scope: "group:2", Subject: "scope", Content: "group two", CreatedAt: now},
-		{MemoryID: "vector-expired", Scope: "group:1", Subject: "scope", Content: "expired", CreatedAt: now, ExpiresAt: ptrTime(now.Add(-time.Minute))},
+		{MemoryID: "vector-global", Scope: "global", Type: "global_fact", Subject: "scope", Content: "shared", CreatedAt: now},
+		{MemoryID: "vector-group-1", Scope: "group:1", Type: "group_fact", Subject: "scope", Content: "group one", CreatedAt: now},
+		{MemoryID: "vector-user-7", Scope: "group:1:user:7", Type: "user_fact", Subject: "scope", Content: "user seven", CreatedAt: now},
+		{MemoryID: "vector-group-2", Scope: "group:2", Type: "other_group_fact", Subject: "scope", Content: "group two", CreatedAt: now},
+		{MemoryID: "vector-expired", Scope: "group:1", Type: "expired_fact", Subject: "scope", Content: "expired", CreatedAt: now, ExpiresAt: ptrTime(now.Add(-time.Minute))},
 	}
 	for _, record := range records {
 		if err := source.UpsertMemory(ctx, record); err != nil {
@@ -177,7 +177,7 @@ func TestVectorMemoryFiltersScopeAndExpiry(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	results, err := store.SearchMemories(ctx, "scope", 1, 7, 10, 0)
+	results, err := store.SearchMemories(ctx, ports.MemoryQuery{Query: "scope", GroupID: 1, UserID: 7, TopK: 10}, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -187,6 +187,27 @@ func TestVectorMemoryFiltersScopeAndExpiry(t *testing.T) {
 	}
 	if !seen["vector-global"] || !seen["vector-group-1"] || !seen["vector-user-7"] || seen["vector-group-2"] || seen["vector-expired"] {
 		t.Fatalf("unexpected scoped vector results: %+v", results)
+	}
+
+	explicitScope, err := store.SearchMemories(ctx, ports.MemoryQuery{
+		Query: "scope", GroupID: 1, UserID: 7, Scope: "group:1", TopK: 10,
+	}, 0)
+	if err != nil || len(explicitScope) != 1 || explicitScope[0].MemoryID != "vector-group-1" {
+		t.Fatalf("explicit scope was not enforced: results=%+v err=%v", explicitScope, err)
+	}
+
+	typed, err := store.SearchMemories(ctx, ports.MemoryQuery{
+		Query: "scope", GroupID: 1, UserID: 7, Types: []string{"user_fact"}, TopK: 10,
+	}, 0)
+	if err != nil || len(typed) != 1 || typed[0].MemoryID != "vector-user-7" {
+		t.Fatalf("memory types were not enforced: results=%+v err=%v", typed, err)
+	}
+
+	foreignScope, err := store.SearchMemories(ctx, ports.MemoryQuery{
+		Query: "scope", GroupID: 1, UserID: 7, Scope: "group:2", TopK: 10,
+	}, 0)
+	if err != nil || len(foreignScope) != 0 {
+		t.Fatalf("foreign scope should fail closed: results=%+v err=%v", foreignScope, err)
 	}
 }
 

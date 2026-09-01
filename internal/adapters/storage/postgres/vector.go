@@ -4,12 +4,16 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"strconv"
+	"strings"
 
 	"github.com/cloudwego/eino/components/embedding"
 	"github.com/pgvector/pgvector-go"
 
+	"github.com/phlin/go-agent/internal/application/ports"
 	"github.com/phlin/go-agent/internal/domain/media"
 	memorydomain "github.com/phlin/go-agent/internal/domain/memory"
+	searchcore "github.com/phlin/go-agent/internal/search"
 )
 
 // pgVectorMaxDim 是 halfvec HNSW 的维度上限(schema/schema.sql 的 halfvec(2048))。
@@ -73,27 +77,52 @@ func (s *VectorStore) StoreMemory(ctx context.Context, record memorydomain.Memor
 }
 
 // SearchMemories 实现 ports.VectorMemoryStore。
-// <=> 是余弦距离(0=相同),相似度 = 1 - distance,低于 threshold 的结果丢弃。
-func (s *VectorStore) SearchMemories(ctx context.Context, query string, groupID, userID int64, topK int, threshold float64) ([]memorydomain.MemoryRecord, error) {
-	if topK <= 0 {
-		topK = 5
+// <=> 是余弦距离(0=相同),相似度 = 1 - distance。scope、type、expiry 和
+// threshold 都在 SQL 中过滤，避免语义轨绕过词法轨的查询约束。
+func (s *VectorStore) SearchMemories(ctx context.Context, query ports.MemoryQuery, threshold float64) ([]memorydomain.MemoryRecord, error) {
+	if query.TopK <= 0 {
+		query.TopK = 5
 	}
-	vec, err := s.embed(ctx, query)
+	if query.Scope != "" && !searchcore.MemoryScopeVisible(query.Scope, query.GroupID, query.UserID) {
+		return []memorydomain.MemoryRecord{}, nil
+	}
+	vec, err := s.embed(ctx, strings.TrimSpace(query.Query))
 	if err != nil {
 		return nil, err
 	}
-	rows, err := s.db.QueryContext(ctx, `
+
+	statement := `
 		SELECT m.memory_id, m.scope, m.type, m.subject, m.content, m.source_event_id, m.descriptor_ref,
 		       m.confidence, m.importance, m.revision, m.created_at, m.expires_at,
 		       1 - (v.embedding <=> $1) AS similarity
 		FROM memory_vectors v
 		JOIN memories m ON m.memory_id = v.memory_id
-		WHERE (m.expires_at IS NULL OR m.expires_at > NOW())
-		  AND (($2::bigint = 0 AND m.scope = 'global')
-		       OR ($2::bigint <> 0 AND (m.scope = 'global' OR m.scope = 'group:' || $2::bigint::text OR m.scope = 'group:' || $2::bigint::text || ':user:' || $3::bigint::text)))
-		ORDER BY v.embedding <=> $1
-		LIMIT $4
-	`, vec, groupID, userID, topK)
+		WHERE (m.expires_at IS NULL OR m.expires_at > NOW())`
+	args := []any{vec}
+	addArg := func(value any) string {
+		args = append(args, value)
+		return "$" + strconv.Itoa(len(args))
+	}
+	if query.Scope != "" {
+		statement += " AND m.scope = " + addArg(query.Scope)
+	} else if query.GroupID != 0 {
+		groupScope := addArg(fmt.Sprintf("group:%d", query.GroupID))
+		userScope := addArg(fmt.Sprintf("group:%d:user:%d", query.GroupID, query.UserID))
+		statement += " AND (m.scope = 'global' OR m.scope = " + groupScope + " OR m.scope = " + userScope + ")"
+	} else {
+		statement += " AND m.scope = 'global'"
+	}
+	if len(query.Types) > 0 {
+		placeholders := make([]string, 0, len(query.Types))
+		for _, memoryType := range query.Types {
+			placeholders = append(placeholders, addArg(memoryType))
+		}
+		statement += " AND m.type IN (" + strings.Join(placeholders, ",") + ")"
+	}
+	statement += " AND 1 - (v.embedding <=> $1) >= " + addArg(threshold)
+	statement += " ORDER BY v.embedding <=> $1 LIMIT " + addArg(query.TopK)
+
+	rows, err := s.db.QueryContext(ctx, statement, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -112,9 +141,6 @@ func (s *VectorStore) SearchMemories(ctx context.Context, query string, groupID,
 		}
 		if expiresAt.Valid {
 			record.ExpiresAt = &expiresAt.Time
-		}
-		if similarity < threshold {
-			continue
 		}
 		records = append(records, record)
 	}
