@@ -62,8 +62,15 @@ func TestExampleConfigLoads(t *testing.T) {
 	if err != nil {
 		t.Fatalf("load example config: %v", err)
 	}
-	if cfg.Persona.Name != "芙芙" || len(cfg.Persona.InitialFacts) != 1 || len(cfg.Persona.ResponseScenarios) == 0 {
+	if cfg.Persona.Name != "芙芙" || len(cfg.Persona.ResponseScenarios) == 0 {
 		t.Fatalf("example persona runtime config not loaded: %+v", cfg.Persona)
+	}
+	seenGoal := false
+	for _, fact := range cfg.Persona.InitialFacts {
+		seenGoal = seenGoal || fact.Key == "current_goal"
+	}
+	if !seenGoal {
+		t.Fatalf("example persona current goal not loaded: %+v", cfg.Persona.InitialFacts)
 	}
 }
 
