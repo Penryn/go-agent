@@ -214,6 +214,45 @@ func TestExecuteRhythmSendsBubblesSeparately(t *testing.T) {
 	}
 }
 
+func TestRhythmDelayScalesWithBubbleLength(t *testing.T) {
+	oldBase, oldPerRune, oldMinimum := bubbleDelay, bubbleDelayPerRune, bubbleMinimumDelay
+	t.Cleanup(func() {
+		bubbleDelay, bubbleDelayPerRune, bubbleMinimumDelay = oldBase, oldPerRune, oldMinimum
+	})
+	bubbleDelay = 100 * time.Millisecond
+	bubbleDelayPerRune = 10 * time.Millisecond
+	bubbleMinimumDelay = 50 * time.Millisecond
+
+	short := rhythmDelay("短")
+	long := rhythmDelay("这是一条明显更长的消息")
+	if short <= bubbleMinimumDelay || long <= short {
+		t.Fatalf("expected positive length-sensitive delays, short=%v long=%v", short, long)
+	}
+}
+
+func TestExecuteRhythmWaitsBetweenBubbles(t *testing.T) {
+	oldBase, oldPerRune, oldMinimum := bubbleDelay, bubbleDelayPerRune, bubbleMinimumDelay
+	t.Cleanup(func() {
+		bubbleDelay, bubbleDelayPerRune, bubbleMinimumDelay = oldBase, oldPerRune, oldMinimum
+	})
+	bubbleDelay = 0
+	bubbleDelayPerRune = 0
+	bubbleMinimumDelay = 25 * time.Millisecond
+
+	sender := inmemory.NewSender()
+	executor := New(sender, nil, nil)
+	started := time.Now()
+	if _, err := executor.Execute(context.Background(), conversationEvent(), policydomain.AutonomyDecision{
+		DecisionID: "d-rhythm-delay",
+		Action:     policydomain.ActionReply,
+	}, replydomain.ReplyPlan{Bubbles: []string{"先说", "后说"}}); err != nil {
+		t.Fatalf("execute rhythm: %v", err)
+	}
+	if elapsed := time.Since(started); elapsed < bubbleMinimumDelay {
+		t.Fatalf("bubbles were sent too quickly: elapsed=%v minimum=%v", elapsed, bubbleMinimumDelay)
+	}
+}
+
 func TestExecuteRhythmDropsQueuedBubblesAfterCancellation(t *testing.T) {
 	sender := inmemory.NewSender()
 	bubbleDelay = 100 * time.Millisecond

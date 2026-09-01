@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -61,8 +62,12 @@ func WithSelfID(selfID int64) Option {
 
 type Option func(*Service)
 
-// bubbleDelay 是分条气泡之间的发送间隔。测试通过覆盖该变量调整节奏。
+// bubbleDelay 是分条气泡之间的基础间隔。每个 rune 还会增加一点撰写时间，
+// 让较长的下一条消息不会紧贴上一条发出。
 var bubbleDelay = 350 * time.Millisecond
+
+var bubbleDelayPerRune = 20 * time.Millisecond
+var bubbleMinimumDelay = 250 * time.Millisecond
 
 func New(sender ports.OutboundSender, memes *memesvc.Service, guard *outputguardsvc.Guard, opts ...Option) *Service {
 	service := &Service{sender: sender, memes: memes, guard: guard, rhythm: make(map[int64]rhythmEntry)}
@@ -338,7 +343,7 @@ func (s *Service) executeRhythm(ctx context.Context, event conversationdomain.Co
 	aggregate := replydomain.ActionReceipt{ActionID: decision.DecisionID}
 	for i, bubble := range plan.Bubbles {
 		if i > 0 {
-			timer := time.NewTimer(bubbleDelay)
+			timer := time.NewTimer(rhythmDelay(bubble))
 			select {
 			case <-rhythmCtx.Done():
 				timer.Stop()
@@ -367,6 +372,17 @@ func (s *Service) executeRhythm(ctx context.Context, event conversationdomain.Co
 		}
 	}
 	return aggregate, nil
+}
+
+func rhythmDelay(bubble string) time.Duration {
+	delay := bubbleDelay
+	if bubbleDelayPerRune > 0 {
+		delay += time.Duration(len([]rune(strings.TrimSpace(bubble)))) * bubbleDelayPerRune
+	}
+	if delay < bubbleMinimumDelay {
+		return bubbleMinimumDelay
+	}
+	return delay
 }
 
 func actionText(segments []conversationdomain.MessageSegment) string {
