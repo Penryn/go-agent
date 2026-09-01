@@ -23,7 +23,7 @@ const defaultMaxSeen = 2048
 const burstWindow = 2 * time.Second
 
 type Manager struct {
-	log           ingress.EventLog
+	log           *ingress.MemoryEventLog
 	archive       ports.MemoryStore
 	state         WorkingMemoryStore
 	tailSize      int
@@ -74,7 +74,7 @@ func WithIdleTTL(ttl time.Duration) Option {
 	}
 }
 
-func NewManager(log ingress.EventLog, opts ...Option) *Manager {
+func NewManager(log *ingress.MemoryEventLog, opts ...Option) *Manager {
 	m := &Manager{log: log, tailSize: defaultTailSize, maxCandidates: defaultMaxCandidates, maxSeen: defaultMaxSeen, groups: make(map[int64]*actor)}
 	for _, opt := range opts {
 		opt(m)
@@ -106,13 +106,7 @@ func (m *Manager) Observe(ctx context.Context, record presencedomain.EventRecord
 		}
 	}
 
-	if dedup, ok := m.log.(ingress.DeduplicatingEventLog); ok {
-		var err error
-		_, err = dedup.AppendIfNew(ctx, record)
-		if err != nil {
-			return presencedomain.GroupWorkingMemory{}, err
-		}
-	} else if err := m.log.Append(ctx, record); err != nil {
+	if _, err := m.log.AppendIfNew(ctx, record); err != nil {
 		return presencedomain.GroupWorkingMemory{}, err
 	}
 	a, err := m.actor(ctx, record.GroupID)
@@ -298,10 +292,7 @@ func (m *Manager) Close() error {
 	}
 	m.closed = true
 	m.mu.Unlock()
-	if closer, ok := m.log.(interface{ Close() error }); ok {
-		return closer.Close()
-	}
-	return nil
+	return m.log.Close()
 }
 
 // actor holds one group's working memory behind a mutex. Every method takes

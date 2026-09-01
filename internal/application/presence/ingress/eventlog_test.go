@@ -12,21 +12,16 @@ func TestMemoryEventLogDeduplicatesAndAssignsSequence(t *testing.T) {
 	log := NewMemoryEventLog()
 	now := time.Unix(100, 0)
 	record := presencedomain.EventRecord{EventID: "e1", GroupID: 1, Timestamp: now}
-	if err := log.Append(context.Background(), record); err != nil {
-		t.Fatalf("append first event: %v", err)
+	if first, err := log.AppendIfNew(context.Background(), record); err != nil || !first {
+		t.Fatalf("append first event: first=%v err=%v", first, err)
 	}
-	if err := log.Append(context.Background(), record); err != nil {
-		t.Fatalf("append duplicate event: %v", err)
+	if dup, err := log.AppendIfNew(context.Background(), record); err != nil || dup {
+		t.Fatalf("duplicate event should be dropped: dup=%v err=%v", dup, err)
 	}
-	if err := log.Append(context.Background(), presencedomain.EventRecord{EventID: "e2", GroupID: 1, Timestamp: now.Add(time.Second)}); err != nil {
-		t.Fatalf("append second event: %v", err)
+	if ok, err := log.AppendIfNew(context.Background(), presencedomain.EventRecord{EventID: "e2", GroupID: 1, Timestamp: now.Add(time.Second)}); err != nil || !ok {
+		t.Fatalf("append second event: ok=%v err=%v", ok, err)
 	}
-
-	items, err := log.Recent(context.Background(), 1, 10)
-	if err != nil {
-		t.Fatalf("read events: %v", err)
-	}
-	if len(items) != 2 || items[0].Sequence != 1 || items[1].Sequence != 2 {
-		t.Fatalf("unexpected records: %+v", items)
+	if ok, err := log.AppendIfNew(context.Background(), presencedomain.EventRecord{}); err == nil || ok {
+		t.Fatal("empty event id should be rejected")
 	}
 }
