@@ -116,7 +116,7 @@ func (g *Guard) Clean(bubbles []string) Result {
 			result.Suppressed = true
 			result.Reasons = appendUniq(result.Reasons, "role_break_detected")
 			slog.Warn("outputguard: role break detected, suppressing reply",
-				"bubble_preview", safePreview(cleaned, 40))
+				"bubble_preview", textutil.TruncateRunes(cleaned, 40))
 			return Result{
 				Suppressed: true,
 				Reasons:    result.Reasons,

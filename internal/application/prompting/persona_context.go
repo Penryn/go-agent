@@ -1,6 +1,7 @@
 package prompting
 
 import (
+	"slices"
 	"strings"
 
 	personadomain "github.com/phlin/go-agent/internal/domain/persona"
@@ -101,12 +102,7 @@ func selectByKeywords(values, keywords []string, limit int) []string {
 }
 
 func containsAnyText(text string, terms ...string) bool {
-	for _, term := range terms {
-		if strings.Contains(text, term) {
-			return true
-		}
-	}
-	return false
+	return slices.ContainsFunc(terms, func(term string) bool { return strings.Contains(text, term) })
 }
 
 func selectLimit[T any](values []T, limit int) []T {

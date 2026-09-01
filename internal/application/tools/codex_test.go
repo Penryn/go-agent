@@ -33,7 +33,7 @@ done
 		t.Fatal(err)
 	}
 
-	base := NewCodexTool(config.CodexConfig{Enabled: true, Binary: fake, CWD: dir, Timeout: "2s"})
+	base := NewCodexToolWithApproval(config.CodexConfig{Enabled: true, Binary: fake, CWD: dir, Timeout: "2s"}, nil)
 	invokable, ok := base.(tool.InvokableTool)
 	if !ok {
 		t.Fatal("Codex tool is not invokable")

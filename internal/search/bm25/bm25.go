@@ -61,7 +61,7 @@ func Rank(query string, documents []Document, limit int) []Result {
 		k1 = 1.2
 		b  = 0.75
 	)
-	scored := make([]scoredDocument, 0, len(documents))
+	scored := make([]Result, 0, len(documents))
 	for i, terms := range docTerms {
 		score := 0.0
 		for term, qf := range queryFrequency {
@@ -75,24 +75,18 @@ func Rank(query string, documents []Document, limit int) []Result {
 			score += float64(qf) * idf * (float64(tf) * (k1 + 1)) / (float64(tf) + k1*normalizedLength)
 		}
 		if score > 0 {
-			scored = append(scored, scoredDocument{result: Result{ID: documents[i].ID, Score: score}, order: i})
+			scored = append(scored, Result{ID: documents[i].ID, Score: score})
 		}
 	}
 
+	// scored 按文档序构建，SliceStable 保证同分保持原顺序，无需额外 order 字段。
 	sort.SliceStable(scored, func(i, j int) bool {
-		if scored[i].result.Score == scored[j].result.Score {
-			return scored[i].order < scored[j].order
-		}
-		return scored[i].result.Score > scored[j].result.Score
+		return scored[i].Score > scored[j].Score
 	})
 	if limit > 0 && len(scored) > limit {
 		scored = scored[:limit]
 	}
-	results := make([]Result, len(scored))
-	for i := range scored {
-		results[i] = scored[i].result
-	}
-	return results
+	return scored
 }
 
 func tokenize(text string) []string {

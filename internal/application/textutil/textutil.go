@@ -25,21 +25,22 @@ func StripThinkBlocks(s string) string {
 	return strings.TrimSpace(s)
 }
 
+// TruncateRunes 按 rune 数截断文本，超出时以省略号结尾。
+func TruncateRunes(s string, limit int) string {
+	runes := []rune(s)
+	if len(runes) <= limit {
+		return s
+	}
+	return string(runes[:limit]) + "…"
+}
+
 // Backoff 返回第 attempt 次重试的指数退避时长：2^attempt 秒，钳制在 [min, max]。
 // attempt <= 0 按首次等待处理，直接返回 min。outbox 任务与 ws 重连共用这一条曲线。
-func Backoff(attempt int, min, max time.Duration) time.Duration {
+func Backoff(attempt int, floor, ceiling time.Duration) time.Duration {
 	if attempt < 1 {
-		return min
+		return floor
 	}
-	if attempt > 30 { // 防 1<<attempt 溢出
-		return max
-	}
-	d := time.Duration(int64(1)<<attempt) * time.Second
-	if d < min {
-		return min
-	}
-	if d > max {
-		return max
-	}
-	return d
+	// 移位前先钳位防溢出；attempt 超 30 秒级退避必然已达 ceiling
+	d := time.Duration(int64(1)<<min(attempt, 30)) * time.Second
+	return min(max(d, floor), ceiling)
 }

@@ -17,6 +17,7 @@ import (
 	"github.com/cloudwego/eino/components/tool"
 	"github.com/cloudwego/eino/schema"
 
+	"github.com/phlin/go-agent/internal/application/textutil"
 	"github.com/phlin/go-agent/internal/config"
 )
 
@@ -30,10 +31,6 @@ type codexTool struct {
 type codexArgs struct {
 	Task  string `json:"task"`
 	Write bool   `json:"write"`
-}
-
-func NewCodexTool(cfg config.CodexConfig) tool.BaseTool {
-	return newCodexTool(cfg, nil, nil)
 }
 
 func NewCodexToolWithApproval(cfg config.CodexConfig, approvals *WriteApprovalStore, writeUsers ...[]int64) tool.BaseTool {
@@ -149,8 +146,7 @@ type appServerMessage struct {
 	} `json:"error,omitempty"`
 }
 
-func runCodexAppServer(ctx context.Context, cfg config.CodexConfig, task string, writeRequest ...bool) (string, error) {
-	write := len(writeRequest) > 0 && writeRequest[0]
+func runCodexAppServer(ctx context.Context, cfg config.CodexConfig, task string, write bool) (string, error) {
 	cmd := exec.CommandContext(ctx, cfg.Binary, "app-server")
 	cmd.Dir = cfg.CWD
 	stdin, err := cmd.StdinPipe()
@@ -301,7 +297,7 @@ func runCodexAppServer(ctx context.Context, cfg config.CodexConfig, task string,
 			if result == "" {
 				return "", errors.New("Codex completed without an answer")
 			}
-			return truncateRunes(result, 12_000), nil
+			return textutil.TruncateRunes(result, 12_000), nil
 		}
 	}
 	return "", appServerReadError(ctx, scanner.Err(), stderr.String())
@@ -315,7 +311,7 @@ func appServerReadError(ctx context.Context, scanErr error, stderr string) error
 		return scanErr
 	}
 	if stderr = strings.TrimSpace(stderr); stderr != "" {
-		return fmt.Errorf("Codex app-server stopped: %s", truncateRunes(stderr, 2_000))
+		return fmt.Errorf("Codex app-server stopped: %s", textutil.TruncateRunes(stderr, 2_000))
 	}
 	return io.ErrUnexpectedEOF
 }

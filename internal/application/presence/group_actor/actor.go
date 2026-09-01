@@ -527,12 +527,7 @@ func supersedeBurstCandidates(memory *presencedomain.GroupWorkingMemory, eventID
 }
 
 func overlaps(left, right []string) bool {
-	for _, l := range left {
-		if slices.Contains(right, l) {
-			return true
-		}
-	}
-	return false
+	return slices.ContainsFunc(left, func(l string) bool { return slices.Contains(right, l) })
 }
 
 func candidateFor(record presencedomain.EventRecord, burst presencedomain.ConversationBurst) presencedomain.ThoughtCandidate {
@@ -707,12 +702,7 @@ func pruneMedia(memory *presencedomain.GroupWorkingMemory) {
 }
 
 func eventInTail(records []presencedomain.EventRecord, eventID string) bool {
-	for _, record := range records {
-		if record.EventID == eventID {
-			return true
-		}
-	}
-	return false
+	return slices.ContainsFunc(records, func(r presencedomain.EventRecord) bool { return r.EventID == eventID })
 }
 
 func memoryTopic(text string) string {
