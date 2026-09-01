@@ -64,10 +64,10 @@ type Option func(*Service)
 
 // bubbleDelay 是分条气泡之间的基础间隔。每个 rune 还会增加一点撰写时间，
 // 让较长的下一条消息不会紧贴上一条发出。
-var bubbleDelay = 350 * time.Millisecond
+var bubbleDelay = 550 * time.Millisecond
 
-var bubbleDelayPerRune = 20 * time.Millisecond
-var bubbleMinimumDelay = 250 * time.Millisecond
+var bubbleDelayPerRune = 50 * time.Millisecond
+var bubbleMinimumDelay = 350 * time.Millisecond
 
 func New(sender ports.OutboundSender, memes *memesvc.Service, guard *outputguardsvc.Guard, opts ...Option) *Service {
 	service := &Service{sender: sender, memes: memes, guard: guard, rhythm: make(map[int64]rhythmEntry)}
