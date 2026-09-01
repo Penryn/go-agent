@@ -226,6 +226,22 @@ func extractCandidates(_ context.Context, input Input) (Output, error) {
 	}
 
 	output := Output{}
+	// emit 是四类候选共用的构造点：字段完全同构，只差 ID 前缀和语义标注。
+	emit := func(idPrefix, kind, value, meaning string, evidence int, eventIDs []string, conf float64, targetUser int64) {
+		output.Candidates = append(output.Candidates, memorydomain.LearningCandidate{
+			ID:              idPrefix + value,
+			GroupID:         input.GroupID,
+			Kind:            kind,
+			Value:           value,
+			Meaning:         meaning,
+			EvidenceCount:   evidence,
+			ExampleEventIDs: eventIDs,
+			Confidence:      conf,
+			Status:          "pending",
+			CreatedAt:       time.Now(),
+			TargetUserID:    targetUser,
+		})
+	}
 
 	// group_slang / topic_keyword（按 n-gram 长度区分）
 	for phrase, stats := range counter {
@@ -233,27 +249,11 @@ func extractCandidates(_ context.Context, input Input) (Output, error) {
 			continue
 		}
 		conf := math.Min(1.0, 0.5+float64(len(stats.senders))/10+float64(stats.count)/20)
-		runeLen := len([]rune(phrase))
-		kind := "group_slang"
-		if runeLen >= 5 || hasTopicSuffix(phrase) {
-			kind = "topic_keyword"
+		kind, meaning := "group_slang", "群内高频表达"
+		if len([]rune(phrase)) >= 5 || hasTopicSuffix(phrase) {
+			kind, meaning = "topic_keyword", "群内流行话题关键词"
 		}
-		meaning := "群内高频表达"
-		if kind == "topic_keyword" {
-			meaning = "群内流行话题关键词"
-		}
-		output.Candidates = append(output.Candidates, memorydomain.LearningCandidate{
-			ID:              "candidate-" + phrase,
-			GroupID:         input.GroupID,
-			Kind:            kind,
-			Value:           phrase,
-			Meaning:         meaning,
-			EvidenceCount:   stats.count,
-			ExampleEventIDs: stats.eventIDs,
-			Confidence:      conf,
-			Status:          "pending",
-			CreatedAt:       time.Now(),
-		})
+		emit("candidate-", kind, phrase, meaning, stats.count, stats.eventIDs, conf, 0)
 	}
 
 	// user_catchphrase（按用户分组，阈值 count>=3）
@@ -263,19 +263,7 @@ func extractCandidates(_ context.Context, input Input) (Output, error) {
 				continue
 			}
 			conf := math.Min(1.0, 0.5+float64(stats.count)/10)
-			output.Candidates = append(output.Candidates, memorydomain.LearningCandidate{
-				ID:              "candidate-user-" + phrase,
-				GroupID:         input.GroupID,
-				Kind:            "user_catchphrase",
-				Value:           phrase,
-				Meaning:         "用户个人口头禅",
-				EvidenceCount:   stats.count,
-				ExampleEventIDs: stats.eventIDs,
-				Confidence:      conf,
-				Status:          "pending",
-				CreatedAt:       time.Now(),
-				TargetUserID:    uid,
-			})
+			emit("candidate-user-", "user_catchphrase", phrase, "用户个人口头禅", stats.count, stats.eventIDs, conf, uid)
 		}
 	}
 
@@ -284,18 +272,7 @@ func extractCandidates(_ context.Context, input Input) (Output, error) {
 		if count < 2 {
 			continue
 		}
-		conf := math.Min(1.0, 0.5+float64(count)/10)
-		output.Candidates = append(output.Candidates, memorydomain.LearningCandidate{
-			ID:            "candidate-reply-" + text,
-			GroupID:       input.GroupID,
-			Kind:          "reaction_pattern",
-			Value:         text,
-			Meaning:       "[conversation] 群内高频回复套路",
-			EvidenceCount: count,
-			Confidence:    conf,
-			Status:        "pending",
-			CreatedAt:     time.Now(),
-		})
+		emit("candidate-reply-", "reaction_pattern", text, "[conversation] 群内高频回复套路", count, nil, math.Min(1.0, 0.5+float64(count)/10), 0)
 	}
 
 	// reaction_pattern/meme_trigger（触发图片的前置文本，count>=2）
@@ -303,18 +280,7 @@ func extractCandidates(_ context.Context, input Input) (Output, error) {
 		if count < 2 {
 			continue
 		}
-		conf := math.Min(1.0, 0.5+float64(count)/10)
-		output.Candidates = append(output.Candidates, memorydomain.LearningCandidate{
-			ID:            "candidate-meme-" + text,
-			GroupID:       input.GroupID,
-			Kind:          "reaction_pattern",
-			Value:         text,
-			Meaning:       "[meme_trigger] 触发表情包发送的上文",
-			EvidenceCount: count,
-			Confidence:    conf,
-			Status:        "pending",
-			CreatedAt:     time.Now(),
-		})
+		emit("candidate-meme-", "reaction_pattern", text, "[meme_trigger] 触发表情包发送的上文", count, nil, math.Min(1.0, 0.5+float64(count)/10), 0)
 	}
 
 	return output, nil

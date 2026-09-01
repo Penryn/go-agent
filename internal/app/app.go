@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
@@ -15,7 +16,6 @@ import (
 	outboundnapcat "github.com/phlin/go-agent/internal/adapters/outbound/napcat"
 	actionsvc "github.com/phlin/go-agent/internal/application/action"
 	contextsvc "github.com/phlin/go-agent/internal/application/context"
-	curatorsvc "github.com/phlin/go-agent/internal/application/curator"
 	learningsvc "github.com/phlin/go-agent/internal/application/learning"
 	memesvc "github.com/phlin/go-agent/internal/application/meme"
 	memsvc "github.com/phlin/go-agent/internal/application/memory"
@@ -47,7 +47,7 @@ import (
 type App struct {
 	cfg          config.Config
 	humanRuntime *presenceruntime.Runtime
-	inbound      ports.InboundSource
+	inbound      *inboundnapcat.WSReceiver
 	server       *http.Server
 	sched        *scheduler.Scheduler
 	closeOnce    sync.Once
@@ -253,24 +253,27 @@ func New(ctx context.Context, cfg config.Config) (*App, error) {
 
 	// learning service：接入运行时，每 6 小时对白名单群跑一次增量学习
 	profileService := profilesvc.New(stores.profile, cfg.Persona.ID)
-	// applyCurator 把 curator 提取的亮点写入长期记忆（置信度阈值过滤）。
-	applyCurator := func(jobCtx context.Context, intents []memsvc.WriteIntent) error {
-		for _, intent := range intents {
-			if intent.Confidence < 0.7 {
-				continue
-			}
-			if _, err := memorySvc.MarkIntent(jobCtx, intent); err != nil {
-				return err
-			}
-		}
-		return nil
-	}
+	// curator_turn：把一轮对话的短文本亮点（≤24 字）写入长期记忆。
 	if err := durableOutbox.Register("curator_turn", func(jobCtx context.Context, payload []byte) error {
 		var snapshot conversationdomain.ContextSnapshot
 		if err := json.Unmarshal(payload, &snapshot); err != nil {
 			return fmt.Errorf("decode curator snapshot: %w", err)
 		}
-		return applyCurator(jobCtx, curatorsvc.Extract(snapshot))
+		text := strings.TrimSpace(snapshot.Event.Text)
+		if text == "" || len([]rune(text)) > 24 {
+			return nil
+		}
+		intent := memsvc.WriteIntent{
+			Scope:         fmt.Sprintf("group:%d", snapshot.Event.GroupID),
+			MemoryType:    "conversation_highlight",
+			Subject:       "event",
+			Content:       text,
+			SourceEventID: snapshot.Event.EventID,
+			Importance:    0.7,
+			Confidence:    0.8,
+		}
+		_, err := memorySvc.MarkIntent(jobCtx, intent)
+		return err
 	}); err != nil {
 		_ = durableOutbox.Close()
 		_ = stores.Close()

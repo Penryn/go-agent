@@ -34,12 +34,6 @@ type Service struct {
 	cfg          Config
 }
 
-type rankedMemory struct {
-	record memorydomain.MemoryRecord
-	score  float64
-	order  int
-}
-
 func New(memoryStore ports.MemoryStore, memeStore ports.MemeStore, memoryVector ports.VectorMemoryStore, memeVector ports.VectorMemeStore, cfg Config) *Service {
 	if cfg.MemoryCandidateK <= 0 {
 		cfg.MemoryCandidateK = 30
@@ -151,30 +145,36 @@ func mergeVectorMemeCandidates(group, global []mediadomain.MemeSearchResult) []m
 	return results
 }
 
-func mergeMemoryResults(lexical, semantic []memorydomain.MemoryRecord, limit int) []memorydomain.MemoryRecord {
-	byID := make(map[string]*rankedMemory, len(lexical)+len(semantic))
-	add := func(records []memorydomain.MemoryRecord) {
-		for rank, record := range records {
-			id := record.MemoryID
-			if id == "" {
-				id = record.Scope + "\x00" + record.Subject + "\x00" + record.Content
+// mergeRRF 用 Reciprocal Rank Fusion 融合 lexical 与 semantic 两轨结果:
+// score += 1/(rrfK + rank+1),按融合分稳定排序后截断。better 在两轨给出
+// 同一 ID 的不同投影时挑选更完整的那条(取首个非空 summary/content)。
+func mergeRRF[T any](lexical, semantic []T, limit int, id func(T) string, better func(cur, next T) T) []T {
+	type ranked struct {
+		item  T
+		score float64
+		order int
+	}
+	byID := make(map[string]*ranked, len(lexical)+len(semantic))
+	add := func(items []T) {
+		for rank, item := range items {
+			key := id(item)
+			if key == "" {
+				continue
 			}
-			item := byID[id]
-			if item == nil {
-				item = &rankedMemory{record: record, order: len(byID)}
-				byID[id] = item
+			entry := byID[key]
+			if entry == nil {
+				entry = &ranked{item: item, order: len(byID)}
+				byID[key] = entry
 			}
-			item.score += 1 / (rrfK + float64(rank+1))
-			if item.record.Content == "" && record.Content != "" {
-				item.record = record
-			}
+			entry.score += 1 / (rrfK + float64(rank+1))
+			entry.item = better(entry.item, item)
 		}
 	}
 	add(lexical)
 	add(semantic)
-	items := make([]rankedMemory, 0, len(byID))
-	for _, item := range byID {
-		items = append(items, *item)
+	items := make([]ranked, 0, len(byID))
+	for _, entry := range byID {
+		items = append(items, *entry)
 	}
 	sort.SliceStable(items, func(i, j int) bool {
 		if items[i].score == items[j].score {
@@ -185,67 +185,50 @@ func mergeMemoryResults(lexical, semantic []memorydomain.MemoryRecord, limit int
 	if limit > 0 && len(items) > limit {
 		items = items[:limit]
 	}
-	results := make([]memorydomain.MemoryRecord, len(items))
+	results := make([]T, len(items))
 	for i := range items {
-		results[i] = items[i].record
+		results[i] = items[i].item
 	}
 	return results
 }
 
+func mergeMemoryResults(lexical, semantic []memorydomain.MemoryRecord, limit int) []memorydomain.MemoryRecord {
+	return mergeRRF(lexical, semantic, limit,
+		func(r memorydomain.MemoryRecord) string {
+			if r.MemoryID != "" {
+				return r.MemoryID
+			}
+			return r.Scope + "\x00" + r.Subject + "\x00" + r.Content
+		},
+		func(cur, next memorydomain.MemoryRecord) memorydomain.MemoryRecord {
+			if cur.Content == "" && next.Content != "" {
+				return next
+			}
+			return cur
+		},
+	)
+}
+
 func mergeMemeResults(lexical, semantic []mediadomain.MemeSearchResult, limit int) []mediadomain.MemeSearchResult {
-	type ranked struct {
-		result  mediadomain.MemeSearchResult
-		score   float64
-		order   int
-		lexical bool
-		vector  bool
-	}
-	byID := make(map[string]*ranked, len(lexical)+len(semantic))
-	add := func(results []mediadomain.MemeSearchResult, isLexical bool) {
-		for rank, result := range results {
-			item := byID[result.MemeID]
-			if item == nil {
-				item = &ranked{result: result, order: len(byID)}
-				byID[result.MemeID] = item
+	results := mergeRRF(lexical, semantic, limit,
+		func(r mediadomain.MemeSearchResult) string { return r.MemeID },
+		func(cur, next mediadomain.MemeSearchResult) mediadomain.MemeSearchResult {
+			if cur.Descriptor.Summary == "" && next.Descriptor.Summary != "" {
+				return next
 			}
-			item.score += 1 / (rrfK + float64(rank+1))
-			if isLexical {
-				item.lexical = true
-			} else {
-				item.vector = true
-			}
-			if item.result.Descriptor.Summary == "" && result.Descriptor.Summary != "" {
-				item.result = result
-			}
-		}
+			return cur
+		},
+	)
+	lexIDs := make(map[string]struct{}, len(lexical))
+	for _, item := range lexical {
+		lexIDs[item.MemeID] = struct{}{}
 	}
-	add(lexical, true)
-	add(semantic, false)
-	items := make([]ranked, 0, len(byID))
-	for _, item := range byID {
-		item.result.Score = item.score
-		switch {
-		case item.lexical && item.vector:
-			item.result.MatchType = "hybrid"
-		case item.vector:
-			item.result.MatchType = "vector"
-		case item.lexical:
-			item.result.MatchType = "bm25"
+	for i := range results {
+		if _, lexicalHit := lexIDs[results[i].MemeID]; lexicalHit {
+			results[i].MatchType = "hybrid"
+		} else {
+			results[i].MatchType = "vector"
 		}
-		items = append(items, *item)
-	}
-	sort.SliceStable(items, func(i, j int) bool {
-		if items[i].score == items[j].score {
-			return items[i].order < items[j].order
-		}
-		return items[i].score > items[j].score
-	})
-	if limit > 0 && len(items) > limit {
-		items = items[:limit]
-	}
-	results := make([]mediadomain.MemeSearchResult, len(items))
-	for i := range items {
-		results[i] = items[i].result
 	}
 	return results
 }
