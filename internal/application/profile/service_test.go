@@ -34,7 +34,7 @@ func TestObserveEventUpdatesProfile(t *testing.T) {
 		t.Fatalf("observe event: %v", err)
 	}
 
-	profile, err := service.Query(context.Background(), 1, 2)
+	profile, err := store.GetMemberProfile(context.Background(), 1, 2)
 	if err != nil {
 		t.Fatalf("query profile: %v", err)
 	}

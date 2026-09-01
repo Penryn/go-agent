@@ -5,8 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
-	"regexp"
-	"strconv"
 	"time"
 
 	"github.com/phlin/go-agent/internal/application/ports"
@@ -144,26 +142,6 @@ func (s *Service) ProcessVectorIndex(ctx context.Context, record memorydomain.Me
 	}
 	return s.vectorStore.StoreMemory(ctx, record)
 }
-
-func (s *Service) Query(ctx context.Context, query ports.MemoryQuery) ([]memorydomain.MemoryRecord, error) {
-	// Preserve the legacy trusted-service API where callers supplied an
-	// explicit scope without session fields. Tool/retrieval paths always carry
-	// the current group and user and therefore remain fail-closed in adapters.
-	if query.GroupID == 0 && query.Scope != "" {
-		if match := memoryGroupScope.FindStringSubmatch(query.Scope); len(match) == 2 {
-			query.GroupID, _ = strconv.ParseInt(match[1], 10, 64)
-			if userMatch := memoryUserScope.FindStringSubmatch(query.Scope); len(userMatch) == 2 {
-				query.UserID, _ = strconv.ParseInt(userMatch[1], 10, 64)
-			}
-		}
-	}
-	return s.store.QueryMemories(ctx, query)
-}
-
-var (
-	memoryGroupScope = regexp.MustCompile(`^group:([0-9]+)(?::user:[0-9]+)?$`)
-	memoryUserScope  = regexp.MustCompile(`^group:[0-9]+:user:([0-9]+)$`)
-)
 
 func projectionKey(id string, revision int64) string {
 	if revision <= 0 {

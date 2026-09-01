@@ -181,9 +181,3 @@ func (s *VectorStore) SearchMemes(ctx context.Context, groupID int64, queryText 
 	}
 	return results, rows.Err()
 }
-
-// DeleteMeme 实现 ports.VectorMemeStore。
-func (s *VectorStore) DeleteMeme(ctx context.Context, memeID string) error {
-	_, err := s.db.ExecContext(ctx, `DELETE FROM meme_vectors WHERE meme_id = $1`, memeID)
-	return err
-}

@@ -184,11 +184,14 @@ func (v *vectorIndexer) IndexMeme(_ context.Context, _ string, _ string, _ int64
 	return nil
 }
 
+func (v *vectorIndexer) IndexMemeVersioned(_ context.Context, _ string, _ string, _ int64, _ int64) error {
+	v.calls++
+	return nil
+}
+
 func (v *vectorIndexer) SearchMemes(context.Context, int64, string, int, float64) ([]mediadomain.MemeSearchResult, error) {
 	return nil, nil
 }
-
-func (v *vectorIndexer) DeleteMeme(context.Context, string) error { return nil }
 
 func TestObserveEventUsesOutboxForVectorIndex(t *testing.T) {
 	store := inmemory.NewStore()
@@ -227,10 +230,12 @@ func (s *fallbackMemeStore) SearchMemes(ctx context.Context, query ports.MemeQue
 type missingVectorMeme struct{}
 
 func (missingVectorMeme) IndexMeme(context.Context, string, string, int64) error { return nil }
+func (missingVectorMeme) IndexMemeVersioned(context.Context, string, string, int64, int64) error {
+	return nil
+}
 func (missingVectorMeme) SearchMemes(context.Context, int64, string, int, float64) ([]mediadomain.MemeSearchResult, error) {
 	return []mediadomain.MemeSearchResult{{MemeID: "missing-vector-result"}}, nil
 }
-func (missingVectorMeme) DeleteMeme(context.Context, string) error { return nil }
 
 func TestSearchFallsBackToBM25AfterHybridCandidatesAreFiltered(t *testing.T) {
 	base := inmemory.NewStore()

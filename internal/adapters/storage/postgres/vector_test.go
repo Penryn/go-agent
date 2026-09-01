@@ -154,17 +154,6 @@ func TestVectorMemeRoundtrip(t *testing.T) {
 	if len(other) != 0 {
 		t.Fatalf("expected 0 results for other group, got %d", len(other))
 	}
-
-	if err := store.DeleteMeme(ctx, memeID); err != nil {
-		t.Fatalf("delete meme: %v", err)
-	}
-	after, err := store.SearchMemes(ctx, 1, "离谱", 5, 0.0)
-	if err != nil {
-		t.Fatalf("search after delete: %v", err)
-	}
-	if len(after) != 0 {
-		t.Fatalf("expected 0 results after delete, got %d", len(after))
-	}
 }
 
 func TestVectorMemoryFiltersScopeAndExpiry(t *testing.T) {

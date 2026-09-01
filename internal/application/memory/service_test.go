@@ -49,10 +49,10 @@ func TestMarkIntentAndQuery(t *testing.T) {
 		t.Fatalf("mark intent: %v", err)
 	}
 
-	records, err := service.Query(context.Background(), ports.MemoryQuery{
-		Scope: "group:1",
-		Query: "表情包",
-		TopK:  3,
+	records, err := store.QueryMemories(context.Background(), ports.MemoryQuery{
+		GroupID: 1,
+		Query:   "表情包",
+		TopK:    3,
 	})
 	if err != nil {
 		t.Fatalf("query memory: %v", err)

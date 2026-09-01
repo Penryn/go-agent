@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"log/slog"
 	"path"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -221,10 +222,7 @@ func (s *Service) ProcessVectorIndex(ctx context.Context, task VectorIndexTask) 
 	if s == nil || s.vectorStore == nil {
 		return fmt.Errorf("meme: vector store is not configured")
 	}
-	if versioned, ok := s.vectorStore.(ports.VersionedVectorMemeStore); ok {
-		return versioned.IndexMemeVersioned(ctx, task.MemeID, task.Text, task.GroupID, task.Revision)
-	}
-	return s.vectorStore.IndexMeme(ctx, task.MemeID, task.Text, task.GroupID)
+	return s.vectorStore.IndexMemeVersioned(ctx, task.MemeID, task.Text, task.GroupID, task.Revision)
 }
 
 // Search 搜索表情包，向量优先；向量无结果时 fallback 到关键词搜索。
@@ -308,15 +306,9 @@ func (s *Service) rankAndFilter(ctx context.Context, results []mediadomain.MemeS
 
 func matchesTag(tags []string, wanted string) bool {
 	wanted = strings.ToLower(strings.TrimSpace(wanted))
-	if wanted == "" {
-		return true
-	}
-	for _, tag := range tags {
-		if strings.Contains(strings.ToLower(tag), wanted) {
-			return true
-		}
-	}
-	return false
+	return wanted == "" || slices.ContainsFunc(tags, func(tag string) bool {
+		return strings.Contains(strings.ToLower(tag), wanted)
+	})
 }
 
 func dudRate(asset mediadomain.MemeAsset) float64 {
@@ -376,12 +368,7 @@ func (s *Service) collectible(attachment mediadomain.MultimodalAttachment, descr
 }
 
 func containsFold(values []string, wanted string) bool {
-	for _, value := range values {
-		if strings.EqualFold(strings.TrimSpace(value), wanted) {
-			return true
-		}
-	}
-	return false
+	return slices.ContainsFunc(values, func(v string) bool { return strings.EqualFold(strings.TrimSpace(v), wanted) })
 }
 
 // MarkSent 标记表情包已发送，更新发送计数和最后发送时间。

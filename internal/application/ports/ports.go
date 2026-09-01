@@ -15,10 +15,6 @@ import (
 	replydomain "github.com/phlin/go-agent/internal/domain/reply"
 )
 
-type InboundSource interface {
-	Receive(ctx context.Context, handler func(context.Context, []byte) error) error
-}
-
 type OutboundSender interface {
 	Send(ctx context.Context, action replydomain.ActionExecution) (replydomain.ActionReceipt, error)
 }
@@ -163,15 +159,8 @@ type VectorMemoryStore interface {
 type VectorMemeStore interface {
 	// IndexMeme 将表情包描述文本向量化后存入向量库。
 	IndexMeme(ctx context.Context, memeID string, text string, groupID int64) error
+	// IndexMemeVersioned 携带描述 revision 入库，投影任务用它避免旧版本覆盖新版本。
+	IndexMemeVersioned(ctx context.Context, memeID string, text string, groupID int64, revision int64) error
 	// SearchMemes 执行语义检索，返回相似度 >= threshold 的记录（Descriptor 字段为零值）。
 	SearchMemes(ctx context.Context, groupID int64, queryText string, topK int, threshold float64) ([]mediadomain.MemeSearchResult, error)
-	// DeleteMeme 从向量库删除指定表情包。
-	DeleteMeme(ctx context.Context, memeID string) error
-}
-
-// VersionedVectorMemeStore is an optional extension used by durable projection
-// handlers. The legacy VectorMemeStore method remains available to keep simple
-// adapters and tests small.
-type VersionedVectorMemeStore interface {
-	IndexMemeVersioned(ctx context.Context, memeID string, text string, groupID int64, revision int64) error
 }

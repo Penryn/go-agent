@@ -9,7 +9,6 @@ import (
 
 	"github.com/phlin/go-agent/internal/application/ports"
 	conversationdomain "github.com/phlin/go-agent/internal/domain/conversation"
-	profiledomain "github.com/phlin/go-agent/internal/domain/profile"
 )
 
 type Service struct {
@@ -87,10 +86,6 @@ func familiarityEvidence(event conversationdomain.ConversationEvent) float64 {
 		increment += 0.002
 	}
 	return increment
-}
-
-func (s *Service) Query(ctx context.Context, groupID, userID int64) (profiledomain.MemberProfile, error) {
-	return s.store.GetMemberProfile(ctx, groupID, userID)
 }
 
 func appendIfMissing(items []string, value string, max int) []string {
