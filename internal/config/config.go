@@ -46,7 +46,7 @@ type ModelProviderConfig struct {
 	Provider string `yaml:"provider"`
 	Model    string `yaml:"model"`
 	BaseURL  string `yaml:"base_url"`
-	APIKey   string `yaml:"-"`
+	APIKey   string `yaml:"api_key"`
 	Timeout  string `yaml:"timeout"`
 	// APIType 仅对 embedding 模型生效：text（默认）或 multimodal。
 	// doubao-embedding-vision 系列多模态模型须设为 multimodal。
@@ -119,7 +119,7 @@ type PostgresConfig struct {
 	Port     int    `yaml:"port"`
 	Database string `yaml:"database"`
 	User     string `yaml:"user"`
-	Password string `yaml:"-"`
+	Password string `yaml:"password"`
 	SSLMode  string `yaml:"ssl_mode"`
 	// VectorDim 是 pgvector 向量列维度，须与 embedding 模型输出严格一致。
 	// 启动时校验与表结构一致，不一致拒绝启动。
@@ -140,7 +140,7 @@ func (c PostgresConfig) DSN() string {
 type QQConfig struct {
 	Enabled        bool    `yaml:"enabled"`
 	SelfID         int64   `yaml:"self_id"`
-	AccessToken    string  `yaml:"-"`
+	AccessToken    string  `yaml:"access_token"`
 	OutboundURL    string  `yaml:"outbound_url"`
 	EventWSURL     string  `yaml:"event_ws_url"`
 	GroupWhitelist []int64 `yaml:"group_whitelist"`

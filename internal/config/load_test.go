@@ -6,15 +6,16 @@ import (
 	"testing"
 )
 
-func TestLoadReadsDotEnvSecrets(t *testing.T) {
+func TestLoadDoesNotOverrideYAMLSecretsFromEnvironment(t *testing.T) {
+	t.Setenv("QQBOT_QQ_ACCESS_TOKEN", "env-qq-secret")
+	t.Setenv("QQBOT_MAIN_MODEL_API_KEY", "env-model-secret")
+	t.Setenv("QQBOT_STORAGE_POSTGRES_PASSWORD", "env-db-secret")
+
 	dir := t.TempDir()
-	t.Chdir(dir)
 
 	path := filepath.Join(dir, "config.yaml")
-	if err := os.WriteFile(path, []byte("app:\n  mode: test\npersona:\n  id: test\n  name: Test Bot\n"), 0o600); err != nil {
-		t.Fatalf("write config: %v", err)
-	}
-	if err := os.WriteFile(filepath.Join(dir, ".env"), []byte("QQBOT_QQ_ACCESS_TOKEN=qq-secret\nQQBOT_MAIN_MODEL_API_KEY=model-secret\nQQBOT_STORAGE_POSTGRES_PASSWORD=db-secret\n"), 0o600); err != nil {
+	content := "app:\n  mode: test\nmodels:\n  main:\n    api_key: model-secret\npersona:\n  id: test\n  name: Test Bot\nstorage:\n  postgres:\n    password: db-secret\nqq:\n  access_token: qq-secret\n"
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
 		t.Fatalf("write config: %v", err)
 	}
 
@@ -34,12 +35,8 @@ func TestLoadReadsDotEnvSecrets(t *testing.T) {
 	}
 }
 
-func TestLoadIgnoresPublicEnvOverride(t *testing.T) {
-	t.Setenv("QQBOT_SERVER_HTTP_LISTEN", ":9090")
-	t.Setenv("QQBOT_QQ_OUTBOUND_URL", "http://127.0.0.1:9999")
-
+func TestLoadReadsPublicYAMLConfig(t *testing.T) {
 	dir := t.TempDir()
-	t.Chdir(dir)
 
 	path := filepath.Join(dir, "config.yaml")
 	if err := os.WriteFile(path, []byte("server:\n  http_listen: \":8081\"\npersona:\n  id: test\n  name: Test Bot\nqq:\n  outbound_url: http://127.0.0.1:3000\n"), 0o600); err != nil {
@@ -56,6 +53,13 @@ func TestLoadIgnoresPublicEnvOverride(t *testing.T) {
 	}
 	if got, want := cfg.QQ.OutboundURL, "http://127.0.0.1:3000"; got != want {
 		t.Fatalf("qq outbound url mismatch: got %q want %q", got, want)
+	}
+}
+
+func TestExampleConfigLoads(t *testing.T) {
+	path := filepath.Join("..", "..", "configs", "config.example.yaml")
+	if _, err := Load(path); err != nil {
+		t.Fatalf("load example config: %v", err)
 	}
 }
 

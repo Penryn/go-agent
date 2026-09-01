@@ -2,6 +2,9 @@ bin
 data
 .DS_Store
 .codex
+# 本地运行配置可能包含密钥；仓库只提交 config.example.yaml。
+configs/config.yaml
+# 兼容旧版本遗留的本地密钥文件，应用不再读取。
 .env
 .serena/
 .idea/

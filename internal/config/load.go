@@ -4,10 +4,8 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"path/filepath"
 	"strings"
 
-	"github.com/joho/godotenv"
 	personadomain "github.com/phlin/go-agent/internal/domain/persona"
 	policydomain "github.com/phlin/go-agent/internal/domain/policy"
 	"gopkg.in/yaml.v3"
@@ -102,9 +100,6 @@ func Default() Config {
 
 func Load(path string) (Config, error) {
 	cfg := Default()
-	if err := loadDotEnv(path); err != nil {
-		return Config{}, err
-	}
 	if path != "" {
 		content, err := os.ReadFile(path)
 		if err != nil && !errors.Is(err, os.ErrNotExist) {
@@ -117,60 +112,11 @@ func Load(path string) (Config, error) {
 		}
 	}
 
-	overrideWithEnvSecrets(&cfg)
-
 	if err := Validate(cfg); err != nil {
 		return Config{}, err
 	}
 
 	return cfg, nil
-}
-
-func loadDotEnv(configPath string) error {
-	candidates := dotenvCandidates(configPath)
-	seen := make(map[string]struct{}, len(candidates))
-	for _, candidate := range candidates {
-		if candidate == "" {
-			continue
-		}
-		candidate = filepath.Clean(candidate)
-		if _, ok := seen[candidate]; ok {
-			continue
-		}
-		seen[candidate] = struct{}{}
-		if _, err := os.Stat(candidate); errors.Is(err, os.ErrNotExist) {
-			continue
-		} else if err != nil {
-			return fmt.Errorf("stat dotenv file %q: %w", candidate, err)
-		}
-		if err := godotenv.Load(candidate); err != nil {
-			return fmt.Errorf("load dotenv file %q: %w", candidate, err)
-		}
-	}
-	return nil
-}
-
-func dotenvCandidates(configPath string) []string {
-	candidates := []string{".env"}
-	if configPath == "" {
-		return candidates
-	}
-
-	configDir := filepath.Dir(configPath)
-	candidates = append(candidates, filepath.Join(configDir, ".env"))
-	parentDir := filepath.Dir(configDir)
-	if parentDir != configDir {
-		candidates = append(candidates, filepath.Join(parentDir, ".env"))
-	}
-	return candidates
-}
-
-func overrideWithEnvSecrets(cfg *Config) {
-	stringOverride("QQBOT_MAIN_MODEL_API_KEY", &cfg.Models.Main.APIKey)
-	stringOverride("QQBOT_VISION_MODEL_API_KEY", &cfg.Models.Vision.APIKey)
-	stringOverride("QQBOT_EMBEDDING_MODEL_API_KEY", &cfg.Models.Embedding.APIKey)
-	stringOverride("QQBOT_STORAGE_POSTGRES_PASSWORD", &cfg.Storage.Postgres.Password)
-	stringOverride("QQBOT_QQ_ACCESS_TOKEN", &cfg.QQ.AccessToken)
 }
 
 func Validate(cfg Config) error {
@@ -222,10 +168,4 @@ func Validate(cfg Config) error {
 		}
 	}
 	return nil
-}
-
-func stringOverride(key string, target *string) {
-	if value, ok := os.LookupEnv(key); ok {
-		*target = value
-	}
 }

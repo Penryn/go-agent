@@ -84,7 +84,7 @@ CREATE INDEX ON meme_vectors USING hnsw (embedding vector_cosine_ops);
 - `internal/config/config.go`:
   - `MySQLConfig` → `PostgresConfig`(host/port/database/user/password/sslmode),DSN 为 pgx URL 格式
   - `QdrantConfig` 删除;`vector_dim` 挪入 PG 配置段;collection 名配置删除(表名固定)
-- `configs/config.yaml`、`docker-compose.yml` 同步更新;密码继续走 `.env`
+- `configs/config.example.yaml`、`docker-compose.yml` 同步更新；密码统一写入本地 `configs/config.yaml`
 
 ## 实施阶段(单分支三步)
 

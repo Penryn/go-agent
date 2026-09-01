@@ -96,7 +96,7 @@ docker compose up -d
 | ② | HTTP 监听端口 | `3000` | 对应 `qq.outbound_url` |
 | ③ | 启用正向 WebSocket | ✅ 开启 | Bot 通过 WS 接收事件 |
 | ④ | WebSocket 端口 | `3001` | 对应 `qq.event_ws_url` |
-| ⑤ | Access Token | 自定义一个值 | 和 `.env` 中 `QQBOT_QQ_ACCESS_TOKEN` 保持一致 |
+| ⑤ | Access Token | 自定义一个值 | 和 `configs/config.yaml` 中 `qq.access_token` 保持一致 |
 
 设置完成后点击 **保存并应用**，必要时重启 NapCat。
 
@@ -104,31 +104,26 @@ docker compose up -d
 
 ### 4. 配置应用
 
+先复制示例配置，再编辑 `configs/config.yaml`，启用 QQ 并填写模型信息与密钥：
+
 ```bash
-cp .env.example .env
+cp configs/config.example.yaml configs/config.yaml
 ```
-
-编辑 `.env`，填入密钥（最少只需下面两行）：
-
-```dotenv
-QQBOT_QQ_ACCESS_TOKEN=你在NapCat网页里设置的Token
-QQBOT_MAIN_MODEL_API_KEY=你的LLM-API-Key
-```
-
-编辑 `configs/config.yaml`，启用 QQ 并填写模型信息：
 
 ```yaml
 qq:
   enabled: true
   self_id: 你的机器人QQ号          # 必填
+  access_token: 你在NapCat网页里设置的Token
 
 models:
   main:
     provider: ark                  # 或 openai_compat
     model: 你的模型端点ID
+    api_key: 你的LLM-API-Key
 ```
 
-> 完整配置项说明见 [`configs/config.yaml`](configs/config.yaml) 中的注释。
+> 完整配置项说明见 [`configs/config.example.yaml`](configs/config.example.yaml) 中的注释。真实 `config.yaml` 可能包含密钥，已被 Git 忽略。
 
 NapCat 正向 WebSocket、事件解析、HTTP action 调用和协议错误由 `github.com/zjutjh/napcat-sdk` 统一处理；断线后应用会自动重连，原始事件 JSON 仍会进入领域归一化层。
 
@@ -150,23 +145,23 @@ go run ./cmd/qqbotd -config configs/config.yaml
 
 ## 配置参考
 
-**优先级**：内置默认值 → `configs/config.yaml` → `.env` / 环境变量
+**优先级**：内置默认值 → `configs/config.yaml`
 
 | 文件 | 用途 |
 |------|------|
-| [`configs/config.yaml`](configs/config.yaml) | 公开配置（人格、策略、模型地址等） |
-| [`.env.example`](.env.example) → `.env` | 私密配置（API Key、密码、Token） |
+| [`configs/config.example.yaml`](configs/config.example.yaml) | 可提交的完整配置模板，不包含真实密钥 |
+| `configs/config.yaml` | 本地运行配置，统一保存普通配置与密钥，已被 Git 忽略 |
 
 <details>
-<summary>环境变量一览</summary>
+<summary>密钥配置一览</summary>
 
-| 变量 | 说明 |
+| YAML 配置项 | 说明 |
 |------|------|
-| `QQBOT_QQ_ACCESS_TOKEN` | NapCat Access Token |
-| `QQBOT_MAIN_MODEL_API_KEY` | 主模型 API Key |
-| `QQBOT_VISION_MODEL_API_KEY` | Vision 模型 Key（可选） |
-| `QQBOT_EMBEDDING_MODEL_API_KEY` | Embedding 模型 Key（预留） |
-| `QQBOT_STORAGE_POSTGRES_PASSWORD` | PostgreSQL 密码 |
+| `qq.access_token` | NapCat Access Token |
+| `models.main.api_key` | 主模型 API Key |
+| `models.vision.api_key` | Vision 模型 Key（可选） |
+| `models.embedding.api_key` | Embedding 模型 Key（预留） |
+| `storage.postgres.password` | PostgreSQL 密码 |
 
 </details>
 
@@ -207,7 +202,7 @@ go run ./cmd/qqbotd -config configs/config.yaml
 ```
 go-agent/
 ├── cmd/qqbotd/                  # 启动入口
-├── configs/config.yaml          # 公开配置
+├── configs/config.example.yaml  # 完整配置模板
 ├── docs/                        # 架构、ADR 与专项设计
 ├── schema/                      # PostgreSQL 幂等 schema
 ├── tests/testdata/              # 跨包测试数据

@@ -1,6 +1,6 @@
-# 主配置文件。
-# 公开配置放这里；私密配置只放 .env。
-# 优先级：内置默认值 < 本文件 < .env / 进程环境变量。
+# 主配置示例文件。
+# 首次运行请复制为 config.yaml；所有运行配置（包括密钥）统一写入该文件。
+# config.yaml 已被 Git 忽略，请勿将真实密钥提交到仓库。
 
 app:
   # 应用名，仅用于日志和运行标识。
@@ -29,21 +29,24 @@ models:
     model: ""
     # 可选 provider base URL。ark 和 openai_compat 都会消费这个字段。
     base_url: "https://ark.cn-beijing.volces.com/api/v3"
-    # 私密项 API Key 从 .env 的 QQBOT_MAIN_MODEL_API_KEY 读取。
+    # 模型 API Key；请在本地 config.yaml 中填写。
+    api_key: ""
     timeout: 20s
   # Vision Agent 使用的多模态模型。
   vision:
     provider: ark
     model: ""
     base_url: "https://ark.cn-beijing.volces.com/api/v3"
-    # 私密项 API Key 从 .env 的 QQBOT_VISION_MODEL_API_KEY 读取。
+    # Vision 模型 API Key；未单独配置时可留空。
+    api_key: ""
     timeout: 15s
   # Embedding 预留配置，供向量记忆/检索接线使用。
   embedding:
     provider: ark
     model: ""
     base_url: "https://ark.cn-beijing.volces.com/api/v3"
-    # 私密项 API Key 从 .env 的 QQBOT_EMBEDDING_MODEL_API_KEY 读取。
+    # Embedding 模型 API Key；未启用时可留空。
+    api_key: ""
     timeout: 15s
     # doubao-embedding-vision 系列须使用多模态接口。
     api_type: multimodal
@@ -263,17 +266,19 @@ storage:
     port: 5432
     database: qqbot
     user: qqbot
+    # 本地默认值与 docker-compose.yml 保持一致；生产环境请修改。
+    password: qqbotpass
     ssl_mode: disable
     # embedding 模型输出维度；必须与 halfvec schema 一致，维度不匹配会拒绝索引。
     vector_dim: 2048
-    # 私密项 password 从 .env 的 QQBOT_STORAGE_POSTGRES_PASSWORD 读取。
 
 qq:
   # 为 false 时，不连接 NapCat，也不发真实 OneBot 动作，适合本地最小链路验证。
-  enabled: true
+  enabled: false
   # 机器人自身 QQ 号，用于过滤自己发出的事件和别名触发判断。
   self_id:
-  # 私密项 access token 从 .env 的 QQBOT_QQ_ACCESS_TOKEN 读取。
+  # 与 NapCat 网页端配置的 Access Token 保持一致。
+  access_token: ""
   # 出站 HTTP API 地址，例如 http://127.0.0.1:3000 。
   outbound_url: http://127.0.0.1:3000
   # 默认使用正向 WebSocket /event 收事件。

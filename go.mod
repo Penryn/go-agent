@@ -11,7 +11,6 @@ require (
 	github.com/cloudwego/eino-ext/components/tool/mcp/officialmcp v0.1.1
 	github.com/coder/websocket v1.8.15
 	github.com/jackc/pgx/v5 v5.10.0
-	github.com/joho/godotenv v1.5.1
 	github.com/modelcontextprotocol/go-sdk v1.7.0
 	github.com/pgvector/pgvector-go v0.4.1
 	github.com/volcengine/volcengine-go-sdk v1.2.9
