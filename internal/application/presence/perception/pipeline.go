@@ -6,7 +6,6 @@ import (
 	"context"
 	"encoding/json"
 	"log/slog"
-	"strings"
 
 	memesvc "github.com/phlin/go-agent/internal/application/meme"
 	multimodalsvc "github.com/phlin/go-agent/internal/application/multimodal"
@@ -63,12 +62,14 @@ func (p *Pipeline) Process(ctx context.Context, record presencedomain.EventRecor
 }
 
 func (p *Pipeline) process(ctx context.Context, record presencedomain.EventRecord) error {
-	descriptors := fallbackDescriptors(record.Event.Attachments)
+	// vision 失败或无结果时 descriptors 为空：媒体没被理解就当没看见，
+	// 不用 PlatformHint 拼假描述污染下游（meme 收藏 / 接图判断）。
+	var descriptors []mediadomain.MediaDescriptor
 	if p.vision != nil {
 		result, err := p.vision.Understand(ctx, record.Event.Attachments)
 		if err != nil {
-			slog.Warn("perception: vision failed, using fallback", "event_id", record.EventID, "err", err)
-		} else if len(result) > 0 {
+			slog.Warn("perception: vision failed", "event_id", record.EventID, "err", err)
+		} else {
 			descriptors = result
 		}
 	}
@@ -81,21 +82,4 @@ func (p *Pipeline) process(ctx context.Context, record presencedomain.EventRecor
 		}
 	}
 	return nil
-}
-
-func fallbackDescriptors(attachments []mediadomain.MultimodalAttachment) []mediadomain.MediaDescriptor {
-	descriptors := make([]mediadomain.MediaDescriptor, 0, len(attachments))
-	for _, attachment := range attachments {
-		summary := strings.TrimSpace(attachment.PlatformHint)
-		if summary == "" {
-			summary = "收到一个" + string(attachment.Kind) + "附件"
-		}
-		descriptors = append(descriptors, mediadomain.MediaDescriptor{
-			AttachmentID: attachment.AttachmentID,
-			Kind:         attachment.Kind,
-			Summary:      summary,
-			Confidence:   0.2,
-		})
-	}
-	return descriptors
 }

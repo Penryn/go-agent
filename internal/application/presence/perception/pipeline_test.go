@@ -52,7 +52,7 @@ func TestPipelineEnqueuesDurablePerceptionTask(t *testing.T) {
 	}
 }
 
-func TestPipelineFallsBackToPlatformHintAndCollectsSticker(t *testing.T) {
+func TestPipelineWithoutVisionSkipsMediaEnrichmentAndCollection(t *testing.T) {
 	store := inmemory.NewStore()
 	working := groupactor.NewManager(ingress.NewMemoryEventLog())
 	defer working.Close()
@@ -86,19 +86,16 @@ func TestPipelineFallsBackToPlatformHintAndCollectsSticker(t *testing.T) {
 		t.Fatalf("process: %v", err)
 	}
 
+	// vision 缺席时媒体不被理解：不 enrich、不收藏，
+	// 不用 PlatformHint 拼假描述污染下游。
 	memory, err := working.Snapshot(context.Background(), record.GroupID)
 	if err != nil {
 		t.Fatalf("snapshot: %v", err)
 	}
-	got := memory.MediaByEvent[record.EventID]
-	if len(got) != 1 || got[0].Summary != "开心小狗" || got[0].Confidence != 0.2 {
-		t.Fatalf("unexpected media enrichment: %+v", got)
+	if got := memory.MediaByEvent[record.EventID]; len(got) != 0 {
+		t.Fatalf("expected no media enrichment without vision, got %+v", got)
 	}
-	asset, descriptor, err := store.GetMeme(context.Background(), "meme-content-1")
-	if err != nil {
-		t.Fatalf("get collected sticker: %v", err)
-	}
-	if asset.ObjectKey != "stickers/sticker-1.gif" || descriptor.Summary != "开心小狗" {
-		t.Fatalf("unexpected collected sticker: asset=%+v descriptor=%+v", asset, descriptor)
+	if _, _, err := store.GetMeme(context.Background(), "meme-content-1"); err == nil {
+		t.Fatal("sticker should not be collected without vision understanding")
 	}
 }

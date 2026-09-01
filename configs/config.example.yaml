@@ -4,7 +4,7 @@
 
 app:
   # 应用名，仅用于日志和运行标识。
-  name: qq-group-bot
+  name: qq-bot
   # 运行模式：dev / prod。
   mode: dev
   # 终端日志级别：debug / info / warn / error，默认 info。

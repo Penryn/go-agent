@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"log/slog"
 	"sort"
-	"strings"
 	"time"
 
 	policysvc "github.com/phlin/go-agent/internal/application/policy"
@@ -131,9 +130,8 @@ func (s *Service) BuildSnapshot(ctx context.Context, envelope conversationdomain
 	if len(mediaDescriptors) == 0 {
 		mediaDescriptors = append([]mediadomain.MediaDescriptor(nil), working.MediaByEvent[envelope.Event.EventID]...)
 	}
-	if len(mediaDescriptors) == 0 {
-		mediaDescriptors = attachmentsAsDescriptors(envelope.Event.Attachments)
-	}
+	// vision 未跑或失败时不再拼「收到一个xx附件」的假描述——
+	// 模型看到的媒体描述要么是真实理解，要么没有。
 	groupPolicy := s.policy.EffectiveGroupPolicy(envelope.Event.GroupID)
 	resolvedPersona := personadomain.Resolve(s.persona, envelope.Event.GroupID, groupPolicy.PersonaOverlay)
 	personaConfig := resolvedPersona.Config
@@ -235,26 +233,6 @@ func mergeRecentTurns(archived, live []conversationdomain.ConversationEvent, lim
 		merged = merged[len(merged)-limit:]
 	}
 	return merged
-}
-
-func attachmentsAsDescriptors(attachments []mediadomain.MultimodalAttachment) []mediadomain.MediaDescriptor {
-	descriptors := make([]mediadomain.MediaDescriptor, 0, len(attachments))
-	for _, attachment := range attachments {
-		descriptors = append(descriptors, mediadomain.MediaDescriptor{
-			AttachmentID: attachment.AttachmentID,
-			Kind:         attachment.Kind,
-			Summary:      attachmentSummary(attachment),
-			Confidence:   0.2,
-		})
-	}
-	return descriptors
-}
-
-func attachmentSummary(attachment mediadomain.MultimodalAttachment) string {
-	if hint := strings.TrimSpace(attachment.PlatformHint); hint != "" {
-		return hint
-	}
-	return fmt.Sprintf("收到一个%s附件", attachment.Kind)
 }
 
 func ensureMemberProfile(profile profiledomain.MemberProfile, event conversationdomain.ConversationEvent) profiledomain.MemberProfile {
