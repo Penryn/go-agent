@@ -161,24 +161,15 @@ persona:
 
 # 默认群策略。未命中 group_policies 时使用这里。
 default_policy:
-  enabled: true
   # 可选：low_key / balanced / active，当前逻辑主要消费是否保守回复。
   presence_level: balanced
   # Agent 可调用工具白名单。留空表示全部注册工具均可用。
   tool_allowlist: []
-  # 安静时段，格式 HH:MM-HH:MM。
+  # 安静时段，格式 HH:MM-HH:MM，支持跨午夜（如 23:00-06:00）。
+  # 时段内 bot 不主动出声也不接话，包括被 @。
   quiet_hours: ["01:00-08:00"]
   # 连续 bot 发言上限。
   max_consecutive_bot: 3
-  # 对图片消息接话的基础概率。
-  reply_to_image_chance: 0.10
-  # 是否允许回 poke（向下兼容；poke_back_chance > 0 时以 poke_back_chance 为准）。
-  allow_poke_back: true
-  # 被戳时戳回的基础概率（0~1）。0 时由 allow_poke_back 推导默认值（true→0.7，false→0）。
-  # 状态乘数（mood/energy）会在运行时动态调整实际概率。
-  poke_back_chance: 0.5
-  # 是否允许撤回最近消息。
-  allow_recall: true
 
 # 预留的群级覆写策略。按群号单独配置时放这里。
 group_policies: []

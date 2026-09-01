@@ -43,11 +43,9 @@ func Default() Config {
 			PreferMemes:       false,
 		},
 		DefaultPolicy: policydomain.GroupPolicy{
-			Enabled:            true,
-			PresenceLevel:      "balanced",
-			ToolAllowlist:      nil,
-			MaxConsecutiveBot:  1,
-			ReplyToImageChance: 0.25,
+			PresenceLevel:     "balanced",
+			ToolAllowlist:     nil,
+			MaxConsecutiveBot: 1,
 		},
 		Autonomy: policydomain.AutonomyPolicy{
 			ObserveWindowSize:        20,

@@ -22,18 +22,12 @@ const (
 )
 
 type GroupPolicy struct {
-	GroupID            int64          `json:"group_id" yaml:"group_id"`
-	Enabled            bool           `json:"enabled" yaml:"enabled"`
-	PresenceLevel      string         `json:"presence_level" yaml:"presence_level"`
-	PersonaOverlay     map[string]any `json:"persona_overlay" yaml:"persona_overlay"`
-	ToolAllowlist      []string       `json:"tool_allowlist" yaml:"tool_allowlist"`
-	QuietHours         []string       `json:"quiet_hours" yaml:"quiet_hours"`
-	ActiveHours        []string       `json:"active_hours" yaml:"active_hours"`
-	MaxConsecutiveBot  int            `json:"max_consecutive_bot" yaml:"max_consecutive_bot"`
-	ReplyToImageChance float64        `json:"reply_to_image_chance" yaml:"reply_to_image_chance"`
-	AllowPokeBack      bool           `json:"allow_poke_back" yaml:"allow_poke_back"`
-	PokeBackChance     float64        `json:"poke_back_chance" yaml:"poke_back_chance"` // 0~1，被戳时戳回的基础概率；0 时由 AllowPokeBack 推导默认值
-	AllowRecall        bool           `json:"allow_recall" yaml:"allow_recall"`
+	GroupID           int64          `json:"group_id" yaml:"group_id"`
+	PresenceLevel     string         `json:"presence_level" yaml:"presence_level"`
+	PersonaOverlay    map[string]any `json:"persona_overlay" yaml:"persona_overlay"`
+	ToolAllowlist     []string       `json:"tool_allowlist" yaml:"tool_allowlist"`
+	QuietHours        []string       `json:"quiet_hours" yaml:"quiet_hours"`
+	MaxConsecutiveBot int            `json:"max_consecutive_bot" yaml:"max_consecutive_bot"`
 }
 
 type AutonomyPolicy struct {

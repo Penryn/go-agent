@@ -193,7 +193,6 @@ func sampleSnapshot() conversationdomain.ContextSnapshot {
 		},
 		GroupPolicy: policydomain.GroupPolicy{
 			GroupID:       1,
-			Enabled:       true,
 			PresenceLevel: "balanced",
 			ToolAllowlist: nil,
 		},
