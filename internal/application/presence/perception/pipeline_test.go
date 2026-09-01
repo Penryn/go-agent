@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/phlin/go-agent/internal/adapters/inmemory"
+	"github.com/phlin/go-agent/internal/testsupport"
 	memesvc "github.com/phlin/go-agent/internal/application/meme"
 	groupactor "github.com/phlin/go-agent/internal/application/presence/group_actor"
 	"github.com/phlin/go-agent/internal/application/presence/ingress"
@@ -53,7 +53,7 @@ func TestPipelineEnqueuesDurablePerceptionTask(t *testing.T) {
 }
 
 func TestPipelineWithoutVisionSkipsMediaEnrichmentAndCollection(t *testing.T) {
-	store := inmemory.NewStore()
+	store := testsupport.NewStore(t)
 	working := groupactor.NewManager(ingress.NewMemoryEventLog())
 	defer working.Close()
 	pipeline := New(nil, memesvc.New(store, config.MemeConfig{AutoCollect: true}), working)

@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/phlin/go-agent/internal/adapters/inmemory"
+	"github.com/phlin/go-agent/internal/testsupport"
 	conversationdomain "github.com/phlin/go-agent/internal/domain/conversation"
 )
 
@@ -21,7 +21,7 @@ func TestFamiliarityEvidenceReflectsInteractionQuality(t *testing.T) {
 }
 
 func TestObserveEventUpdatesProfile(t *testing.T) {
-	store := inmemory.NewStore()
+	store := testsupport.NewStore(t)
 	service := New(store, "")
 
 	err := service.ObserveEvent(context.Background(), conversationdomain.ConversationEvent{
@@ -47,7 +47,7 @@ func TestObserveEventUpdatesProfile(t *testing.T) {
 }
 
 func TestObserveEventInitializesAffinityOnFirstMessage(t *testing.T) {
-	store := inmemory.NewStore()
+	store := testsupport.NewStore(t)
 	service := New(store, "persona-1")
 	ctx := context.Background()
 	event := conversationdomain.ConversationEvent{GroupID: 1, UserID: 9, Text: "在吗", TimestampUnix: time.Now().Unix()}

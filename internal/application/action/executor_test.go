@@ -13,10 +13,11 @@ import (
 	mediadomain "github.com/phlin/go-agent/internal/domain/media"
 	policydomain "github.com/phlin/go-agent/internal/domain/policy"
 	replydomain "github.com/phlin/go-agent/internal/domain/reply"
+	"github.com/phlin/go-agent/internal/testsupport"
 )
 
 func TestExecuteSendMemeAndRecall(t *testing.T) {
-	store := inmemory.NewStore()
+	store := testsupport.NewStore(t)
 	sender := inmemory.NewSender()
 	memeService := memesvc.New(store, config.MemeConfig{})
 

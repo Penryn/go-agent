@@ -6,16 +6,17 @@ import (
 	"testing"
 	"time"
 
-	"github.com/phlin/go-agent/internal/adapters/inmemory"
+	postgresstore "github.com/phlin/go-agent/internal/adapters/storage/postgres"
 	"github.com/phlin/go-agent/internal/application/ports"
 	retrievalsvc "github.com/phlin/go-agent/internal/application/retrieval"
 	"github.com/phlin/go-agent/internal/config"
 	conversationdomain "github.com/phlin/go-agent/internal/domain/conversation"
 	mediadomain "github.com/phlin/go-agent/internal/domain/media"
+	"github.com/phlin/go-agent/internal/testsupport"
 )
 
 func TestObserveEventAndBuildSendSegments(t *testing.T) {
-	store := inmemory.NewStore()
+	store := testsupport.NewStore(t)
 	service := New(store, config.MemeConfig{AutoCollect: true}, WithRetriever(retrievalsvc.New(store, store, nil, nil, retrievalsvc.Config{})))
 
 	err := service.ObserveEvent(context.Background(), conversationdomain.ConversationEvent{
@@ -54,7 +55,7 @@ func TestObserveEventAndBuildSendSegments(t *testing.T) {
 }
 
 func TestDudFeedbackSinksColdMemes(t *testing.T) {
-	store := inmemory.NewStore()
+	store := testsupport.NewStore(t)
 	ctx := context.Background()
 	svc := New(store, config.MemeConfig{AutoCollect: true, RepeatCooldown: "10m"}, WithRetriever(retrievalsvc.New(store, store, nil, nil, retrievalsvc.Config{})))
 
@@ -114,7 +115,7 @@ func TestDudFeedbackSinksColdMemes(t *testing.T) {
 }
 
 func TestCollectsOnlySafeConfidentMemeCandidates(t *testing.T) {
-	store := inmemory.NewStore()
+	store := testsupport.NewStore(t)
 	svc := New(store, config.MemeConfig{AutoCollect: true, CandidateThreshold: 0.6}, WithRetriever(retrievalsvc.New(store, store, nil, nil, retrievalsvc.Config{})))
 	event := conversationdomain.ConversationEvent{EventID: "e1", GroupID: 1, Attachments: []mediadomain.MultimodalAttachment{
 		{AttachmentID: "safe", Kind: mediadomain.MediaImage, ObjectKey: "safe.jpg"},
@@ -136,11 +137,11 @@ func TestCollectsOnlySafeConfidentMemeCandidates(t *testing.T) {
 }
 
 func TestSearchAppliesTagsDefaultsScopeAndStrictCooldown(t *testing.T) {
-	store := inmemory.NewStore()
+	store := testsupport.NewStore(t)
 	seed := func(id string, groupID int64, emotion string) {
 		t.Helper()
 		if err := store.UpsertMeme(context.Background(), mediadomain.MemeAsset{
-			MemeID: id, GroupID: groupID, ObjectKey: id + ".webp", Status: "approved", CreatedAt: time.Now(),
+			MemeID: id, GroupID: groupID, ObjectKey: id + ".webp", ContentHash: "hash-" + id, Status: "approved", CreatedAt: time.Now(),
 		}, mediadomain.MemeDescriptor{
 			MemeID: id, Summary: "reaction", EmotionTags: []string{emotion}, SceneTags: []string{"chat"}, Confidence: 1,
 		}); err != nil {
@@ -166,9 +167,9 @@ func TestSearchAppliesTagsDefaultsScopeAndStrictCooldown(t *testing.T) {
 }
 
 func TestBuildSendSegmentsRejectsUnapprovedMeme(t *testing.T) {
-	store := inmemory.NewStore()
+	store := testsupport.NewStore(t)
 	if err := store.UpsertMeme(context.Background(), mediadomain.MemeAsset{
-		MemeID: "pending", GroupID: 1, ObjectKey: "pending.webp", Status: "pending",
+		MemeID: "pending", GroupID: 1, ObjectKey: "pending.webp", ContentHash: "hash-pending", Status: "pending",
 	}, mediadomain.MemeDescriptor{MemeID: "pending"}); err != nil {
 		t.Fatalf("seed: %v", err)
 	}
@@ -194,7 +195,7 @@ func (v *vectorIndexer) SearchMemes(context.Context, int64, string, int, float64
 }
 
 func TestObserveEventUsesOutboxForVectorIndex(t *testing.T) {
-	store := inmemory.NewStore()
+	store := testsupport.NewStore(t)
 	indexer := &vectorIndexer{}
 	outbox := &recordingMemeOutbox{}
 	svc := New(store, config.MemeConfig{AutoCollect: true, CandidateThreshold: 0.6}, WithVectorStore(indexer), WithOutbox(outbox))
@@ -204,8 +205,16 @@ func TestObserveEventUsesOutboxForVectorIndex(t *testing.T) {
 	}, []mediadomain.MediaDescriptor{{AttachmentID: "a", Kind: mediadomain.MediaSticker, Confidence: 1, MemeSignals: []string{"reaction"}}}); err != nil {
 		t.Fatalf("observe: %v", err)
 	}
-	if outbox.kind != "meme_vector_index" || indexer.calls != 0 {
-		t.Fatalf("vector index was not durable: outbox=%+v calls=%d", outbox, indexer.calls)
+	// PG store 实现了 AtomicMemeProjectionStore：meme 与向量任务同事务落库。
+	claimed, err := store.ClaimOutbox(context.Background(), "test-worker", time.Now(), time.Minute, 10)
+	if err != nil {
+		t.Fatalf("claim outbox: %v", err)
+	}
+	if len(claimed) != 1 || claimed[0].Kind != "meme_vector_index" {
+		t.Fatalf("expected one meme_vector_index task, got %+v", claimed)
+	}
+	if indexer.calls != 0 {
+		t.Fatalf("vector index should be deferred to outbox handler, calls=%d", indexer.calls)
 	}
 }
 
@@ -215,7 +224,7 @@ type recordingMemeOutbox struct {
 }
 
 type fallbackMemeStore struct {
-	*inmemory.Store
+	*postgresstore.Store
 	calls int
 }
 
@@ -238,9 +247,9 @@ func (missingVectorMeme) SearchMemes(context.Context, int64, string, int, float6
 }
 
 func TestSearchFallsBackToBM25AfterHybridCandidatesAreFiltered(t *testing.T) {
-	base := inmemory.NewStore()
+	base := testsupport.NewStore(t)
 	if err := base.UpsertMeme(context.Background(), mediadomain.MemeAsset{
-		MemeID: "keyword-hit", GroupID: 1, ObjectKey: "keyword.webp", Status: "approved",
+		MemeID: "keyword-hit", GroupID: 1, ObjectKey: "keyword.webp", ContentHash: "hash-keyword-hit", Status: "approved",
 	}, mediadomain.MemeDescriptor{MemeID: "keyword-hit", Summary: "可用关键词结果", Keywords: []string{"关键词"}}); err != nil {
 		t.Fatal(err)
 	}
@@ -258,8 +267,8 @@ func (o *recordingMemeOutbox) Enqueue(_ context.Context, kind, key string, body 
 	return nil
 }
 
-// memeIds 辅助：inmemory 没有列表接口，从检索拿全部。
-func memeIDs(t *testing.T, store *inmemory.Store) map[string]struct{} {
+// memeIds 辅助：store 没有列表接口，从检索拿全部。
+func memeIDs(t *testing.T, store *postgresstore.Store) map[string]struct{} {
 	t.Helper()
 	ids := map[string]struct{}{}
 	results, err := store.SearchMemes(context.Background(), ports.MemeQuery{GroupID: 1, Query: "", TopK: 10})

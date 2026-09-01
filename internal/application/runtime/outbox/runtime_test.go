@@ -8,12 +8,12 @@ import (
 	"testing"
 	"time"
 
-	"github.com/phlin/go-agent/internal/adapters/inmemory"
+	"github.com/phlin/go-agent/internal/testsupport"
 )
 
 func TestRuntimeExecutesIdempotentTask(t *testing.T) {
-	store := inmemory.NewStore()
-	runtime := New(context.Background(), store, Config{WorkerCount: 1, PollInterval: time.Millisecond, TaskTimeout: time.Second, WorkerID: "test"})
+	store := testsupport.NewStore(t)
+	runtime := New(context.Background(), store, Config{WorkerCount: 1, PollInterval: time.Millisecond, TaskTimeout: time.Second})
 	defer runtime.Close()
 	var calls atomic.Int32
 	if err := runtime.Register("profile", func(_ context.Context, payload []byte) error {
@@ -42,8 +42,8 @@ func TestRuntimeExecutesIdempotentTask(t *testing.T) {
 }
 
 func TestRuntimeMovesPermanentFailureToDeadLetter(t *testing.T) {
-	store := inmemory.NewStore()
-	runtime := New(context.Background(), store, Config{WorkerCount: 1, PollInterval: time.Millisecond, TaskTimeout: time.Second, MaxAttempts: 1, WorkerID: "test"})
+	store := testsupport.NewStore(t)
+	runtime := New(context.Background(), store, Config{WorkerCount: 1, PollInterval: time.Millisecond, TaskTimeout: time.Second, MaxAttempts: 1})
 	defer runtime.Close()
 	var calls atomic.Int32
 	if err := runtime.Register("broken", func(context.Context, []byte) error {
@@ -62,9 +62,19 @@ func TestRuntimeMovesPermanentFailureToDeadLetter(t *testing.T) {
 	if calls.Load() == 0 {
 		t.Fatal("handler was not called")
 	}
+	// dead_letter 任务的 available_at 被推到无限远,不再可被 claim。
 	for time.Now().Before(deadline) {
-		if task, ok := store.LookupOutbox(TaskID("broken", "event-2")); ok && task.Status == "dead_letter" {
+		tasks, err := store.ClaimOutbox(context.Background(), "probe-worker", time.Now(), time.Second, 10)
+		if err != nil {
+			t.Fatalf("claim: %v", err)
+		}
+		if len(tasks) == 0 {
 			return
+		}
+		for _, task := range tasks {
+			if task.Kind == "broken" && task.Status == "dead_letter" {
+				return
+			}
 		}
 		time.Sleep(time.Millisecond)
 	}

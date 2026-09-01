@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/phlin/go-agent/internal/adapters/inmemory"
+	"github.com/phlin/go-agent/internal/testsupport"
 	"github.com/phlin/go-agent/internal/application/presence/ingress"
 	conversationdomain "github.com/phlin/go-agent/internal/domain/conversation"
 	mediadomain "github.com/phlin/go-agent/internal/domain/media"
@@ -15,7 +15,7 @@ import (
 
 func TestManagerMergesShortBurstAndKeepsOutboundEvent(t *testing.T) {
 	log := ingress.NewMemoryEventLog()
-	store := inmemory.NewStore()
+	store := testsupport.NewStore(t)
 	manager := NewManager(log, WithTailSize(4), WithArchive(store))
 	defer manager.Close()
 
@@ -133,7 +133,7 @@ func TestManagerEnrichesMediaOnlyForRecentEvent(t *testing.T) {
 }
 
 func TestManagerEnqueuesProactiveCandidateThroughActor(t *testing.T) {
-	store := inmemory.NewStore()
+	store := testsupport.NewStore(t)
 	manager := NewManager(ingress.NewMemoryEventLog(), WithStateStore(store))
 	defer manager.Close()
 
@@ -166,7 +166,7 @@ func TestManagerEnqueuesProactiveCandidateThroughActor(t *testing.T) {
 }
 
 func TestManagerRestoresWorkingMemoryAfterRestart(t *testing.T) {
-	store := inmemory.NewStore()
+	store := testsupport.NewStore(t)
 	record := eventRecord("persist-1", 9, 7, "状态要保留", time.Unix(100, 0))
 
 	first := NewManager(ingress.NewMemoryEventLog(), WithStateStore(store))
@@ -212,7 +212,7 @@ func TestManagerBoundsCandidateState(t *testing.T) {
 }
 
 func TestManagerPrunesIdleActorsButKeepsLiveCandidates(t *testing.T) {
-	store := inmemory.NewStore()
+	store := testsupport.NewStore(t)
 	manager := NewManager(ingress.NewMemoryEventLog(), WithStateStore(store), WithIdleTTL(time.Minute))
 	defer manager.Close()
 

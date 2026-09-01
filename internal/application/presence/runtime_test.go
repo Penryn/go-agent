@@ -6,7 +6,9 @@ import (
 	"testing"
 	"time"
 
+	postgresstore "github.com/phlin/go-agent/internal/adapters/storage/postgres"
 	"github.com/phlin/go-agent/internal/adapters/inmemory"
+	"github.com/phlin/go-agent/internal/testsupport"
 	"github.com/phlin/go-agent/internal/application/action"
 	contextsvc "github.com/phlin/go-agent/internal/application/context"
 	"github.com/phlin/go-agent/internal/application/normalizer"
@@ -63,14 +65,16 @@ func TestProcessRawEventUsesCandidateRuntime(t *testing.T) {
 	ctx := context.Background()
 	cfg := config.Default()
 	cfg.QQ.SelfID = 123456
-	store := inmemory.NewStore()
+	db := testsupport.NewDB(t)
+	store := postgresstore.NewStore(db)
+	states := postgresstore.NewStateStore(db)
 	policy := policysvc.New(cfg)
 	normalizer := normalizer.New("onebot", cfg.QQ.SelfID, cfg.Persona.Aliases)
 	eventLog := ingress.NewMemoryEventLog()
 	working := group_actor.NewManager(eventLog)
 	defer working.Close()
 	retriever := retrievalsvc.New(store, store, nil, nil, retrievalsvc.Config{})
-	contextService := contextsvc.New(store, store, store, policy, cfg.Persona, retriever, cfg.Memory.TopK)
+	contextService := contextsvc.New(store, store, states, policy, cfg.Persona, retriever, cfg.Memory.TopK)
 	contextService.WithWorkingMemory(working)
 	// 用 recordingDeliberator 断言消息走到 deliberation 并被执行,
 	// 不依赖确定性 planner 的话术内容
@@ -97,14 +101,16 @@ func TestProcessRawEventSendsOrdinaryContentToPlanner(t *testing.T) {
 	ctx := context.Background()
 	cfg := config.Default()
 	cfg.QQ.SelfID = 123456
-	store := inmemory.NewStore()
+	db := testsupport.NewDB(t)
+	store := postgresstore.NewStore(db)
+	states := postgresstore.NewStateStore(db)
 	policy := policysvc.New(cfg)
 	normalizer := normalizer.New("onebot", cfg.QQ.SelfID, cfg.Persona.Aliases)
 	eventLog := ingress.NewMemoryEventLog()
 	working := group_actor.NewManager(eventLog)
 	defer working.Close()
 	retriever := retrievalsvc.New(store, store, nil, nil, retrievalsvc.Config{})
-	contextService := contextsvc.New(store, store, store, policy, cfg.Persona, retriever, cfg.Memory.TopK)
+	contextService := contextsvc.New(store, store, states, policy, cfg.Persona, retriever, cfg.Memory.TopK)
 	contextService.WithWorkingMemory(working)
 	planner := &recordingPlanner{}
 	sender := inmemory.NewSender()

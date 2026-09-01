@@ -6,7 +6,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/phlin/go-agent/internal/adapters/inmemory"
+	postgresstore "github.com/phlin/go-agent/internal/adapters/storage/postgres"
+	"github.com/phlin/go-agent/internal/testsupport"
 	"github.com/phlin/go-agent/internal/application/ports"
 	mediadomain "github.com/phlin/go-agent/internal/domain/media"
 	memorydomain "github.com/phlin/go-agent/internal/domain/memory"
@@ -40,7 +41,7 @@ func (f vectorMemeFake) SearchMemes(context.Context, int64, string, int, float64
 }
 
 type failingMemoryStore struct {
-	*inmemory.Store
+	*postgresstore.Store
 	err error
 }
 
@@ -49,7 +50,7 @@ func (s failingMemoryStore) QueryMemories(context.Context, ports.MemoryQuery) ([
 }
 
 type failingMemeStore struct {
-	*inmemory.Store
+	*postgresstore.Store
 	err error
 }
 
@@ -58,7 +59,7 @@ func (s failingMemeStore) SearchMemes(context.Context, ports.MemeQuery) ([]media
 }
 
 func TestSearchMemoriesUsesBM25AndVectorWithRRF(t *testing.T) {
-	store := inmemory.NewStore()
+	store := testsupport.NewStore(t)
 	ctx := context.Background()
 	for _, record := range []memorydomain.MemoryRecord{
 		{MemoryID: "lexical", Scope: "group:1", Subject: "精确", Content: "旧梗"},
@@ -79,7 +80,7 @@ func TestSearchMemoriesUsesBM25AndVectorWithRRF(t *testing.T) {
 }
 
 func TestSearchMemoriesFailsClosedForForeignScope(t *testing.T) {
-	store := inmemory.NewStore()
+	store := testsupport.NewStore(t)
 	retriever := New(store, store, nil, nil, Config{})
 	_, err := retriever.SearchMemories(context.Background(), ports.MemoryQuery{GroupID: 1, UserID: 7, Scope: "group:2", Query: "x"})
 	if !errors.Is(err, ErrScopeForbidden) {
@@ -88,7 +89,7 @@ func TestSearchMemoriesFailsClosedForForeignScope(t *testing.T) {
 }
 
 func TestSearchMemoriesDegradesWhenVectorFails(t *testing.T) {
-	store := inmemory.NewStore()
+	store := testsupport.NewStore(t)
 	if err := store.UpsertMemory(context.Background(), memorydomain.MemoryRecord{MemoryID: "lexical", Scope: "group:1", Content: "旧梗"}); err != nil {
 		t.Fatal(err)
 	}
@@ -100,7 +101,7 @@ func TestSearchMemoriesDegradesWhenVectorFails(t *testing.T) {
 }
 
 func TestSearchMemoriesPassesCompleteQueryToVectorTrack(t *testing.T) {
-	store := inmemory.NewStore()
+	store := testsupport.NewStore(t)
 	var observed ports.MemoryQuery
 	retriever := New(store, store, vectorMemoryFake{observed: &observed}, nil, Config{MemoryCandidateK: 12})
 	_, err := retriever.SearchMemories(context.Background(), ports.MemoryQuery{
@@ -120,7 +121,7 @@ func TestSearchMemoriesPassesCompleteQueryToVectorTrack(t *testing.T) {
 }
 
 func TestSearchMemoriesDegradesToVectorWhenLexicalFails(t *testing.T) {
-	base := inmemory.NewStore()
+	base := testsupport.NewStore(t)
 	store := failingMemoryStore{Store: base, err: errors.New("lexical unavailable")}
 	retriever := New(store, base, vectorMemoryFake{records: []memorydomain.MemoryRecord{{MemoryID: "semantic", Scope: "group:1", Content: "语义结果"}}}, nil, Config{})
 	results, err := retriever.SearchMemories(context.Background(), ports.MemoryQuery{GroupID: 1, Query: "语义", TopK: 1})
@@ -130,7 +131,7 @@ func TestSearchMemoriesDegradesToVectorWhenLexicalFails(t *testing.T) {
 }
 
 func TestSearchMemoriesReturnsCombinedErrorWhenAllTracksFail(t *testing.T) {
-	base := inmemory.NewStore()
+	base := testsupport.NewStore(t)
 	store := failingMemoryStore{Store: base, err: errors.New("lexical unavailable")}
 	retriever := New(store, base, vectorMemoryFake{err: errors.New("vector unavailable")}, nil, Config{})
 	_, err := retriever.SearchMemories(context.Background(), ports.MemoryQuery{GroupID: 1, Query: "失败", TopK: 1})
@@ -140,7 +141,7 @@ func TestSearchMemoriesReturnsCombinedErrorWhenAllTracksFail(t *testing.T) {
 }
 
 func TestSearchMemesDegradesToVectorWhenLexicalFails(t *testing.T) {
-	base := inmemory.NewStore()
+	base := testsupport.NewStore(t)
 	store := failingMemeStore{Store: base, err: errors.New("lexical unavailable")}
 	retriever := New(base, store, nil, vectorMemeFake{results: []mediadomain.MemeSearchResult{{MemeID: "semantic"}}}, Config{})
 	results, err := retriever.SearchMemes(context.Background(), ports.MemeQuery{Query: "语义", TopK: 1})
@@ -150,7 +151,7 @@ func TestSearchMemesDegradesToVectorWhenLexicalFails(t *testing.T) {
 }
 
 func TestSearchMemesReturnsCombinedErrorWhenAllTracksFail(t *testing.T) {
-	base := inmemory.NewStore()
+	base := testsupport.NewStore(t)
 	store := failingMemeStore{Store: base, err: errors.New("lexical unavailable")}
 	retriever := New(base, store, nil, vectorMemeFake{err: errors.New("vector unavailable")}, Config{})
 	_, err := retriever.SearchMemes(context.Background(), ports.MemeQuery{Query: "失败", TopK: 1})

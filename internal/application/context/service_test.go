@@ -5,9 +5,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/phlin/go-agent/internal/adapters/inmemory"
 	conversationdomain "github.com/phlin/go-agent/internal/domain/conversation"
 	personadomain "github.com/phlin/go-agent/internal/domain/persona"
+	"github.com/phlin/go-agent/internal/testsupport"
 )
 
 func TestMergeRecentTurnsOrdersAndBoundsTheProjection(t *testing.T) {
@@ -29,7 +29,7 @@ func TestMergeRecentTurnsOrdersAndBoundsTheProjection(t *testing.T) {
 }
 
 func TestCurrentPersonaFactsRuntimeVerifiedValueOverridesConfigSeed(t *testing.T) {
-	store := inmemory.NewStore()
+	store := testsupport.NewStore(t)
 	seedAt := time.Date(2026, 9, 1, 0, 0, 0, 0, time.FixedZone("CST", 8*60*60))
 	runtimeAt := seedAt.Add(7 * 24 * time.Hour)
 	service := &Service{

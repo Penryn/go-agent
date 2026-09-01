@@ -8,7 +8,7 @@ import (
 
 	"github.com/cloudwego/eino/schema"
 
-	"github.com/phlin/go-agent/internal/adapters/inmemory"
+	"github.com/phlin/go-agent/internal/testsupport"
 	modeladapter "github.com/phlin/go-agent/internal/adapters/model"
 	retrievalsvc "github.com/phlin/go-agent/internal/application/retrieval"
 	toolsvc "github.com/phlin/go-agent/internal/application/tools"
@@ -20,7 +20,7 @@ import (
 )
 
 func TestAgentPlannerToolLoop(t *testing.T) {
-	store := inmemory.NewStore()
+	store := testsupport.NewStore(t)
 	if err := store.UpsertMemory(context.Background(), memorydomain.MemoryRecord{
 		MemoryID:   "m1",
 		Subject:    "旧梗",
@@ -87,7 +87,7 @@ func TestAgentPlannerStaySilent(t *testing.T) {
 
 	planner := NewAgentPlanner(
 		modeladapter.StaticFactory{MainModel: mockModel},
-		toolsvc.NewRuntime(inmemory.NewStore(), inmemory.NewStore()),
+		toolsvc.NewRuntime(testsupport.NewStore(t), testsupport.NewStore(t)),
 		NewComposer(defaultPersona()),
 		NewDeterministicPlanner(defaultPersona()),
 	)
@@ -111,7 +111,7 @@ func TestAgentPlannerCanReplyWhenRuleBaselineWasSilent(t *testing.T) {
 	)
 	planner := NewAgentPlanner(
 		modeladapter.StaticFactory{MainModel: mockModel},
-		toolsvc.NewRuntime(inmemory.NewStore(), inmemory.NewStore()),
+		toolsvc.NewRuntime(testsupport.NewStore(t), testsupport.NewStore(t)),
 		NewComposer(defaultPersona()), NewDeterministicPlanner(defaultPersona()),
 	)
 	decision := sampleDecision()
@@ -126,7 +126,7 @@ func TestAgentPlannerCanReplyWhenRuleBaselineWasSilent(t *testing.T) {
 }
 
 func TestAgentPlannerSendMemeReturnsDirectly(t *testing.T) {
-	store := inmemory.NewStore()
+	store := testsupport.NewStore(t)
 	if err := store.UpsertMeme(context.Background(), mediadomain.MemeAsset{
 		MemeID: "meme-1", GroupID: 1, ObjectKey: "meme.webp", Status: "approved",
 	}, mediadomain.MemeDescriptor{MemeID: "meme-1"}); err != nil {
@@ -177,7 +177,7 @@ func TestAgentPlannerRepairsRecentBotMessage(t *testing.T) {
 	}}))
 	planner := NewAgentPlanner(
 		modeladapter.StaticFactory{MainModel: mockModel},
-		toolsvc.NewRuntime(inmemory.NewStore(), inmemory.NewStore()),
+		toolsvc.NewRuntime(testsupport.NewStore(t), testsupport.NewStore(t)),
 		NewComposer(defaultPersona()),
 		NewDeterministicPlanner(defaultPersona()),
 	)

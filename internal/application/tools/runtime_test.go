@@ -9,7 +9,7 @@ import (
 	"github.com/cloudwego/eino/components/tool"
 	"github.com/cloudwego/eino/schema"
 
-	"github.com/phlin/go-agent/internal/adapters/inmemory"
+	"github.com/phlin/go-agent/internal/testsupport"
 	personadomain "github.com/phlin/go-agent/internal/domain/persona"
 	profiledomain "github.com/phlin/go-agent/internal/domain/profile"
 	replydomain "github.com/phlin/go-agent/internal/domain/reply"
@@ -22,7 +22,7 @@ func (externalTestTool) Info(context.Context) (*schema.ToolInfo, error) {
 }
 
 func TestToolSchemas(t *testing.T) {
-	store := inmemory.NewStore()
+	store := testsupport.NewStore(t)
 	_ = store.SaveMemberProfile(context.Background(), profiledomain.MemberProfile{
 		Stats: profiledomain.MemberStats{GroupID: 1, UserID: 2, Nickname: "alice"},
 	})
@@ -52,7 +52,7 @@ func TestToolSchemas(t *testing.T) {
 }
 
 func TestContextualTerminalTools(t *testing.T) {
-	runtime := NewRuntime(inmemory.NewStore(), inmemory.NewStore())
+	runtime := NewRuntime(testsupport.NewStore(t), testsupport.NewStore(t))
 	base := runtime.TerminalTools(replydomain.ToolContext{})
 	if base["poke_member"] || base["repair_message"] {
 		t.Fatalf("contextual tools leaked into a normal turn: %#v", base)
@@ -92,7 +92,7 @@ func TestTerminalPlan(t *testing.T) {
 }
 
 func TestExternalToolsRequireExplicitAllowlist(t *testing.T) {
-	runtime := NewRuntime(inmemory.NewStore(), inmemory.NewStore())
+	runtime := NewRuntime(testsupport.NewStore(t), testsupport.NewStore(t))
 	if err := runtime.RegisterTools(context.Background(), externalTestTool{}); err != nil {
 		t.Fatal(err)
 	}
@@ -112,7 +112,7 @@ func TestExternalToolsRequireExplicitAllowlist(t *testing.T) {
 }
 
 func TestUpdatePersonaFactAuthorizationAndProvenance(t *testing.T) {
-	store := inmemory.NewStore()
+	store := testsupport.NewStore(t)
 	now := time.Now().Truncate(time.Second)
 	session := replydomain.ToolContext{
 		GroupID:              1,

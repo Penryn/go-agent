@@ -6,9 +6,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/phlin/go-agent/internal/adapters/inmemory"
 	"github.com/phlin/go-agent/internal/application/ports"
 	memorydomain "github.com/phlin/go-agent/internal/domain/memory"
+	"github.com/phlin/go-agent/internal/testsupport"
 )
 
 type recordingOutbox struct {
@@ -34,7 +34,7 @@ func (s *recordingVectorStore) SearchMemories(context.Context, ports.MemoryQuery
 }
 
 func TestMarkIntentAndQuery(t *testing.T) {
-	store := inmemory.NewStore()
+	store := testsupport.NewStore(t)
 	service := New(store)
 
 	record, err := service.MarkIntent(context.Background(), WriteIntent{
@@ -63,7 +63,7 @@ func TestMarkIntentAndQuery(t *testing.T) {
 }
 
 func TestMarkIntentEnqueuesVectorSync(t *testing.T) {
-	store := inmemory.NewStore()
+	store := testsupport.NewStore(t)
 	outbox := &recordingOutbox{}
 	vector := &recordingVectorStore{}
 	service := New(store, WithVectorStore(vector), WithOutbox(outbox))

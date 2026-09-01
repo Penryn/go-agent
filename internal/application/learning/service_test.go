@@ -5,13 +5,13 @@ import (
 	"testing"
 	"time"
 
-	"github.com/phlin/go-agent/internal/adapters/inmemory"
+	"github.com/phlin/go-agent/internal/testsupport"
 	memsvc "github.com/phlin/go-agent/internal/application/memory"
 	conversationdomain "github.com/phlin/go-agent/internal/domain/conversation"
 )
 
 func TestRun(t *testing.T) {
-	store := inmemory.NewStore()
+	store := testsupport.NewStore(t)
 	service, err := New(context.Background(), store, store, memsvc.New(store))
 	if err != nil {
 		t.Fatalf("new learning service: %v", err)
@@ -36,7 +36,7 @@ func TestRun(t *testing.T) {
 
 func TestLearnGroupAdvancesDurableWatermark(t *testing.T) {
 	ctx := context.Background()
-	store := inmemory.NewStore()
+	store := testsupport.NewStore(t)
 	service, err := New(ctx, store, store, memsvc.New(store))
 	if err != nil {
 		t.Fatalf("new learning service: %v", err)
