@@ -35,34 +35,16 @@ func (s *Service) PersonaID() string { return s.personaID }
 // RegisterJobs 向 Scheduler 注册情绪衰减定时任务。
 // groupIDs 来自 cfg.QQ.GroupWhitelist，用于遍历所有已知群。
 func (s *Service) RegisterJobs(sched *scheduler.Scheduler, groupIDs []int64) {
-	sched.Register("persona_mood_decay", decayInterval, s.decayAllGroups(groupIDs))
+	// 情绪状态全局共享（单槽），groupIDs 只用于观测，衰减只需执行一次。
+	_ = groupIDs
+	sched.Register("persona_mood_decay", decayInterval, func(ctx context.Context) error {
+		if err := s.decayGroup(ctx, globalMoodSlot); err != nil {
+			slog.Warn("persona decay failed", "err", err)
+		}
+		return nil
+	})
 }
 
-// ThresholdAdjustment 返回当前情绪状态对发言阈值的调整量。
-// tired / withdrawn / aggro 抬高阈值（更难开口），talkBias 为正则降低（更愿意接话）。
-// 返回值直接叠加在 base 阈值上，调用方负责 clamp 到 [0,1]。
-func (s *Service) ThresholdAdjustment(ctx context.Context, groupID int64) float64 {
-	// 读全局槽：情绪跨群一致，groupID 仅保留在签名上以兼容调用方。
-	_ = groupID
-	state, err := s.store.GetPersonaState(ctx, s.personaID, globalMoodSlot)
-	if err != nil {
-		return 0
-	}
-	adjustment := -state.TalkBias // talkBias 正向（想说话）=> 阈值下降
-	switch personadomain.Energy(state.Energy) {
-	case personadomain.EnergyTired:
-		adjustment += 0.2
-	case personadomain.EnergyLow:
-		adjustment += 0.1
-	}
-	switch personadomain.Mood(state.Mood) {
-	case personadomain.MoodWithdrawn:
-		adjustment += 0.15
-	case personadomain.MoodAggro:
-		adjustment += 0.1
-	}
-	return adjustment
-}
 
 // globalMoodSlot 是全局人格状态的 GroupID（0）：mood/energy 不按群分片，
 // 「我这个人此刻的状态」在所有群一致——两群有共同好友时不会穿帮。
@@ -161,16 +143,6 @@ func transitionState(current personadomain.PersonaState, snapshot conversationdo
 	return mood, energy, min(max(talkBias, -0.5), 0.5)
 }
 
-// decayAllGroups 返回一个 Scheduler JobFunc。情绪状态全局共享（单槽），
-// groupIDs 只用于日志观测，衰减本身只需执行一次。
-func (s *Service) decayAllGroups(groupIDs []int64) func(ctx context.Context) error {
-	return func(ctx context.Context) error {
-		if err := s.decayGroup(ctx, globalMoodSlot); err != nil {
-			slog.Warn("persona decay failed", "err", err)
-		}
-		return nil
-	}
-}
 
 // decayGroup 将指定群的情绪状态向基线衰减一步。
 func (s *Service) decayGroup(ctx context.Context, groupID int64) error {
