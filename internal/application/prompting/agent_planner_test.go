@@ -71,13 +71,16 @@ func TestAgentPlannerToolLoop(t *testing.T) {
 	}
 	inputs := mockModel.Inputs()
 	if len(inputs) == 0 || len(inputs[0]) < 3 {
-		t.Fatalf("expected static system, dynamic system and current user messages: %#v", inputs)
+		t.Fatalf("expected static system, current event and dynamic context messages: %#v", inputs)
 	}
 	if inputs[0][0].Role != schema.System || !strings.Contains(inputs[0][0].Content, "长期稳定规则层") {
 		t.Fatalf("first message is not the stable prefix: %+v", inputs[0][0])
 	}
-	if inputs[0][1].Role != schema.System || !strings.Contains(inputs[0][1].Content, "当前回合动态状态层") {
-		t.Fatalf("second message is not dynamic state: %+v", inputs[0][1])
+	if inputs[0][1].Role != schema.User || !strings.Contains(inputs[0][1].Content, "bot 你记得那个梗吗") {
+		t.Fatalf("second message is not the current event: %+v", inputs[0][1])
+	}
+	if inputs[0][2].Role != schema.User || !strings.Contains(inputs[0][2].Content, "当前回合动态状态层") {
+		t.Fatalf("dynamic context does not follow the cacheable event prefix: %+v", inputs[0][2])
 	}
 }
 

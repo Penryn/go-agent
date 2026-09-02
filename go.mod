@@ -7,7 +7,7 @@ require (
 	github.com/cloudwego/eino-ext/components/embedding/ark v0.1.2
 	github.com/cloudwego/eino-ext/components/embedding/openai v0.0.0-20260311121809-88ebb0eecbdb
 	github.com/cloudwego/eino-ext/components/model/ark v0.1.69
-	github.com/cloudwego/eino-ext/components/model/openai v0.1.9
+	github.com/cloudwego/eino-ext/components/model/openai v0.1.13
 	github.com/cloudwego/eino-ext/components/tool/mcp/officialmcp v0.1.1
 	github.com/jackc/pgx/v5 v5.10.0
 	github.com/modelcontextprotocol/go-sdk v1.7.0
@@ -19,9 +19,9 @@ require (
 
 require (
 	github.com/bytedance/mockey v1.3.0 // indirect
-	github.com/cloudwego/eino-ext/libs/acl/openai v0.1.14 // indirect
+	github.com/cloudwego/eino-ext/libs/acl/openai v0.1.17 // indirect
 	github.com/evanphx/json-patch v0.5.2 // indirect
-	github.com/meguminnnnnnnnn/go-openai v0.1.1 // indirect
+	github.com/meguminnnnnnnnn/go-openai v0.1.2 // indirect
 	github.com/rogpeppe/go-internal v1.14.1 // indirect
 	github.com/smarty/assertions v1.16.0 // indirect
 )

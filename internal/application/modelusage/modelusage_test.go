@@ -72,3 +72,15 @@ func TestWrapRecordsStreamingUsage(t *testing.T) {
 		t.Fatalf("unexpected calls: %+v", calls)
 	}
 }
+
+func TestApplyDeepSeekCacheUsageUsesProviderField(t *testing.T) {
+	message := schema.AssistantMessage("done", nil)
+	message.ResponseMeta = &schema.ResponseMeta{Usage: &schema.TokenUsage{
+		PromptTokens:       120,
+		PromptTokenDetails: schema.PromptTokenDetails{CachedTokens: 1},
+	}}
+	updated, err := applyDeepSeekCacheUsage(context.Background(), message, []byte(`{"usage":{"prompt_cache_hit_tokens":80}}`))
+	if err != nil || updated.ResponseMeta.Usage.PromptTokenDetails.CachedTokens != 80 {
+		t.Fatalf("cached tokens were not mapped: message=%+v err=%v", updated, err)
+	}
+}

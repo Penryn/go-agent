@@ -4,11 +4,14 @@ package modelusage
 
 import (
 	"context"
+	"encoding/json"
 	"log/slog"
+	"reflect"
 	"slices"
 	"strings"
 	"sync"
 
+	openaimodel "github.com/cloudwego/eino-ext/components/model/openai"
 	modelcomponent "github.com/cloudwego/eino/components/model"
 	"github.com/cloudwego/eino/schema"
 )
@@ -170,7 +173,7 @@ func Wrap(model modelcomponent.BaseChatModel) modelcomponent.BaseChatModel {
 func (m *meteredModel) Generate(ctx context.Context, input []*schema.Message, opts ...modelcomponent.Option) (*schema.Message, error) {
 	recorder := FromContext(ctx)
 	call := recorder.begin()
-	message, err := m.inner.Generate(ctx, input, opts...)
+	message, err := m.inner.Generate(ctx, input, withCacheUsageOptions(m.inner, opts)...)
 	recorder.update(call, message, err)
 	return message, err
 }
@@ -178,7 +181,7 @@ func (m *meteredModel) Generate(ctx context.Context, input []*schema.Message, op
 func (m *meteredModel) Stream(ctx context.Context, input []*schema.Message, opts ...modelcomponent.Option) (*schema.StreamReader[*schema.Message], error) {
 	recorder := FromContext(ctx)
 	call := recorder.begin()
-	reader, err := m.inner.Stream(ctx, input, opts...)
+	reader, err := m.inner.Stream(ctx, input, withCacheUsageOptions(m.inner, opts)...)
 	if err != nil {
 		recorder.update(call, nil, err)
 		return nil, err
@@ -187,4 +190,48 @@ func (m *meteredModel) Stream(ctx context.Context, input []*schema.Message, opts
 		recorder.update(call, message, nil)
 		return message, nil
 	}), nil
+}
+
+func withCacheUsageOptions(chatModel modelcomponent.BaseChatModel, opts []modelcomponent.Option) []modelcomponent.Option {
+	if !isOpenAIModel(chatModel) {
+		return opts
+	}
+	result := append([]modelcomponent.Option(nil), opts...)
+	result = append(result,
+		openaimodel.WithResponseMessageModifier(applyDeepSeekCacheUsage),
+		openaimodel.WithResponseChunkMessageModifier(func(_ context.Context, message *schema.Message, raw []byte, _ bool) (*schema.Message, error) {
+			return applyDeepSeekCacheUsage(context.Background(), message, raw)
+		}),
+	)
+	return result
+}
+
+func isOpenAIModel(chatModel modelcomponent.BaseChatModel) bool {
+	typeOf := reflect.TypeOf(chatModel)
+	for typeOf != nil && typeOf.Kind() == reflect.Pointer {
+		typeOf = typeOf.Elem()
+	}
+	return typeOf != nil && typeOf.PkgPath() == "github.com/cloudwego/eino-ext/components/model/openai"
+}
+
+func applyDeepSeekCacheUsage(_ context.Context, message *schema.Message, raw []byte) (*schema.Message, error) {
+	if message == nil || message.ResponseMeta == nil || message.ResponseMeta.Usage == nil {
+		return message, nil
+	}
+	var response struct {
+		PromptCacheHitTokens int `json:"prompt_cache_hit_tokens"`
+		Usage                struct {
+			PromptCacheHitTokens int `json:"prompt_cache_hit_tokens"`
+		} `json:"usage"`
+	}
+	if err := json.Unmarshal(raw, &response); err == nil {
+		cachedTokens := response.Usage.PromptCacheHitTokens
+		if cachedTokens == 0 {
+			cachedTokens = response.PromptCacheHitTokens
+		}
+		if cachedTokens > 0 {
+			message.ResponseMeta.Usage.PromptTokenDetails.CachedTokens = cachedTokens
+		}
+	}
+	return message, nil
 }

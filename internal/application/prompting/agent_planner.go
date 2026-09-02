@@ -95,18 +95,14 @@ func (p *AgentPlanner) Plan(ctx context.Context, snapshot conversationdomain.Con
 	guard := newToolRuntimeGuard(snapshot.SnapshotID, defaultMaxToolCalls, defaultToolResultMaxBytes, returnDirectly)
 
 	staticInstruction := p.composer.StaticInstruction()
-	dynamicInstruction := p.composer.DynamicInstruction(snapshot, decision)
 	agent, err := adk.NewChatModelAgent(ctx, &adk.ChatModelAgentConfig{
 		Name:        "main_persona_agent",
 		Description: "Generate a natural QQ group reply with controlled runtime tools.",
 		Instruction: staticInstruction,
 		GenModelInput: func(_ context.Context, instruction string, input *adk.AgentInput) ([]*schema.Message, error) {
-			messages := make([]*schema.Message, 0, len(input.Messages)+2)
+			messages := make([]*schema.Message, 0, len(input.Messages)+1)
 			if strings.TrimSpace(instruction) != "" {
 				messages = append(messages, schema.SystemMessage(instruction))
-			}
-			if strings.TrimSpace(dynamicInstruction) != "" {
-				messages = append(messages, schema.SystemMessage(dynamicInstruction))
 			}
 			messages = append(messages, input.Messages...)
 			return messages, nil
@@ -129,7 +125,7 @@ func (p *AgentPlanner) Plan(ctx context.Context, snapshot conversationdomain.Con
 	}
 
 	runner := adk.NewRunner(ctx, adk.RunnerConfig{Agent: agent})
-	iter := runner.Run(ctx, p.composer.Messages(snapshot))
+	iter := runner.Run(ctx, p.composer.Messages(snapshot, decision))
 
 	var (
 		assistantText   string
