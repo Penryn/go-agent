@@ -3,6 +3,7 @@ package napcat
 import (
 	"context"
 	"log/slog"
+	"sync/atomic"
 	"time"
 
 	napcatsdk "github.com/zjutjh/napcat-sdk"
@@ -14,7 +15,10 @@ type WSReceiver struct {
 	url         string
 	accessToken string
 	options     []napcatsdk.Option
+	connected   atomic.Bool
 }
+
+func (r *WSReceiver) Connected() bool { return r.connected.Load() }
 
 func NewWSReceiver(url, accessToken string, options ...napcatsdk.Option) *WSReceiver {
 	return &WSReceiver{
@@ -59,6 +63,8 @@ func (r *WSReceiver) receiveOnce(ctx context.Context, handler func(context.Conte
 	if err != nil {
 		return false, err
 	}
+	r.connected.Store(true)
+	defer r.connected.Store(false)
 	slog.Info("ws: connected", "url", r.url)
 
 	for {

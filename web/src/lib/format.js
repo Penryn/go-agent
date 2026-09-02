@@ -12,4 +12,5 @@ export function relativeTime(value) {
 }
 export const moodText = (value) => ({ happy: '开心', steady: '平稳', withdrawn: '低落', aggro: '有点烦' })[value ?? ''] ?? value ?? '平稳';
 export const energyText = (value) => ({ high: '充沛', normal: '正常', low: '偏低', tired: '疲惫' })[value ?? ''] ?? value ?? '正常';
+export const talkBiasText = (value = 0) => value <= -0.2 ? '偏低' : value >= 0.2 ? '偏高' : '中性';
 export const activityText = (value) => ({ message: '消息', decision: '决策', task: '任务' })[value] ?? value;

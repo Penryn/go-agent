@@ -45,9 +45,9 @@ onUnmounted(store.stopPolling)
       </nav>
 
       <div class="sidebar-status">
-        <div class="status-orbit"><i /></div>
+        <div class="status-orbit" :data-online="snapshot?.status.qq_connected === true"><i /></div>
         <div>
-          <strong>{{ snapshot?.status.qq_enabled ? 'Bot 运行中' : 'Bot 未连接' }}</strong>
+          <strong>{{ snapshot?.status.qq_connected ? 'Bot 运行中' : 'Bot 未连接' }}</strong>
           <span>{{ snapshot?.status.mode || 'loading' }} · {{ snapshot?.status.self_id || '—' }}</span>
         </div>
       </div>
@@ -79,11 +79,7 @@ onUnmounted(store.stopPolling)
         </div>
       </header>
 
-      <RouterView v-slot="{ Component }">
-        <Transition name="page" mode="out-in">
-          <component :is="Component" />
-        </Transition>
-      </RouterView>
+      <RouterView />
     </main>
 
     <el-dialog

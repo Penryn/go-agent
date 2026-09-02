@@ -2,7 +2,7 @@
 import { computed } from 'vue'
 import { storeToRefs } from 'pinia'
 import { useDashboardStore } from '@/stores/dashboard'
-import { activityText, energyText, moodText, relativeTime } from '@/lib/format'
+import { activityText, energyText, moodText, relativeTime, talkBiasText } from '@/lib/format'
 
 const store = useDashboardStore()
 const { snapshot, loading } = storeToRefs(store)
@@ -25,16 +25,16 @@ const stats = computed(() => [
 
     <section class="overview-grid">
       <article class="glass-panel identity-panel">
-        <div class="panel-title"><div><span>IDENTITY</span><h2>此刻身份</h2></div><el-tag effect="dark" round>{{ snapshot?.status.qq_enabled ? '在线' : '离线' }}</el-tag></div>
+        <div class="panel-title"><div><span>IDENTITY</span><h2>此刻身份</h2></div><el-tag :type="snapshot?.status.qq_connected ? 'success' : 'info'" effect="dark" round>{{ snapshot?.status.qq_connected ? '在线' : '离线' }}</el-tag></div>
         <div class="identity-hero">
-          <div class="portrait"><span>{{ persona?.name?.slice(0, 1) || '芙' }}</span><i /></div>
+          <div class="portrait"><span>{{ persona?.name?.slice(0, 1) || '芙' }}</span><i :data-online="snapshot?.status.qq_connected === true" /></div>
           <div class="identity-copy">
             <h3>{{ persona?.name || 'Bot' }}</h3>
             <p>{{ persona?.description || '等待身份数据' }}</p>
             <div class="state-pills">
               <span>情绪 <b>{{ moodText(persona?.mood) }}</b></span>
               <span>精力 <b>{{ energyText(persona?.energy) }}</b></span>
-              <span>发言倾向 <b>{{ (persona?.talk_bias ?? 0).toFixed(2) }}</b></span>
+              <span>发言倾向 <b>{{ talkBiasText(persona?.talk_bias) }}</b></span>
               <span>状态 <b>{{ persona?.runtime.state || 'observing' }}</b></span>
             </div>
           </div>

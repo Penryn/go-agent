@@ -35,9 +35,11 @@ func TestWSReceiverReceivesEvent(t *testing.T) {
 	defer cancel()
 
 	receiver := NewWSReceiver(wsURL(server.URL), "secret")
+	connectedCh := make(chan bool, 1)
 	done := make(chan error, 1)
 	go func() {
 		done <- receiver.Receive(ctx, func(_ context.Context, payload []byte) error {
+			connectedCh <- receiver.Connected()
 			payloadCh <- append([]byte(nil), payload...)
 			cancel()
 			return nil
@@ -60,6 +62,12 @@ func TestWSReceiverReceivesEvent(t *testing.T) {
 		}
 	case <-time.After(3 * time.Second):
 		t.Fatal("timed out waiting for receiver shutdown")
+	}
+	if !<-connectedCh {
+		t.Fatal("receiver should report connected while handling an event")
+	}
+	if receiver.Connected() {
+		t.Fatal("receiver should report disconnected after shutdown")
 	}
 }
 

@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
-	"strings"
 	"sync"
 	"time"
 
@@ -39,11 +38,9 @@ import (
 	"github.com/phlin/go-agent/internal/application/textutil"
 	toolsvc "github.com/phlin/go-agent/internal/application/tools"
 	"github.com/phlin/go-agent/internal/config"
-	conversationdomain "github.com/phlin/go-agent/internal/domain/conversation"
 	memorydomain "github.com/phlin/go-agent/internal/domain/memory"
 	personadomain "github.com/phlin/go-agent/internal/domain/persona"
 	presencedomain "github.com/phlin/go-agent/internal/domain/presence"
-	replydomain "github.com/phlin/go-agent/internal/domain/reply"
 )
 
 type App struct {
@@ -291,44 +288,7 @@ func New(ctx context.Context, cfg config.Config) (*App, error) {
 
 	// learning service：接入运行时，每 6 小时对白名单群跑一次增量学习
 	profileService := profilesvc.New(stores.profile, cfg.Persona.ID)
-	// curator_turn：把一轮对话的短文本亮点（≤24 字）写入长期记忆。
-	if err := durableOutbox.Register("curator_turn", func(jobCtx context.Context, payload []byte) error {
-		var snapshot conversationdomain.ContextSnapshot
-		if err := json.Unmarshal(payload, &snapshot); err != nil {
-			return fmt.Errorf("decode curator snapshot: %w", err)
-		}
-		text := strings.TrimSpace(snapshot.Event.Text)
-		if text == "" || len([]rune(text)) > 24 {
-			return nil
-		}
-		intent := memsvc.WriteIntent{
-			Scope:         fmt.Sprintf("group:%d", snapshot.Event.GroupID),
-			MemoryType:    "conversation_highlight",
-			Subject:       "event",
-			Content:       text,
-			SourceEventID: snapshot.Event.EventID,
-			Importance:    0.7,
-			Confidence:    0.8,
-		}
-		_, err := memorySvc.MarkIntent(jobCtx, intent)
-		return err
-	}); err != nil {
-		_ = durableOutbox.Close()
-		_ = stores.Close()
-		return nil, fmt.Errorf("register curator outbox handler: %w", err)
-	}
 	humanRuntime.AddEventObserver(profileService.ObserveEvent)
-	humanRuntime.AddCompletedTurnObserver(presenceruntime.CompletedTurnObserverFunc(func(turnCtx context.Context, snapshot conversationdomain.ContextSnapshot, _ replydomain.ActionReceipt) error {
-		payload, err := json.Marshal(snapshot)
-		if err != nil {
-			return fmt.Errorf("encode curator snapshot: %w", err)
-		}
-		key := snapshot.SnapshotID
-		if key == "" {
-			key = snapshot.Event.EventID
-		}
-		return durableOutbox.Enqueue(turnCtx, "curator_turn", key, payload)
-	}))
 	learningSvc, learnErr := learningsvc.New(ctx, stores.memory, stores.learning, memorySvc, learningsvc.WithOutbox(durableOutbox))
 	if learnErr != nil {
 		_ = durableOutbox.Close()
@@ -365,7 +325,7 @@ func New(ctx context.Context, cfg config.Config) (*App, error) {
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", app.handleHealth)
-	adminHandler := newAdminHandler(stores.db, stores.state, stores.personaFacts, personaDefinition, cfg)
+	adminHandler := newAdminHandler(stores.db, stores.state, stores.personaFacts, personaDefinition, cfg, app.qqConnected)
 	mux.Handle("/admin", adminHandler)
 	mux.Handle("/admin/", adminHandler)
 
@@ -379,6 +339,8 @@ func New(ctx context.Context, cfg config.Config) (*App, error) {
 	mcpOwned = false
 	return app, nil
 }
+
+func (a *App) qqConnected() bool { return a.inbound != nil && a.inbound.Connected() }
 
 func (a *App) Run(ctx context.Context) error {
 	// 启动定时任务调度器（情绪衰减等 background job）

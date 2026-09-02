@@ -208,6 +208,13 @@ input {
   animation: breathe 2.3s ease-in-out infinite;
 }
 
+.status-orbit[data-online="false"] i,
+.portrait i[data-online="false"] {
+  background: #5e6875;
+  box-shadow: none;
+  animation: none;
+}
+
 .sidebar-status strong,
 .sidebar-status span {
   display: block;
@@ -239,7 +246,7 @@ input {
 }
 
 .page-kicker,
-.panel-title span,
+.panel-title > div > span,
 .page-panel-head > div > span {
   display: block;
   color: var(--mint);
@@ -847,17 +854,6 @@ input {
   margin-top: 3px;
   color: var(--muted);
   font-size: 10px;
-}
-
-.page-enter-active,
-.page-leave-active {
-  transition: opacity 140ms ease, transform 140ms ease;
-}
-
-.page-enter-from,
-.page-leave-to {
-  opacity: 0;
-  transform: translateY(4px);
 }
 
 @keyframes breathe {

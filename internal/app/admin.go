@@ -27,6 +27,7 @@ type adminDashboard struct {
 	facts      ports.PersonaFactStore
 	definition personadomain.PersonaDefinition
 	cfg        config.Config
+	connected  func() bool
 }
 
 type adminSnapshot struct {
@@ -42,9 +43,10 @@ type adminSnapshot struct {
 }
 
 type adminStatus struct {
-	Mode      string `json:"mode"`
-	QQEnabled bool   `json:"qq_enabled"`
-	SelfID    int64  `json:"self_id"`
+	Mode        string `json:"mode"`
+	QQEnabled   bool   `json:"qq_enabled"`
+	QQConnected bool   `json:"qq_connected"`
+	SelfID      int64  `json:"self_id"`
 }
 
 type adminStats struct {
@@ -107,8 +109,8 @@ type adminActivity struct {
 	Detail  string    `json:"detail"`
 }
 
-func newAdminHandler(db *sql.DB, state ports.RuntimeStateStore, facts ports.PersonaFactStore, definition personadomain.PersonaDefinition, cfg config.Config) http.Handler {
-	dashboard := &adminDashboard{db: db, state: state, facts: facts, definition: definition, cfg: cfg}
+func newAdminHandler(db *sql.DB, state ports.RuntimeStateStore, facts ports.PersonaFactStore, definition personadomain.PersonaDefinition, cfg config.Config, connected func() bool) http.Handler {
+	dashboard := &adminDashboard{db: db, state: state, facts: facts, definition: definition, cfg: cfg, connected: connected}
 	assets, _ := fs.Sub(adminAssets, "adminui/dist")
 	return &adminHandler{
 		token:  strings.TrimSpace(cfg.Server.AdminToken),
@@ -215,7 +217,7 @@ func (d *adminDashboard) snapshot(ctx context.Context, selectedGroup int64) (adm
 	}
 	return adminSnapshot{
 		UpdatedAt: time.Now(), SelectedGroup: selectedGroup,
-		Status: adminStatus{Mode: d.cfg.App.Mode, QQEnabled: d.cfg.QQ.Enabled, SelfID: d.cfg.QQ.SelfID},
+		Status: adminStatus{Mode: d.cfg.App.Mode, QQEnabled: d.cfg.QQ.Enabled, QQConnected: d.connected != nil && d.connected(), SelfID: d.cfg.QQ.SelfID},
 		Stats:  stats, Persona: persona, Groups: groups, Memories: memories,
 		Relationships: relationships, Activity: activity,
 	}, nil
@@ -303,7 +305,7 @@ func (d *adminDashboard) loadPersona(ctx context.Context, groupID int64) (adminP
 	if groupID == 0 {
 		return persona, nil
 	}
-	state, err := d.state.GetPersonaState(ctx, persona.ID, groupID)
+	state, err := d.state.GetPersonaState(ctx, persona.ID, 0)
 	if err != nil {
 		return adminPersona{}, fmt.Errorf("persona state: %w", err)
 	}
@@ -428,13 +430,13 @@ const adminHTML = `<!doctype html>
 const $=id=>document.getElementById(id), esc=v=>String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 let token=sessionStorage.getItem('bot-admin-token')||'', group=0, busy=false;
 const ago=value=>{if(!value||value.startsWith('0001-'))return '暂无';const d=new Date(value),s=Math.max(0,(Date.now()-d)/1000);if(s<60)return Math.floor(s)+' 秒前';if(s<3600)return Math.floor(s/60)+' 分钟前';if(s<86400)return Math.floor(s/3600)+' 小时前';return d.toLocaleDateString('zh-CN')};
-const mood=v=>({happy:'开心',steady:'平稳',withdrawn:'低落',aggro:'有点烦'}[v]||v||'平稳'), energy=v=>({high:'充沛',normal:'正常',low:'偏低',tired:'疲惫'}[v]||v||'正常');
+const mood=v=>({happy:'开心',steady:'平稳',withdrawn:'低落',aggro:'有点烦'}[v]||v||'平稳'), energy=v=>({high:'充沛',normal:'正常',low:'偏低',tired:'疲惫'}[v]||v||'正常'), talk=v=>v<=-.2?'偏低':v>=.2?'偏高':'中性';
 function render(d){
   $('updated').textContent='刚刚更新';$('groups').textContent=d.stats.groups;$('members').textContent=d.stats.members;$('memoryCount').textContent=d.stats.memories;$('tasks').textContent=d.stats.pending_tasks;
-  $('mode').textContent=(d.status.qq_enabled?'QQ 在线':'QQ 未连接')+' · '+esc(d.status.mode);$('subtitle').textContent=(d.persona.name||'Bot')+' / '+(d.selected_group?'群 '+d.selected_group:'暂无群聊');$('avatarTop').textContent=(d.persona.name||'B').slice(0,1);
+  $('mode').textContent=(d.status.qq_connected?'QQ 在线':'QQ 未连接')+' · '+esc(d.status.mode);$('subtitle').textContent=(d.persona.name||'Bot')+' / '+(d.selected_group?'群 '+d.selected_group:'暂无群聊');$('avatarTop').textContent=(d.persona.name||'B').slice(0,1);
   const old=String(group||d.selected_group||0);$('group').innerHTML=(d.groups.length?d.groups:[{group_id:0,members:0,messages:0}]).map(g=>'<option value="'+g.group_id+'">'+(g.group_id?'群 '+g.group_id:'暂无群聊')+' · '+g.members+' 人</option>').join('');$('group').value=old;$('group').disabled=!d.groups.length;group=Number($('group').value)||0;
   const p=d.persona, facts=(p.facts||[]).map(f=>'<div class="fact"><small>'+esc(f.key)+'</small><div title="'+esc(f.value)+'">'+esc(f.value)+'</div></div>').join('');
-  $('persona').innerHTML='<div class="persona"><div class="avatar">'+esc((p.name||'B').slice(0,1))+'</div><div><h3>'+esc(p.name)+'</h3><p>'+esc(p.description)+'</p><div class="pills"><span class="pill">情绪 <b>'+esc(mood(p.mood))+'</b></span><span class="pill">精力 <b>'+esc(energy(p.energy))+'</b></span><span class="pill">发言倾向 <b>'+Number(p.talk_bias||0).toFixed(2)+'</b></span><span class="pill">状态 <b>'+esc(p.runtime.state||'observing')+'</b></span></div></div></div><div class="facts">'+facts+'</div>';
+  $('persona').innerHTML='<div class="persona"><div class="avatar">'+esc((p.name||'B').slice(0,1))+'</div><div><h3>'+esc(p.name)+'</h3><p>'+esc(p.description)+'</p><div class="pills"><span class="pill">情绪 <b>'+esc(mood(p.mood))+'</b></span><span class="pill">精力 <b>'+esc(energy(p.energy))+'</b></span><span class="pill">发言倾向 <b>'+talk(p.talk_bias||0)+'</b></span><span class="pill">状态 <b>'+esc(p.runtime.state||'observing')+'</b></span></div></div></div><div class="facts">'+facts+'</div>';
   $('relations').innerHTML=(d.relationships||[]).map(r=>'<div class="relation"><div class="name"><b>'+esc(r.name)+'</b><small>'+esc(r.user_id)+' · '+r.message_count+' 条消息</small></div><div><div class="bar"><i style="width:'+Math.round(r.affinity*100)+'%"></i></div><small>熟悉度 '+Number(r.familiarity).toFixed(2)+'</small></div><div class="score">'+Math.round(r.affinity*100)+'</div></div>').join('')||'<div class="empty">还没有形成群友关系</div>';
   $('activity').innerHTML=(d.activity||[]).map(a=>'<div class="entry"><time>'+ago(a.at)+'</time><span class="badge '+esc(a.type)+'">'+esc(a.type==='message'?'消息':a.type==='decision'?'决策':'任务')+'</span><div class="subject"><b>'+esc(a.subject||a.label)+'</b><br><small>'+esc(a.label)+(a.group_id?' · 群 '+a.group_id:'')+'</small></div><div class="detail">'+esc(a.detail||'—')+'</div></div>').join('')||'<div class="empty">暂无运行记录</div>';
   $('memories').innerHTML=(d.memories||[]).map(m=>'<article class="memory"><div class="meta"><span class="tag">'+esc(m.type)+'</span><span>'+ago(m.created_at)+'</span></div><h4>'+esc(m.subject||m.scope)+'</h4><p>'+esc(m.content)+'</p></article>').join('')||'<div class="empty">暂无有效记忆</div>';

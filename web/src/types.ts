@@ -1,7 +1,7 @@
 export interface BotSnapshot {
   updated_at: string
   selected_group: number
-  status: { mode: string; qq_enabled: boolean; self_id: number }
+  status: { mode: string; qq_enabled: boolean; qq_connected: boolean; self_id: number }
   stats: { groups: number; members: number; memories: number; pending_tasks: number }
   persona: {
     id: string
