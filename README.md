@@ -104,6 +104,18 @@ curl http://127.0.0.1:8088/healthz
 {"ok":true}
 ```
 
+### 实时后台
+
+启动 Bot 后打开 [http://127.0.0.1:8088/admin/](http://127.0.0.1:8088/admin/)，可查看当前身份、长期记忆、群友关系和运行记录。`server.admin_token` 留空时后台数据仅允许本机读取；需要远程访问时请配置令牌，并在反向代理层启用 HTTPS。
+
+前端源码位于 `web/`，使用 Vue、Vue Router、Pinia、Axios、Tailwind CSS 和 Element Plus。修改前端后重新构建嵌入资源：
+
+```bash
+cd web
+npm install
+npm run build
+```
+
 ## 本地事件验证
 
 将 `qq.enabled` 临时设为 `false`，可在不连接 QQ、也不发送真实 OneBot 动作的情况下处理单条测试事件：
@@ -164,8 +176,8 @@ tests/testdata/       测试事件
 ## 开发验证
 
 ```bash
-go build ./...
-go test ./...
+make build
+make test
 go test -race ./...
 docker compose config
 ```

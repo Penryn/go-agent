@@ -365,6 +365,9 @@ func New(ctx context.Context, cfg config.Config) (*App, error) {
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", app.handleHealth)
+	adminHandler := newAdminHandler(stores.db, stores.state, stores.personaFacts, personaDefinition, cfg)
+	mux.Handle("/admin", adminHandler)
+	mux.Handle("/admin/", adminHandler)
 
 	app.server = &http.Server{
 		Addr:         cfg.Server.HTTPListen,

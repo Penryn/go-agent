@@ -249,6 +249,11 @@ func TestInstructionPrefersLooseConversationOverIdentityExposition(t *testing.T)
 		"允许省略主语、半句、倒装、语气词",
 		"不要每次结尾都反问、给建议或邀请继续聊",
 		"只同步句长、正式程度和聊天节奏",
+		"闲聊默认只发一条",
+		"结果不理想时，一句最短、自然的话带过或保持沉默",
+		"只有原因会影响对方下一步时才简短说明",
+		"幽默只用当下顺口就能说出的简单反应",
+		"短回应只发一条",
 		"不用每次都热情、周全或积极",
 	} {
 		if !strings.Contains(instruction, expected) {

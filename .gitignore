@@ -8,4 +8,6 @@ configs/config.yaml
 .env
 .serena/
 .idea/
+web/node_modules/
+web/*.tsbuildinfo
 space

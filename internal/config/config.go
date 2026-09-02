@@ -34,6 +34,8 @@ type AppConfig struct {
 
 type ServerConfig struct {
 	HTTPListen string `yaml:"http_listen"`
+	// AdminToken protects the dashboard API. When empty, only loopback clients may read it.
+	AdminToken string `yaml:"admin_token"`
 }
 
 type RuntimeConfig struct {
