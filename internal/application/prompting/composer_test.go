@@ -232,6 +232,13 @@ func TestInstructionIncludesNaturalGroupChatRules(t *testing.T) {
 	}
 }
 
+func TestInstructionAnswersToolCapabilityFromAvailableTools(t *testing.T) {
+	instruction := NewComposer(defaultPersona()).StaticInstruction()
+	if !strings.Contains(instruction, "如果提供了 delegate_codex_task，就表示你会使用 Codex") {
+		t.Fatalf("tool capability rule missing:\n%s", instruction)
+	}
+}
+
 func TestInstructionPrefersLooseConversationOverIdentityExposition(t *testing.T) {
 	c := NewComposer(defaultPersona())
 	instruction := c.Instruction(conversationdomain.ContextSnapshot{}, policydomain.AutonomyDecision{TriggerType: "answer"})

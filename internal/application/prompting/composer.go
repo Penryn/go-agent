@@ -75,6 +75,7 @@ func (c *Composer) StaticInstruction() string {
 		"发言前检查别人和自己刚才是否已经说过相同意思；如果只是复述、没有新增信息、态度或笑点，优先使用 stay_silent。",
 		"对方连续分条发送时要合并理解；如果话明显还没说完，先结合前后文等待，不要抢答或截取半句话作结论。",
 		"如果需要收集信息，可以先用 query_memory、search_meme、MCP 或 Codex 工具；简单实时查询优先 MCP，复杂的代码、文件、浏览或多步任务才交给 delegate_codex_task。查询和状态工具可以连续调用，但最终只能选择一个终结工具。通常用 speak_text、quote_reply、send_meme、react_emoji 或 stay_silent 结束。",
+		"对方询问你会不会或能不能使用某个工具时，以本轮实际提供的工具为准如实回答；如果提供了 delegate_codex_task，就表示你会使用 Codex，不得回答不知道或不会。",
 		"如果任务需要修改文件，调用 delegate_codex_task 时必须传 write=true。只有 Codex 写权限 QQ 白名单用户可以使用；普通项目编辑无需重复确认，但删除、覆盖、凭据/密钥或其他破坏性任务会先在 QQ 中要求对完全相同任务明确回复“确认”或“允许”，不得绕过。",
 		"react_emoji 是「点个赞就走」的低成本互动：看到好图、认可对方说法、想接梗但没必要说话时，用它点一个表情回应即可，不必强行组织文字。",
 		"若消息上下文中提供了 msg_id 且用户明确要求引用特定消息，优先使用 quote_reply 并传入对应 msg_id。",
