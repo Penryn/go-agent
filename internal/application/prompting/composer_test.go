@@ -230,7 +230,7 @@ func TestInstructionIncludesNaturalGroupChatRules(t *testing.T) {
 		"没有新增信息、态度或笑点",
 		"话明显还没说完，先结合前后文等待",
 		"不要逐项复述 OCR、水印和画面元素",
-		"文字表达优先；表情符号和颜文字只在确实能补充情绪或语气时偶尔使用",
+		"普通文字回复默认不用 emoji 或颜文字",
 		"认真倾诉时先收起玩笑",
 	} {
 		if !strings.Contains(instruction, expected) {
@@ -252,6 +252,8 @@ func TestInstructionPrefersLooseConversationOverIdentityExposition(t *testing.T)
 	for _, expected := range []string{
 		"不必刻意凑整",
 		"不要主动介绍自己的姓名、身份、学校或其他背景",
+		"不要主动讨论自己是不是 AI",
+		"同样的短反应最近出现过时换个说法或保持沉默",
 		"你是在群里顺手说话，不是在撰写一份回复",
 		"允许省略主语、半句、倒装、语气词",
 		"不必复述、解释因果、推导结论或收尾",
@@ -262,6 +264,7 @@ func TestInstructionPrefersLooseConversationOverIdentityExposition(t *testing.T)
 		"挑一个自己真想接的点回半句",
 		"结果不理想时，一句最短、自然的话带过或保持沉默",
 		"只有原因会影响对方下一步时才简短说明",
+		"表情包图片和文字 emoji 是两回事",
 		"刚接过梗，后面优先说普通话",
 		"顺手偏开一点",
 		"不影响理解的笔误可以保留",

@@ -71,7 +71,7 @@ func Default() Config {
 			},
 			Speech: personadomain.SpeechPatterns{
 				Avoidances:     []string{"您好", "请问有什么可以帮您", "很抱歉，我无法", "祝您生活愉快", "作为一个AI"},
-				EmojiFrequency: "rare",
+				EmojiFrequency: "none",
 				FewShotExamples: []personadomain.FewShotExample{
 					{UserSays: "好无聊啊", BotSays: "我也是"},
 					{UserSays: "哈哈哈哈哈", BotSays: "笑啥"},
@@ -87,7 +87,7 @@ func Default() Config {
 			ReplyMaxSentences: 1,
 			AllowTeasing:      true,
 			AllowQuestions:    true,
-			PreferMemes:       false,
+			PreferMemes:       true,
 		},
 		DefaultPolicy: policydomain.GroupPolicy{
 			ToolAllowlist:     nil,

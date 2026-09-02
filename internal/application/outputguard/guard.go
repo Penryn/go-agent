@@ -41,6 +41,8 @@ var roleBreakPatterns = []string{
 	"我是ai", "我是人工智能", "我是语言模型", "我是大语言模型",
 	"我是llm", "我是chatgpt", "我是claude", "我是gpt",
 	"作为ai", "作为语言模型", "作为人工智能",
+	"我ai味", "我ai感", "我像ai", "我不像ai", "我的ai味", "我有ai味",
+	"我有机器人味", "我的模型味",
 	"as an ai", "as a language model", "i'm an ai", "i am an ai",
 }
 
@@ -53,6 +55,34 @@ func detectRoleBreak(s string) bool {
 		}
 	}
 	return false
+}
+
+// Prompt metadata is useful to the model but must never cross the outbound boundary.
+var promptMetadataPrefixRe = regexp.MustCompile(`^\s*(\[(时间=[^\]]+|时间未知|你|用户[^\]]+|msg_id=[^\]]+|群昵称=[^\]]+|QQ昵称=[^\]]+|QQ=[^\]]+)\]\s*)+`)
+
+func stripPromptMetadata(s string) (string, bool) {
+	cleaned := promptMetadataPrefixRe.ReplaceAllString(s, "")
+	return cleaned, cleaned != s
+}
+
+func stripTextEmoji(s string) (string, bool) {
+	var builder strings.Builder
+	stripped := false
+	for _, r := range s {
+		if isTextEmoji(r) || r == '\ufe0f' || r == '\u200d' {
+			stripped = true
+			continue
+		}
+		builder.WriteRune(r)
+	}
+	cleaned := strings.TrimSpace(builder.String())
+	return cleaned, stripped || cleaned != s
+}
+
+func isTextEmoji(r rune) bool {
+	return r >= 0x1f1e6 && r <= 0x1f1ff ||
+		r >= 0x1f300 && r <= 0x1faff ||
+		r >= 0x2600 && r <= 0x27bf
 }
 
 // 规则3：字符数截断（按 Unicode rune 计算）
@@ -111,6 +141,18 @@ func (g *Guard) Clean(bubbles []string) Result {
 				"original_len", len(original), "cleaned_len", len(cleaned))
 		}
 
+		var metadataStripped bool
+		cleaned, metadataStripped = stripPromptMetadata(cleaned)
+		if metadataStripped {
+			result.Reasons = appendUniq(result.Reasons, "prompt_metadata_stripped")
+		}
+
+		var emojiStripped bool
+		cleaned, emojiStripped = stripTextEmoji(cleaned)
+		if emojiStripped {
+			result.Reasons = appendUniq(result.Reasons, "text_emoji_stripped")
+		}
+
 		// 规则2：RoleBreak — 命中则整条回复静默
 		if detectRoleBreak(cleaned) {
 			result.Suppressed = true
@@ -156,4 +198,3 @@ func appendUniq(slice []string, s string) []string {
 	}
 	return append(slice, s)
 }
-

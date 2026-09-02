@@ -108,6 +108,12 @@ func TestDefaultPersonaIncludesConversationalVoiceExamples(t *testing.T) {
 			t.Fatalf("default persona contains an empty voice example: %+v", example)
 		}
 	}
+	if cfg.Persona.Speech.EmojiFrequency != "none" {
+		t.Fatalf("default persona should avoid text emoji, got %q", cfg.Persona.Speech.EmojiFrequency)
+	}
+	if !cfg.Persona.PreferMemes {
+		t.Fatal("default persona should allow meme images independently of text emoji")
+	}
 }
 
 func TestDefaultGroupWhitelistEmpty(t *testing.T) {

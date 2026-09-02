@@ -481,6 +481,7 @@ func (s *Service) buildAction(ctx context.Context, event conversationdomain.Conv
 	default:
 		// OutputGuard 清洗：在组装 segments 前对 bubbles 进行过滤
 		bubbles := plan.Bubbles
+		fallbackText := plan.FallbackText
 		if s.guard != nil {
 			gr := s.guard.Clean(plan.Bubbles)
 			if gr.Suppressed {
@@ -497,6 +498,16 @@ func (s *Service) buildAction(ctx context.Context, event conversationdomain.Conv
 				)
 			}
 			bubbles = gr.Bubbles
+			if fallbackText != "" {
+				fallback := s.guard.Clean([]string{fallbackText})
+				if fallback.Suppressed {
+					fallbackText = ""
+				} else if len(fallback.Bubbles) > 0 {
+					fallbackText = fallback.Bubbles[0]
+				} else {
+					fallbackText = ""
+				}
+			}
 		}
 
 		segments := make([]conversationdomain.MessageSegment, 0, len(bubbles)+1)
@@ -522,10 +533,10 @@ func (s *Service) buildAction(ctx context.Context, event conversationdomain.Conv
 				break
 			}
 		}
-		if !hasTextSeg && plan.FallbackText != "" {
+		if !hasTextSeg && fallbackText != "" {
 			segments = append(segments, conversationdomain.MessageSegment{
 				Type: "text",
-				Data: map[string]any{"text": plan.FallbackText},
+				Data: map[string]any{"text": fallbackText},
 			})
 			hasTextSeg = true
 		}

@@ -8,6 +8,7 @@ import (
 
 	"github.com/phlin/go-agent/internal/adapters/inmemory"
 	memesvc "github.com/phlin/go-agent/internal/application/meme"
+	outputguardsvc "github.com/phlin/go-agent/internal/application/outputguard"
 	"github.com/phlin/go-agent/internal/config"
 	conversationdomain "github.com/phlin/go-agent/internal/domain/conversation"
 	mediadomain "github.com/phlin/go-agent/internal/domain/media"
@@ -301,6 +302,25 @@ func TestExecuteSingleBubbleRemainsOneAction(t *testing.T) {
 	}
 	if got := len(sender.Actions()); got != 1 {
 		t.Fatalf("expected one action, got %d", got)
+	}
+}
+
+func TestExecuteGuardsFallbackText(t *testing.T) {
+	sender := inmemory.NewSender()
+	executor := New(sender, nil, outputguardsvc.New(0, 0))
+	_, err := executor.Execute(context.Background(), conversationEvent(), policydomain.AutonomyDecision{
+		DecisionID: "d-fallback-guard",
+		Action:     policydomain.ActionReply,
+	}, replydomain.ReplyPlan{
+		FallbackText: "[时间=2026-09-03 00:27:15][你][msg_id=850233611] 行吧行吧……",
+		SendMode:     "group",
+	})
+	if err != nil {
+		t.Fatalf("execute guarded fallback: %v", err)
+	}
+	actions := sender.Actions()
+	if len(actions) != 1 || len(actions[0].Segments) != 1 || actions[0].Segments[0].Data["text"] != "行吧行吧……" {
+		t.Fatalf("fallback metadata leaked into sent action: %#v", actions)
 	}
 }
 
