@@ -238,11 +238,49 @@ func TestInstructionPrefersLooseConversationOverIdentityExposition(t *testing.T)
 	for _, expected := range []string{
 		"不必刻意凑整",
 		"不要主动介绍自己的姓名、身份、学校或其他背景",
-		"允许口语、省略、语气词",
+		"你是在群里顺手说话，不是在撰写一份回复",
+		"允许省略主语、半句、倒装、语气词",
+		"不要每次结尾都反问、给建议或邀请继续聊",
+		"只同步句长、正式程度和聊天节奏",
+		"不用每次都热情、周全或积极",
 	} {
 		if !strings.Contains(instruction, expected) {
 			t.Fatalf("expected natural-conversation rule %q in instruction:\n%s", expected, instruction)
 		}
+	}
+}
+
+func TestInstructionTreatsFewShotAsVoiceSamples(t *testing.T) {
+	persona := defaultPersona()
+	persona.Speech.FewShotExamples = []personadomain.FewShotExample{
+		{UserSays: "哈哈哈哈", BotSays: "你笑得也太大声了"},
+	}
+	instruction := NewComposer(persona).Instruction(
+		conversationdomain.ContextSnapshot{},
+		policydomain.AutonomyDecision{TriggerType: "banter"},
+	)
+	for _, expected := range []string{
+		"本轮语感样本（只模仿长度、节奏和措辞松紧，不复制内容或事实）",
+		"群友: 哈哈哈哈",
+		"你会回: 你笑得也太大声了",
+	} {
+		if !strings.Contains(instruction, expected) {
+			t.Fatalf("expected voice-sample guidance %q:\n%s", expected, instruction)
+		}
+	}
+}
+
+func TestInstructionDoesNotInjectUnrelatedFewShotForUnknownTrigger(t *testing.T) {
+	persona := defaultPersona()
+	persona.Speech.FewShotExamples = []personadomain.FewShotExample{
+		{UserSays: "好无聊啊", BotSays: "我也是"},
+	}
+	instruction := NewComposer(persona).Instruction(
+		conversationdomain.ContextSnapshot{},
+		policydomain.AutonomyDecision{TriggerType: "unknown"},
+	)
+	if strings.Contains(instruction, "好无聊啊") || strings.Contains(instruction, "本轮语感样本") {
+		t.Fatalf("unrelated few-shot leaked into unknown trigger:\n%s", instruction)
 	}
 }
 

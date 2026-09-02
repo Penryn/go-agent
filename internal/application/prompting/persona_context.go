@@ -70,14 +70,18 @@ func relevantFewShot(examples []personadomain.FewShotExample, trigger string) []
 		"support":      {"累", "难受", "烦心", "陪", "哭"},
 		"request_help": {"帮", "查", "写", "需求", "问题"},
 		"banter":       {"哈哈", "无聊", "笑", "游戏"},
+		"gratitude":    {"谢", "麻烦", "辛苦"},
 		"question":     {"吗", "谁", "什么", "最近"},
 		"answer":       {"放学", "成绩", "数学", "多少", "哈哈", "谢谢"},
 		"react":        {"图片", "照片", "表情", "截图", "发来"},
 	}
 	terms := keywords[trigger]
+	if len(terms) == 0 {
+		return nil
+	}
 	selected := make([]personadomain.FewShotExample, 0, 2)
 	for _, example := range examples {
-		if len(terms) == 0 || containsAnyText(example.UserSays, terms...) {
+		if containsAnyText(example.UserSays, terms...) {
 			selected = append(selected, example)
 			if len(selected) == 2 {
 				return selected

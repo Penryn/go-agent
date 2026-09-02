@@ -95,6 +95,21 @@ func TestDefaultToolAllowlistEmpty(t *testing.T) {
 	}
 }
 
+func TestDefaultPersonaIncludesConversationalVoiceExamples(t *testing.T) {
+	cfg := Default()
+	if !strings.Contains(cfg.Persona.SpeechStyle, "句长随场景变化") {
+		t.Fatalf("default persona is missing variable conversational rhythm: %q", cfg.Persona.SpeechStyle)
+	}
+	if len(cfg.Persona.Speech.FewShotExamples) < 4 {
+		t.Fatalf("default persona needs enough voice examples, got %d", len(cfg.Persona.Speech.FewShotExamples))
+	}
+	for _, example := range cfg.Persona.Speech.FewShotExamples {
+		if strings.TrimSpace(example.UserSays) == "" || strings.TrimSpace(example.BotSays) == "" {
+			t.Fatalf("default persona contains an empty voice example: %+v", example)
+		}
+	}
+}
+
 func TestDefaultGroupWhitelistEmpty(t *testing.T) {
 	cfg := Default()
 	if cfg.QQ.GroupWhitelist != nil {
