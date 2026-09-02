@@ -79,7 +79,7 @@ func TestAgentPlannerToolLoop(t *testing.T) {
 	if inputs[0][1].Role != schema.User || !strings.Contains(inputs[0][1].Content, "bot 你记得那个梗吗") {
 		t.Fatalf("second message is not the current event: %+v", inputs[0][1])
 	}
-	if inputs[0][2].Role != schema.User || !strings.Contains(inputs[0][2].Content, "当前回合动态状态层") {
+	if inputs[0][2].Role != schema.User || !strings.Contains(inputs[0][2].Content, "本轮动态数据") {
 		t.Fatalf("dynamic context does not follow the cacheable event prefix: %+v", inputs[0][2])
 	}
 }
