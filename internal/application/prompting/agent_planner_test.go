@@ -3,12 +3,12 @@ package prompting
 import (
 	"context"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/cloudwego/eino/schema"
 
-	"github.com/phlin/go-agent/internal/testsupport"
 	modeladapter "github.com/phlin/go-agent/internal/adapters/model"
 	retrievalsvc "github.com/phlin/go-agent/internal/application/retrieval"
 	toolsvc "github.com/phlin/go-agent/internal/application/tools"
@@ -17,6 +17,7 @@ import (
 	memorydomain "github.com/phlin/go-agent/internal/domain/memory"
 	personadomain "github.com/phlin/go-agent/internal/domain/persona"
 	policydomain "github.com/phlin/go-agent/internal/domain/policy"
+	"github.com/phlin/go-agent/internal/testsupport"
 )
 
 func TestAgentPlannerToolLoop(t *testing.T) {
@@ -67,6 +68,16 @@ func TestAgentPlannerToolLoop(t *testing.T) {
 	}
 	if len(plan.PlannedActions) == 0 || plan.PlannedActions[0] != policydomain.ActionReply {
 		t.Fatalf("unexpected actions: %#v", plan.PlannedActions)
+	}
+	inputs := mockModel.Inputs()
+	if len(inputs) == 0 || len(inputs[0]) < 3 {
+		t.Fatalf("expected static system, dynamic system and current user messages: %#v", inputs)
+	}
+	if inputs[0][0].Role != schema.System || !strings.Contains(inputs[0][0].Content, "长期稳定规则层") {
+		t.Fatalf("first message is not the stable prefix: %+v", inputs[0][0])
+	}
+	if inputs[0][1].Role != schema.System || !strings.Contains(inputs[0][1].Content, "当前回合动态状态层") {
+		t.Fatalf("second message is not dynamic state: %+v", inputs[0][1])
 	}
 }
 

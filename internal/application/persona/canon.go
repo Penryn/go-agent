@@ -13,6 +13,7 @@ import (
 	modelcomponent "github.com/cloudwego/eino/components/model"
 	"github.com/cloudwego/eino/schema"
 
+	"github.com/phlin/go-agent/internal/application/modelusage"
 	"github.com/phlin/go-agent/internal/application/ports"
 	"github.com/phlin/go-agent/internal/application/textutil"
 	personadomain "github.com/phlin/go-agent/internal/domain/persona"
@@ -318,6 +319,14 @@ func (s *CanonService) ProcessExtraction(ctx context.Context, task CanonExtracti
 	if err != nil || model == nil {
 		return err
 	}
+	ctx, usageRecorder := modelusage.WithRecorder(ctx, modelusage.Metadata{
+		TraceID: task.SourceEventID,
+		GroupID: task.GroupID,
+		Trigger: "persona_canon_extract",
+		Phase:   "persona_canon_extract",
+	})
+	defer usageRecorder.Flush(modelusage.FinalState{Action: "background_extract"})
+	model = modelusage.Wrap(model)
 	view, err := s.View(ctx, time.Now())
 	if err != nil {
 		return err

@@ -42,6 +42,27 @@ func TestInstructionIncludesPersonaState(t *testing.T) {
 	}
 }
 
+func TestStaticInstructionDoesNotChangeWithTurnState(t *testing.T) {
+	c := NewComposer(defaultPersona())
+	first := c.StaticInstruction()
+	second := c.StaticInstruction()
+	if first != second {
+		t.Fatal("static instruction changed without persona configuration change")
+	}
+	if strings.Contains(first, "当前心情=") || strings.Contains(first, "熟悉度=") || strings.Contains(first, "本轮回应目的") {
+		t.Fatalf("turn state leaked into cacheable prefix:\n%s", first)
+	}
+	dynamic := c.DynamicInstruction(conversationdomain.ContextSnapshot{
+		PersonaState:      personadomain.PersonaState{Mood: "happy"},
+		RelationshipState: profiledomain.RelationshipState{Familiarity: 0.3},
+	}, policydomain.AutonomyDecision{TriggerType: "question"})
+	for _, expected := range []string{"当前心情=happy", "熟悉度=0.30", "本轮回应目的"} {
+		if !strings.Contains(dynamic, expected) {
+			t.Fatalf("dynamic instruction missing %q:\n%s", expected, dynamic)
+		}
+	}
+}
+
 func TestInstructionDefaultsEmptyMoodAndEnergy(t *testing.T) {
 	c := NewComposer(defaultPersona())
 
@@ -265,6 +286,31 @@ func TestMessagesIncludeShanghaiEventTime(t *testing.T) {
 	})[0].Content
 	if !strings.Contains(content, "时间=2026-09-02 20:34:56（上海时间）") {
 		t.Fatalf("expected Shanghai event time in prompt:\n%s", content)
+	}
+}
+
+func TestMessagesKeepHistoricalTurnByteStableAcrossCurrentEvents(t *testing.T) {
+	c := NewComposer(defaultPersona())
+	history := conversationdomain.ConversationEvent{
+		EventID: "history", MessageID: "m-history", UserID: 8, TimestampUnix: 100, Text: "稳定历史消息",
+	}
+	first := c.Messages(conversationdomain.ContextSnapshot{
+		Event:       conversationdomain.ConversationEvent{EventID: "current-1", UserID: 7, TimestampUnix: 120, Text: "第一轮"},
+		RecentTurns: []conversationdomain.ConversationEvent{history},
+	})[0].Content
+	second := c.Messages(conversationdomain.ContextSnapshot{
+		Event:       conversationdomain.ConversationEvent{EventID: "current-2", UserID: 9, TimestampUnix: 300, Text: "第二轮"},
+		RecentTurns: []conversationdomain.ConversationEvent{history},
+	})[0].Content
+	want := "[时间=1970-01-01 08:01:40][用户8][QQ=8] 稳定历史消息"
+	if !strings.Contains(first, want) || !strings.Contains(second, want) {
+		t.Fatalf("history was not serialized stably:\nfirst=%s\nsecond=%s", first, second)
+	}
+	if strings.Contains(first, "[T-") || strings.Contains(second, "[当前用户]") {
+		t.Fatalf("relative/current-role labels still rewrite history:\nfirst=%s\nsecond=%s", first, second)
+	}
+	if !strings.HasSuffix(first, `text="第一轮"`) || !strings.HasSuffix(second, `text="第二轮"`) {
+		t.Fatalf("current event must remain the final prompt data:\nfirst=%s\nsecond=%s", first, second)
 	}
 }
 

@@ -12,6 +12,7 @@ import (
 	"github.com/cloudwego/eino/compose"
 	"github.com/cloudwego/eino/schema"
 
+	"github.com/phlin/go-agent/internal/application/modelusage"
 	"github.com/phlin/go-agent/internal/application/textutil"
 	toolsvc "github.com/phlin/go-agent/internal/application/tools"
 	conversationdomain "github.com/phlin/go-agent/internal/domain/conversation"
@@ -52,6 +53,7 @@ func (p *AgentPlanner) Plan(ctx context.Context, snapshot conversationdomain.Con
 		slog.Warn("planner: no chat model, fallback", "trace_id", snapshot.SnapshotID, "error", err)
 		return p.fallback.Plan(ctx, snapshot, decision)
 	}
+	chatModel = modelusage.Wrap(chatModel)
 
 	toolContext := replydomain.ToolContext{
 		TraceID:              snapshot.SnapshotID,
@@ -92,11 +94,24 @@ func (p *AgentPlanner) Plan(ctx context.Context, snapshot conversationdomain.Con
 	maxIterations := defaultMaxIterations
 	guard := newToolRuntimeGuard(snapshot.SnapshotID, defaultMaxToolCalls, defaultToolResultMaxBytes, returnDirectly)
 
+	staticInstruction := p.composer.StaticInstruction()
+	dynamicInstruction := p.composer.DynamicInstruction(snapshot, decision)
 	agent, err := adk.NewChatModelAgent(ctx, &adk.ChatModelAgentConfig{
 		Name:        "main_persona_agent",
 		Description: "Generate a natural QQ group reply with controlled runtime tools.",
-		Instruction: p.composer.Instruction(snapshot, decision),
-		Model:       chatModel,
+		Instruction: staticInstruction,
+		GenModelInput: func(_ context.Context, instruction string, input *adk.AgentInput) ([]*schema.Message, error) {
+			messages := make([]*schema.Message, 0, len(input.Messages)+2)
+			if strings.TrimSpace(instruction) != "" {
+				messages = append(messages, schema.SystemMessage(instruction))
+			}
+			if strings.TrimSpace(dynamicInstruction) != "" {
+				messages = append(messages, schema.SystemMessage(dynamicInstruction))
+			}
+			messages = append(messages, input.Messages...)
+			return messages, nil
+		},
+		Model: chatModel,
 		ToolsConfig: adk.ToolsConfig{
 			ToolsNodeConfig: compose.ToolsNodeConfig{
 				Tools: toolList,

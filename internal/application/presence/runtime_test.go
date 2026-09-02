@@ -173,7 +173,7 @@ func TestProcessRawEventUsesCandidateRuntime(t *testing.T) {
 	}
 }
 
-func TestProcessRawEventSendsOrdinaryContentToPlanner(t *testing.T) {
+func TestProcessRawEventLetsOrdinaryContentReachPlanner(t *testing.T) {
 	ctx := context.Background()
 	cfg := config.Default()
 	cfg.QQ.SelfID = 123456
@@ -200,14 +200,14 @@ func TestProcessRawEventSendsOrdinaryContentToPlanner(t *testing.T) {
 		t.Fatalf("process raw event: %v", err)
 	}
 	if outcome.Candidate.CandidateID == "" || outcome.Decision.Action != policydomain.ActionReply {
-		t.Fatalf("expected planning for ordinary content, got %+v", outcome)
+		t.Fatalf("expected planner decision for ordinary content, got %+v", outcome)
 	}
-	if !outcome.Receipt.Sent {
-		t.Fatalf("ordinary content did not reach planner: %+v", outcome.Receipt)
+	if !outcome.Receipt.Sent || planner.calls != 1 {
+		t.Fatalf("ordinary content did not reach planning: calls=%d outcome=%+v", planner.calls, outcome)
 	}
 }
 
-func TestRateLimitAppliesAfterModelDeliberation(t *testing.T) {
+func TestRateLimitAppliesBeforeModelDeliberation(t *testing.T) {
 	ctx := context.Background()
 	cfg := config.Default()
 	cfg.QQ.SelfID = 123456
@@ -219,13 +219,13 @@ func TestRateLimitAppliesAfterModelDeliberation(t *testing.T) {
 		action.New(inmemory.NewSender(), nil, nil), Config{SelfID: cfg.QQ.SelfID})
 	defer runtime.Close()
 
-	payload := []byte(`{"post_type":"message","message_type":"group","time":1710000000,"self_id":123456,"group_id":100,"user_id":200,"message_id":"m-rate","message":[{"type":"text","data":{"text":"普通闲聊"}}]}`)
+	payload := []byte(`{"post_type":"message","message_type":"group","time":1710000000,"self_id":123456,"group_id":100,"user_id":200,"message_id":"m-rate","message":[{"type":"at","data":{"qq":"123456"}},{"type":"text","data":{"text":"帮我看看"}}]}`)
 	outcome, err := runtime.ProcessRawEvent(ctx, payload)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if planner.calls != 1 || turns.checks != 1 {
-		t.Fatalf("expected one model decision before rate check, model=%d checks=%d", planner.calls, turns.checks)
+	if planner.calls != 0 || turns.checks != 1 {
+		t.Fatalf("rate limit was not enforced before model: model=%d checks=%d", planner.calls, turns.checks)
 	}
 	if outcome.Decision.Action != policydomain.ActionSilent || outcome.Receipt.Sent {
 		t.Fatalf("rate limit did not suppress only output: %+v", outcome)
@@ -242,12 +242,12 @@ func TestInboundMessageResetsConsecutiveTurnGate(t *testing.T) {
 		action.New(inmemory.NewSender(), nil, nil), Config{SelfID: 123456})
 	defer runtime.Close()
 
-	payload := []byte(`{"post_type":"message","message_type":"group","time":1710000000,"self_id":123456,"group_id":100,"user_id":200,"message_id":"m-reset","message":[{"type":"text","data":{"text":"普通闲聊"}}]}`)
+	payload := []byte(`{"post_type":"message","message_type":"group","time":1710000000,"self_id":123456,"group_id":100,"user_id":200,"message_id":"m-reset","message":[{"type":"at","data":{"qq":"123456"}},{"type":"text","data":{"text":"帮我看看"}}]}`)
 	outcome, err := runtime.ProcessRawEvent(ctx, payload)
 	if err != nil {
 		t.Fatalf("process raw event: %v", err)
 	}
-	if !turns.reset || turns.checks != 1 {
+	if !turns.reset || turns.checks != 2 {
 		t.Fatalf("inbound reset hook was not applied: %+v", turns)
 	}
 	if !outcome.Receipt.Sent || outcome.Decision.Action != policydomain.ActionReply {

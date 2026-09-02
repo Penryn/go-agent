@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/phlin/go-agent/internal/application/action"
+	"github.com/phlin/go-agent/internal/application/modelusage"
 	normalizersvc "github.com/phlin/go-agent/internal/application/normalizer"
 	personasvc "github.com/phlin/go-agent/internal/application/persona"
 	"github.com/phlin/go-agent/internal/application/ports"
@@ -458,6 +459,26 @@ func (r *Runtime) process(ctx context.Context, envelope conversationdomain.Event
 }
 
 func (r *Runtime) processWithValidation(ctx context.Context, envelope conversationdomain.EventEnvelope, candidate presencedomain.ThoughtCandidate, validate func(context.Context) (bool, error)) (Outcome, error) {
+	if r.turns != nil {
+		allowed, err := r.turns.CanDeliberate(ctx, envelope.Event.GroupID, time.Now())
+		if err != nil {
+			return Outcome{}, fmt.Errorf("precheck output permission: %w", err)
+		}
+		if !allowed {
+			return r.silentBeforeModel(ctx, envelope, candidate, "output_rate_limited")
+		}
+	}
+
+	ctx, usageRecorder := modelusage.WithRecorder(ctx, modelusage.Metadata{
+		TraceID: envelope.TraceID,
+		GroupID: envelope.Event.GroupID,
+		UserID:  envelope.Event.UserID,
+		Trigger: candidate.Intent,
+		Phase:   "reply_planner",
+	})
+	usageFinal := modelusage.FinalState{}
+	defer func() { usageRecorder.Flush(usageFinal) }()
+
 	memory, err := r.working.Snapshot(ctx, envelope.Event.GroupID)
 	if err != nil {
 		return Outcome{}, fmt.Errorf("load working memory: %w", err)
@@ -467,16 +488,22 @@ func (r *Runtime) processWithValidation(ctx context.Context, envelope conversati
 		return Outcome{}, fmt.Errorf("deliberate response: %w", err)
 	}
 	snapshot, decision, plan := result.Snapshot, result.Decision, result.Plan
+	usageFinal.Action = string(decision.Action)
 	if validate != nil {
 		valid, err := validate(ctx)
 		if err != nil {
 			return Outcome{}, fmt.Errorf("validate candidate before action: %w", err)
 		}
 		if !valid {
+			usageFinal.Action = string(policydomain.ActionSilent)
+			usageFinal.DropReason = "candidate_stale"
 			return Outcome{Envelope: envelope, Snapshot: snapshot, Candidate: candidate, Decision: silentDecision(envelope.TraceID, "candidate_stale"), Plan: plan}, nil
 		}
 	}
 	if decision.Action != policydomain.ActionSilent && r.turns != nil {
+		// Re-check after generation because another same-group turn may have sent
+		// while this model call was in flight. The precheck avoids already-known
+		// waste; this check preserves the concurrency safety boundary.
 		allowed, err := r.turns.CanDeliberate(ctx, envelope.Event.GroupID, time.Now())
 		if err != nil {
 			return Outcome{}, fmt.Errorf("check output permission: %w", err)
@@ -484,6 +511,9 @@ func (r *Runtime) processWithValidation(ctx context.Context, envelope conversati
 		if !allowed {
 			decision.Action = policydomain.ActionSilent
 			decision.ReasonCodes = append(decision.ReasonCodes, "output_rate_limited")
+			usageFinal.RateLimited = true
+			usageFinal.Action = string(decision.Action)
+			usageFinal.DropReason = "output_rate_limited"
 		}
 	}
 	var canonProposal personasvc.CanonProposal
@@ -530,7 +560,11 @@ func (r *Runtime) processWithValidation(ctx context.Context, envelope conversati
 		}
 		plan.ProposedPersonaFacts = append([]replydomain.PersonaFactCandidate(nil), canonProposal.Candidates...)
 	}
+	usageFinal.Action = string(decision.Action)
 	receipt, err := r.executor.Execute(ctx, envelope.Event, decision, plan)
+	usageFinal.Sent = receipt.Sent
+	usageFinal.Action = string(decision.Action)
+	usageFinal.DropReason = receipt.DropReason
 	if receipt.Sent && r.canon != nil && strings.TrimSpace(receipt.DeliveredText) != "" {
 		sourceEventID := "outbound-" + decision.DecisionID + "-action"
 		if receipt.PlatformMessageID != "" {
@@ -587,6 +621,19 @@ func (r *Runtime) processWithValidation(ctx context.Context, envelope conversati
 		}
 	}
 	return Outcome{Envelope: envelope, Snapshot: snapshot, Candidate: candidate, Decision: decision, Plan: plan, Receipt: receipt}, nil
+}
+
+func (r *Runtime) silentBeforeModel(ctx context.Context, envelope conversationdomain.EventEnvelope, candidate presencedomain.ThoughtCandidate, reason string) (Outcome, error) {
+	decision := silentDecision(envelope.TraceID, reason)
+	plan := replydomain.ReplyPlan{PlanID: decision.DecisionID + "-plan", PlannedActions: []policydomain.DecisionAction{policydomain.ActionSilent}, SendMode: "silent"}
+	var receipt replydomain.ActionReceipt
+	var err error
+	if r.executor != nil {
+		receipt, err = r.executor.Execute(ctx, envelope.Event, decision, plan)
+	} else {
+		receipt.DropReason = "action_silent"
+	}
+	return Outcome{Envelope: envelope, Candidate: candidate, Decision: decision, Plan: plan, Receipt: receipt}, err
 }
 
 func plannedReplyText(plan replydomain.ReplyPlan) string {
