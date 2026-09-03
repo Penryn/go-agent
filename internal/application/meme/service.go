@@ -7,8 +7,14 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
+	"mime"
+	"net/http"
+	"net/url"
+	"os"
 	"path"
+	"path/filepath"
 	"slices"
 	"sort"
 	"strings"
@@ -152,14 +158,19 @@ func (s *Service) ObserveEvent(ctx context.Context, event conversationdomain.Con
 		}
 
 		memeID := buildMemeID(attachment)
+		objectKey, contentHash, err := s.persistAttachment(ctx, memeID, attachment)
+		if err != nil {
+			slog.Debug("meme: skip attachment that cannot be persisted", "attachment_id", attachment.AttachmentID, "url", attachment.URL, "err", err)
+			continue
+		}
 		memeDescriptor := buildMemeDescriptor(memeID, attachment, []mediadomain.MediaDescriptor{descriptor}, s.cfg.CandidateThreshold)
 		memeAsset := mediadomain.MemeAsset{
 			MemeID:         memeID,
 			GroupID:        event.GroupID,
 			SourceEventID:  event.EventID,
-			ObjectKey:      attachment.ObjectKey,
-			FileExt:        fileExt(attachment.ObjectKey),
-			ContentHash:    coalesce(attachment.ContentHash, memeID),
+			ObjectKey:      objectKey,
+			FileExt:        fileExt(objectKey),
+			ContentHash:    coalesce(contentHash, coalesce(attachment.ContentHash, memeID)),
 			PerceptualHash: coalesce(attachment.ContentHash, memeID),
 			Width:          attachment.Width,
 			Height:         attachment.Height,
@@ -333,7 +344,7 @@ func (s *Service) BuildSendSegments(ctx context.Context, memeID string, replyToM
 	}
 	segments = append(segments, conversationdomain.MessageSegment{
 		Type: "image",
-		Data: map[string]any{"file": asset.ObjectKey},
+		Data: map[string]any{"file": s.sendPath(asset.ObjectKey)},
 	})
 	if strings.TrimSpace(caption) != "" {
 		segments = append(segments, conversationdomain.MessageSegment{
@@ -342,6 +353,106 @@ func (s *Service) BuildSendSegments(ctx context.Context, memeID string, replyToM
 		})
 	}
 	return segments, nil
+}
+
+func (s *Service) sendPath(objectKey string) string {
+	if s.cfg.StoragePath == "" || objectKey == "" || filepath.IsAbs(objectKey) {
+		return objectKey
+	}
+	return filepath.Join(s.cfg.StoragePath, objectKey)
+}
+
+func (s *Service) persistAttachment(ctx context.Context, memeID string, attachment mediadomain.MultimodalAttachment) (string, string, error) {
+	if strings.TrimSpace(attachment.URL) == "" {
+		if strings.TrimSpace(attachment.ObjectKey) == "" {
+			return "", "", errors.New("attachment has no URL or object key")
+		}
+		return attachment.ObjectKey, attachment.ContentHash, nil
+	}
+	if strings.TrimSpace(s.cfg.StoragePath) == "" {
+		return "", "", errors.New("meme storage path is not configured")
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := os.MkdirAll(s.cfg.StoragePath, 0o755); err != nil {
+		return "", "", fmt.Errorf("create meme storage directory: %w", err)
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, attachment.URL, nil)
+	if err != nil {
+		return "", "", fmt.Errorf("create meme download request: %w", err)
+	}
+	client := &http.Client{Timeout: 15 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return "", "", fmt.Errorf("download meme: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return "", "", fmt.Errorf("download meme: HTTP %d", resp.StatusCode)
+	}
+	maxBytes := int64(s.cfg.MaxSizeMB) * 1024 * 1024
+	if maxBytes > 0 && resp.ContentLength > maxBytes {
+		return "", "", fmt.Errorf("meme exceeds %d MB limit", s.cfg.MaxSizeMB)
+	}
+	ext := attachmentExtension(attachment, resp.Header.Get("Content-Type"))
+	if ext == "" {
+		ext = ".jpg"
+	}
+	name := memeID + ext
+	tmp, err := os.CreateTemp(s.cfg.StoragePath, ".meme-*")
+	if err != nil {
+		return "", "", fmt.Errorf("create meme temp file: %w", err)
+	}
+	tmpPath := tmp.Name()
+	defer func() {
+		_ = tmp.Close()
+		_ = os.Remove(tmpPath)
+	}()
+	hash := sha1.New()
+	limit := io.Reader(resp.Body)
+	if maxBytes > 0 {
+		limit = io.LimitReader(resp.Body, maxBytes+1)
+	}
+	written, err := io.Copy(io.MultiWriter(tmp, hash), limit)
+	if err != nil {
+		return "", "", fmt.Errorf("write meme file: %w", err)
+	}
+	if maxBytes > 0 && written > maxBytes {
+		return "", "", fmt.Errorf("meme exceeds %d MB limit", s.cfg.MaxSizeMB)
+	}
+	if err := tmp.Close(); err != nil {
+		return "", "", fmt.Errorf("close meme temp file: %w", err)
+	}
+	if err := os.Rename(tmpPath, filepath.Join(s.cfg.StoragePath, name)); err != nil {
+		return "", "", fmt.Errorf("save meme file: %w", err)
+	}
+	return name, hex.EncodeToString(hash.Sum(nil)), nil
+}
+
+func attachmentExtension(attachment mediadomain.MultimodalAttachment, contentType string) string {
+	if ext := knownFileExt(attachment.ObjectKey); ext != "" {
+		return ext
+	}
+	if parsed, err := url.Parse(attachment.URL); err == nil {
+		if ext := knownFileExt(parsed.Path); ext != "" {
+			return ext
+		}
+	}
+	if ext, _ := mime.ExtensionsByType(strings.Split(contentType, ";")[0]); len(ext) > 0 {
+		return ext[0]
+	}
+	return ""
+}
+
+func knownFileExt(key string) string {
+	ext := strings.ToLower(path.Ext(key))
+	switch ext {
+	case ".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp":
+		return ext
+	default:
+		return ""
+	}
 }
 
 func descriptorFor(attachmentID string, descriptors []mediadomain.MediaDescriptor) (mediadomain.MediaDescriptor, bool) {
@@ -480,4 +591,3 @@ func coalesce(primary, fallback string) string {
 	}
 	return fallback
 }
-

@@ -9,14 +9,22 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"log/slog"
+	"mime"
 	"net"
 	"net/http"
 	"net/url"
+	"os"
+	"path/filepath"
 	"slices"
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
+
+	napcatsdk "github.com/zjutjh/napcat-sdk"
+	"github.com/zjutjh/napcat-sdk/api"
 
 	"github.com/phlin/go-agent/internal/application/ports"
 	toolsvc "github.com/phlin/go-agent/internal/application/tools"
@@ -35,6 +43,10 @@ type adminDashboard struct {
 	mainModelReady    bool
 	vectorSearchReady bool
 	health            *capabilityHealth
+	groupClient       *napcatsdk.Client
+	groupNamesMu      sync.Mutex
+	groupNames        map[int64]string
+	groupNamesAt      time.Time
 }
 
 type adminSnapshot struct {
@@ -88,6 +100,7 @@ type adminPersona struct {
 
 type adminGroup struct {
 	GroupID      int64     `json:"group_id"`
+	GroupName    string    `json:"group_name"`
 	Messages     int       `json:"messages"`
 	Members      int       `json:"members"`
 	ActiveTopic  string    `json:"active_topic"`
@@ -312,34 +325,44 @@ type adminMetricSeries struct {
 
 func newAdminHandler(db *sql.DB, state ports.RuntimeStateStore, facts ports.PersonaFactStore, definition personadomain.PersonaDefinition, cfg config.Config, connected func() bool, mcp *toolsvc.MCPManager, mainModelReady, vectorSearchReady bool, health *capabilityHealth) http.Handler {
 	dashboard := &adminDashboard{db: db, state: state, facts: facts, definition: definition, cfg: cfg, connected: connected, mainModelReady: mainModelReady, vectorSearchReady: vectorSearchReady, health: health}
+	if strings.TrimSpace(cfg.QQ.OutboundURL) != "" {
+		dashboard.groupClient = napcatsdk.NewHTTPClient(cfg.QQ.OutboundURL,
+			napcatsdk.WithToken(cfg.QQ.OutboundToken), napcatsdk.WithHTTPTimeout(2*time.Second))
+	}
 	assets, _ := fs.Sub(adminAssets, "adminui/dist")
 	return &adminHandler{
-		token:      strings.TrimSpace(cfg.Server.AdminToken),
-		personaID:  definition.Config.ID,
-		load:       dashboard.snapshot,
-		loadWindow: dashboard.snapshotWindow,
-		loadCore:   dashboard.snapshotCore,
-		mcp:        mcp,
-		db:         db,
-		assets:     http.StripPrefix("/admin/", http.FileServer(http.FS(assets))),
+		token:           strings.TrimSpace(cfg.Server.AdminToken),
+		personaID:       definition.Config.ID,
+		load:            dashboard.snapshot,
+		loadWindow:      dashboard.snapshotWindow,
+		loadCore:        dashboard.snapshotCore,
+		mcp:             mcp,
+		db:              db,
+		memeStoragePath: cfg.Meme.StoragePath,
+		assets:          http.StripPrefix("/admin/", http.FileServer(http.FS(assets))),
 	}
 }
 
 type adminHandler struct {
-	token      string
-	personaID  string
-	load       func(context.Context, int64) (adminSnapshot, error)
-	loadWindow func(context.Context, int64, int) (adminSnapshot, error)
-	loadCore   func(context.Context, int64, int) (adminSnapshot, error)
-	assets     http.Handler
-	db         *sql.DB
-	mcp        *toolsvc.MCPManager
+	token           string
+	personaID       string
+	load            func(context.Context, int64) (adminSnapshot, error)
+	loadWindow      func(context.Context, int64, int) (adminSnapshot, error)
+	loadCore        func(context.Context, int64, int) (adminSnapshot, error)
+	assets          http.Handler
+	db              *sql.DB
+	mcp             *toolsvc.MCPManager
+	memeStoragePath string
 }
 
 //go:embed adminui/dist
 var adminAssets embed.FS
 
 func (h *adminHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	if strings.HasPrefix(r.URL.Path, "/admin/api/memes/files/") {
+		h.handleMemeFile(w, r)
+		return
+	}
 	if strings.HasPrefix(r.URL.Path, "/admin/api/events/") {
 		h.handleEventDetail(w, r)
 		return
@@ -383,6 +406,56 @@ func (h *adminHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Security-Policy", "default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src 'self'; img-src 'self' data: https: http:")
 		h.assets.ServeHTTP(w, r)
 	}
+}
+
+func (h *adminHandler) handleMemeFile(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		w.Header().Set("Allow", http.MethodGet)
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if !h.authorized(r) && !h.authorizedQueryToken(r) {
+		http.Error(w, "admin token required", http.StatusUnauthorized)
+		return
+	}
+	name, err := url.PathUnescape(strings.TrimPrefix(r.URL.Path, "/admin/api/memes/files/"))
+	if err != nil || name == "" || name != filepath.Base(name) || strings.ContainsAny(name, `/\\`) {
+		http.Error(w, "invalid meme file", http.StatusBadRequest)
+		return
+	}
+	base, err := filepath.Abs(strings.TrimSpace(h.memeStoragePath))
+	if err != nil || strings.TrimSpace(h.memeStoragePath) == "" {
+		http.NotFound(w, r)
+		return
+	}
+	target := filepath.Join(base, name)
+	resolvedBase, err := filepath.EvalSymlinks(base)
+	if err != nil {
+		http.NotFound(w, r)
+		return
+	}
+	resolvedTarget, err := filepath.EvalSymlinks(target)
+	if err != nil || filepath.Dir(resolvedTarget) != resolvedBase {
+		http.NotFound(w, r)
+		return
+	}
+	info, err := os.Stat(resolvedTarget)
+	if err != nil || info.IsDir() {
+		http.NotFound(w, r)
+		return
+	}
+	if contentType := mime.TypeByExtension(filepath.Ext(name)); contentType != "" {
+		w.Header().Set("Content-Type", contentType)
+	}
+	http.ServeFile(w, r, resolvedTarget)
+}
+
+func (h *adminHandler) authorizedQueryToken(r *http.Request) bool {
+	if h.token == "" {
+		return false
+	}
+	provided := strings.TrimSpace(r.URL.Query().Get("token"))
+	return len(provided) == len(h.token) && subtle.ConstantTimeCompare([]byte(provided), []byte(h.token)) == 1
 }
 
 func (h *adminHandler) handleActivity(w http.ResponseWriter, r *http.Request) {
@@ -553,6 +626,15 @@ func (h *adminHandler) handleMeme(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer tx.Rollback()
+	var objectKey string
+	if err := tx.QueryRowContext(ctx, `SELECT object_key FROM meme_assets WHERE meme_id = $1`, memeID).Scan(&objectKey); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			http.NotFound(w, r)
+			return
+		}
+		http.Error(w, "delete meme: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
 	if _, err = tx.ExecContext(ctx, `DELETE FROM meme_descriptors WHERE meme_id = $1`, memeID); err != nil {
 		http.Error(w, "delete meme descriptor: "+err.Error(), http.StatusInternalServerError)
 		return
@@ -583,7 +665,23 @@ func (h *adminHandler) handleMeme(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "delete meme: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
+	if filePath, err := h.memeFilePath(objectKey); err == nil {
+		if err := os.Remove(filePath); err != nil && !errors.Is(err, os.ErrNotExist) {
+			slog.Warn("admin: remove deleted meme file failed", "path", filePath, "err", err)
+		}
+	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+func (h *adminHandler) memeFilePath(name string) (string, error) {
+	base, err := filepath.Abs(strings.TrimSpace(h.memeStoragePath))
+	if err != nil || strings.TrimSpace(h.memeStoragePath) == "" {
+		return "", fmt.Errorf("meme storage path is not configured")
+	}
+	if name == "" || name != filepath.Base(name) || strings.ContainsAny(name, `/\\`) {
+		return "", fmt.Errorf("invalid meme file")
+	}
+	return filepath.Join(base, name), nil
 }
 
 func (h *adminHandler) handleMemes(w http.ResponseWriter, r *http.Request) {
@@ -612,7 +710,7 @@ func (h *adminHandler) handleMemes(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 4*time.Second)
 	defer cancel()
-	memes, err := loadAdminMemePage(ctx, h.db, groupID, r.URL.Query().Get("q"), page, pageSize)
+	memes, err := loadAdminMemePage(ctx, h.db, groupID, r.URL.Query().Get("q"), page, pageSize, h.memeStoragePath)
 	if err != nil {
 		http.Error(w, "load memes: "+err.Error(), http.StatusInternalServerError)
 		return
@@ -821,7 +919,7 @@ func (h *adminHandler) handleEventDetail(w http.ResponseWriter, r *http.Request)
 
 type adminMCPConfig struct {
 	Servers []config.MCPServerConfig `json:"servers"`
-	Tools   []toolsvc.MCPToolInfo     `json:"tools"`
+	Tools   []toolsvc.MCPToolInfo    `json:"tools"`
 }
 
 func (h *adminHandler) handleMCP(w http.ResponseWriter, r *http.Request) {
@@ -920,9 +1018,31 @@ func (h *adminHandler) handleSnapshot(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "load dashboard: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
+	normalizeAdminSnapshot(&snapshot)
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("Cache-Control", "no-store")
 	_ = json.NewEncoder(w).Encode(snapshot)
+}
+
+func normalizeAdminSnapshot(snapshot *adminSnapshot) {
+	if snapshot.Groups == nil {
+		snapshot.Groups = []adminGroup{}
+	}
+	if snapshot.Memories == nil {
+		snapshot.Memories = []adminMemory{}
+	}
+	if snapshot.Relationships == nil {
+		snapshot.Relationships = []adminRelationship{}
+	}
+	if snapshot.Activity == nil {
+		snapshot.Activity = []adminActivity{}
+	}
+	if snapshot.Persona.Facts == nil {
+		snapshot.Persona.Facts = []personadomain.PersonaFact{}
+	}
+	if snapshot.Persona.Interests == nil {
+		snapshot.Persona.Interests = []string{}
+	}
 }
 
 func (h *adminHandler) authorized(r *http.Request) bool {
@@ -1094,11 +1214,11 @@ func (d *adminDashboard) loadWindowMetrics(ctx context.Context, groupID int64, w
 	var metrics adminWindowMetrics
 	err := d.db.QueryRowContext(ctx, `
 		SELECT
-			(SELECT COUNT(*) FROM thought_records WHERE created_at > NOW() - ($2 || ' minutes')::interval AND ($1 = 0 OR group_id = $1)),
-			(SELECT COUNT(*) FROM thought_records WHERE created_at > NOW() - ($2 || ' minutes')::interval AND ($1 = 0 OR group_id = $1) AND chosen_action <> 'silent'),
-			(SELECT COUNT(*) FROM thought_records WHERE created_at > NOW() - ($2 || ' minutes')::interval AND ($1 = 0 OR group_id = $1) AND outcome = 'sent'),
-			(SELECT COUNT(*) FROM async_outbox WHERE updated_at > NOW() - ($2 || ' minutes')::interval),
-			(SELECT COUNT(*) FROM async_outbox WHERE updated_at > NOW() - ($2 || ' minutes')::interval AND (status = 'dead_letter' OR last_error <> ''))
+			(SELECT COUNT(*) FROM thought_records WHERE created_at > NOW() - make_interval(mins => $2) AND ($1 = 0 OR group_id = $1)),
+			(SELECT COUNT(*) FROM thought_records WHERE created_at > NOW() - make_interval(mins => $2) AND ($1 = 0 OR group_id = $1) AND chosen_action <> 'silent'),
+			(SELECT COUNT(*) FROM thought_records WHERE created_at > NOW() - make_interval(mins => $2) AND ($1 = 0 OR group_id = $1) AND outcome = 'sent'),
+			(SELECT COUNT(*) FROM async_outbox WHERE updated_at > NOW() - make_interval(mins => $2)),
+			(SELECT COUNT(*) FROM async_outbox WHERE updated_at > NOW() - make_interval(mins => $2) AND (status = 'dead_letter' OR last_error <> ''))
 	`, groupID, windowMinutes).Scan(&metrics.Decisions, &metrics.ActionDecisions, &metrics.Replies, &metrics.Tasks, &metrics.FailedTasks)
 	if err != nil {
 		return metrics, fmt.Errorf("window metrics: %w", err)
@@ -1168,7 +1288,7 @@ func (d *adminDashboard) loadModelUsageMetrics(ctx context.Context, groupID int6
 		SELECT COUNT(*), COALESCE(SUM(input_tokens), 0), COALESCE(SUM(output_tokens), 0), AVG(duration_ms),
 		       COUNT(*) FILTER (WHERE error <> '')
 		FROM model_usage_records
-		WHERE created_at > NOW() - ($2 || ' minutes')::interval AND ($1 = 0 OR group_id = $1)
+		WHERE created_at > NOW() - make_interval(mins => $2) AND ($1 = 0 OR group_id = $1)
 	`, groupID, windowMinutes).Scan(&metrics.Calls, &metrics.InputTokens, &metrics.OutputTokens, &avg, &metrics.ErrorCalls)
 	if err != nil {
 		return metrics, fmt.Errorf("model usage metrics: %w", err)
@@ -1189,7 +1309,7 @@ func (d *adminDashboard) loadRetrievalMetrics(ctx context.Context, groupID int64
 		       COUNT(*) FILTER (WHERE outcome <> ''),
 		       COUNT(*) FILTER (WHERE jsonb_array_length(selected_memory_ids_json) > 0)
 		FROM retrieval_traces
-		WHERE created_at > NOW() - ($2 || ' minutes')::interval AND ($1 = 0 OR group_id = $1)
+		WHERE created_at > NOW() - make_interval(mins => $2) AND ($1 = 0 OR group_id = $1)
 	`, groupID, windowMinutes).Scan(&metrics.Queries, &metrics.QueriesWithHits, &avg, &metrics.ResultRecordedQueries, &metrics.SelectedQueries)
 	if err != nil {
 		return metrics, fmt.Errorf("retrieval metrics: %w", err)
@@ -1248,8 +1368,10 @@ func (d *adminDashboard) loadGroups(ctx context.Context) ([]adminGroup, error) {
 			byID[groupID] = adminGroup{GroupID: groupID}
 		}
 	}
+	groupNames := d.loadGroupNames(ctx)
 	groups := make([]adminGroup, 0, len(byID))
 	for _, group := range byID {
+		group.GroupName = groupNames[group.GroupID]
 		groups = append(groups, group)
 	}
 	sort.Slice(groups, func(i, j int) bool {
@@ -1259,6 +1381,55 @@ func (d *adminDashboard) loadGroups(ctx context.Context) ([]adminGroup, error) {
 		return groups[i].LastActivity.After(groups[j].LastActivity)
 	})
 	return groups, nil
+}
+
+func (d *adminDashboard) loadGroupNames(ctx context.Context) map[int64]string {
+	if d.groupClient == nil {
+		return nil
+	}
+
+	d.groupNamesMu.Lock()
+	if time.Since(d.groupNamesAt) < 5*time.Minute {
+		names := cloneGroupNames(d.groupNames)
+		d.groupNamesMu.Unlock()
+		return names
+	}
+	d.groupNamesMu.Unlock()
+
+	groups, err := d.groupClient.API().GetGroupList(ctx, api.GetGroupListRequest{})
+	now := time.Now()
+	if err != nil {
+		slog.Warn("admin: load group names failed", "error", err)
+		d.groupNamesMu.Lock()
+		d.groupNamesAt = now
+		names := cloneGroupNames(d.groupNames)
+		d.groupNamesMu.Unlock()
+		return names
+	}
+
+	names := make(map[int64]string, len(*groups))
+	for _, group := range *groups {
+		name := strings.TrimSpace(group.GroupName)
+		if name != "" {
+			names[int64(group.GroupID)] = name
+		}
+	}
+	d.groupNamesMu.Lock()
+	d.groupNames = names
+	d.groupNamesAt = now
+	d.groupNamesMu.Unlock()
+	return cloneGroupNames(names)
+}
+
+func cloneGroupNames(names map[int64]string) map[int64]string {
+	if len(names) == 0 {
+		return nil
+	}
+	clone := make(map[int64]string, len(names))
+	for id, name := range names {
+		clone[id] = name
+	}
+	return clone
 }
 
 func (d *adminDashboard) loadStats(ctx context.Context) (adminStats, error) {
@@ -1282,8 +1453,11 @@ func (d *adminDashboard) loadPersona(ctx context.Context, groupID int64) (adminP
 	persona := adminPersona{
 		ID: d.definition.Config.ID, Name: d.definition.Config.Name,
 		Description: d.definition.Config.Description, Facts: view.Facts,
-		Interests: append([]string(nil), d.definition.Config.Interests...),
+		Interests: append([]string{}, d.definition.Config.Interests...),
 		Mood:      "steady", Energy: "normal",
+	}
+	if persona.Facts == nil {
+		persona.Facts = []personadomain.PersonaFact{}
 	}
 	if groupID == 0 {
 		return persona, nil
@@ -1372,15 +1546,14 @@ func loadAdminMemoryPage(ctx context.Context, db *sql.DB, groupID int64, status,
 }
 
 func loadAdminMemes(ctx context.Context, db *sql.DB, groupID int64, query string) ([]adminMeme, error) {
-	page, err := loadAdminMemePage(ctx, db, groupID, query, 1, 200)
+	page, err := loadAdminMemePage(ctx, db, groupID, query, 1, 200, "")
 	return page.Items, err
 }
 
-func loadAdminMemePage(ctx context.Context, db *sql.DB, groupID int64, query string, page, pageSize int) (adminMemePage, error) {
+func loadAdminMemePage(ctx context.Context, db *sql.DB, groupID int64, query string, page, pageSize int, storagePath string) (adminMemePage, error) {
 	query = strings.TrimSpace(query)
 	where := ` FROM meme_assets a
 		JOIN meme_descriptors d ON d.meme_id = a.meme_id
-		LEFT JOIN messages m ON m.event_id = a.source_event_id
 		WHERE ($1 = 0 OR a.group_id = $1)
 		  AND ($2 = '' OR d.title ILIKE '%' || $2 || '%' OR d.summary ILIKE '%' || $2 || '%'
 		       OR d.keywords_json::text ILIKE '%' || $2 || '%'
@@ -1392,10 +1565,6 @@ func loadAdminMemePage(ctx context.Context, db *sql.DB, groupID int64, query str
 		return adminMemePage{}, fmt.Errorf("count memes: %w", err)
 	}
 	selectSQL := `SELECT a.meme_id, a.group_id, a.source_event_id, a.object_key, a.file_ext,
-		       COALESCE((SELECT NULLIF(att->>'url', '')
-		                   FROM jsonb_array_elements(CASE WHEN jsonb_typeof(m.attachments_json) = 'array'
-		                                                  THEN m.attachments_json ELSE '[]'::jsonb END) att
-		                   WHERE att->>'object_key' = a.object_key LIMIT 1), ''),
 		       a.width, a.height, a.animated, a.status, a.send_count, a.dud_count,
 		       a.created_at, a.last_sent_at, d.title, d.summary, d.keywords_json,
 		       d.emotion_tags_json, d.scene_tags_json, d.confidence, d.reviewed` + where + fmt.Sprintf(" ORDER BY a.created_at DESC LIMIT $%d OFFSET $%d", len(args)+1, len(args)+2)
@@ -1410,14 +1579,13 @@ func loadAdminMemePage(ctx context.Context, db *sql.DB, groupID int64, query str
 	for rows.Next() {
 		var meme adminMeme
 		var keywords, emotions, scenes []byte
-		var previewURL string
 		if err := rows.Scan(&meme.MemeID, &meme.GroupID, &meme.SourceEventID, &meme.ObjectKey, &meme.FileExt,
-			&previewURL, &meme.Width, &meme.Height, &meme.Animated, &meme.Status, &meme.SendCount, &meme.DudCount,
+			&meme.Width, &meme.Height, &meme.Animated, &meme.Status, &meme.SendCount, &meme.DudCount,
 			&meme.CreatedAt, &meme.LastSentAt, &meme.Title, &meme.Summary, &keywords, &emotions, &scenes,
 			&meme.Confidence, &meme.Reviewed); err != nil {
 			return adminMemePage{}, err
 		}
-		meme.PreviewURL = safePreviewURL(previewURL)
+		meme.PreviewURL = memePreviewURL(storagePath, meme.ObjectKey)
 		_ = json.Unmarshal(keywords, &meme.Keywords)
 		_ = json.Unmarshal(emotions, &meme.EmotionTags)
 		_ = json.Unmarshal(scenes, &meme.SceneTags)
@@ -1429,12 +1597,14 @@ func loadAdminMemePage(ctx context.Context, db *sql.DB, groupID int64, query str
 	return adminMemePage{Items: memes, Total: total, Page: page, PageSize: pageSize}, nil
 }
 
-func safePreviewURL(raw string) string {
-	parsed, err := url.Parse(strings.TrimSpace(raw))
-	if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Host == "" {
+func memePreviewURL(storagePath, objectKey string) string {
+	if strings.TrimSpace(storagePath) == "" || objectKey == "" || objectKey != filepath.Base(objectKey) {
 		return ""
 	}
-	return parsed.String()
+	if _, err := os.Stat(filepath.Join(storagePath, objectKey)); err != nil {
+		return ""
+	}
+	return "/admin/api/memes/files/" + url.PathEscape(objectKey)
 }
 
 func (d *adminDashboard) loadRelationships(ctx context.Context, groupID int64) ([]adminRelationship, error) {
@@ -1485,10 +1655,10 @@ func (d *adminDashboard) loadActivity(ctx context.Context, groupID int64, window
 			SELECT event_id, occurred_at AS at, group_id, 'message' AS type, kind AS label,
 			       COALESCE(NULLIF(sender_group_card, ''), NULLIF(sender_qq_nickname, ''), user_id::text) AS subject,
 			       LEFT(text_content, 300) AS detail
-			FROM messages WHERE occurred_at > NOW() - ($2 || ' minutes')::interval AND ($1 = 0 OR group_id = $1)
+			FROM messages WHERE occurred_at > NOW() - make_interval(mins => $2) AND ($1 = 0 OR group_id = $1)
 			UNION ALL
 			SELECT event_id, created_at, group_id, 'decision', chosen_action, outcome, LEFT(interpretation, 300)
-			FROM thought_records WHERE created_at > NOW() - ($2 || ' minutes')::interval AND ($1 = 0 OR group_id = $1)
+			FROM thought_records WHERE created_at > NOW() - make_interval(mins => $2) AND ($1 = 0 OR group_id = $1)
 		) activity
 		ORDER BY at DESC LIMIT 80
 	`, groupID, windowMinutes)
@@ -1513,10 +1683,10 @@ func loadAdminActivityPage(ctx context.Context, db *sql.DB, groupID int64, windo
 			SELECT event_id, occurred_at AS at, group_id, 'message' AS type, kind AS label,
 			       COALESCE(NULLIF(sender_group_card, ''), NULLIF(sender_qq_nickname, ''), user_id::text) AS subject,
 			       LEFT(text_content, 300) AS detail
-			FROM messages WHERE occurred_at > NOW() - ($1 || ' minutes')::interval AND ($2 = 0 OR group_id = $2)
+			FROM messages WHERE occurred_at > NOW() - make_interval(mins => $1) AND ($2 = 0 OR group_id = $2)
 			UNION ALL
 			SELECT event_id, created_at, group_id, 'decision', chosen_action, outcome, LEFT(interpretation, 300)
-			FROM thought_records WHERE created_at > NOW() - ($1 || ' minutes')::interval AND ($2 = 0 OR group_id = $2)
+			FROM thought_records WHERE created_at > NOW() - make_interval(mins => $1) AND ($2 = 0 OR group_id = $2)
 		) activity`
 	args := []any{windowMinutes, groupID, activityType}
 	where := " WHERE ($3 = '' OR type = $3)"

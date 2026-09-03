@@ -44,7 +44,7 @@ const stats = computed(() => [
           <div v-for="fact in persona?.facts || []" :key="fact.fact_id" class="fact-cell">
             <span>{{ fact.key }}</span><strong :title="fact.value">{{ fact.value }}</strong>
           </div>
-          <el-empty v-if="!persona?.facts.length" description="暂无人物事实" :image-size="56" />
+          <el-empty v-if="!(persona?.facts || []).length" description="暂无人物事实" :image-size="56" />
         </div>
       </article>
 
@@ -54,7 +54,7 @@ const stats = computed(() => [
         <div class="runtime-metrics">
           <div><span>当前状态</span><strong>{{ persona?.runtime.state || '—' }}</strong></div>
           <div><span>近 10 分钟发言</span><strong>{{ persona?.runtime.replies_last_10min ?? 0 }}</strong></div>
-          <div><span>兴趣标签</span><strong>{{ persona?.interests.length ?? 0 }}</strong></div>
+          <div><span>兴趣标签</span><strong>{{ (persona?.interests || []).length }}</strong></div>
         </div>
         <div class="runtime-note">QQ {{ snapshot?.status.qq_connected ? '正常' : '异常' }} · 数据库 {{ snapshot?.status.database_ok ? '正常' : '异常' }} · 主模型 {{ snapshot?.status.main_model_status === 'ready' ? '已就绪' : snapshot?.status.main_model_status === 'degraded' ? '最近调用异常' : '未配置' }} · 向量检索 {{ snapshot?.status.vector_search_status === 'ready' ? '正常' : snapshot?.status.vector_search_status === 'degraded' ? '最近检索降级' : snapshot?.status.vector_search_status === 'idle' ? '等待检索' : '未启用' }} · 队列积压 {{ snapshot?.status.queue_backlog ?? 0 }} · 最近错误 {{ relativeTime(snapshot?.status.last_error_at) }} · 模型检查 {{ relativeTime(snapshot?.status.main_model_checked_at) }} · 向量检查 {{ relativeTime(snapshot?.status.vector_checked_at) }}。</div>
       </article>
@@ -63,7 +63,7 @@ const stats = computed(() => [
         <div class="panel-title"><div><span>GROUP COVERAGE</span><h2>群聊状态</h2></div><span class="panel-hint">按消息量排序</span></div>
         <div v-if="groups.length" class="group-list">
           <div v-for="group in groups" :key="group.group_id" class="group-row">
-            <div class="group-id"><span>群</span><strong>{{ group.group_id }}</strong></div>
+            <div class="group-id"><span>群</span><strong :title="String(group.group_id)">{{ group.group_name || group.group_id }}</strong><small v-if="group.group_name">{{ group.group_id }}</small></div>
             <div class="group-topic"><strong>{{ group.active_topic || '暂无活跃话题' }}</strong><span>{{ group.members }} 位群友 · {{ group.messages }} 条消息</span></div>
             <div class="group-load"><div class="load-track"><i :style="{ width: `${Math.min(100, Math.max(8, group.messages / Math.max(1, groups[0]?.messages || 1) * 100))}%` }" /></div><span>{{ group.messages }}</span></div>
           </div>

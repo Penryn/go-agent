@@ -270,6 +270,9 @@ meme:
   candidate_threshold: 0.6
   per_group_limit: 5000
   search_top_k: 5
+  # 表情包图片本地存储目录；管理后台和发送动作均使用本地文件。
+  storage_path: "./memes"
+  max_size_mb: 10
   # 同一张表情包重复发送冷却。
   repeat_cooldown: 10m
   prefer_group_scoped: true

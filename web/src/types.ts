@@ -66,6 +66,7 @@ export interface PersonaFact {
 
 export interface GroupSummary {
   group_id: number
+  group_name: string
   messages: number
   members: number
   active_topic: string

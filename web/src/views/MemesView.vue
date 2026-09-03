@@ -39,6 +39,11 @@ function dudRate(item: MemeRecord) {
   return item.send_count ? Math.round(item.dud_count / item.send_count * 100) : 0
 }
 
+function previewURL(item: MemeRecord) {
+  if (!item.preview_url || !token.value) return item.preview_url
+  return `${item.preview_url}?token=${encodeURIComponent(token.value)}`
+}
+
 async function remove(item: MemeRecord) {
   try {
     await ElMessageBox.confirm(`删除“${item.title || '未命名表情包'}”后，Bot 将不再检索或发送它。原始群消息不会被删除。`, '删除表情包', { type: 'warning', confirmButtonText: '删除', cancelButtonText: '取消' })
@@ -77,7 +82,7 @@ onMounted(load)
     <div v-if="memes.length" v-loading="loading" class="meme-grid">
       <article v-for="item in memes" :key="item.meme_id" class="meme-card">
         <div class="meme-preview">
-          <el-image v-if="item.preview_url" :src="item.preview_url" fit="contain" loading="lazy" :preview-src-list="[item.preview_url]" preview-teleported hide-on-click-modal />
+          <el-image v-if="item.preview_url" :src="previewURL(item)" fit="contain" loading="lazy" :preview-src-list="[previewURL(item)]" preview-teleported hide-on-click-modal />
           <div v-else class="meme-placeholder"><el-icon><Picture /></el-icon><span>暂无可访问预览</span><small>{{ item.file_ext || '图片素材' }}</small></div>
           <span v-if="item.animated" class="meme-motion">GIF</span>
         </div>

@@ -3,6 +3,10 @@ package meme
 import (
 	"context"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -51,6 +55,37 @@ func TestObserveEventAndBuildSendSegments(t *testing.T) {
 	}
 	if len(segments) < 2 || segments[0].Type != "reply" || segments[1].Type != "image" {
 		t.Fatalf("unexpected segments: %#v", segments)
+	}
+}
+
+func TestObserveEventDownloadsURLToConfiguredStorage(t *testing.T) {
+	store := testsupport.NewStore(t)
+	storage := t.TempDir()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "image/png")
+		_, _ = w.Write([]byte("png-data"))
+	}))
+	defer server.Close()
+	service := New(store, config.MemeConfig{AutoCollect: true, StoragePath: storage, MaxSizeMB: 1})
+	if err := service.ObserveEvent(context.Background(), conversationdomain.ConversationEvent{
+		EventID: "download-event", GroupID: 1,
+		Attachments: []mediadomain.MultimodalAttachment{{AttachmentID: "download", Kind: mediadomain.MediaSticker, URL: server.URL}},
+	}, []mediadomain.MediaDescriptor{{AttachmentID: "download", Kind: mediadomain.MediaSticker, Confidence: 1}}); err != nil {
+		t.Fatalf("observe event: %v", err)
+	}
+	asset, _, err := store.GetMeme(context.Background(), buildMemeID(mediadomain.MultimodalAttachment{AttachmentID: "download", Kind: mediadomain.MediaSticker, URL: server.URL}))
+	if err != nil {
+		t.Fatalf("get meme: %v", err)
+	}
+	if asset.ObjectKey == "" || filepath.IsAbs(asset.ObjectKey) || filepath.Ext(asset.ObjectKey) != ".png" {
+		t.Fatalf("expected local png object key, got %q", asset.ObjectKey)
+	}
+	if _, err := os.Stat(filepath.Join(storage, asset.ObjectKey)); err != nil {
+		t.Fatalf("downloaded file missing: %v", err)
+	}
+	segments, err := service.BuildSendSegments(context.Background(), asset.MemeID, "", "")
+	if err != nil || len(segments) != 1 || segments[0].Data["file"] != filepath.Join(storage, asset.ObjectKey) {
+		t.Fatalf("expected absolute send path, segments=%#v err=%v", segments, err)
 	}
 }
 

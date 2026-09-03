@@ -78,6 +78,8 @@ type MemeConfig struct {
 	CandidateThreshold float64 `yaml:"candidate_threshold"`
 	PerGroupLimit      int     `yaml:"per_group_limit"`
 	SearchTopK         int     `yaml:"search_top_k"`
+	StoragePath        string  `yaml:"storage_path"`
+	MaxSizeMB          int     `yaml:"max_size_mb"`
 	RepeatCooldown     string  `yaml:"repeat_cooldown"`
 	PreferGroupScoped  bool    `yaml:"prefer_group_scoped"`
 	SemanticThreshold  float64 `yaml:"semantic_threshold"` // 向量相似度过滤阈值，低于此值的结果被丢弃

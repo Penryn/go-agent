@@ -76,7 +76,7 @@ watch(() => route.name, (name) => store.setSnapshotMode(detailedSnapshotRoutes.h
             <el-option
               v-for="group in snapshot?.groups || []"
               :key="group.group_id"
-              :label="`群 ${group.group_id} · ${group.members} 人`"
+              :label="group.group_name ? `${group.group_name} · ${group.group_id}` : `群 ${group.group_id} · ${group.members} 人`"
               :value="group.group_id"
             />
           </el-select>

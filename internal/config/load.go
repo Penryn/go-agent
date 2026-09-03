@@ -108,6 +108,8 @@ func Default() Config {
 			CandidateThreshold: 0.6,
 			PerGroupLimit:      5000,
 			SearchTopK:         5,
+			StoragePath:        "./memes",
+			MaxSizeMB:          10,
 			RepeatCooldown:     "10m",
 			PreferGroupScoped:  true,
 		},

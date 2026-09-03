@@ -18,14 +18,14 @@ func PruneObservability(ctx context.Context, db *sql.DB, retentionDays int) erro
 	}
 	defer tx.Rollback()
 	for _, table := range []string{"retrieval_traces", "model_usage_records", "thought_records"} {
-		if _, err := tx.ExecContext(ctx, "DELETE FROM "+table+" WHERE created_at < NOW() - ($1 || ' days')::interval", retentionDays); err != nil {
+		if _, err := tx.ExecContext(ctx, "DELETE FROM "+table+" WHERE created_at < NOW() - make_interval(days => $1)", retentionDays); err != nil {
 			return fmt.Errorf("prune %s: %w", table, err)
 		}
 	}
 	if _, err := tx.ExecContext(ctx, `
 		DELETE FROM async_outbox
 		WHERE status IN ('completed', 'dead_letter')
-		  AND updated_at < NOW() - ($1 || ' days')::interval
+		  AND updated_at < NOW() - make_interval(days => $1)
 	`, retentionDays); err != nil {
 		return fmt.Errorf("prune async_outbox: %w", err)
 	}
