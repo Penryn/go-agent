@@ -1,7 +1,7 @@
 export interface BotSnapshot {
   updated_at: string
   selected_group: number
-  status: { mode: string; qq_enabled: boolean; qq_connected: boolean; self_id: number }
+  status: { mode: string; qq_enabled: boolean; qq_connected: boolean; self_id: number; database_ok: boolean }
   stats: { groups: number; members: number; memories: number; pending_tasks: number }
   persona: {
     id: string
@@ -74,6 +74,13 @@ export interface MemoryRecord {
   importance: number
   created_at: string
   expires_at?: string
+  source_event_id: string
+  updated_at: string
+}
+
+export interface TaskRecord {
+  id: string; kind: string; status: string; attempts: number; max_attempts: number
+  available_at: string; last_error: string; created_at: string; updated_at: string
 }
 
 export interface Relationship {

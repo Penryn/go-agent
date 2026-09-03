@@ -23,7 +23,7 @@ const memories = computed(() => (snapshot.value?.memories || []).filter((item) =
       <article v-for="item in memories" :key="item.id" class="memory-card">
         <div class="memory-meta"><el-tag effect="plain" round>{{ item.type }}</el-tag><span>{{ relativeTime(item.created_at) }}</span></div>
         <h3>{{ item.subject || item.scope }}</h3><p>{{ item.content }}</p>
-        <footer><span>{{ item.scope }}</span><span>重要度 {{ item.importance.toFixed(2) }}</span><span>置信度 {{ item.confidence.toFixed(2) }}</span></footer>
+        <footer><span>{{ item.scope }}</span><span>重要度 {{ item.importance.toFixed(2) }}</span><span>置信度 {{ item.confidence.toFixed(2) }}</span><span v-if="item.expires_at">{{ new Date(item.expires_at).getTime() > Date.now() ? '有过期时间' : '已过期' }}</span></footer>
       </article>
     </div>
     <el-empty v-else description="没有符合条件的记忆" />

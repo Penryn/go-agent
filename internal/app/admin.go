@@ -12,6 +12,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -51,6 +52,7 @@ type adminStatus struct {
 	QQEnabled   bool   `json:"qq_enabled"`
 	QQConnected bool   `json:"qq_connected"`
 	SelfID      int64  `json:"self_id"`
+	DatabaseOK  bool   `json:"database_ok"`
 }
 
 type adminStats struct {
@@ -81,15 +83,29 @@ type adminGroup struct {
 }
 
 type adminMemory struct {
-	ID         string     `json:"id"`
-	Scope      string     `json:"scope"`
-	Type       string     `json:"type"`
-	Subject    string     `json:"subject"`
-	Content    string     `json:"content"`
-	Confidence float64    `json:"confidence"`
-	Importance float64    `json:"importance"`
-	CreatedAt  time.Time  `json:"created_at"`
-	ExpiresAt  *time.Time `json:"expires_at,omitempty"`
+	ID            string     `json:"id"`
+	Scope         string     `json:"scope"`
+	Type          string     `json:"type"`
+	Subject       string     `json:"subject"`
+	Content       string     `json:"content"`
+	Confidence    float64    `json:"confidence"`
+	Importance    float64    `json:"importance"`
+	CreatedAt     time.Time  `json:"created_at"`
+	ExpiresAt     *time.Time `json:"expires_at,omitempty"`
+	SourceEventID string     `json:"source_event_id"`
+	UpdatedAt     time.Time  `json:"updated_at"`
+}
+
+type adminTask struct {
+	ID          string    `json:"id"`
+	Kind        string    `json:"kind"`
+	Status      string    `json:"status"`
+	Attempts    int       `json:"attempts"`
+	MaxAttempts int       `json:"max_attempts"`
+	AvailableAt time.Time `json:"available_at"`
+	LastError   string    `json:"last_error"`
+	CreatedAt   time.Time `json:"created_at"`
+	UpdatedAt   time.Time `json:"updated_at"`
 }
 
 type adminRelationship struct {
@@ -192,6 +208,8 @@ func (h *adminHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.handleSnapshot(w, r)
 	case "/admin/api/mcp":
 		h.handleMCP(w, r)
+	case "/admin/api/tasks":
+		h.handleTasks(w, r)
 	default:
 		if r.Method != http.MethodGet {
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -204,6 +222,51 @@ func (h *adminHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Security-Policy", "default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src 'self'; img-src 'self' data:")
 		h.assets.ServeHTTP(w, r)
 	}
+}
+
+func (h *adminHandler) handleTasks(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if !h.authorized(r) {
+		http.Error(w, "admin token required", http.StatusUnauthorized)
+		return
+	}
+	status := strings.TrimSpace(r.URL.Query().Get("status"))
+	if status != "" && !slices.Contains([]string{"pending", "running", "retry", "completed", "dead_letter"}, status) {
+		http.Error(w, "invalid status", http.StatusBadRequest)
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 4*time.Second)
+	defer cancel()
+	query := `SELECT task_id, kind, status, attempts, max_attempts, available_at, COALESCE(last_error, ''), created_at, updated_at FROM async_outbox`
+	args := []any{}
+	if status != "" {
+		query += " WHERE status = $1"
+		args = append(args, status)
+	}
+	query += " ORDER BY updated_at DESC LIMIT 200"
+	rows, err := h.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		http.Error(w, "load tasks: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	defer rows.Close()
+	tasks := []adminTask{}
+	for rows.Next() {
+		var task adminTask
+		if err := rows.Scan(&task.ID, &task.Kind, &task.Status, &task.Attempts, &task.MaxAttempts, &task.AvailableAt, &task.LastError, &task.CreatedAt, &task.UpdatedAt); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		tasks = append(tasks, task)
+	}
+	if err := rows.Err(); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, tasks)
 }
 
 func (h *adminHandler) handleEventDetail(w http.ResponseWriter, r *http.Request) {
@@ -359,7 +422,7 @@ func (d *adminDashboard) snapshot(ctx context.Context, selectedGroup int64) (adm
 	}
 	return adminSnapshot{
 		UpdatedAt: time.Now(), SelectedGroup: selectedGroup,
-		Status: adminStatus{Mode: d.cfg.App.Mode, QQEnabled: d.cfg.QQ.Enabled, QQConnected: d.connected != nil && d.connected(), SelfID: d.cfg.QQ.SelfID},
+		Status: adminStatus{Mode: d.cfg.App.Mode, QQEnabled: d.cfg.QQ.Enabled, QQConnected: d.connected != nil && d.connected(), SelfID: d.cfg.QQ.SelfID, DatabaseOK: d.db.PingContext(ctx) == nil},
 		Stats:  stats, Persona: persona, Groups: groups, Memories: memories,
 		Relationships: relationships, Activity: activity, Retrieval: retrieval,
 	}, nil
@@ -488,7 +551,7 @@ func (d *adminDashboard) loadPersona(ctx context.Context, groupID int64) (adminP
 
 func (d *adminDashboard) loadMemories(ctx context.Context, groupID int64) ([]adminMemory, error) {
 	rows, err := d.db.QueryContext(ctx, `
-		SELECT memory_id, scope, type, subject, content, confidence, importance, created_at, expires_at
+		SELECT memory_id, scope, type, subject, content, confidence, importance, created_at, expires_at, source_event_id, updated_at
 		FROM memories
 		WHERE (expires_at IS NULL OR expires_at > NOW())
 		  AND ($1 = 0 OR scope = 'global' OR scope = 'group:' || $1::text OR scope LIKE 'group:' || $1::text || ':user:%')
@@ -503,7 +566,7 @@ func (d *adminDashboard) loadMemories(ctx context.Context, groupID int64) ([]adm
 		var memory adminMemory
 		var expires sql.NullTime
 		if err := rows.Scan(&memory.ID, &memory.Scope, &memory.Type, &memory.Subject, &memory.Content,
-			&memory.Confidence, &memory.Importance, &memory.CreatedAt, &expires); err != nil {
+			&memory.Confidence, &memory.Importance, &memory.CreatedAt, &expires, &memory.SourceEventID, &memory.UpdatedAt); err != nil {
 			return nil, err
 		}
 		if expires.Valid {

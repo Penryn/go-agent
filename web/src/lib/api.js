@@ -16,6 +16,10 @@ export async function getEventDetail(eventID, token) {
     });
     return response.data;
 }
+export async function getTasks(status, token) {
+    const response = await api.get('/tasks', { params: status ? { status } : undefined, headers: token ? { Authorization: `Bearer ${token}` } : undefined });
+    return response.data;
+}
 export async function getMCPConfig(token) {
     const response = await api.get('/mcp', {
         headers: token ? { Authorization: `Bearer ${token}` } : undefined,

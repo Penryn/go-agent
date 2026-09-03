@@ -56,7 +56,7 @@ const stats = computed(() => [
           <div><span>近 10 分钟发言</span><strong>{{ persona?.runtime.replies_last_10min ?? 0 }}</strong></div>
           <div><span>兴趣标签</span><strong>{{ persona?.interests.length ?? 0 }}</strong></div>
         </div>
-        <div class="runtime-note">首页只保留健康信号；详细决策与任务请到运行记录查看。</div>
+        <div class="runtime-note">QQ {{ snapshot?.status.qq_connected ? '正常' : '异常' }} · 数据库 {{ snapshot?.status.database_ok ? '正常' : '异常' }} · 详细任务请到任务队列查看。</div>
       </article>
 
       <article class="glass-panel groups-panel">
