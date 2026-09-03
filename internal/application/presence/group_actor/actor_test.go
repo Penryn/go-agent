@@ -21,7 +21,7 @@ func TestManagerMergesShortBurstAndKeepsOutboundEvent(t *testing.T) {
 
 	base := time.Unix(100, 0)
 	first := eventRecord("e1", 1, 7, "今晚开黑吗", base)
-	second := eventRecord("e2", 1, 7, "八点行不行", base.Add(time.Second))
+	second := eventRecord("e2", 1, 8, "八点行不行", base.Add(500*time.Millisecond))
 	memory, err := manager.Observe(context.Background(), first)
 	if err != nil {
 		t.Fatalf("observe first: %v", err)
@@ -33,11 +33,11 @@ func TestManagerMergesShortBurstAndKeepsOutboundEvent(t *testing.T) {
 	if len(memory.CurrentBurst.EventIDs) != 2 || memory.CurrentBurst.Text != "今晚开黑吗 八点行不行" {
 		t.Fatalf("burst was not merged: %+v", memory.CurrentBurst)
 	}
-	if memory.Candidates[0].Status != presencedomain.CandidateCancelled || memory.Candidates[1].Status != presencedomain.CandidatePending {
-		t.Fatalf("burst candidates were not superseded: %+v", memory.Candidates)
+	if len(memory.Candidates) != 1 || memory.Candidates[0].Status != presencedomain.CandidatePending || len(memory.Candidates[0].SourceEventIDs) != 2 {
+		t.Fatalf("burst candidate was not updated: %+v", memory.Candidates)
 	}
-	if ok, err := manager.CanExecute(context.Background(), 1, memory.Candidates[0].CandidateID, base.Add(time.Second)); err != nil || ok {
-		t.Fatalf("superseded candidate must not execute: ok=%v err=%v", ok, err)
+	if _, ok, err := manager.ClaimDue(context.Background(), 1, base.Add(600*time.Millisecond)); err != nil || ok {
+		t.Fatalf("quiet window must delay burst: ok=%v err=%v", ok, err)
 	}
 
 	outbound := eventRecord("out-1", 1, 999, "那就八点", base.Add(3*time.Second))

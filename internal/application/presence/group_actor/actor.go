@@ -20,7 +20,10 @@ import (
 const defaultTailSize = 32
 const defaultMaxCandidates = 256
 const defaultMaxSeen = 2048
-const burstWindow = 2 * time.Second
+const (
+	burstWindow    = 700 * time.Millisecond
+	burstMaxWindow = 3 * time.Second
+)
 
 type Manager struct {
 	log           *ingress.MemoryEventLog
@@ -168,6 +171,24 @@ func (m *Manager) ClaimDue(ctx context.Context, groupID int64, now time.Time) (p
 		return presencedomain.ThoughtCandidate{}, false, err
 	}
 	candidate, memory := a.claim(now)
+	if candidate == nil {
+		return presencedomain.ThoughtCandidate{}, false, nil
+	}
+	if err := m.save(ctx, memory); err != nil {
+		return presencedomain.ThoughtCandidate{}, false, err
+	}
+	return *candidate, true, nil
+}
+
+// ClaimCandidate atomically reserves a known candidate for synchronous replay.
+// It intentionally ignores DueAt because replay callers explicitly choose the
+// event they want to process.
+func (m *Manager) ClaimCandidate(ctx context.Context, groupID int64, candidateID string) (presencedomain.ThoughtCandidate, bool, error) {
+	a, err := m.actor(ctx, groupID)
+	if err != nil {
+		return presencedomain.ThoughtCandidate{}, false, err
+	}
+	candidate, memory := a.claimCandidate(candidateID)
 	if candidate == nil {
 		return presencedomain.ThoughtCandidate{}, false, nil
 	}
@@ -379,6 +400,23 @@ func (a *actor) claim(now time.Time) (*presencedomain.ThoughtCandidate, presence
 	return candidate, cloneMemory(a.memory)
 }
 
+func (a *actor) claimCandidate(candidateID string) (*presencedomain.ThoughtCandidate, presencedomain.GroupWorkingMemory) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.touch()
+	for i := range a.memory.Candidates {
+		candidate := &a.memory.Candidates[i]
+		if candidate.CandidateID != candidateID || candidate.Status != presencedomain.CandidatePending {
+			continue
+		}
+		candidate.Status = presencedomain.CandidateAccepted
+		copy := *candidate
+		copy.SourceEventIDs = append([]string(nil), candidate.SourceEventIDs...)
+		return &copy, cloneMemory(a.memory)
+	}
+	return nil, cloneMemory(a.memory)
+}
+
 func (a *actor) enqueue(candidate presencedomain.ThoughtCandidate) (presencedomain.GroupWorkingMemory, bool) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
@@ -488,10 +526,15 @@ func reduce(memory presencedomain.GroupWorkingMemory, record presencedomain.Even
 	}
 
 	burst := memory.CurrentBurst
-	if burst.UserID == record.UserID && !burst.LastAt.IsZero() && record.Timestamp.Sub(burst.LastAt) <= burstWindow {
+	if !burst.LastAt.IsZero() &&
+		record.Timestamp.Sub(burst.LastAt) <= burstWindow &&
+		record.Timestamp.Sub(burst.StartedAt) <= burstMaxWindow {
 		burst.EventIDs = append(burst.EventIDs, record.EventID)
 		burst.Text = strings.TrimSpace(burst.Text + " " + record.Event.Text)
 		burst.LastAt = record.Timestamp
+		if burst.UserID != record.UserID {
+			burst.UserID = 0 // mixed-user burst
+		}
 	} else {
 		burst = presencedomain.ConversationBurst{
 			UserID:    record.UserID,
@@ -502,58 +545,41 @@ func reduce(memory presencedomain.GroupWorkingMemory, record presencedomain.Even
 		}
 	}
 	memory.CurrentBurst = burst
-	supersedeBurstCandidates(&memory, burst.EventIDs)
 	if text := strings.TrimSpace(record.Event.Text); text != "" {
 		memory.ActiveTopic = text
 		if strings.ContainsAny(text, "?？") {
 			memory.OpenLoops = appendUnique(memory.OpenLoops, text)
 		}
 	}
-	memory.Candidates = append(memory.Candidates, candidateFor(record, burst))
+	upsertBurstCandidate(&memory, candidateFor(record, burst, burstHasAttachments(memory.RecentTail, burst.EventIDs)))
 	return memory
 }
 
-func supersedeBurstCandidates(memory *presencedomain.GroupWorkingMemory, eventIDs []string) {
-	if len(eventIDs) < 2 {
-		return
-	}
-	for i := range memory.Candidates {
-		candidate := &memory.Candidates[i]
-		if candidate.Status != presencedomain.CandidatePending && candidate.Status != presencedomain.CandidateDeferred && candidate.Status != presencedomain.CandidateAccepted {
-			continue
-		}
-		if overlaps(candidate.SourceEventIDs, eventIDs[:len(eventIDs)-1]) {
-			candidate.Status = presencedomain.CandidateCancelled
-		}
-	}
-}
-
-func overlaps(left, right []string) bool {
-	return slices.ContainsFunc(left, func(l string) bool { return slices.Contains(right, l) })
-}
-
-func candidateFor(record presencedomain.EventRecord, burst presencedomain.ConversationBurst) presencedomain.ThoughtCandidate {
+func candidateFor(record presencedomain.EventRecord, burst presencedomain.ConversationBurst, deferred bool) presencedomain.ThoughtCandidate {
 	direct := record.Event.MentionedBot || record.Event.NamedBot || record.Event.IsReplyToBot
 	intent, urgency, reason := classifyDialogueAct(record.Event.Text, direct, len(record.Event.Attachments) > 0)
-	// 回复延迟带方差：被直接 cue 时 0.8~2.5s（像顺手回一句），主动接话
-	// 3~12s（像犹豫了一下才决定插嘴）。固定延迟是自动回复最明显的破绽。
-	delay := jitteredDelay(3*time.Second, 12*time.Second)
+	delay := burstWindow
 	if direct {
-		delay = jitteredDelay(800*time.Millisecond, 2500*time.Millisecond)
+		delay = jitteredDelay(150*time.Millisecond, 300*time.Millisecond)
 	}
 	status := presencedomain.CandidatePending
-	if len(record.Event.Attachments) > 0 {
+	if deferred {
 		status = presencedomain.CandidateDeferred
 	}
+	dueAt := record.Timestamp.Add(delay)
+	maxDueAt := burst.StartedAt.Add(burstMaxWindow)
+	if maxDueAt.Before(dueAt) {
+		dueAt = maxDueAt
+	}
 	return presencedomain.ThoughtCandidate{
-		CandidateID:    record.EventID + "-candidate",
+		CandidateID:    burst.EventIDs[0] + "-candidate",
 		SourceEventIDs: append([]string(nil), burst.EventIDs...),
 		TopicID:        memoryTopic(record.Event.Text),
 		Addressee:      record.UserID,
 		Intent:         intent,
 		Urgency:        urgency,
 		Score:          urgency,
-		DueAt:          record.Timestamp.Add(delay),
+		DueAt:          dueAt,
 		// 过期窗口放宽到分钟级：真人不会因为隔了 11 秒就不回，
 		// 10s 的旧值会让 worker 忙时错过的消息永久静默。
 		ExpiresAt:      record.Timestamp.Add(2 * time.Minute),
@@ -562,6 +588,27 @@ func candidateFor(record presencedomain.EventRecord, burst presencedomain.Conver
 		DeliveryTarget: "group",
 		Status:         status,
 	}
+}
+
+func upsertBurstCandidate(memory *presencedomain.GroupWorkingMemory, candidate presencedomain.ThoughtCandidate) {
+	for i := range memory.Candidates {
+		existing := &memory.Candidates[i]
+		if existing.CandidateID != candidate.CandidateID || !isLive(existing.Status) {
+			continue
+		}
+		*existing = candidate
+		return
+	}
+	memory.Candidates = append(memory.Candidates, candidate)
+}
+
+func burstHasAttachments(records []presencedomain.EventRecord, eventIDs []string) bool {
+	for _, record := range records {
+		if slices.Contains(eventIDs, record.EventID) && len(record.Event.Attachments) > 0 {
+			return true
+		}
+	}
+	return false
 }
 
 // jitteredDelay 在 [lo, hi] 内取均匀随机延迟，让回复节奏有真人式的方差。

@@ -68,6 +68,7 @@ type InboundTurnObserver interface {
 
 // pollInterval 是调度循环周期;100ms 足够即时,再快只会空转。
 const pollInterval = 100 * time.Millisecond
+const maxConcurrentModelRuns = 4
 
 func DefaultConfig() Config {
 	return Config{JobTimeout: 120 * time.Second}
@@ -116,6 +117,9 @@ type Runtime struct {
 	proactiveThreshold     float64
 	lastProactive          map[int64]time.Time
 	proactiveMu            sync.Mutex
+	groupRunMu             sync.Mutex
+	groupRunLocks          map[int64]*sync.Mutex
+	modelSlots             chan struct{}
 
 	ctx    context.Context
 	cancel context.CancelFunc
@@ -167,6 +171,8 @@ func New(parent context.Context, normalizer *normalizersvc.Service, working *gro
 		proactiveProbability: cfg.ProactiveBaseProbability,
 		proactiveThreshold:   cfg.ProactiveScoreThreshold,
 		lastProactive:        make(map[int64]time.Time),
+		groupRunLocks:        make(map[int64]*sync.Mutex),
+		modelSlots:           make(chan struct{}, maxConcurrentModelRuns),
 		ctx:                  ctx,
 		cancel:               cancel,
 	}
@@ -261,8 +267,15 @@ func (r *Runtime) ProcessRawEvent(ctx context.Context, payload []byte) (Outcome,
 	if candidate.CandidateID == "" {
 		return Outcome{Envelope: envelope, Decision: silentDecision(envelope.TraceID, "no_candidate")}, nil
 	}
-	outcome, err := r.process(ctx, envelope, candidate)
-	_ = r.working.Complete(ctx, envelope.Event.GroupID, candidate.CandidateID)
+	claimed, ok, err := r.working.ClaimCandidate(ctx, envelope.Event.GroupID, candidate.CandidateID)
+	if err != nil {
+		return Outcome{}, fmt.Errorf("claim candidate: %w", err)
+	}
+	if !ok {
+		return Outcome{Envelope: envelope, Candidate: candidate, Decision: silentDecision(envelope.TraceID, "candidate_stale")}, nil
+	}
+	outcome, err := r.process(ctx, envelope, claimed)
+	_ = r.working.Complete(ctx, envelope.Event.GroupID, claimed.CandidateID)
 	return outcome, err
 }
 
@@ -281,8 +294,7 @@ func (r *Runtime) loop(interval, timeout time.Duration) {
 				if err != nil || !ok {
 					continue
 				}
-				// 跨群并发直接开 goroutine;同群串行由 Manager 内部互斥与
-				// CanExecute 幂等闸门保证。
+				// 跨群并发直接开 goroutine；同群由 runCandidate 的群锁串行。
 				r.wg.Add(1)
 				go r.runCandidate(groupID, candidate, timeout)
 			}
@@ -293,11 +305,36 @@ func (r *Runtime) loop(interval, timeout time.Duration) {
 // runCandidate 失败路径也必须终结候选,避免已认领工作永久占位。
 func (r *Runtime) runCandidate(groupID int64, candidate presencedomain.ThoughtCandidate, timeout time.Duration) {
 	defer r.wg.Done()
+	groupLock := r.groupRunLock(groupID)
+	groupLock.Lock()
+	defer groupLock.Unlock()
+	if r.modelSlots != nil {
+		select {
+		case r.modelSlots <- struct{}{}:
+			defer func() { <-r.modelSlots }()
+		case <-r.ctx.Done():
+			return
+		}
+	}
 	ctx, cancel := context.WithTimeout(r.ctx, timeout)
 	defer cancel()
 	if _, err := r.processCandidate(ctx, groupID, candidate); err != nil {
 		slog.Warn("human runtime: candidate failed", "group_id", groupID, "candidate_id", candidate.CandidateID, "err", err)
 	}
+}
+
+func (r *Runtime) groupRunLock(groupID int64) *sync.Mutex {
+	r.groupRunMu.Lock()
+	defer r.groupRunMu.Unlock()
+	if r.groupRunLocks == nil {
+		r.groupRunLocks = make(map[int64]*sync.Mutex)
+	}
+	if lock := r.groupRunLocks[groupID]; lock != nil {
+		return lock
+	}
+	lock := &sync.Mutex{}
+	r.groupRunLocks[groupID] = lock
+	return lock
 }
 
 // proactiveLoop 是主动开口扫描器：群冷场且仍有未接话题时，以配置的
