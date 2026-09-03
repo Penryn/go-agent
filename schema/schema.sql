@@ -160,9 +160,13 @@ CREATE TABLE IF NOT EXISTS retrieval_traces (
   candidate_count INT NOT NULL DEFAULT 0,
   hit_memory_ids_json JSONB NOT NULL,
   selected_memory_ids_json JSONB NOT NULL,
-  outcome VARCHAR(64) NOT NULL DEFAULT '',
-  created_at TIMESTAMPTZ NOT NULL
+	outcome VARCHAR(64) NOT NULL DEFAULT '',
+	vector_enabled BOOLEAN NOT NULL DEFAULT FALSE,
+	vector_error BOOLEAN NOT NULL DEFAULT FALSE,
+	created_at TIMESTAMPTZ NOT NULL
 );
+ALTER TABLE retrieval_traces ADD COLUMN IF NOT EXISTS vector_enabled BOOLEAN NOT NULL DEFAULT FALSE;
+ALTER TABLE retrieval_traces ADD COLUMN IF NOT EXISTS vector_error BOOLEAN NOT NULL DEFAULT FALSE;
 CREATE INDEX IF NOT EXISTS idx_retrieval_traces_group_created ON retrieval_traces (group_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_retrieval_traces_event ON retrieval_traces (event_id);
 

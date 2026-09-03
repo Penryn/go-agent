@@ -56,7 +56,7 @@ const stats = computed(() => [
           <div><span>近 10 分钟发言</span><strong>{{ persona?.runtime.replies_last_10min ?? 0 }}</strong></div>
           <div><span>兴趣标签</span><strong>{{ persona?.interests.length ?? 0 }}</strong></div>
         </div>
-        <div class="runtime-note">QQ {{ snapshot?.status.qq_connected ? '正常' : '异常' }} · 数据库 {{ snapshot?.status.database_ok ? '正常' : '异常' }} · 主模型 {{ snapshot?.status.main_model_status === 'ready' ? '已就绪' : '未配置' }} · 向量检索 {{ snapshot?.status.vector_search_status === 'ready' ? '已启用' : '未启用' }} · 队列积压 {{ snapshot?.status.queue_backlog ?? 0 }} · 最近错误 {{ relativeTime(snapshot?.status.last_error_at) }} · 详细任务请到任务队列查看。</div>
+        <div class="runtime-note">QQ {{ snapshot?.status.qq_connected ? '正常' : '异常' }} · 数据库 {{ snapshot?.status.database_ok ? '正常' : '异常' }} · 主模型 {{ snapshot?.status.main_model_status === 'ready' ? '已就绪' : snapshot?.status.main_model_status === 'degraded' ? '最近调用异常' : '未配置' }} · 向量检索 {{ snapshot?.status.vector_search_status === 'ready' ? '正常' : snapshot?.status.vector_search_status === 'degraded' ? '最近检索降级' : snapshot?.status.vector_search_status === 'idle' ? '等待检索' : '未启用' }} · 队列积压 {{ snapshot?.status.queue_backlog ?? 0 }} · 最近错误 {{ relativeTime(snapshot?.status.last_error_at) }} · 模型检查 {{ relativeTime(snapshot?.status.main_model_checked_at) }} · 向量检查 {{ relativeTime(snapshot?.status.vector_checked_at) }}。</div>
       </article>
 
       <article class="glass-panel groups-panel">

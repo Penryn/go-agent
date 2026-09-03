@@ -105,6 +105,7 @@ func (s *Service) SearchMemories(ctx context.Context, query ports.MemoryQuery) (
 		if err := s.traceStore.SaveRetrievalTrace(ctx, ports.RetrievalTrace{
 			TraceID: traceID, EventID: query.EventID, GroupID: query.GroupID, UserID: query.UserID,
 			Query: query.Query, CandidateCount: len(seen), HitMemoryIDs: hits, CreatedAt: time.Now(),
+			VectorEnabled: vectorEnabled, VectorError: semanticErr != nil,
 		}); err != nil {
 			slog.WarnContext(ctx, "retrieval: save trace failed", "err", err)
 		}

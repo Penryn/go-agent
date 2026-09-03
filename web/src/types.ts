@@ -3,7 +3,7 @@ export interface BotSnapshot {
   window_minutes: number
   window_metrics: { decisions: number; action_decisions: number; replies: number; tasks: number; failed_tasks: number }
   selected_group: number
-  status: { mode: string; qq_enabled: boolean; qq_connected: boolean; self_id: number; database_ok: boolean; queue_backlog: number; last_error_at?: string; main_model_status: string; vector_search_status: string }
+  status: { mode: string; qq_enabled: boolean; qq_connected: boolean; self_id: number; database_ok: boolean; queue_backlog: number; last_error_at?: string; main_model_status: string; vector_search_status: string; main_model_checked_at?: string; vector_checked_at?: string }
   stats: { groups: number; members: number; memories: number; pending_tasks: number }
   persona: {
     id: string

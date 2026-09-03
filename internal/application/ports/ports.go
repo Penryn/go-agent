@@ -51,6 +51,8 @@ type RetrievalTrace struct {
 	HitMemoryIDs   []string
 	SelectedIDs    []string
 	Outcome        string
+	VectorEnabled  bool
+	VectorError    bool
 	CreatedAt      time.Time
 }
 

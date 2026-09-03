@@ -62,6 +62,8 @@ type adminStatus struct {
 	LastErrorAt        *time.Time `json:"last_error_at,omitempty"`
 	MainModelStatus    string     `json:"main_model_status"`
 	VectorSearchStatus string     `json:"vector_search_status"`
+	MainModelCheckedAt *time.Time `json:"main_model_checked_at,omitempty"`
+	VectorCheckedAt    *time.Time `json:"vector_checked_at,omitempty"`
 }
 
 type adminStats struct {
@@ -916,12 +918,66 @@ func (d *adminDashboard) snapshotWithDetail(ctx context.Context, selectedGroup i
 	if err != nil {
 		return adminSnapshot{}, err
 	}
+	mainModelStatus, vectorStatus, mainCheckedAt, vectorCheckedAt, err := d.loadCapabilityHealth(ctx)
+	if err != nil {
+		return adminSnapshot{}, err
+	}
 	return adminSnapshot{
 		UpdatedAt: time.Now(), SelectedGroup: selectedGroup,
-		Status: adminStatus{Mode: d.cfg.App.Mode, QQEnabled: d.cfg.QQ.Enabled, QQConnected: d.connected != nil && d.connected(), SelfID: d.cfg.QQ.SelfID, DatabaseOK: d.db.PingContext(ctx) == nil, QueueBacklog: stats.PendingTasks, LastErrorAt: lastErrorAt, MainModelStatus: capabilityStatus(d.mainModelReady, "not_configured"), VectorSearchStatus: capabilityStatus(d.vectorSearchReady, "disabled")},
+		Status: adminStatus{Mode: d.cfg.App.Mode, QQEnabled: d.cfg.QQ.Enabled, QQConnected: d.connected != nil && d.connected(), SelfID: d.cfg.QQ.SelfID, DatabaseOK: d.db.PingContext(ctx) == nil, QueueBacklog: stats.PendingTasks, LastErrorAt: lastErrorAt, MainModelStatus: mainModelStatus, VectorSearchStatus: vectorStatus, MainModelCheckedAt: mainCheckedAt, VectorCheckedAt: vectorCheckedAt},
 		Stats:  stats, Persona: persona, Groups: groups, Memories: memories,
 		Relationships: relationships, Activity: activity, Retrieval: retrieval, ModelUsage: modelUsage, WindowMinutes: windowMinutes, WindowMetrics: windowMetrics,
 	}, nil
+}
+
+func (d *adminDashboard) loadCapabilityHealth(ctx context.Context) (string, string, *time.Time, *time.Time, error) {
+	mainStatus := capabilityStatus(d.mainModelReady, "not_configured")
+	vectorStatus := capabilityStatus(d.vectorSearchReady, "disabled")
+	var mainCheckedAt, vectorCheckedAt sql.NullTime
+	var mainError bool
+	err := d.db.QueryRowContext(ctx, `
+		SELECT created_at, (COALESCE(error, '') <> '')
+		FROM model_usage_records ORDER BY created_at DESC LIMIT 1
+	`).Scan(&mainCheckedAt, &mainError)
+	if errors.Is(err, sql.ErrNoRows) {
+		err = nil
+	} else if err != nil {
+		return "", "", nil, nil, fmt.Errorf("model health: %w", err)
+	}
+	if mainCheckedAt.Valid && d.mainModelReady {
+		mainStatus = "ready"
+		if mainError {
+			mainStatus = "degraded"
+		}
+	}
+	var vectorError bool
+	err = d.db.QueryRowContext(ctx, `
+		SELECT created_at, vector_error
+		FROM retrieval_traces WHERE vector_enabled
+		ORDER BY created_at DESC LIMIT 1
+	`).Scan(&vectorCheckedAt, &vectorError)
+	if errors.Is(err, sql.ErrNoRows) {
+		err = nil
+	} else if err != nil {
+		return "", "", nil, nil, fmt.Errorf("vector health: %w", err)
+	}
+	if d.vectorSearchReady {
+		vectorStatus = "idle"
+		if vectorCheckedAt.Valid {
+			vectorStatus = "ready"
+			if vectorError {
+				vectorStatus = "degraded"
+			}
+		}
+	}
+	var mainAt, vectorAt *time.Time
+	if mainCheckedAt.Valid {
+		mainAt = &mainCheckedAt.Time
+	}
+	if vectorCheckedAt.Valid {
+		vectorAt = &vectorCheckedAt.Time
+	}
+	return mainStatus, vectorStatus, mainAt, vectorAt, nil
 }
 
 func capabilityStatus(ready bool, unavailable string) string {
