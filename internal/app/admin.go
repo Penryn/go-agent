@@ -26,12 +26,14 @@ import (
 )
 
 type adminDashboard struct {
-	db         *sql.DB
-	state      ports.RuntimeStateStore
-	facts      ports.PersonaFactStore
-	definition personadomain.PersonaDefinition
-	cfg        config.Config
-	connected  func() bool
+	db                *sql.DB
+	state             ports.RuntimeStateStore
+	facts             ports.PersonaFactStore
+	definition        personadomain.PersonaDefinition
+	cfg               config.Config
+	connected         func() bool
+	mainModelReady    bool
+	vectorSearchReady bool
 }
 
 type adminSnapshot struct {
@@ -51,13 +53,15 @@ type adminSnapshot struct {
 }
 
 type adminStatus struct {
-	Mode         string     `json:"mode"`
-	QQEnabled    bool       `json:"qq_enabled"`
-	QQConnected  bool       `json:"qq_connected"`
-	SelfID       int64      `json:"self_id"`
-	DatabaseOK   bool       `json:"database_ok"`
-	QueueBacklog int        `json:"queue_backlog"`
-	LastErrorAt  *time.Time `json:"last_error_at,omitempty"`
+	Mode               string     `json:"mode"`
+	QQEnabled          bool       `json:"qq_enabled"`
+	QQConnected        bool       `json:"qq_connected"`
+	SelfID             int64      `json:"self_id"`
+	DatabaseOK         bool       `json:"database_ok"`
+	QueueBacklog       int        `json:"queue_backlog"`
+	LastErrorAt        *time.Time `json:"last_error_at,omitempty"`
+	MainModelStatus    string     `json:"main_model_status"`
+	VectorSearchStatus string     `json:"vector_search_status"`
 }
 
 type adminStats struct {
@@ -239,8 +243,8 @@ type adminWindowMetrics struct {
 	FailedTasks     int `json:"failed_tasks"`
 }
 
-func newAdminHandler(db *sql.DB, state ports.RuntimeStateStore, facts ports.PersonaFactStore, definition personadomain.PersonaDefinition, cfg config.Config, connected func() bool, mcp *toolsvc.MCPManager) http.Handler {
-	dashboard := &adminDashboard{db: db, state: state, facts: facts, definition: definition, cfg: cfg, connected: connected}
+func newAdminHandler(db *sql.DB, state ports.RuntimeStateStore, facts ports.PersonaFactStore, definition personadomain.PersonaDefinition, cfg config.Config, connected func() bool, mcp *toolsvc.MCPManager, mainModelReady, vectorSearchReady bool) http.Handler {
+	dashboard := &adminDashboard{db: db, state: state, facts: facts, definition: definition, cfg: cfg, connected: connected, mainModelReady: mainModelReady, vectorSearchReady: vectorSearchReady}
 	assets, _ := fs.Sub(adminAssets, "adminui/dist")
 	return &adminHandler{
 		token:      strings.TrimSpace(cfg.Server.AdminToken),
@@ -721,17 +725,26 @@ func (d *adminDashboard) snapshotWindow(ctx context.Context, selectedGroup int64
 	}
 	return adminSnapshot{
 		UpdatedAt: time.Now(), SelectedGroup: selectedGroup,
-		Status: adminStatus{Mode: d.cfg.App.Mode, QQEnabled: d.cfg.QQ.Enabled, QQConnected: d.connected != nil && d.connected(), SelfID: d.cfg.QQ.SelfID, DatabaseOK: d.db.PingContext(ctx) == nil, QueueBacklog: stats.PendingTasks, LastErrorAt: lastErrorAt},
+		Status: adminStatus{Mode: d.cfg.App.Mode, QQEnabled: d.cfg.QQ.Enabled, QQConnected: d.connected != nil && d.connected(), SelfID: d.cfg.QQ.SelfID, DatabaseOK: d.db.PingContext(ctx) == nil, QueueBacklog: stats.PendingTasks, LastErrorAt: lastErrorAt, MainModelStatus: capabilityStatus(d.mainModelReady, "not_configured"), VectorSearchStatus: capabilityStatus(d.vectorSearchReady, "disabled")},
 		Stats:  stats, Persona: persona, Groups: groups, Memories: memories,
 		Relationships: relationships, Activity: activity, Retrieval: retrieval, ModelUsage: modelUsage, WindowMinutes: windowMinutes, WindowMetrics: windowMetrics,
 	}, nil
 }
 
+func capabilityStatus(ready bool, unavailable string) string {
+	if ready {
+		return "ready"
+	}
+	return unavailable
+}
+
 func (d *adminDashboard) loadLastTaskErrorAt(ctx context.Context) (*time.Time, error) {
 	var last sql.NullTime
 	if err := d.db.QueryRowContext(ctx, `
-		SELECT MAX(updated_at) FILTER (WHERE status = 'dead_letter' OR COALESCE(last_error, '') <> '')
-		FROM async_outbox
+		SELECT NULLIF(GREATEST(
+			COALESCE((SELECT MAX(updated_at) FROM async_outbox WHERE status = 'dead_letter' OR COALESCE(last_error, '') <> ''), TIMESTAMPTZ 'epoch'),
+			COALESCE((SELECT MAX(created_at) FROM model_usage_records WHERE COALESCE(error, '') <> ''), TIMESTAMPTZ 'epoch')
+		), TIMESTAMPTZ 'epoch')
 	`).Scan(&last); err != nil {
 		return nil, fmt.Errorf("task health: %w", err)
 	}

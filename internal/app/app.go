@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
@@ -332,7 +333,8 @@ func New(ctx context.Context, cfg config.Config) (*App, error) {
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", app.handleHealth)
-	adminHandler := newAdminHandler(stores.db, stores.state, stores.personaFacts, personaDefinition, cfg, app.qqConnected, mcpManager)
+	mainModelReady := strings.TrimSpace(cfg.Models.Main.APIKey) != "" && strings.TrimSpace(cfg.Models.Main.Model) != ""
+	adminHandler := newAdminHandler(stores.db, stores.state, stores.personaFacts, personaDefinition, cfg, app.qqConnected, mcpManager, mainModelReady, vectorGraph.memory != nil)
 	mux.Handle("/admin", adminHandler)
 	mux.Handle("/admin/", adminHandler)
 
