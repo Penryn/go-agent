@@ -1,5 +1,6 @@
 export interface BotSnapshot {
   updated_at: string
+  window_minutes: number
   selected_group: number
   status: { mode: string; qq_enabled: boolean; qq_connected: boolean; self_id: number; database_ok: boolean }
   stats: { groups: number; members: number; memories: number; pending_tasks: number }
@@ -77,6 +78,30 @@ export interface MemoryRecord {
   expires_at?: string
   source_event_id: string
   updated_at: string
+}
+
+export interface MemeRecord {
+  meme_id: string
+  group_id: number
+  source_event_id: string
+  object_key: string
+  file_ext: string
+  preview_url: string
+  width: number
+  height: number
+  animated: boolean
+  status: string
+  send_count: number
+  dud_count: number
+  created_at: string
+  last_sent_at?: string
+  title: string
+  summary: string
+  keywords: string[]
+  emotion_tags: string[]
+  scene_tags: string[]
+  confidence: number
+  reviewed: boolean
 }
 
 export interface TaskRecord {

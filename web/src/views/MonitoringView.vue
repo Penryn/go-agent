@@ -3,7 +3,8 @@ import { computed } from 'vue'
 import { storeToRefs } from 'pinia'
 import { useDashboardStore } from '@/stores/dashboard'
 
-const { snapshot } = storeToRefs(useDashboardStore())
+const store = useDashboardStore()
+const { snapshot, windowMinutes } = storeToRefs(store)
 const memories = computed(() => snapshot.value?.memories || [])
 const decisions = computed(() => (snapshot.value?.activity || []).filter((item) => item.type === 'decision'))
 const tasks = computed(() => (snapshot.value?.activity || []).filter((item) => item.type === 'task'))
@@ -19,7 +20,7 @@ const modelUsage = computed(() => snapshot.value?.model_usage || { calls: 0, inp
 
 <template>
   <section class="glass-panel page-panel monitoring-page">
-    <div class="page-panel-head"><div><span>OBSERVABILITY</span><h2>监控指标</h2><p>检索质量与后续决策采用情况</p></div></div>
+    <div class="page-panel-head"><div><span>OBSERVABILITY</span><h2>监控指标</h2><p>检索质量与后续决策采用情况</p></div><el-segmented v-model="windowMinutes" :options="[{ label: '10 分钟', value: 10 }, { label: '1 小时', value: 60 }, { label: '24 小时', value: 1440 }]" @change="store.setWindow" /></div>
 
     <section class="monitor-grid">
       <article class="monitor-card" data-tone="mint"><span>近 10 分钟发言</span><strong>{{ snapshot?.persona.runtime.replies_last_10min ?? 0 }}</strong><small>当前群聊</small></article>

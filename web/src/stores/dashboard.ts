@@ -7,6 +7,7 @@ import type { BotSnapshot } from '@/types'
 export const useDashboardStore = defineStore('dashboard', () => {
   const snapshot = ref<BotSnapshot>()
   const selectedGroup = ref(0)
+  const windowMinutes = ref(1440)
   const token = ref(sessionStorage.getItem('bot-admin-token') ?? '')
   const loading = ref(false)
   const needsToken = ref(false)
@@ -19,7 +20,7 @@ export const useDashboardStore = defineStore('dashboard', () => {
     if (loading.value || document.hidden) return
     loading.value = true
     try {
-      const data = await getSnapshot(selectedGroup.value, token.value)
+      const data = await getSnapshot(selectedGroup.value, token.value, windowMinutes.value)
       snapshot.value = data
       selectedGroup.value ||= data.selected_group
       needsToken.value = false
@@ -37,6 +38,11 @@ export const useDashboardStore = defineStore('dashboard', () => {
 
   function setGroup(groupID: number) {
     selectedGroup.value = groupID
+    void refresh()
+  }
+
+  function setWindow(value: number) {
+    windowMinutes.value = value
     void refresh()
   }
 
@@ -58,5 +64,5 @@ export const useDashboardStore = defineStore('dashboard', () => {
   }
 
   onScopeDispose(stopPolling)
-  return { snapshot, selectedGroup, token, loading, needsToken, error, persona, refresh, setGroup, setToken, startPolling, stopPolling }
+  return { snapshot, selectedGroup, windowMinutes, token, loading, needsToken, error, persona, refresh, setGroup, setWindow, setToken, startPolling, stopPolling }
 })

@@ -6,6 +6,7 @@ import RelationsView from '@/views/RelationsView.vue'
 import MonitoringView from '@/views/MonitoringView.vue'
 import MCPView from '@/views/MCPView.vue'
 import TasksView from '@/views/TasksView.vue'
+import MemesView from '@/views/MemesView.vue'
 
 export const router = createRouter({
   history: createWebHashHistory(),
@@ -15,6 +16,7 @@ export const router = createRouter({
     { path: '/relations', name: 'relations', component: RelationsView, meta: { title: '群友关系' } },
     { path: '/activity', name: 'activity', component: ActivityView, meta: { title: '运行记录' } },
     { path: '/tasks', name: 'tasks', component: TasksView, meta: { title: '任务队列' } },
+    { path: '/memes', name: 'memes', component: MemesView, meta: { title: '表情包库' } },
     { path: '/monitoring', name: 'monitoring', component: MonitoringView, meta: { title: '监控指标' } },
     { path: '/mcp', name: 'mcp', component: MCPView, meta: { title: 'MCP 工具' } },
   ],

@@ -2,7 +2,7 @@
 import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { storeToRefs } from 'pinia'
 import { useRoute } from 'vue-router'
-import { ChatDotRound, Connection, DataAnalysis, Memo, Refresh, Setting, TrendCharts, User, List } from '@element-plus/icons-vue'
+import { ChatDotRound, Connection, DataAnalysis, Memo, Refresh, Setting, TrendCharts, User, List, Picture } from '@element-plus/icons-vue'
 import { useDashboardStore } from '@/stores/dashboard'
 
 const store = useDashboardStore()
@@ -17,6 +17,7 @@ const nav = [
   { to: '/relations', label: '群友关系', icon: User },
   { to: '/activity', label: '运行记录', icon: ChatDotRound },
   { to: '/tasks', label: '任务队列', icon: List },
+  { to: '/memes', label: '表情包库', icon: Picture },
   { to: '/monitoring', label: '监控指标', icon: TrendCharts },
   { to: '/mcp', label: 'MCP 工具', icon: Setting },
 ]

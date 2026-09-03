@@ -46,6 +46,7 @@ type adminSnapshot struct {
 	Activity      []adminActivity        `json:"activity"`
 	Retrieval     adminRetrievalMetrics  `json:"retrieval"`
 	ModelUsage    adminModelUsageMetrics `json:"model_usage"`
+	WindowMinutes int                    `json:"window_minutes"`
 }
 
 type adminStatus struct {
@@ -95,6 +96,30 @@ type adminMemory struct {
 	ExpiresAt     *time.Time `json:"expires_at,omitempty"`
 	SourceEventID string     `json:"source_event_id"`
 	UpdatedAt     time.Time  `json:"updated_at"`
+}
+
+type adminMeme struct {
+	MemeID        string     `json:"meme_id"`
+	GroupID       int64      `json:"group_id"`
+	SourceEventID string     `json:"source_event_id"`
+	ObjectKey     string     `json:"object_key"`
+	FileExt       string     `json:"file_ext"`
+	PreviewURL    string     `json:"preview_url"`
+	Width         int        `json:"width"`
+	Height        int        `json:"height"`
+	Animated      bool       `json:"animated"`
+	Status        string     `json:"status"`
+	SendCount     int        `json:"send_count"`
+	DudCount      int        `json:"dud_count"`
+	CreatedAt     time.Time  `json:"created_at"`
+	LastSentAt    *time.Time `json:"last_sent_at,omitempty"`
+	Title         string     `json:"title"`
+	Summary       string     `json:"summary"`
+	Keywords      []string   `json:"keywords"`
+	EmotionTags   []string   `json:"emotion_tags"`
+	SceneTags     []string   `json:"scene_tags"`
+	Confidence    float64    `json:"confidence"`
+	Reviewed      bool       `json:"reviewed"`
 }
 
 type adminTask struct {
@@ -199,20 +224,22 @@ func newAdminHandler(db *sql.DB, state ports.RuntimeStateStore, facts ports.Pers
 	dashboard := &adminDashboard{db: db, state: state, facts: facts, definition: definition, cfg: cfg, connected: connected}
 	assets, _ := fs.Sub(adminAssets, "adminui/dist")
 	return &adminHandler{
-		token:  strings.TrimSpace(cfg.Server.AdminToken),
-		load:   dashboard.snapshot,
-		mcp:    mcp,
-		db:     db,
-		assets: http.StripPrefix("/admin/", http.FileServer(http.FS(assets))),
+		token:      strings.TrimSpace(cfg.Server.AdminToken),
+		load:       dashboard.snapshot,
+		loadWindow: dashboard.snapshotWindow,
+		mcp:        mcp,
+		db:         db,
+		assets:     http.StripPrefix("/admin/", http.FileServer(http.FS(assets))),
 	}
 }
 
 type adminHandler struct {
-	token  string
-	load   func(context.Context, int64) (adminSnapshot, error)
-	assets http.Handler
-	db     *sql.DB
-	mcp    *toolsvc.MCPManager
+	token      string
+	load       func(context.Context, int64) (adminSnapshot, error)
+	loadWindow func(context.Context, int64, int) (adminSnapshot, error)
+	assets     http.Handler
+	db         *sql.DB
+	mcp        *toolsvc.MCPManager
 }
 
 //go:embed adminui/dist
@@ -230,6 +257,8 @@ func (h *adminHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.handleSnapshot(w, r)
 	case "/admin/api/mcp":
 		h.handleMCP(w, r)
+	case "/admin/api/memes":
+		h.handleMemes(w, r)
 	case "/admin/api/tasks":
 		h.handleTasks(w, r)
 	default:
@@ -241,9 +270,38 @@ func (h *adminHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			http.NotFound(w, r)
 			return
 		}
-		w.Header().Set("Content-Security-Policy", "default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src 'self'; img-src 'self' data:")
+		w.Header().Set("Content-Security-Policy", "default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src 'self'; img-src 'self' data: https: http:")
 		h.assets.ServeHTTP(w, r)
 	}
+}
+
+func (h *adminHandler) handleMemes(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		w.Header().Set("Allow", http.MethodGet)
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if !h.authorized(r) {
+		http.Error(w, "admin token required", http.StatusUnauthorized)
+		return
+	}
+	groupID := int64(0)
+	if raw := strings.TrimSpace(r.URL.Query().Get("group_id")); raw != "" {
+		parsed, err := strconv.ParseInt(raw, 10, 64)
+		if err != nil || parsed < 0 {
+			http.Error(w, "invalid group_id", http.StatusBadRequest)
+			return
+		}
+		groupID = parsed
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 4*time.Second)
+	defer cancel()
+	memes, err := loadAdminMemes(ctx, h.db, groupID, r.URL.Query().Get("q"))
+	if err != nil {
+		http.Error(w, "load memes: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, memes)
 }
 
 func (h *adminHandler) handleTasks(w http.ResponseWriter, r *http.Request) {
@@ -386,9 +444,22 @@ func (h *adminHandler) handleSnapshot(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid group_id", http.StatusBadRequest)
 		return
 	}
+	window := 1440
+	if raw := r.URL.Query().Get("window_minutes"); raw != "" {
+		window, err = strconv.Atoi(raw)
+		if err != nil || !slices.Contains([]int{10, 60, 1440}, window) {
+			http.Error(w, "invalid window_minutes", http.StatusBadRequest)
+			return
+		}
+	}
 	ctx, cancel := context.WithTimeout(r.Context(), 4*time.Second)
 	defer cancel()
-	snapshot, err := h.load(ctx, groupID)
+	var snapshot adminSnapshot
+	if h.loadWindow != nil {
+		snapshot, err = h.loadWindow(ctx, groupID, window)
+	} else {
+		snapshot, err = h.load(ctx, groupID)
+	}
 	if err != nil {
 		http.Error(w, "load dashboard: "+err.Error(), http.StatusInternalServerError)
 		return
@@ -411,6 +482,10 @@ func (h *adminHandler) authorized(r *http.Request) bool {
 }
 
 func (d *adminDashboard) snapshot(ctx context.Context, selectedGroup int64) (adminSnapshot, error) {
+	return d.snapshotWindow(ctx, selectedGroup, 1440)
+}
+
+func (d *adminDashboard) snapshotWindow(ctx context.Context, selectedGroup int64, windowMinutes int) (adminSnapshot, error) {
 	groups, err := d.loadGroups(ctx)
 	if err != nil {
 		return adminSnapshot{}, err
@@ -434,15 +509,15 @@ func (d *adminDashboard) snapshot(ctx context.Context, selectedGroup int64) (adm
 	if err != nil {
 		return adminSnapshot{}, err
 	}
-	activity, err := d.loadActivity(ctx, selectedGroup)
+	activity, err := d.loadActivity(ctx, selectedGroup, windowMinutes)
 	if err != nil {
 		return adminSnapshot{}, err
 	}
-	retrieval, err := d.loadRetrievalMetrics(ctx, selectedGroup)
+	retrieval, err := d.loadRetrievalMetrics(ctx, selectedGroup, windowMinutes)
 	if err != nil {
 		return adminSnapshot{}, err
 	}
-	modelUsage, err := d.loadModelUsageMetrics(ctx, selectedGroup)
+	modelUsage, err := d.loadModelUsageMetrics(ctx, selectedGroup, windowMinutes)
 	if err != nil {
 		return adminSnapshot{}, err
 	}
@@ -450,19 +525,19 @@ func (d *adminDashboard) snapshot(ctx context.Context, selectedGroup int64) (adm
 		UpdatedAt: time.Now(), SelectedGroup: selectedGroup,
 		Status: adminStatus{Mode: d.cfg.App.Mode, QQEnabled: d.cfg.QQ.Enabled, QQConnected: d.connected != nil && d.connected(), SelfID: d.cfg.QQ.SelfID, DatabaseOK: d.db.PingContext(ctx) == nil},
 		Stats:  stats, Persona: persona, Groups: groups, Memories: memories,
-		Relationships: relationships, Activity: activity, Retrieval: retrieval, ModelUsage: modelUsage,
+		Relationships: relationships, Activity: activity, Retrieval: retrieval, ModelUsage: modelUsage, WindowMinutes: windowMinutes,
 	}, nil
 }
 
-func (d *adminDashboard) loadModelUsageMetrics(ctx context.Context, groupID int64) (adminModelUsageMetrics, error) {
+func (d *adminDashboard) loadModelUsageMetrics(ctx context.Context, groupID int64, windowMinutes int) (adminModelUsageMetrics, error) {
 	var metrics adminModelUsageMetrics
 	var avg sql.NullFloat64
 	err := d.db.QueryRowContext(ctx, `
 		SELECT COUNT(*), COALESCE(SUM(input_tokens), 0), COALESCE(SUM(output_tokens), 0), AVG(duration_ms),
 		       COUNT(*) FILTER (WHERE error <> '')
 		FROM model_usage_records
-		WHERE created_at > NOW() - INTERVAL '24 hours' AND ($1 = 0 OR group_id = $1)
-	`, groupID).Scan(&metrics.Calls, &metrics.InputTokens, &metrics.OutputTokens, &avg, &metrics.ErrorCalls)
+		WHERE created_at > NOW() - ($2 || ' minutes')::interval AND ($1 = 0 OR group_id = $1)
+	`, groupID, windowMinutes).Scan(&metrics.Calls, &metrics.InputTokens, &metrics.OutputTokens, &avg, &metrics.ErrorCalls)
 	if err != nil {
 		return metrics, fmt.Errorf("model usage metrics: %w", err)
 	}
@@ -472,7 +547,7 @@ func (d *adminDashboard) loadModelUsageMetrics(ctx context.Context, groupID int6
 	return metrics, nil
 }
 
-func (d *adminDashboard) loadRetrievalMetrics(ctx context.Context, groupID int64) (adminRetrievalMetrics, error) {
+func (d *adminDashboard) loadRetrievalMetrics(ctx context.Context, groupID int64, windowMinutes int) (adminRetrievalMetrics, error) {
 	var metrics adminRetrievalMetrics
 	var avg sql.NullFloat64
 	err := d.db.QueryRowContext(ctx, `
@@ -482,8 +557,8 @@ func (d *adminDashboard) loadRetrievalMetrics(ctx context.Context, groupID int64
 		       COUNT(*) FILTER (WHERE outcome <> ''),
 		       COUNT(*) FILTER (WHERE jsonb_array_length(selected_memory_ids_json) > 0)
 		FROM retrieval_traces
-		WHERE created_at > NOW() - INTERVAL '24 hours' AND ($1 = 0 OR group_id = $1)
-	`, groupID).Scan(&metrics.Queries, &metrics.QueriesWithHits, &avg, &metrics.FeedbackQueries, &metrics.SelectedQueries)
+		WHERE created_at > NOW() - ($2 || ' minutes')::interval AND ($1 = 0 OR group_id = $1)
+	`, groupID, windowMinutes).Scan(&metrics.Queries, &metrics.QueriesWithHits, &avg, &metrics.FeedbackQueries, &metrics.SelectedQueries)
 	if err != nil {
 		return metrics, fmt.Errorf("retrieval metrics: %w", err)
 	}
@@ -621,6 +696,59 @@ func (d *adminDashboard) loadMemories(ctx context.Context, groupID int64) ([]adm
 	return memories, rows.Err()
 }
 
+func loadAdminMemes(ctx context.Context, db *sql.DB, groupID int64, query string) ([]adminMeme, error) {
+	query = strings.TrimSpace(query)
+	rows, err := db.QueryContext(ctx, `
+		SELECT a.meme_id, a.group_id, a.source_event_id, a.object_key, a.file_ext,
+		       COALESCE((SELECT NULLIF(att->>'url', '')
+		                   FROM jsonb_array_elements(CASE WHEN jsonb_typeof(m.attachments_json) = 'array'
+		                                                  THEN m.attachments_json ELSE '[]'::jsonb END) att
+		                   WHERE att->>'object_key' = a.object_key LIMIT 1), ''),
+		       a.width, a.height, a.animated, a.status, a.send_count, a.dud_count,
+		       a.created_at, a.last_sent_at, d.title, d.summary, d.keywords_json,
+		       d.emotion_tags_json, d.scene_tags_json, d.confidence, d.reviewed
+		FROM meme_assets a
+		JOIN meme_descriptors d ON d.meme_id = a.meme_id
+		LEFT JOIN messages m ON m.event_id = a.source_event_id
+		WHERE ($1 = 0 OR a.group_id = $1)
+		  AND ($2 = '' OR d.title ILIKE '%' || $2 || '%' OR d.summary ILIKE '%' || $2 || '%'
+		       OR d.keywords_json::text ILIKE '%' || $2 || '%'
+		       OR d.emotion_tags_json::text ILIKE '%' || $2 || '%'
+		       OR d.scene_tags_json::text ILIKE '%' || $2 || '%')
+		ORDER BY a.created_at DESC LIMIT 200
+	`, groupID, query)
+	if err != nil {
+		return nil, fmt.Errorf("memes: %w", err)
+	}
+	defer rows.Close()
+	memes := make([]adminMeme, 0)
+	for rows.Next() {
+		var meme adminMeme
+		var keywords, emotions, scenes []byte
+		var previewURL string
+		if err := rows.Scan(&meme.MemeID, &meme.GroupID, &meme.SourceEventID, &meme.ObjectKey, &meme.FileExt,
+			&previewURL, &meme.Width, &meme.Height, &meme.Animated, &meme.Status, &meme.SendCount, &meme.DudCount,
+			&meme.CreatedAt, &meme.LastSentAt, &meme.Title, &meme.Summary, &keywords, &emotions, &scenes,
+			&meme.Confidence, &meme.Reviewed); err != nil {
+			return nil, err
+		}
+		meme.PreviewURL = safePreviewURL(previewURL)
+		_ = json.Unmarshal(keywords, &meme.Keywords)
+		_ = json.Unmarshal(emotions, &meme.EmotionTags)
+		_ = json.Unmarshal(scenes, &meme.SceneTags)
+		memes = append(memes, meme)
+	}
+	return memes, rows.Err()
+}
+
+func safePreviewURL(raw string) string {
+	parsed, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Host == "" {
+		return ""
+	}
+	return parsed.String()
+}
+
 func (d *adminDashboard) loadRelationships(ctx context.Context, groupID int64) ([]adminRelationship, error) {
 	rows, err := d.db.QueryContext(ctx, `
 		SELECT r.group_id, r.user_id,
@@ -649,22 +777,22 @@ func (d *adminDashboard) loadRelationships(ctx context.Context, groupID int64) (
 	return relationships, rows.Err()
 }
 
-func (d *adminDashboard) loadActivity(ctx context.Context, groupID int64) ([]adminActivity, error) {
+func (d *adminDashboard) loadActivity(ctx context.Context, groupID int64, windowMinutes int) ([]adminActivity, error) {
 	rows, err := d.db.QueryContext(ctx, `
 		SELECT at, group_id, type, label, subject, detail FROM (
 			SELECT event_id, occurred_at AS at, group_id, 'message' AS type, kind AS label,
 			       COALESCE(NULLIF(sender_group_card, ''), NULLIF(sender_qq_nickname, ''), user_id::text) AS subject,
 			       LEFT(text_content, 300) AS detail
-			FROM messages WHERE occurred_at > NOW() - INTERVAL '24 hours' AND ($1 = 0 OR group_id = $1)
+			FROM messages WHERE occurred_at > NOW() - ($2 || ' minutes')::interval AND ($1 = 0 OR group_id = $1)
 			UNION ALL
 			SELECT event_id, created_at, group_id, 'decision', chosen_action, outcome, LEFT(interpretation, 300)
-			FROM thought_records WHERE created_at > NOW() - INTERVAL '24 hours' AND ($1 = 0 OR group_id = $1)
+			FROM thought_records WHERE created_at > NOW() - ($2 || ' minutes')::interval AND ($1 = 0 OR group_id = $1)
 			UNION ALL
 			SELECT '', updated_at, 0, 'task', kind, status, LEFT(COALESCE(last_error, ''), 300)
-			FROM async_outbox WHERE updated_at > NOW() - INTERVAL '24 hours'
+			FROM async_outbox WHERE updated_at > NOW() - ($2 || ' minutes')::interval
 		) activity
 		ORDER BY at DESC LIMIT 80
-	`, groupID)
+	`, groupID, windowMinutes)
 	if err != nil {
 		return nil, fmt.Errorf("activity: %w", err)
 	}
