@@ -6,6 +6,7 @@ import { getActivity, getEventDetail } from '@/lib/api'
 import type { Activity, EventDetail } from '@/types'
 import { useDashboardStore } from '@/stores/dashboard'
 import { useRoute } from 'vue-router'
+import { ElMessage } from 'element-plus'
 
 const store = useDashboardStore()
 const route = useRoute()
@@ -43,7 +44,11 @@ async function load(nextPage = page.value) {
 
 async function openDetail(eventID: string) {
   if (!eventID) return
-  detail.value = await getEventDetail(eventID, store.token)
+  try {
+    detail.value = await getEventDetail(eventID, store.token)
+  } catch (error) {
+    ElMessage.error(`读取事件详情失败：${error instanceof Error ? error.message : String(error)}`)
+  }
 }
 
 watch([selectedGroup, windowMinutes, filter], () => { void load(1) })
