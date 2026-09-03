@@ -47,7 +47,7 @@ const modelUsage = computed(() => snapshot.value?.model_usage || { calls: 0, inp
         <p>采用率表示召回内容进入最终决策上下文，不代表记忆内容一定正确；正确率仍需人工标注或用户反馈。</p>
       </article>
       <article class="monitor-detail">
-        <div class="panel-title"><div><span>MODEL USAGE</span><h3>模型用量（近 24 小时）</h3></div><el-tag effect="plain">{{ modelUsage.error_calls }} 次错误</el-tag></div>
+        <div class="panel-title"><div><span>MODEL USAGE</span><h3>模型用量（当前窗口）</h3></div><el-tag effect="plain">{{ modelUsage.error_calls }} 次错误</el-tag></div>
         <div class="quality-row"><span>输入 token</span><strong>{{ modelUsage.input_tokens.toLocaleString() }}</strong></div>
         <div class="quality-row"><span>输出 token</span><strong>{{ modelUsage.output_tokens.toLocaleString() }}</strong></div>
       </article>

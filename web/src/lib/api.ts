@@ -1,5 +1,5 @@
 import axios from 'axios'
-import type { BotSnapshot, EventDetail, MCPServerConfig, MemeRecord, TaskRecord } from '@/types'
+import type { BotSnapshot, EventDetail, MCPServerConfig, MemeRecord, MemoryRecord, TaskRecord } from '@/types'
 
 export const api = axios.create({
   baseURL: '/admin/api',
@@ -23,6 +23,11 @@ export async function getEventDetail(eventID: string, token: string) {
 
 export async function getTasks(status: string, token: string) {
   const response = await api.get<TaskRecord[]>('/tasks', { params: status ? { status } : undefined, headers: token ? { Authorization: `Bearer ${token}` } : undefined })
+  return response.data
+}
+
+export async function getMemories(groupID: number, status: string, query: string, token: string) {
+  const response = await api.get<MemoryRecord[]>('/memories', { params: { group_id: groupID || undefined, status, q: query.trim() || undefined }, headers: token ? { Authorization: `Bearer ${token}` } : undefined })
   return response.data
 }
 

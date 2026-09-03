@@ -273,6 +273,8 @@ func (h *adminHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.handleMemes(w, r)
 	case "/admin/api/tasks":
 		h.handleTasks(w, r)
+	case "/admin/api/memories":
+		h.handleMemories(w, r)
 	default:
 		if r.Method != http.MethodGet {
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -285,6 +287,42 @@ func (h *adminHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Security-Policy", "default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src 'self'; img-src 'self' data: https: http:")
 		h.assets.ServeHTTP(w, r)
 	}
+}
+
+func (h *adminHandler) handleMemories(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if !h.authorized(r) {
+		http.Error(w, "admin token required", http.StatusUnauthorized)
+		return
+	}
+	groupID := int64(0)
+	if raw := strings.TrimSpace(r.URL.Query().Get("group_id")); raw != "" {
+		parsed, err := strconv.ParseInt(raw, 10, 64)
+		if err != nil || parsed < 0 {
+			http.Error(w, "invalid group_id", http.StatusBadRequest)
+			return
+		}
+		groupID = parsed
+	}
+	status := r.URL.Query().Get("status")
+	if status == "" {
+		status = "active"
+	}
+	if !slices.Contains([]string{"active", "expired", "all"}, status) {
+		http.Error(w, "invalid status", http.StatusBadRequest)
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 4*time.Second)
+	defer cancel()
+	memories, err := loadAdminMemories(ctx, h.db, groupID, status, r.URL.Query().Get("q"))
+	if err != nil {
+		http.Error(w, "load memories: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, memories)
 }
 
 func (h *adminHandler) handleMeme(w http.ResponseWriter, r *http.Request) {
@@ -756,13 +794,18 @@ func (d *adminDashboard) loadPersona(ctx context.Context, groupID int64) (adminP
 }
 
 func (d *adminDashboard) loadMemories(ctx context.Context, groupID int64) ([]adminMemory, error) {
-	rows, err := d.db.QueryContext(ctx, `
+	return loadAdminMemories(ctx, d.db, groupID, "active", "")
+}
+
+func loadAdminMemories(ctx context.Context, db *sql.DB, groupID int64, status, query string) ([]adminMemory, error) {
+	rows, err := db.QueryContext(ctx, `
 		SELECT memory_id, scope, type, subject, content, confidence, importance, created_at, expires_at, source_event_id, updated_at
 		FROM memories
-		WHERE (expires_at IS NULL OR expires_at > NOW())
+		WHERE ($2 = 'all' OR ($2 = 'active' AND (expires_at IS NULL OR expires_at > NOW())) OR ($2 = 'expired' AND expires_at IS NOT NULL AND expires_at <= NOW()))
 		  AND ($1 = 0 OR scope = 'global' OR scope = 'group:' || $1::text OR scope LIKE 'group:' || $1::text || ':user:%')
-		ORDER BY created_at DESC LIMIT 60
-	`, groupID)
+		  AND ($3 = '' OR LOWER(subject || ' ' || content || ' ' || scope) LIKE '%' || LOWER($3) || '%')
+		ORDER BY created_at DESC LIMIT 200
+	`, groupID, status, strings.TrimSpace(query))
 	if err != nil {
 		return nil, fmt.Errorf("memories: %w", err)
 	}

@@ -20,6 +20,10 @@ export async function getTasks(status, token) {
     const response = await api.get('/tasks', { params: status ? { status } : undefined, headers: token ? { Authorization: `Bearer ${token}` } : undefined });
     return response.data;
 }
+export async function getMemories(groupID, status, query, token) {
+    const response = await api.get('/memories', { params: { group_id: groupID || undefined, status, q: query.trim() || undefined }, headers: token ? { Authorization: `Bearer ${token}` } : undefined });
+    return response.data;
+}
 export async function getMemes(groupID, query, token) {
     const response = await api.get('/memes', { params: { group_id: groupID || undefined, q: query.trim() || undefined }, headers: token ? { Authorization: `Bearer ${token}` } : undefined });
     return response.data;
