@@ -76,3 +76,19 @@ func TestAdminWithoutTokenIsLoopbackOnly(t *testing.T) {
 		t.Fatalf("expected remote access to be denied, got %d", remoteResponse.Code)
 	}
 }
+
+func TestAdminSnapshotCoreMode(t *testing.T) {
+	handler := &adminHandler{
+		token:      "secret",
+		load:       func(context.Context, int64) (adminSnapshot, error) { return adminSnapshot{SelectedGroup: 1}, nil },
+		loadWindow: func(context.Context, int64, int) (adminSnapshot, error) { return adminSnapshot{SelectedGroup: 2}, nil },
+		loadCore:   func(context.Context, int64, int) (adminSnapshot, error) { return adminSnapshot{SelectedGroup: 3}, nil },
+	}
+	req := httptest.NewRequest(http.MethodGet, "/admin/api/snapshot?mode=core", nil)
+	req.Header.Set("Authorization", "Bearer secret")
+	res := httptest.NewRecorder()
+	handler.ServeHTTP(res, req)
+	if res.Code != http.StatusOK || !strings.Contains(res.Body.String(), `"selected_group":3`) {
+		t.Fatalf("unexpected core snapshot: status=%d body=%q", res.Code, res.Body.String())
+	}
+}

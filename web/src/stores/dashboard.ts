@@ -12,6 +12,7 @@ export const useDashboardStore = defineStore('dashboard', () => {
   const loading = ref(false)
   const needsToken = ref(false)
   const error = ref('')
+  const detailedSnapshot = ref(true)
   let timer: number | undefined
 
   const persona = computed(() => snapshot.value?.persona)
@@ -20,7 +21,7 @@ export const useDashboardStore = defineStore('dashboard', () => {
     if (loading.value || document.hidden) return
     loading.value = true
     try {
-      const data = await getSnapshot(selectedGroup.value, token.value, windowMinutes.value)
+      const data = await getSnapshot(selectedGroup.value, token.value, windowMinutes.value, detailedSnapshot.value)
       snapshot.value = data
       selectedGroup.value ||= data.selected_group
       needsToken.value = false
@@ -46,6 +47,12 @@ export const useDashboardStore = defineStore('dashboard', () => {
     void refresh()
   }
 
+  function setSnapshotMode(detail: boolean) {
+    if (detailedSnapshot.value === detail) return
+    detailedSnapshot.value = detail
+    void refresh()
+  }
+
   function setToken(value: string) {
     token.value = value.trim()
     sessionStorage.setItem('bot-admin-token', token.value)
@@ -64,5 +71,5 @@ export const useDashboardStore = defineStore('dashboard', () => {
   }
 
   onScopeDispose(stopPolling)
-  return { snapshot, selectedGroup, windowMinutes, token, loading, needsToken, error, persona, refresh, setGroup, setWindow, setToken, startPolling, stopPolling }
+  return { snapshot, selectedGroup, windowMinutes, token, loading, needsToken, error, persona, refresh, setGroup, setWindow, setToken, setSnapshotMode, startPolling, stopPolling }
 })

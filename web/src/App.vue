@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref } from 'vue'
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { storeToRefs } from 'pinia'
 import { useRoute } from 'vue-router'
 import { ChatDotRound, Connection, DataAnalysis, Memo, Refresh, Setting, TrendCharts, User, List, Picture } from '@element-plus/icons-vue'
@@ -10,6 +10,7 @@ const { snapshot, selectedGroup, loading, needsToken, error } = storeToRefs(stor
 const route = useRoute()
 const tokenInput = ref('')
 const pageTitle = computed(() => String(route.meta.title ?? '实时概览'))
+const detailedSnapshotRoutes = new Set(['overview', 'monitoring', 'relations'])
 
 const navSections = [
   { label: '运营', items: [{ to: '/', label: '实时概览', icon: DataAnalysis }, { to: '/activity', label: '运行记录', icon: ChatDotRound }, { to: '/tasks', label: '任务队列', icon: List }] },
@@ -24,6 +25,7 @@ function saveToken() {
 
 onMounted(store.startPolling)
 onUnmounted(store.stopPolling)
+watch(() => route.name, (name) => store.setSnapshotMode(detailedSnapshotRoutes.has(String(name))), { immediate: true })
 </script>
 
 <template>

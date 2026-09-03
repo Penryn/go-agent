@@ -6,9 +6,9 @@ export const api = axios.create({
   timeout: 5000,
 })
 
-export async function getSnapshot(groupID: number, token: string, windowMinutes = 1440) {
+export async function getSnapshot(groupID: number, token: string, windowMinutes = 1440, detail = true) {
   const response = await api.get<BotSnapshot>('/snapshot', {
-    params: { ...(groupID ? { group_id: groupID } : {}), window_minutes: windowMinutes },
+    params: { ...(groupID ? { group_id: groupID } : {}), window_minutes: windowMinutes, ...(detail ? {} : { mode: 'core' }) },
     headers: token ? { Authorization: `Bearer ${token}` } : undefined,
   })
   return response.data

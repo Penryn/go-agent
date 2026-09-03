@@ -273,6 +273,7 @@ func newAdminHandler(db *sql.DB, state ports.RuntimeStateStore, facts ports.Pers
 		token:      strings.TrimSpace(cfg.Server.AdminToken),
 		load:       dashboard.snapshot,
 		loadWindow: dashboard.snapshotWindow,
+		loadCore:   dashboard.snapshotCore,
 		mcp:        mcp,
 		db:         db,
 		assets:     http.StripPrefix("/admin/", http.FileServer(http.FS(assets))),
@@ -283,6 +284,7 @@ type adminHandler struct {
 	token      string
 	load       func(context.Context, int64) (adminSnapshot, error)
 	loadWindow func(context.Context, int64, int) (adminSnapshot, error)
+	loadCore   func(context.Context, int64, int) (adminSnapshot, error)
 	assets     http.Handler
 	db         *sql.DB
 	mcp        *toolsvc.MCPManager
@@ -767,7 +769,9 @@ func (h *adminHandler) handleSnapshot(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 4*time.Second)
 	defer cancel()
 	var snapshot adminSnapshot
-	if h.loadWindow != nil {
+	if r.URL.Query().Get("mode") == "core" && h.loadCore != nil {
+		snapshot, err = h.loadCore(ctx, groupID, window)
+	} else if h.loadWindow != nil {
 		snapshot, err = h.loadWindow(ctx, groupID, window)
 	} else {
 		snapshot, err = h.load(ctx, groupID)
@@ -798,6 +802,14 @@ func (d *adminDashboard) snapshot(ctx context.Context, selectedGroup int64) (adm
 }
 
 func (d *adminDashboard) snapshotWindow(ctx context.Context, selectedGroup int64, windowMinutes int) (adminSnapshot, error) {
+	return d.snapshotWithDetail(ctx, selectedGroup, windowMinutes, true)
+}
+
+func (d *adminDashboard) snapshotCore(ctx context.Context, selectedGroup int64, windowMinutes int) (adminSnapshot, error) {
+	return d.snapshotWithDetail(ctx, selectedGroup, windowMinutes, false)
+}
+
+func (d *adminDashboard) snapshotWithDetail(ctx context.Context, selectedGroup int64, windowMinutes int, includeDetail bool) (adminSnapshot, error) {
 	groups, err := d.loadGroups(ctx)
 	if err != nil {
 		return adminSnapshot{}, err
@@ -809,25 +821,31 @@ func (d *adminDashboard) snapshotWindow(ctx context.Context, selectedGroup int64
 	if err != nil {
 		return adminSnapshot{}, err
 	}
-	persona, err := d.loadPersona(ctx, selectedGroup)
-	if err != nil {
-		return adminSnapshot{}, err
-	}
-	memories, err := d.loadMemories(ctx, selectedGroup)
-	if err != nil {
-		return adminSnapshot{}, err
-	}
-	relationships, err := d.loadRelationships(ctx, selectedGroup)
-	if err != nil {
-		return adminSnapshot{}, err
-	}
-	activity, err := d.loadActivity(ctx, selectedGroup, windowMinutes)
-	if err != nil {
-		return adminSnapshot{}, err
-	}
 	retrieval, err := d.loadRetrievalMetrics(ctx, selectedGroup, windowMinutes)
 	if err != nil {
 		return adminSnapshot{}, err
+	}
+	var persona adminPersona
+	memories := []adminMemory{}
+	relationships := []adminRelationship{}
+	activity := []adminActivity{}
+	if includeDetail {
+		persona, err = d.loadPersona(ctx, selectedGroup)
+		if err != nil {
+			return adminSnapshot{}, err
+		}
+		memories, err = d.loadMemories(ctx, selectedGroup)
+		if err != nil {
+			return adminSnapshot{}, err
+		}
+		relationships, err = d.loadRelationships(ctx, selectedGroup)
+		if err != nil {
+			return adminSnapshot{}, err
+		}
+		activity, err = d.loadActivity(ctx, selectedGroup, windowMinutes)
+		if err != nil {
+			return adminSnapshot{}, err
+		}
 	}
 	modelUsage, err := d.loadModelUsageMetrics(ctx, selectedGroup, windowMinutes)
 	if err != nil {
