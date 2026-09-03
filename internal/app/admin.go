@@ -917,9 +917,6 @@ func (d *adminDashboard) loadActivity(ctx context.Context, groupID int64, window
 			UNION ALL
 			SELECT event_id, created_at, group_id, 'decision', chosen_action, outcome, LEFT(interpretation, 300)
 			FROM thought_records WHERE created_at > NOW() - ($2 || ' minutes')::interval AND ($1 = 0 OR group_id = $1)
-			UNION ALL
-			SELECT '', updated_at, 0, 'task', kind, status, LEFT(COALESCE(last_error, ''), 300)
-			FROM async_outbox WHERE updated_at > NOW() - ($2 || ' minutes')::interval
 		) activity
 		ORDER BY at DESC LIMIT 80
 	`, groupID, windowMinutes)
@@ -1047,7 +1044,7 @@ function render(d){
   const p=d.persona, facts=(p.facts||[]).map(f=>'<div class="fact"><small>'+esc(f.key)+'</small><div title="'+esc(f.value)+'">'+esc(f.value)+'</div></div>').join('');
   $('persona').innerHTML='<div class="persona"><div class="avatar">'+esc((p.name||'B').slice(0,1))+'</div><div><h3>'+esc(p.name)+'</h3><p>'+esc(p.description)+'</p><div class="pills"><span class="pill">情绪 <b>'+esc(mood(p.mood))+'</b></span><span class="pill">精力 <b>'+esc(energy(p.energy))+'</b></span><span class="pill">发言倾向 <b>'+talk(p.talk_bias||0)+'</b></span><span class="pill">状态 <b>'+esc(p.runtime.state||'observing')+'</b></span></div></div></div><div class="facts">'+facts+'</div>';
   $('relations').innerHTML=(d.relationships||[]).map(r=>'<div class="relation"><div class="name"><b>'+esc(r.name)+'</b><small>'+esc(r.user_id)+' · '+r.message_count+' 条消息</small></div><div><div class="bar"><i style="width:'+Math.round(r.affinity*100)+'%"></i></div><small>熟悉度 '+Number(r.familiarity).toFixed(2)+'</small></div><div class="score">'+Math.round(r.affinity*100)+'</div></div>').join('')||'<div class="empty">还没有形成群友关系</div>';
-  $('activity').innerHTML=(d.activity||[]).map(a=>'<div class="entry"><time>'+ago(a.at)+'</time><span class="badge '+esc(a.type)+'">'+esc(a.type==='message'?'消息':a.type==='decision'?'决策':'任务')+'</span><div class="subject"><b>'+esc(a.subject||a.label)+'</b><br><small>'+esc(a.label)+(a.group_id?' · 群 '+a.group_id:'')+'</small></div><div class="detail">'+esc(a.detail||'—')+'</div></div>').join('')||'<div class="empty">暂无运行记录</div>';
+  $('activity').innerHTML=(d.activity||[]).map(a=>'<div class="entry"><time>'+ago(a.at)+'</time><span class="badge '+esc(a.type)+'">'+esc(a.type==='message'?'消息':'决策')+'</span><div class="subject"><b>'+esc(a.subject||a.label)+'</b><br><small>'+esc(a.label)+(a.group_id?' · 群 '+a.group_id:'')+'</small></div><div class="detail">'+esc(a.detail||'—')+'</div></div>').join('')||'<div class="empty">暂无运行记录</div>';
   $('memories').innerHTML=(d.memories||[]).map(m=>'<article class="memory"><div class="meta"><span class="tag">'+esc(m.type)+'</span><span>'+ago(m.created_at)+'</span></div><h4>'+esc(m.subject||m.scope)+'</h4><p>'+esc(m.content)+'</p></article>').join('')||'<div class="empty">暂无有效记忆</div>';
 }
 async function load(){if(busy)return;busy=true;try{const headers=token?{Authorization:'Bearer '+token}:{};const url='/admin/api/snapshot'+(group?'?group_id='+group:'');const r=await fetch(url,{headers});if(r.status===401){$('tokenbox').classList.add('show');return}if(!r.ok)throw new Error(await r.text());render(await r.json());$('autherror').textContent='';$('tokenbox').classList.remove('show')}catch(e){$('updated').textContent='连接异常';$('autherror').textContent=String(e.message||e)}finally{busy=false}}

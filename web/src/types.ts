@@ -126,7 +126,7 @@ export interface Activity {
   event_id: string
   at: string
   group_id: number
-  type: 'message' | 'decision' | 'task'
+  type: 'message' | 'decision'
   label: string
   subject: string
   detail: string
