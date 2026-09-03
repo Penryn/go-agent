@@ -839,7 +839,7 @@ func (d *adminDashboard) loadRelationships(ctx context.Context, groupID int64) (
 
 func (d *adminDashboard) loadActivity(ctx context.Context, groupID int64, windowMinutes int) ([]adminActivity, error) {
 	rows, err := d.db.QueryContext(ctx, `
-		SELECT at, group_id, type, label, subject, detail FROM (
+		SELECT event_id, at, group_id, type, label, subject, detail FROM (
 			SELECT event_id, occurred_at AS at, group_id, 'message' AS type, kind AS label,
 			       COALESCE(NULLIF(sender_group_card, ''), NULLIF(sender_qq_nickname, ''), user_id::text) AS subject,
 			       LEFT(text_content, 300) AS detail
