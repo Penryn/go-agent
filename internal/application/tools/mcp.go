@@ -69,6 +69,8 @@ func (m *MCPManager) Apply(ctx context.Context, servers []config.MCPServerConfig
 }
 
 func (m *MCPManager) Close() error {
+	m.applyMu.Lock()
+	defer m.applyMu.Unlock()
 	m.mu.Lock()
 	active := m.active
 	m.active = nil
