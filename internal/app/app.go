@@ -230,6 +230,7 @@ func New(ctx context.Context, cfg config.Config) (*App, error) {
 		toolRuntime,
 		promptingsvc.NewComposer(cfg.Persona),
 		fallbackPlanner,
+		presenceManager,
 	)
 	normalizer := normalizersvc.New("onebot", cfg.QQ.SelfID, cfg.Persona.Aliases)
 

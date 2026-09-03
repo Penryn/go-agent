@@ -120,6 +120,17 @@ func (m *Manager) Snapshot(ctx context.Context, groupID int64) (presencedomain.G
 	return a.snapshot(), nil
 }
 
+// UpdatePromptSession persists the model-visible conversation for one group.
+// It is kept behind the same actor lock as event state so prompt history does
+// not race with working-memory updates.
+func (m *Manager) UpdatePromptSession(ctx context.Context, groupID int64, session conversationdomain.PromptSession) error {
+	a, err := m.actor(ctx, groupID)
+	if err != nil {
+		return err
+	}
+	return m.save(ctx, a.updatePromptSession(session))
+}
+
 func (m *Manager) actor(ctx context.Context, groupID int64) (*actor, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -411,6 +422,14 @@ func (a *actor) snapshot() presencedomain.GroupWorkingMemory {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	a.touch()
+	return cloneMemory(a.memory)
+}
+
+func (a *actor) updatePromptSession(session conversationdomain.PromptSession) presencedomain.GroupWorkingMemory {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.touch()
+	a.memory.PromptSession = session
 	return cloneMemory(a.memory)
 }
 
@@ -819,6 +838,10 @@ func cloneMemory(memory presencedomain.GroupWorkingMemory) presencedomain.GroupW
 			media[eventID] = append([]mediadomain.MediaDescriptor(nil), descriptors...)
 		}
 		memory.MediaByEvent = media
+	}
+	memory.PromptSession.Messages = append([]conversationdomain.PromptMessage(nil), memory.PromptSession.Messages...)
+	for i := range memory.PromptSession.Messages {
+		memory.PromptSession.Messages[i].ToolCalls = append([]conversationdomain.PromptToolCall(nil), memory.PromptSession.Messages[i].ToolCalls...)
 	}
 	return memory
 }

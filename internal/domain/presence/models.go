@@ -47,6 +47,7 @@ type GroupWorkingMemory struct {
 	Candidates    []ThoughtCandidate                       `json:"candidates"`
 	MediaByEvent  map[string][]mediadomain.MediaDescriptor `json:"media_by_event"`
 	LastUpdatedAt time.Time                                `json:"last_updated_at"`
+	PromptSession conversationdomain.PromptSession         `json:"prompt_session,omitempty"`
 }
 
 type CandidateStatus string

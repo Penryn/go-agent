@@ -35,6 +35,7 @@ type Call struct {
 	Iteration       int
 	InputTokens     int
 	CachedTokens    int
+	CacheMissTokens int
 	OutputTokens    int
 	ReasoningTokens int
 	Tools           []string
@@ -104,6 +105,9 @@ func (r *Recorder) update(call *Call, message *schema.Message, callErr error) {
 		usage := message.ResponseMeta.Usage
 		call.InputTokens = usage.PromptTokens
 		call.CachedTokens = usage.PromptTokenDetails.CachedTokens
+		if value, ok := message.Extra["prompt_cache_miss_tokens"].(int); ok {
+			call.CacheMissTokens = value
+		}
 		call.OutputTokens = usage.CompletionTokens
 		call.ReasoningTokens = usage.CompletionTokensDetails.ReasoningTokens
 		call.UsageAvailable = true
@@ -146,6 +150,7 @@ func (r *Recorder) Flush(final FinalState) {
 			"iteration", call.Iteration,
 			"input_tokens", call.InputTokens,
 			"cached_tokens", call.CachedTokens,
+			"prompt_cache_miss_tokens", call.CacheMissTokens,
 			"output_tokens", call.OutputTokens,
 			"reasoning_tokens", call.ReasoningTokens,
 			"usage_available", call.UsageAvailable,
@@ -219,9 +224,11 @@ func applyDeepSeekCacheUsage(_ context.Context, message *schema.Message, raw []b
 		return message, nil
 	}
 	var response struct {
-		PromptCacheHitTokens int `json:"prompt_cache_hit_tokens"`
-		Usage                struct {
-			PromptCacheHitTokens int `json:"prompt_cache_hit_tokens"`
+		PromptCacheHitTokens  int `json:"prompt_cache_hit_tokens"`
+		PromptCacheMissTokens int `json:"prompt_cache_miss_tokens"`
+		Usage                 struct {
+			PromptCacheHitTokens  int `json:"prompt_cache_hit_tokens"`
+			PromptCacheMissTokens int `json:"prompt_cache_miss_tokens"`
 		} `json:"usage"`
 	}
 	if err := json.Unmarshal(raw, &response); err == nil {
@@ -231,6 +238,16 @@ func applyDeepSeekCacheUsage(_ context.Context, message *schema.Message, raw []b
 		}
 		if cachedTokens > 0 {
 			message.ResponseMeta.Usage.PromptTokenDetails.CachedTokens = cachedTokens
+		}
+		missTokens := response.Usage.PromptCacheMissTokens
+		if missTokens == 0 {
+			missTokens = response.PromptCacheMissTokens
+		}
+		if missTokens > 0 {
+			if message.Extra == nil {
+				message.Extra = make(map[string]any)
+			}
+			message.Extra["prompt_cache_miss_tokens"] = missTokens
 		}
 	}
 	return message, nil

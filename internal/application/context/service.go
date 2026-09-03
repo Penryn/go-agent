@@ -156,6 +156,7 @@ func (s *Service) BuildSnapshot(ctx context.Context, envelope conversationdomain
 		Projection:        projection,
 		Event:             envelope.Event,
 		RecentTurns:       recentTurns,
+		PromptSession:     working.PromptSession,
 		RelevantMemories:  relevantMemories,
 		RecentThoughts:    s.recentThoughts(ctx, envelope.Event.GroupID),
 		MediaDescriptors:  mediaDescriptors,

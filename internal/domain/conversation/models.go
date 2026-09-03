@@ -70,12 +70,38 @@ type ThoughtDigest struct {
 	CreatedAt      time.Time `json:"created_at" yaml:"created_at"`
 }
 
+// PromptMessage is the model-visible part of one persisted conversation.
+// Provider response metadata is intentionally excluded so the session stays
+// portable across model adapters.
+type PromptMessage struct {
+	Role       string           `json:"role" yaml:"role"`
+	Content    string           `json:"content" yaml:"content"`
+	Name       string           `json:"name,omitempty" yaml:"name,omitempty"`
+	ToolCalls  []PromptToolCall `json:"tool_calls,omitempty" yaml:"tool_calls,omitempty"`
+	ToolCallID string           `json:"tool_call_id,omitempty" yaml:"tool_call_id,omitempty"`
+}
+
+type PromptToolCall struct {
+	ID        string `json:"id" yaml:"id"`
+	Type      string `json:"type" yaml:"type"`
+	Name      string `json:"name" yaml:"name"`
+	Arguments string `json:"arguments" yaml:"arguments"`
+}
+
+// PromptSession contains the exact message history reused on the next turn.
+// Version changes intentionally invalidate old provider prefixes.
+type PromptSession struct {
+	Version  string          `json:"version,omitempty" yaml:"version,omitempty"`
+	Messages []PromptMessage `json:"messages,omitempty" yaml:"messages,omitempty"`
+}
+
 type ContextSnapshot struct {
 	SnapshotID       string                      `json:"snapshot_id" yaml:"snapshot_id"`
 	SelfID           int64                       `json:"self_id" yaml:"self_id"`
 	Projection       ProjectionMetadata          `json:"projection" yaml:"projection"`
 	Event            ConversationEvent           `json:"event" yaml:"event"`
 	RecentTurns      []ConversationEvent         `json:"recent_turns" yaml:"recent_turns"`
+	PromptSession    PromptSession               `json:"prompt_session,omitempty" yaml:"prompt_session,omitempty"`
 	RelevantMemories []memorydomain.MemoryRecord `json:"relevant_memories" yaml:"relevant_memories"`
 	// RecentThoughts 是该群最近几轮的思考摘要（新到旧），供模型回看自己
 	// 上次的判断——说错过的话别再说，收过的梗换着接。

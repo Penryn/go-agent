@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"log/slog"
 	"slices"
+	"sort"
 	"strings"
 	"time"
 
@@ -101,19 +102,52 @@ func (r *Runtime) availableTools(session replydomain.ToolContext) []registeredTo
 	internal = append(internal, r.profileTools(session)...)
 	all := make([]registeredTool, 0, len(internal)+len(r.external))
 	for _, candidate := range internal {
-		all = append(all, registeredTool{name: candidate.Name(), tool: candidate, terminal: isTerminalTool(candidate.Name())})
+		allowed := internalToolAllowed(session.AllowedTools, candidate.Name())
+		all = append(all, registeredTool{
+			name:     candidate.Name(),
+			tool:     gateTool(candidate, allowed),
+			terminal: isTerminalTool(candidate.Name()),
+		})
 	}
-	all = append(all, r.external...)
-
-	allowed := make([]registeredTool, 0, len(all))
-	for _, candidate := range all {
-		if (candidate.external && !slices.Contains(session.AllowedTools, candidate.name)) ||
-			(!candidate.external && len(session.AllowedTools) > 0 && !slices.Contains(session.AllowedTools, candidate.name)) {
-			continue
+	external := append([]registeredTool(nil), r.external...)
+	sort.SliceStable(external, func(i, j int) bool { return external[i].name < external[j].name })
+	for _, candidate := range external {
+		// External tools remain opt-in. Their definitions are loaded at startup,
+		// while group policy decides whether they are exposed to the model.
+		if slices.Contains(session.AllowedTools, candidate.name) {
+			all = append(all, candidate)
 		}
-		allowed = append(allowed, candidate)
 	}
-	return allowed
+	return all
+}
+
+type gatedTool struct {
+	tool tool.InvokableTool
+}
+
+func gateTool(candidate tool.BaseTool, allowed bool) tool.BaseTool {
+	if allowed {
+		return candidate
+	}
+	invokable, ok := candidate.(tool.InvokableTool)
+	if !ok {
+		return candidate
+	}
+	return &gatedTool{tool: invokable}
+}
+
+func (t *gatedTool) Info(ctx context.Context) (*schema.ToolInfo, error) { return t.tool.Info(ctx) }
+
+func (t *gatedTool) InvokableRun(_ context.Context, _ string, _ ...tool.Option) (string, error) {
+	return "", fmt.Errorf("tool %q is not allowed in this group", t.toolName())
+}
+
+func (t *gatedTool) toolName() string {
+	info, err := t.tool.Info(context.Background())
+	if err == nil && info != nil {
+		return info.Name
+	}
+	return "unknown"
 }
 
 func (r *Runtime) Tools(session replydomain.ToolContext) []tool.BaseTool {
@@ -130,11 +164,16 @@ func (r *Runtime) Tools(session replydomain.ToolContext) []tool.BaseTool {
 func (r *Runtime) TerminalTools(session replydomain.ToolContext) map[string]bool {
 	result := make(map[string]bool)
 	for _, candidate := range r.availableTools(session) {
-		if candidate.terminal {
+		if candidate.terminal && (!candidate.external || slices.Contains(session.AllowedTools, candidate.name)) &&
+			internalToolAllowed(session.AllowedTools, candidate.name) {
 			result[candidate.name] = true
 		}
 	}
 	return result
+}
+
+func internalToolAllowed(allowlist []string, name string) bool {
+	return len(allowlist) == 0 || slices.Contains(allowlist, name)
 }
 
 type registeredTool struct {
@@ -193,12 +232,8 @@ func (r *Runtime) replyTools(session replydomain.ToolContext) []namedTool {
 		newReactEmojiTool(),
 		newSendMemeTool(r.memeStore),
 		newQuoteReplyTool(),
-	}
-	if len(session.RecallableMessageIDs) > 0 {
-		result = append(result, newRepairMessageTool(session))
-	}
-	if session.TriggerType == "poke_reply" {
-		result = append(result, newPokeMemberTool())
+		newRepairMessageTool(session),
+		newPokeMemberTool(),
 	}
 	return result
 }

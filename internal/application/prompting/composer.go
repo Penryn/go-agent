@@ -333,6 +333,27 @@ func (c *Composer) Messages(snapshot conversationdomain.ContextSnapshot, decisio
 	recentTruncated := start > 0
 	history = history[start:]
 
+	messages := make([]*schema.Message, 0, len(history)+2)
+	for _, turn := range history {
+		if snapshot.SelfID != 0 && turn.event.UserID == snapshot.SelfID {
+			messages = append(messages, schema.AssistantMessage(turn.content, nil))
+			continue
+		}
+		messages = append(messages, schema.UserMessage(turn.content))
+	}
+	messages = append(messages, c.turnMessages(snapshot, decision, recentTruncated)...)
+	return messages
+}
+
+// TurnMessages renders only the messages added for the current model turn.
+// Keeping this delta separate lets a persisted session append new context
+// without rebuilding older dynamic instructions.
+func (c *Composer) TurnMessages(snapshot conversationdomain.ContextSnapshot, decision policydomain.AutonomyDecision) []*schema.Message {
+	return c.turnMessages(snapshot, decision, false)
+}
+
+func (c *Composer) turnMessages(snapshot conversationdomain.ContextSnapshot, decision policydomain.AutonomyDecision, recentTruncated bool) []*schema.Message {
+	currentEvent := eventWithProfileIdentity(snapshot.Event, snapshot.MemberProfile)
 	memorySnippets := make([]string, 0, len(snapshot.RelevantMemories))
 	for _, record := range snapshot.RelevantMemories {
 		memorySnippets = append(memorySnippets, formatMemorySnippet(record))
@@ -377,16 +398,6 @@ func (c *Composer) Messages(snapshot conversationdomain.ContextSnapshot, decisio
 		}
 	}
 
-	messages := make([]*schema.Message, 0, len(history)+2)
-	for _, turn := range history {
-		if snapshot.SelfID != 0 && turn.event.UserID == snapshot.SelfID {
-			messages = append(messages, schema.AssistantMessage(turn.content, nil))
-			continue
-		}
-		messages = append(messages, schema.UserMessage(turn.content))
-	}
-	messages = append(messages, schema.UserMessage(stableHistoryTurn(currentEvent, snapshot.SelfID)))
-
 	contentParts := []string{
 		c.DynamicInstruction(snapshot, decision),
 		fmt.Sprintf("工作记忆: %s", strings.Join(workingState, " | ")),
@@ -400,7 +411,10 @@ func (c *Composer) Messages(snapshot conversationdomain.ContextSnapshot, decisio
 		contentParts = append(contentParts, "较早上下文已裁剪。")
 	}
 	contentParts = append(contentParts, c.TaskInstruction(snapshot, decision))
-	return append(messages, schema.UserMessage(strings.Join(contentParts, "\n")))
+	return []*schema.Message{
+		schema.UserMessage(stableHistoryTurn(currentEvent, snapshot.SelfID)),
+		schema.UserMessage(strings.Join(contentParts, "\n")),
+	}
 }
 
 func sameEvent(left, right conversationdomain.ConversationEvent) bool {

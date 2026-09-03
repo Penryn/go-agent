@@ -79,8 +79,8 @@ func TestApplyDeepSeekCacheUsageUsesProviderField(t *testing.T) {
 		PromptTokens:       120,
 		PromptTokenDetails: schema.PromptTokenDetails{CachedTokens: 1},
 	}}
-	updated, err := applyDeepSeekCacheUsage(context.Background(), message, []byte(`{"usage":{"prompt_cache_hit_tokens":80}}`))
-	if err != nil || updated.ResponseMeta.Usage.PromptTokenDetails.CachedTokens != 80 {
+	updated, err := applyDeepSeekCacheUsage(context.Background(), message, []byte(`{"usage":{"prompt_cache_hit_tokens":80,"prompt_cache_miss_tokens":40}}`))
+	if err != nil || updated.ResponseMeta.Usage.PromptTokenDetails.CachedTokens != 80 || updated.Extra["prompt_cache_miss_tokens"] != 40 {
 		t.Fatalf("cached tokens were not mapped: message=%+v err=%v", updated, err)
 	}
 }

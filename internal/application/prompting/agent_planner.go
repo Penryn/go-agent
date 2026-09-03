@@ -30,14 +30,16 @@ type AgentPlanner struct {
 	tools    *toolsvc.Runtime
 	composer *Composer
 	fallback *DeterministicPlanner
+	sessions []PromptSessionStore
 }
 
-func NewAgentPlanner(factory MainModelFactory, tools *toolsvc.Runtime, composer *Composer, fallback *DeterministicPlanner) *AgentPlanner {
+func NewAgentPlanner(factory MainModelFactory, tools *toolsvc.Runtime, composer *Composer, fallback *DeterministicPlanner, sessions ...PromptSessionStore) *AgentPlanner {
 	return &AgentPlanner{
 		factory:  factory,
 		tools:    tools,
 		composer: composer,
 		fallback: fallback,
+		sessions: sessions,
 	}
 }
 
@@ -81,6 +83,7 @@ func (p *AgentPlanner) Plan(ctx context.Context, snapshot conversationdomain.Con
 
 	// 只调用一次 Tools()，缓存结果供 agent 构建和日志共用
 	toolList := p.tools.Tools(toolContext)
+	toolHash := toolSchemaHash(ctx, toolList)
 	returnDirectly := p.tools.TerminalTools(toolContext)
 
 	slog.Info("planner: starting LLM agent",
@@ -125,7 +128,17 @@ func (p *AgentPlanner) Plan(ctx context.Context, snapshot conversationdomain.Con
 	}
 
 	runner := adk.NewRunner(ctx, adk.RunnerConfig{Agent: agent})
-	iter := runner.Run(ctx, p.composer.Messages(snapshot, decision))
+	modelInput, promptSession := p.composer.sessionMessages(snapshot, decision, toolHash)
+	slog.Info("planner: prompt shape",
+		"trace_id", snapshot.SnapshotID,
+		"group_id", snapshot.Event.GroupID,
+		"phase", "reply_planner",
+		"tool_schema_hash", toolHash,
+		"prompt_session_version", promptSession.Version,
+		"prompt_message_count", len(modelInput),
+		"prompt_bytes", promptMessageBytes(modelInput),
+	)
+	iter := runner.Run(ctx, modelInput)
 
 	var (
 		assistantText   string
@@ -144,6 +157,9 @@ func (p *AgentPlanner) Plan(ctx context.Context, snapshot conversationdomain.Con
 		msg, err := event.Output.MessageOutput.GetMessage()
 		if err != nil || msg == nil {
 			continue
+		}
+		if msg.Role == schema.Assistant || msg.Role == schema.Tool {
+			promptSession.Messages = append(promptSession.Messages, promptMessagesFromSchema([]*schema.Message{msg})...)
 		}
 
 		if event.Output.MessageOutput.Role == schema.Tool {
@@ -169,6 +185,7 @@ func (p *AgentPlanner) Plan(ctx context.Context, snapshot conversationdomain.Con
 			slog.Debug("planner: assistant output", "trace_id", snapshot.SnapshotID, "text", preview)
 		}
 	}
+	p.savePromptSession(ctx, snapshot.Event.GroupID, promptSession)
 
 	if plan, ok, err := toolsvc.ParseTerminalPlan(decision.DecisionID, terminalName, terminalContent, toolContext); err == nil && ok {
 		slog.Info("planner: terminal tool", "tool", terminalName, "trace_id", snapshot.SnapshotID, "bubbles", len(plan.Bubbles))
@@ -190,6 +207,17 @@ func (p *AgentPlanner) Plan(ctx context.Context, snapshot conversationdomain.Con
 
 	slog.Warn("planner: no output from agent, fallback", "trace_id", snapshot.SnapshotID)
 	return p.fallback.Plan(ctx, snapshot, decision)
+}
+
+func (p *AgentPlanner) savePromptSession(ctx context.Context, groupID int64, session conversationdomain.PromptSession) {
+	for _, store := range p.sessions {
+		if store == nil {
+			continue
+		}
+		if err := store.UpdatePromptSession(ctx, groupID, session); err != nil {
+			slog.Warn("planner: save prompt session failed", "group_id", groupID, "error", err)
+		}
+	}
 }
 
 const (

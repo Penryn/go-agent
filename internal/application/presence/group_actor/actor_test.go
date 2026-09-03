@@ -6,11 +6,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/phlin/go-agent/internal/testsupport"
 	"github.com/phlin/go-agent/internal/application/presence/ingress"
 	conversationdomain "github.com/phlin/go-agent/internal/domain/conversation"
 	mediadomain "github.com/phlin/go-agent/internal/domain/media"
 	presencedomain "github.com/phlin/go-agent/internal/domain/presence"
+	"github.com/phlin/go-agent/internal/testsupport"
 )
 
 func TestManagerMergesShortBurstAndKeepsOutboundEvent(t *testing.T) {
@@ -188,6 +188,26 @@ func TestManagerRestoresWorkingMemoryAfterRestart(t *testing.T) {
 	}
 	if memory.Candidates[0].Status != presencedomain.CandidatePending {
 		t.Fatalf("candidate status changed during restore: %+v", memory.Candidates[0])
+	}
+}
+
+func TestManagerPersistsPromptSessionThroughActor(t *testing.T) {
+	store := testsupport.NewStore(t)
+	manager := NewManager(ingress.NewMemoryEventLog(), WithStateStore(store))
+	defer manager.Close()
+	session := conversationdomain.PromptSession{
+		Version:  "prompt-session-v1:test",
+		Messages: []conversationdomain.PromptMessage{{Role: "user", Content: "上一轮消息"}},
+	}
+	if err := manager.UpdatePromptSession(context.Background(), 31, session); err != nil {
+		t.Fatalf("update prompt session: %v", err)
+	}
+	loaded, err := manager.Snapshot(context.Background(), 31)
+	if err != nil {
+		t.Fatalf("snapshot: %v", err)
+	}
+	if loaded.PromptSession.Version != session.Version || len(loaded.PromptSession.Messages) != 1 || loaded.PromptSession.Messages[0].Content != "上一轮消息" {
+		t.Fatalf("prompt session was not persisted: %+v", loaded.PromptSession)
 	}
 }
 
