@@ -60,6 +60,11 @@ func New(ctx context.Context, cfg config.Config) (*App, error) {
 	if err != nil {
 		return nil, err
 	}
+	runtimeMCPServers, err := loadRuntimeMCPConfig(ctx, stores.db, cfg.Tools.MCPServers)
+	if err != nil {
+		_ = stores.Close()
+		return nil, err
+	}
 	personaDefinition, err := personadomain.Compile(cfg.Persona)
 	if err != nil {
 		_ = stores.Close()
@@ -187,7 +192,7 @@ func New(ctx context.Context, cfg config.Config) (*App, error) {
 		return nil, fmt.Errorf("register perception outbox handler: %w", err)
 	}
 
-	mcpTools, err := toolsvc.ConnectMCP(ctx, cfg.Tools.MCPServers)
+	mcpTools, err := toolsvc.ConnectMCP(ctx, runtimeMCPServers)
 	if err != nil {
 		_ = durableOutbox.Close()
 		_ = stores.Close()
@@ -216,6 +221,7 @@ func New(ctx context.Context, cfg config.Config) (*App, error) {
 		_ = stores.Close()
 		return nil, fmt.Errorf("register MCP tools: %w", err)
 	}
+	mcpManager := toolsvc.NewMCPManager(toolRuntime, mcpTools, runtimeMCPServers)
 	if codexTool := toolsvc.NewCodexToolWithApproval(cfg.Tools.Codex, writeApprovals, cfg.Tools.Codex.WriteUserWhitelist); codexTool != nil {
 		if err := toolRuntime.RegisterTools(ctx, codexTool); err != nil {
 			_ = mcpTools.Close()
@@ -316,7 +322,7 @@ func New(ctx context.Context, cfg config.Config) (*App, error) {
 		humanRuntime: humanRuntime,
 		sched:        sched,
 		cleanup: func() error {
-			return errors.Join(durableOutbox.Close(), humanRuntime.Close(), presenceManager.Close(), mcpTools.Close(), stores.Close())
+			return errors.Join(durableOutbox.Close(), humanRuntime.Close(), presenceManager.Close(), mcpManager.Close(), stores.Close())
 		},
 		healthCheck: stores.HealthCheck,
 	}
@@ -326,7 +332,7 @@ func New(ctx context.Context, cfg config.Config) (*App, error) {
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", app.handleHealth)
-	adminHandler := newAdminHandler(stores.db, stores.state, stores.personaFacts, personaDefinition, cfg, app.qqConnected)
+	adminHandler := newAdminHandler(stores.db, stores.state, stores.personaFacts, personaDefinition, cfg, app.qqConnected, mcpManager)
 	mux.Handle("/admin", adminHandler)
 	mux.Handle("/admin/", adminHandler)
 

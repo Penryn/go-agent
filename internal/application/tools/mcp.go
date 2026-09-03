@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/cloudwego/eino-ext/components/tool/mcp/officialmcp"
@@ -21,6 +22,71 @@ import (
 type MCPTools struct {
 	Tools    []tool.BaseTool
 	sessions []*mcp.ClientSession
+}
+
+// MCPManager owns the replaceable MCP connection set. It never mutates the
+// active set until the replacement has connected and its tools are registered.
+type MCPManager struct {
+	mu      sync.RWMutex
+	applyMu sync.Mutex
+	runtime *Runtime
+	active  *MCPTools
+	servers []config.MCPServerConfig
+}
+
+func NewMCPManager(runtime *Runtime, active *MCPTools, servers []config.MCPServerConfig) *MCPManager {
+	return &MCPManager{runtime: runtime, active: active, servers: cloneMCPServers(servers)}
+}
+
+func (m *MCPManager) Servers() []config.MCPServerConfig {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return cloneMCPServers(m.servers)
+}
+
+func (m *MCPManager) Apply(ctx context.Context, servers []config.MCPServerConfig) error {
+	m.applyMu.Lock()
+	defer m.applyMu.Unlock()
+	next, err := ConnectMCP(ctx, servers)
+	if err != nil {
+		return err
+	}
+	if err := m.runtime.ReplaceMCPTools(ctx, next.Tools...); err != nil {
+		_ = next.Close()
+		return err
+	}
+	m.mu.Lock()
+	old := m.active
+	m.active = next
+	m.servers = cloneMCPServers(servers)
+	m.mu.Unlock()
+	if old != nil {
+		if err := old.Close(); err != nil {
+			slog.Warn("close previous MCP sessions", "error", err)
+		}
+	}
+	return nil
+}
+
+func (m *MCPManager) Close() error {
+	m.mu.Lock()
+	active := m.active
+	m.active = nil
+	m.mu.Unlock()
+	if active == nil {
+		return nil
+	}
+	return active.Close()
+}
+
+func cloneMCPServers(servers []config.MCPServerConfig) []config.MCPServerConfig {
+	result := make([]config.MCPServerConfig, len(servers))
+	copy(result, servers)
+	for i := range result {
+		result[i].Args = append([]string(nil), result[i].Args...)
+		result[i].Tools = append([]string(nil), result[i].Tools...)
+	}
+	return result
 }
 
 func ConnectMCP(ctx context.Context, servers []config.MCPServerConfig) (*MCPTools, error) {

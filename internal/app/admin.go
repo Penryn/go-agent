@@ -6,16 +6,19 @@ import (
 	"database/sql"
 	"embed"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io/fs"
 	"net"
 	"net/http"
+	"net/url"
 	"sort"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/phlin/go-agent/internal/application/ports"
+	toolsvc "github.com/phlin/go-agent/internal/application/tools"
 	"github.com/phlin/go-agent/internal/config"
 	personadomain "github.com/phlin/go-agent/internal/domain/persona"
 	policydomain "github.com/phlin/go-agent/internal/domain/policy"
@@ -102,12 +105,46 @@ type adminRelationship struct {
 }
 
 type adminActivity struct {
+	EventID string    `json:"event_id"`
 	At      time.Time `json:"at"`
 	GroupID int64     `json:"group_id"`
 	Type    string    `json:"type"`
 	Label   string    `json:"label"`
 	Subject string    `json:"subject"`
 	Detail  string    `json:"detail"`
+}
+
+type adminEventDetail struct {
+	EventID    string                 `json:"event_id"`
+	MessageID  string                 `json:"message_id"`
+	GroupID    int64                  `json:"group_id"`
+	UserID     int64                  `json:"user_id"`
+	Kind       string                 `json:"kind"`
+	Text       string                 `json:"text"`
+	Sender     string                 `json:"sender"`
+	OccurredAt time.Time              `json:"occurred_at"`
+	Decision   *adminDecisionDetail   `json:"decision,omitempty"`
+	Retrievals []adminRetrievalDetail `json:"retrievals"`
+}
+
+type adminDecisionDetail struct {
+	ThoughtID      string    `json:"thought_id"`
+	Action         string    `json:"action"`
+	Outcome        string    `json:"outcome"`
+	Interpretation string    `json:"interpretation"`
+	Evidence       []string  `json:"evidence"`
+	Uncertainty    float64   `json:"uncertainty"`
+	CreatedAt      time.Time `json:"created_at"`
+}
+
+type adminRetrievalDetail struct {
+	TraceID        string    `json:"trace_id"`
+	Query          string    `json:"query"`
+	CandidateCount int       `json:"candidate_count"`
+	HitMemoryIDs   []string  `json:"hit_memory_ids"`
+	SelectedIDs    []string  `json:"selected_ids"`
+	Outcome        string    `json:"outcome"`
+	CreatedAt      time.Time `json:"created_at"`
 }
 
 type adminRetrievalMetrics struct {
@@ -120,12 +157,14 @@ type adminRetrievalMetrics struct {
 	SelectionRate     float64 `json:"selection_rate"`
 }
 
-func newAdminHandler(db *sql.DB, state ports.RuntimeStateStore, facts ports.PersonaFactStore, definition personadomain.PersonaDefinition, cfg config.Config, connected func() bool) http.Handler {
+func newAdminHandler(db *sql.DB, state ports.RuntimeStateStore, facts ports.PersonaFactStore, definition personadomain.PersonaDefinition, cfg config.Config, connected func() bool, mcp *toolsvc.MCPManager) http.Handler {
 	dashboard := &adminDashboard{db: db, state: state, facts: facts, definition: definition, cfg: cfg, connected: connected}
 	assets, _ := fs.Sub(adminAssets, "adminui/dist")
 	return &adminHandler{
 		token:  strings.TrimSpace(cfg.Server.AdminToken),
 		load:   dashboard.snapshot,
+		mcp:    mcp,
+		db:     db,
 		assets: http.StripPrefix("/admin/", http.FileServer(http.FS(assets))),
 	}
 }
@@ -134,17 +173,25 @@ type adminHandler struct {
 	token  string
 	load   func(context.Context, int64) (adminSnapshot, error)
 	assets http.Handler
+	db     *sql.DB
+	mcp    *toolsvc.MCPManager
 }
 
 //go:embed adminui/dist
 var adminAssets embed.FS
 
 func (h *adminHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	if strings.HasPrefix(r.URL.Path, "/admin/api/events/") {
+		h.handleEventDetail(w, r)
+		return
+	}
 	switch r.URL.Path {
 	case "/admin":
 		http.Redirect(w, r, "/admin/", http.StatusTemporaryRedirect)
 	case "/admin/api/snapshot":
 		h.handleSnapshot(w, r)
+	case "/admin/api/mcp":
+		h.handleMCP(w, r)
 	default:
 		if r.Method != http.MethodGet {
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -157,6 +204,86 @@ func (h *adminHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Security-Policy", "default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src 'self'; img-src 'self' data:")
 		h.assets.ServeHTTP(w, r)
 	}
+}
+
+func (h *adminHandler) handleEventDetail(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		w.Header().Set("Allow", http.MethodGet)
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if !h.authorized(r) {
+		http.Error(w, "admin token required", http.StatusUnauthorized)
+		return
+	}
+	eventID, err := url.PathUnescape(strings.TrimPrefix(r.URL.Path, "/admin/api/events/"))
+	if err != nil || eventID == "" {
+		http.Error(w, "invalid event_id", http.StatusBadRequest)
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 4*time.Second)
+	defer cancel()
+	detail, err := loadAdminEventDetail(ctx, h.db, eventID)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			http.NotFound(w, r)
+			return
+		}
+		http.Error(w, "load event detail: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, detail)
+}
+
+type adminMCPConfig struct {
+	Servers []config.MCPServerConfig `json:"servers"`
+}
+
+func (h *adminHandler) handleMCP(w http.ResponseWriter, r *http.Request) {
+	if !h.authorized(r) {
+		http.Error(w, "admin token required", http.StatusUnauthorized)
+		return
+	}
+	if h.mcp == nil || h.db == nil {
+		http.Error(w, "MCP manager unavailable", http.StatusServiceUnavailable)
+		return
+	}
+	switch r.Method {
+	case http.MethodGet:
+		writeJSON(w, adminMCPConfig{Servers: h.mcp.Servers()})
+	case http.MethodPut:
+		var payload adminMCPConfig
+		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 256<<10)).Decode(&payload); err != nil {
+			http.Error(w, "invalid MCP config: "+err.Error(), http.StatusBadRequest)
+			return
+		}
+		if err := config.ValidateMCPServers(payload.Servers); err != nil {
+			http.Error(w, "invalid MCP config: "+err.Error(), http.StatusBadRequest)
+			return
+		}
+		ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
+		defer cancel()
+		previous := h.mcp.Servers()
+		if err := h.mcp.Apply(ctx, payload.Servers); err != nil {
+			http.Error(w, "apply MCP config: "+err.Error(), http.StatusBadGateway)
+			return
+		}
+		if err := saveRuntimeMCPConfig(ctx, h.db, payload.Servers); err != nil {
+			_ = h.mcp.Apply(context.Background(), previous)
+			http.Error(w, "persist MCP config: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+		writeJSON(w, adminMCPConfig{Servers: h.mcp.Servers()})
+	default:
+		w.Header().Set("Allow", "GET, PUT")
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+	}
+}
+
+func writeJSON(w http.ResponseWriter, value any) {
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Cache-Control", "no-store")
+	_ = json.NewEncoder(w).Encode(value)
 }
 
 func (h *adminHandler) handleSnapshot(w http.ResponseWriter, r *http.Request) {
@@ -418,15 +545,15 @@ func (d *adminDashboard) loadRelationships(ctx context.Context, groupID int64) (
 func (d *adminDashboard) loadActivity(ctx context.Context, groupID int64) ([]adminActivity, error) {
 	rows, err := d.db.QueryContext(ctx, `
 		SELECT at, group_id, type, label, subject, detail FROM (
-			SELECT occurred_at AS at, group_id, 'message' AS type, kind AS label,
+			SELECT event_id, occurred_at AS at, group_id, 'message' AS type, kind AS label,
 			       COALESCE(NULLIF(sender_group_card, ''), NULLIF(sender_qq_nickname, ''), user_id::text) AS subject,
 			       LEFT(text_content, 300) AS detail
 			FROM messages WHERE $1 = 0 OR group_id = $1
 			UNION ALL
-			SELECT created_at, group_id, 'decision', chosen_action, outcome, LEFT(interpretation, 300)
+			SELECT event_id, created_at, group_id, 'decision', chosen_action, outcome, LEFT(interpretation, 300)
 			FROM thought_records WHERE $1 = 0 OR group_id = $1
 			UNION ALL
-			SELECT updated_at, 0, 'task', kind, status, LEFT(COALESCE(last_error, ''), 300)
+			SELECT '', updated_at, 0, 'task', kind, status, LEFT(COALESCE(last_error, ''), 300)
 			FROM async_outbox
 		) activity
 		ORDER BY at DESC LIMIT 80
@@ -438,12 +565,66 @@ func (d *adminDashboard) loadActivity(ctx context.Context, groupID int64) ([]adm
 	activity := []adminActivity{}
 	for rows.Next() {
 		var item adminActivity
-		if err := rows.Scan(&item.At, &item.GroupID, &item.Type, &item.Label, &item.Subject, &item.Detail); err != nil {
+		if err := rows.Scan(&item.EventID, &item.At, &item.GroupID, &item.Type, &item.Label, &item.Subject, &item.Detail); err != nil {
 			return nil, err
 		}
 		activity = append(activity, item)
 	}
 	return activity, rows.Err()
+}
+
+func loadAdminEventDetail(ctx context.Context, db *sql.DB, eventID string) (adminEventDetail, error) {
+	var detail adminEventDetail
+	var senderCard, nickname sql.NullString
+	err := db.QueryRowContext(ctx, `
+		SELECT event_id, message_id, group_id, user_id, kind, text_content,
+		       sender_group_card, sender_qq_nickname, occurred_at
+		FROM messages WHERE event_id = $1
+	`, eventID).Scan(&detail.EventID, &detail.MessageID, &detail.GroupID, &detail.UserID, &detail.Kind, &detail.Text, &senderCard, &nickname, &detail.OccurredAt)
+	if err != nil {
+		return detail, err
+	}
+	detail.Sender = senderCard.String
+	if detail.Sender == "" {
+		detail.Sender = nickname.String
+	}
+	rows, err := db.QueryContext(ctx, `
+		SELECT trace_id, query, candidate_count, hit_memory_ids_json, selected_memory_ids_json, outcome, created_at
+		FROM retrieval_traces WHERE event_id = $1 ORDER BY created_at ASC
+	`, eventID)
+	if err != nil {
+		return detail, err
+	}
+	defer rows.Close()
+	detail.Retrievals = []adminRetrievalDetail{}
+	for rows.Next() {
+		var item adminRetrievalDetail
+		var hits, selected []byte
+		if err := rows.Scan(&item.TraceID, &item.Query, &item.CandidateCount, &hits, &selected, &item.Outcome, &item.CreatedAt); err != nil {
+			return detail, err
+		}
+		_ = json.Unmarshal(hits, &item.HitMemoryIDs)
+		_ = json.Unmarshal(selected, &item.SelectedIDs)
+		detail.Retrievals = append(detail.Retrievals, item)
+	}
+	if err := rows.Err(); err != nil {
+		return detail, err
+	}
+	var decision adminDecisionDetail
+	var evidence []byte
+	err = db.QueryRowContext(ctx, `
+		SELECT thought_id, chosen_action, outcome, interpretation, evidence_json, uncertainty, created_at
+		FROM thought_records WHERE event_id = $1 ORDER BY created_at DESC LIMIT 1
+	`, eventID).Scan(&decision.ThoughtID, &decision.Action, &decision.Outcome, &decision.Interpretation, &evidence, &decision.Uncertainty, &decision.CreatedAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return detail, nil
+	}
+	if err != nil {
+		return detail, err
+	}
+	_ = json.Unmarshal(evidence, &decision.Evidence)
+	detail.Decision = &decision
+	return detail, nil
 }
 
 const adminHTML = `<!doctype html>

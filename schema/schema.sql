@@ -166,6 +166,12 @@ CREATE TABLE IF NOT EXISTS retrieval_traces (
 CREATE INDEX IF NOT EXISTS idx_retrieval_traces_group_created ON retrieval_traces (group_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_retrieval_traces_event ON retrieval_traces (event_id);
 
+CREATE TABLE IF NOT EXISTS runtime_mcp_config (
+  config_id SMALLINT PRIMARY KEY DEFAULT 1 CHECK (config_id = 1),
+  servers_json JSONB NOT NULL,
+  updated_at TIMESTAMPTZ NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS async_outbox (
   task_id VARCHAR(128) PRIMARY KEY,
   kind VARCHAR(64) NOT NULL,

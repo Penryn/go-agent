@@ -210,13 +210,25 @@ func Validate(cfg Config) error {
 	if cfg.QQ.Enabled && cfg.QQ.SelfID <= 0 {
 		return errors.New("qq.self_id must be a positive QQ number when qq.enabled=true")
 	}
-	for _, server := range cfg.Tools.MCPServers {
+	if err := ValidateMCPServers(cfg.Tools.MCPServers); err != nil {
+		return err
+	}
+	return nil
+}
+
+func ValidateMCPServers(servers []MCPServerConfig) error {
+	seen := make(map[string]bool, len(servers))
+	for _, server := range servers {
 		if !server.Enabled {
 			continue
 		}
 		if strings.TrimSpace(server.Name) == "" {
 			return errors.New("tools.mcp_servers[].name is required when enabled")
 		}
+		if seen[server.Name] {
+			return fmt.Errorf("tools.mcp_servers contains duplicate name %q", server.Name)
+		}
+		seen[server.Name] = true
 		switch server.Transport {
 		case "stdio":
 			if strings.TrimSpace(server.Command) == "" {

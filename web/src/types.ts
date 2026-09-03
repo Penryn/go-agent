@@ -34,6 +34,18 @@ export interface BotSnapshot {
   }
 }
 
+export interface MCPServerConfig {
+  name: string
+  enabled: boolean
+  required: boolean
+  transport: 'stdio' | 'http'
+  command: string
+  args: string[]
+  url: string
+  tools: string[]
+  timeout: string
+}
+
 export interface PersonaFact {
   fact_id: string
   key: string
@@ -77,10 +89,24 @@ export interface Relationship {
 }
 
 export interface Activity {
+  event_id: string
   at: string
   group_id: number
   type: 'message' | 'decision' | 'task'
   label: string
   subject: string
   detail: string
+}
+
+export interface EventDetail {
+  event_id: string
+  message_id: string
+  group_id: number
+  user_id: number
+  kind: string
+  text: string
+  sender: string
+  occurred_at: string
+  decision?: { thought_id: string; action: string; outcome: string; interpretation: string; evidence: string[]; uncertainty: number; created_at: string }
+  retrievals: { trace_id: string; query: string; candidate_count: number; hit_memory_ids: string[]; selected_ids: string[]; outcome: string; created_at: string }[]
 }
