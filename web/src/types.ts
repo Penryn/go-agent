@@ -112,6 +112,13 @@ export interface MemeRecord {
   reviewed: boolean
 }
 
+export interface MemePage {
+  items: MemeRecord[]
+  total: number
+  page: number
+  page_size: number
+}
+
 export interface TaskRecord {
   id: string; kind: string; status: string; attempts: number; max_attempts: number
   available_at: string; last_error: string; created_at: string; updated_at: string
@@ -135,6 +142,13 @@ export interface Relationship {
   grudge_score: number
   message_count: number
   last_interact_at: string
+}
+
+export interface RelationshipPage {
+  items: Relationship[]
+  total: number
+  page: number
+  page_size: number
 }
 
 export interface Activity {

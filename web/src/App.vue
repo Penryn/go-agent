@@ -10,7 +10,7 @@ const { snapshot, selectedGroup, loading, needsToken, error } = storeToRefs(stor
 const route = useRoute()
 const tokenInput = ref('')
 const pageTitle = computed(() => String(route.meta.title ?? '实时概览'))
-const detailedSnapshotRoutes = new Set(['overview', 'monitoring', 'relations'])
+const detailedSnapshotRoutes = new Set(['overview', 'monitoring'])
 
 const navSections = [
   { label: '运营', items: [{ to: '/', label: '实时概览', icon: DataAnalysis }, { to: '/activity', label: '运行记录', icon: ChatDotRound }, { to: '/tasks', label: '任务队列', icon: List }] },

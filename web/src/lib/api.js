@@ -3,9 +3,9 @@ export const api = axios.create({
     baseURL: '/admin/api',
     timeout: 5000,
 });
-export async function getSnapshot(groupID, token, windowMinutes = 1440) {
+export async function getSnapshot(groupID, token, windowMinutes = 1440, detail = true) {
     const response = await api.get('/snapshot', {
-        params: { ...(groupID ? { group_id: groupID } : {}), window_minutes: windowMinutes },
+        params: { ...(groupID ? { group_id: groupID } : {}), window_minutes: windowMinutes, ...(detail ? {} : { mode: 'core' }) },
         headers: token ? { Authorization: `Bearer ${token}` } : undefined,
     });
     return response.data;
@@ -31,8 +31,12 @@ export async function getMemories(groupID, status, type, query, page, token) {
     const response = await api.get('/memories', { params: { group_id: groupID || undefined, status, type: type || undefined, q: query.trim() || undefined, page }, headers: token ? { Authorization: `Bearer ${token}` } : undefined });
     return response.data;
 }
-export async function getMemes(groupID, query, token) {
-    const response = await api.get('/memes', { params: { group_id: groupID || undefined, q: query.trim() || undefined }, headers: token ? { Authorization: `Bearer ${token}` } : undefined });
+export async function getMemes(groupID, query, page, token) {
+    const response = await api.get('/memes', { params: { group_id: groupID || undefined, q: query.trim() || undefined, page }, headers: token ? { Authorization: `Bearer ${token}` } : undefined });
+    return response.data;
+}
+export async function getRelationships(groupID, query, page, token) {
+    const response = await api.get('/relationships', { params: { group_id: groupID || undefined, q: query.trim() || undefined, page }, headers: token ? { Authorization: `Bearer ${token}` } : undefined });
     return response.data;
 }
 export async function deleteMeme(memeID, token) {

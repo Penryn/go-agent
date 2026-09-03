@@ -136,6 +136,13 @@ type adminMeme struct {
 	Reviewed      bool       `json:"reviewed"`
 }
 
+type adminMemePage struct {
+	Items    []adminMeme `json:"items"`
+	Total    int         `json:"total"`
+	Page     int         `json:"page"`
+	PageSize int         `json:"page_size"`
+}
+
 type adminTask struct {
 	ID          string           `json:"id"`
 	Kind        string           `json:"kind"`
@@ -171,6 +178,13 @@ type adminRelationship struct {
 	GrudgeScore    float64   `json:"grudge_score"`
 	MessageCount   int64     `json:"message_count"`
 	LastInteractAt time.Time `json:"last_interact_at"`
+}
+
+type adminRelationshipPage struct {
+	Items    []adminRelationship `json:"items"`
+	Total    int                 `json:"total"`
+	Page     int                 `json:"page"`
+	PageSize int                 `json:"page_size"`
 }
 
 type adminActivity struct {
@@ -271,6 +285,7 @@ func newAdminHandler(db *sql.DB, state ports.RuntimeStateStore, facts ports.Pers
 	assets, _ := fs.Sub(adminAssets, "adminui/dist")
 	return &adminHandler{
 		token:      strings.TrimSpace(cfg.Server.AdminToken),
+		personaID:  definition.Config.ID,
 		load:       dashboard.snapshot,
 		loadWindow: dashboard.snapshotWindow,
 		loadCore:   dashboard.snapshotCore,
@@ -282,6 +297,7 @@ func newAdminHandler(db *sql.DB, state ports.RuntimeStateStore, facts ports.Pers
 
 type adminHandler struct {
 	token      string
+	personaID  string
 	load       func(context.Context, int64) (adminSnapshot, error)
 	loadWindow func(context.Context, int64, int) (adminSnapshot, error)
 	loadCore   func(context.Context, int64, int) (adminSnapshot, error)
@@ -315,6 +331,8 @@ func (h *adminHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.handleMCP(w, r)
 	case "/admin/api/memes":
 		h.handleMemes(w, r)
+	case "/admin/api/relationships":
+		h.handleRelationships(w, r)
 	case "/admin/api/tasks":
 		h.handleTasks(w, r)
 	case "/admin/api/activity":
@@ -517,14 +535,53 @@ func (h *adminHandler) handleMemes(w http.ResponseWriter, r *http.Request) {
 		}
 		groupID = parsed
 	}
+	page, pageSize, err := parseAdminPage(r)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
 	ctx, cancel := context.WithTimeout(r.Context(), 4*time.Second)
 	defer cancel()
-	memes, err := loadAdminMemes(ctx, h.db, groupID, r.URL.Query().Get("q"))
+	memes, err := loadAdminMemePage(ctx, h.db, groupID, r.URL.Query().Get("q"), page, pageSize)
 	if err != nil {
 		http.Error(w, "load memes: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
 	writeJSON(w, memes)
+}
+
+func (h *adminHandler) handleRelationships(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		w.Header().Set("Allow", http.MethodGet)
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if !h.authorized(r) {
+		http.Error(w, "admin token required", http.StatusUnauthorized)
+		return
+	}
+	groupID := int64(0)
+	if raw := strings.TrimSpace(r.URL.Query().Get("group_id")); raw != "" {
+		parsed, err := strconv.ParseInt(raw, 10, 64)
+		if err != nil || parsed < 0 {
+			http.Error(w, "invalid group_id", http.StatusBadRequest)
+			return
+		}
+		groupID = parsed
+	}
+	page, pageSize, err := parseAdminPage(r)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 4*time.Second)
+	defer cancel()
+	relationships, err := loadAdminRelationshipPage(ctx, h.db, h.personaID, groupID, r.URL.Query().Get("q"), page, pageSize)
+	if err != nil {
+		http.Error(w, "load relationships: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, relationships)
 }
 
 func (h *adminHandler) handleTasks(w http.ResponseWriter, r *http.Request) {
@@ -1117,31 +1174,41 @@ func loadAdminMemoryPage(ctx context.Context, db *sql.DB, groupID int64, status,
 }
 
 func loadAdminMemes(ctx context.Context, db *sql.DB, groupID int64, query string) ([]adminMeme, error) {
+	page, err := loadAdminMemePage(ctx, db, groupID, query, 1, 200)
+	return page.Items, err
+}
+
+func loadAdminMemePage(ctx context.Context, db *sql.DB, groupID int64, query string, page, pageSize int) (adminMemePage, error) {
 	query = strings.TrimSpace(query)
-	rows, err := db.QueryContext(ctx, `
-		SELECT a.meme_id, a.group_id, a.source_event_id, a.object_key, a.file_ext,
-		       COALESCE((SELECT NULLIF(att->>'url', '')
-		                   FROM jsonb_array_elements(CASE WHEN jsonb_typeof(m.attachments_json) = 'array'
-		                                                  THEN m.attachments_json ELSE '[]'::jsonb END) att
-		                   WHERE att->>'object_key' = a.object_key LIMIT 1), ''),
-		       a.width, a.height, a.animated, a.status, a.send_count, a.dud_count,
-		       a.created_at, a.last_sent_at, d.title, d.summary, d.keywords_json,
-		       d.emotion_tags_json, d.scene_tags_json, d.confidence, d.reviewed
-		FROM meme_assets a
+	where := ` FROM meme_assets a
 		JOIN meme_descriptors d ON d.meme_id = a.meme_id
 		LEFT JOIN messages m ON m.event_id = a.source_event_id
 		WHERE ($1 = 0 OR a.group_id = $1)
 		  AND ($2 = '' OR d.title ILIKE '%' || $2 || '%' OR d.summary ILIKE '%' || $2 || '%'
 		       OR d.keywords_json::text ILIKE '%' || $2 || '%'
 		       OR d.emotion_tags_json::text ILIKE '%' || $2 || '%'
-		       OR d.scene_tags_json::text ILIKE '%' || $2 || '%')
-		ORDER BY a.created_at DESC LIMIT 200
-	`, groupID, query)
+		       OR d.scene_tags_json::text ILIKE '%' || $2 || '%')`
+	args := []any{groupID, query}
+	var total int
+	if err := db.QueryRowContext(ctx, "SELECT COUNT(*)"+where, args...).Scan(&total); err != nil {
+		return adminMemePage{}, fmt.Errorf("count memes: %w", err)
+	}
+	selectSQL := `SELECT a.meme_id, a.group_id, a.source_event_id, a.object_key, a.file_ext,
+		       COALESCE((SELECT NULLIF(att->>'url', '')
+		                   FROM jsonb_array_elements(CASE WHEN jsonb_typeof(m.attachments_json) = 'array'
+		                                                  THEN m.attachments_json ELSE '[]'::jsonb END) att
+		                   WHERE att->>'object_key' = a.object_key LIMIT 1), ''),
+		       a.width, a.height, a.animated, a.status, a.send_count, a.dud_count,
+		       a.created_at, a.last_sent_at, d.title, d.summary, d.keywords_json,
+		       d.emotion_tags_json, d.scene_tags_json, d.confidence, d.reviewed` + where + fmt.Sprintf(" ORDER BY a.created_at DESC LIMIT $%d OFFSET $%d", len(args)+1, len(args)+2)
+	offset := (page - 1) * pageSize
+	args = append(args, pageSize, offset)
+	rows, err := db.QueryContext(ctx, selectSQL, args...)
 	if err != nil {
-		return nil, fmt.Errorf("memes: %w", err)
+		return adminMemePage{}, fmt.Errorf("query memes: %w", err)
 	}
 	defer rows.Close()
-	memes := make([]adminMeme, 0)
+	memes := make([]adminMeme, 0, pageSize)
 	for rows.Next() {
 		var meme adminMeme
 		var keywords, emotions, scenes []byte
@@ -1150,7 +1217,7 @@ func loadAdminMemes(ctx context.Context, db *sql.DB, groupID int64, query string
 			&previewURL, &meme.Width, &meme.Height, &meme.Animated, &meme.Status, &meme.SendCount, &meme.DudCount,
 			&meme.CreatedAt, &meme.LastSentAt, &meme.Title, &meme.Summary, &keywords, &emotions, &scenes,
 			&meme.Confidence, &meme.Reviewed); err != nil {
-			return nil, err
+			return adminMemePage{}, err
 		}
 		meme.PreviewURL = safePreviewURL(previewURL)
 		_ = json.Unmarshal(keywords, &meme.Keywords)
@@ -1158,7 +1225,10 @@ func loadAdminMemes(ctx context.Context, db *sql.DB, groupID int64, query string
 		_ = json.Unmarshal(scenes, &meme.SceneTags)
 		memes = append(memes, meme)
 	}
-	return memes, rows.Err()
+	if err := rows.Err(); err != nil {
+		return adminMemePage{}, err
+	}
+	return adminMemePage{Items: memes, Total: total, Page: page, PageSize: pageSize}, nil
 }
 
 func safePreviewURL(raw string) string {
@@ -1170,31 +1240,45 @@ func safePreviewURL(raw string) string {
 }
 
 func (d *adminDashboard) loadRelationships(ctx context.Context, groupID int64) ([]adminRelationship, error) {
-	rows, err := d.db.QueryContext(ctx, `
-		SELECT r.group_id, r.user_id,
-		       COALESCE(NULLIF(p.group_card, ''), NULLIF(p.nickname, ''), NULLIF(p.qq_nickname, ''), r.user_id::text),
-		       r.affinity, r.familiarity, r.tease_tolerance, r.grudge_score,
-		       COALESCE(p.message_count, 0), r.last_interact_at
-		FROM relationships r
+	page, err := loadAdminRelationshipPage(ctx, d.db, d.definition.Config.ID, groupID, "", 1, 100)
+	return page.Items, err
+}
+
+func loadAdminRelationshipPage(ctx context.Context, db *sql.DB, personaID string, groupID int64, query string, page, pageSize int) (adminRelationshipPage, error) {
+	where := ` FROM relationships r
 		LEFT JOIN member_profiles p ON p.group_id = r.group_id AND p.user_id = r.user_id
 		WHERE r.persona_id = $1 AND ($2 = 0 OR r.group_id = $2)
-		ORDER BY r.affinity DESC, r.last_interact_at DESC LIMIT 100
-	`, d.definition.Config.ID, groupID)
+		  AND ($3 = '' OR LOWER(COALESCE(NULLIF(p.group_card, ''), NULLIF(p.nickname, ''), NULLIF(p.qq_nickname, ''), r.user_id::text) || ' ' || r.user_id::text) LIKE '%' || LOWER($3) || '%')`
+	args := []any{personaID, groupID, strings.TrimSpace(query)}
+	var total int
+	if err := db.QueryRowContext(ctx, "SELECT COUNT(*)"+where, args...).Scan(&total); err != nil {
+		return adminRelationshipPage{}, fmt.Errorf("count relationships: %w", err)
+	}
+	offset := (page - 1) * pageSize
+	querySQL := `SELECT r.group_id, r.user_id,
+		       COALESCE(NULLIF(p.group_card, ''), NULLIF(p.nickname, ''), NULLIF(p.qq_nickname, ''), r.user_id::text),
+		       r.affinity, r.familiarity, r.tease_tolerance, r.grudge_score,
+		       COALESCE(p.message_count, 0), r.last_interact_at` + where + fmt.Sprintf(" ORDER BY r.affinity DESC, r.last_interact_at DESC LIMIT $%d OFFSET $%d", len(args)+1, len(args)+2)
+	args = append(args, pageSize, offset)
+	rows, err := db.QueryContext(ctx, querySQL, args...)
 	if err != nil {
-		return nil, fmt.Errorf("relationships: %w", err)
+		return adminRelationshipPage{}, fmt.Errorf("query relationships: %w", err)
 	}
 	defer rows.Close()
-	relationships := []adminRelationship{}
+	relationships := make([]adminRelationship, 0, pageSize)
 	for rows.Next() {
 		var relationship adminRelationship
 		if err := rows.Scan(&relationship.GroupID, &relationship.UserID, &relationship.Name,
 			&relationship.Affinity, &relationship.Familiarity, &relationship.TeaseTolerance,
 			&relationship.GrudgeScore, &relationship.MessageCount, &relationship.LastInteractAt); err != nil {
-			return nil, err
+			return adminRelationshipPage{}, err
 		}
 		relationships = append(relationships, relationship)
 	}
-	return relationships, rows.Err()
+	if err := rows.Err(); err != nil {
+		return adminRelationshipPage{}, err
+	}
+	return adminRelationshipPage{Items: relationships, Total: total, Page: page, PageSize: pageSize}, nil
 }
 
 func (d *adminDashboard) loadActivity(ctx context.Context, groupID int64, windowMinutes int) ([]adminActivity, error) {

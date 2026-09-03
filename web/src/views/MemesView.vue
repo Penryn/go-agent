@@ -14,15 +14,20 @@ const memes = ref<MemeRecord[]>([])
 const query = ref('')
 const loading = ref(false)
 const deleting = ref('')
+const total = ref(0)
+const page = ref(1)
 let searchTimer: number | undefined
 
 const sentCount = computed(() => memes.value.reduce((total, item) => total + item.send_count, 0))
 const previewCount = computed(() => memes.value.filter((item) => item.preview_url).length)
 
-async function load() {
+async function load(nextPage = page.value) {
   loading.value = true
+  page.value = nextPage
   try {
-    memes.value = await getMemes(selectedGroup.value, query.value, token.value)
+    const result = await getMemes(selectedGroup.value, query.value, page.value, token.value)
+    memes.value = result.items
+    total.value = result.total
   } catch (error) {
     ElMessage.error(`读取表情包失败：${error instanceof Error ? error.message : String(error)}`)
   } finally {
@@ -52,10 +57,10 @@ async function remove(item: MemeRecord) {
   }
 }
 
-watch(selectedGroup, load)
+watch(selectedGroup, () => load(1))
 watch(query, () => {
   window.clearTimeout(searchTimer)
-  searchTimer = window.setTimeout(load, 250)
+  searchTimer = window.setTimeout(() => load(1), 250)
 })
 onMounted(load)
 </script>
@@ -64,10 +69,10 @@ onMounted(load)
   <section class="glass-panel page-panel meme-page">
     <div class="page-panel-head">
       <div><span>REACTION ARCHIVE</span><h2>表情包库</h2><p>只在这里管理 Bot 收集的图片素材；首页与监控页不重复展示明细。</p></div>
-      <div class="meme-filters"><el-input v-model="query" :prefix-icon="Search" clearable placeholder="搜索标题、摘要或标签" /><el-button :icon="Refresh" :loading="loading" @click="load">刷新</el-button></div>
+      <div class="meme-filters"><el-input v-model="query" :prefix-icon="Search" clearable placeholder="搜索标题、摘要或标签" /><el-button :icon="Refresh" :loading="loading" @click="load()">刷新</el-button></div>
     </div>
 
-    <div class="meme-summary"><span><b>{{ memes.length }}</b> 个素材</span><span><b>{{ previewCount }}</b> 个可预览</span><span><b>{{ sentCount }}</b> 次发送</span></div>
+    <div class="meme-summary"><span><b>{{ total }}</b> 个素材</span><span><b>{{ previewCount }}</b> 个可预览（本页）</span><span><b>{{ sentCount }}</b> 次发送（本页）</span></div>
 
     <div v-if="memes.length" v-loading="loading" class="meme-grid">
       <article v-for="item in memes" :key="item.meme_id" class="meme-card">
@@ -86,5 +91,6 @@ onMounted(load)
       </article>
     </div>
     <el-empty v-else-if="!loading" description="当前群还没有收集到表情包" />
+    <el-pagination v-if="total > 50" class="meme-pagination" layout="prev, pager, next" :current-page="page" :page-size="50" :total="total" @current-change="load" />
   </section>
 </template>
