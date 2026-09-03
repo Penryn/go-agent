@@ -51,11 +51,13 @@ type adminSnapshot struct {
 }
 
 type adminStatus struct {
-	Mode        string `json:"mode"`
-	QQEnabled   bool   `json:"qq_enabled"`
-	QQConnected bool   `json:"qq_connected"`
-	SelfID      int64  `json:"self_id"`
-	DatabaseOK  bool   `json:"database_ok"`
+	Mode         string     `json:"mode"`
+	QQEnabled    bool       `json:"qq_enabled"`
+	QQConnected  bool       `json:"qq_connected"`
+	SelfID       int64      `json:"self_id"`
+	DatabaseOK   bool       `json:"database_ok"`
+	QueueBacklog int        `json:"queue_backlog"`
+	LastErrorAt  *time.Time `json:"last_error_at,omitempty"`
 }
 
 type adminStats struct {
@@ -712,12 +714,30 @@ func (d *adminDashboard) snapshotWindow(ctx context.Context, selectedGroup int64
 	if err != nil {
 		return adminSnapshot{}, err
 	}
+	lastErrorAt, err := d.loadLastTaskErrorAt(ctx)
+	if err != nil {
+		return adminSnapshot{}, err
+	}
 	return adminSnapshot{
 		UpdatedAt: time.Now(), SelectedGroup: selectedGroup,
-		Status: adminStatus{Mode: d.cfg.App.Mode, QQEnabled: d.cfg.QQ.Enabled, QQConnected: d.connected != nil && d.connected(), SelfID: d.cfg.QQ.SelfID, DatabaseOK: d.db.PingContext(ctx) == nil},
+		Status: adminStatus{Mode: d.cfg.App.Mode, QQEnabled: d.cfg.QQ.Enabled, QQConnected: d.connected != nil && d.connected(), SelfID: d.cfg.QQ.SelfID, DatabaseOK: d.db.PingContext(ctx) == nil, QueueBacklog: stats.PendingTasks, LastErrorAt: lastErrorAt},
 		Stats:  stats, Persona: persona, Groups: groups, Memories: memories,
 		Relationships: relationships, Activity: activity, Retrieval: retrieval, ModelUsage: modelUsage, WindowMinutes: windowMinutes, WindowMetrics: windowMetrics,
 	}, nil
+}
+
+func (d *adminDashboard) loadLastTaskErrorAt(ctx context.Context) (*time.Time, error) {
+	var last sql.NullTime
+	if err := d.db.QueryRowContext(ctx, `
+		SELECT MAX(updated_at) FILTER (WHERE status = 'dead_letter' OR COALESCE(last_error, '') <> '')
+		FROM async_outbox
+	`).Scan(&last); err != nil {
+		return nil, fmt.Errorf("task health: %w", err)
+	}
+	if !last.Valid {
+		return nil, nil
+	}
+	return &last.Time, nil
 }
 
 func (d *adminDashboard) loadWindowMetrics(ctx context.Context, groupID int64, windowMinutes int) (adminWindowMetrics, error) {

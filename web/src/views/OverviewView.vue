@@ -2,7 +2,7 @@
 import { computed } from 'vue'
 import { storeToRefs } from 'pinia'
 import { useDashboardStore } from '@/stores/dashboard'
-import { energyText, moodText, talkBiasText } from '@/lib/format'
+import { energyText, moodText, relativeTime, talkBiasText } from '@/lib/format'
 
 const store = useDashboardStore()
 const { snapshot, loading } = storeToRefs(store)
@@ -56,7 +56,7 @@ const stats = computed(() => [
           <div><span>近 10 分钟发言</span><strong>{{ persona?.runtime.replies_last_10min ?? 0 }}</strong></div>
           <div><span>兴趣标签</span><strong>{{ persona?.interests.length ?? 0 }}</strong></div>
         </div>
-        <div class="runtime-note">QQ {{ snapshot?.status.qq_connected ? '正常' : '异常' }} · 数据库 {{ snapshot?.status.database_ok ? '正常' : '异常' }} · 模型 {{ snapshot?.model_usage.error_calls ? '有错误' : '正常' }} · 详细任务请到任务队列查看。</div>
+        <div class="runtime-note">QQ {{ snapshot?.status.qq_connected ? '正常' : '异常' }} · 数据库 {{ snapshot?.status.database_ok ? '正常' : '异常' }} · 队列积压 {{ snapshot?.status.queue_backlog ?? 0 }} · 最近错误 {{ relativeTime(snapshot?.status.last_error_at) }} · 详细任务请到任务队列查看。</div>
       </article>
 
       <article class="glass-panel groups-panel">
