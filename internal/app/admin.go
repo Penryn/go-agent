@@ -105,6 +105,13 @@ type adminMemory struct {
 	UpdatedAt     time.Time  `json:"updated_at"`
 }
 
+type adminMemoryPage struct {
+	Items    []adminMemory `json:"items"`
+	Total    int           `json:"total"`
+	Page     int           `json:"page"`
+	PageSize int           `json:"page_size"`
+}
+
 type adminMeme struct {
 	MemeID        string     `json:"meme_id"`
 	GroupID       int64      `json:"group_id"`
@@ -412,9 +419,14 @@ func (h *adminHandler) handleMemories(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid status", http.StatusBadRequest)
 		return
 	}
+	page, pageSize, err := parseAdminPage(r)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
 	ctx, cancel := context.WithTimeout(r.Context(), 4*time.Second)
 	defer cancel()
-	memories, err := loadAdminMemories(ctx, h.db, groupID, status, r.URL.Query().Get("q"))
+	memories, err := loadAdminMemoryPage(ctx, h.db, groupID, status, strings.TrimSpace(r.URL.Query().Get("type")), r.URL.Query().Get("q"), page, pageSize)
 	if err != nil {
 		http.Error(w, "load memories: "+err.Error(), http.StatusInternalServerError)
 		return
@@ -1018,6 +1030,44 @@ func loadAdminMemories(ctx context.Context, db *sql.DB, groupID int64, status, q
 		memories = append(memories, memory)
 	}
 	return memories, rows.Err()
+}
+
+func loadAdminMemoryPage(ctx context.Context, db *sql.DB, groupID int64, status, memoryType, query string, page, pageSize int) (adminMemoryPage, error) {
+	where := ` FROM memories
+		WHERE ($2 = 'all' OR ($2 = 'active' AND (expires_at IS NULL OR expires_at > NOW())) OR ($2 = 'expired' AND expires_at IS NOT NULL AND expires_at <= NOW()))
+		  AND ($1 = 0 OR scope = 'global' OR scope = 'group:' || $1::text OR scope LIKE 'group:' || $1::text || ':user:%')
+		  AND ($3 = '' OR type = $3)
+		  AND ($4 = '' OR LOWER(subject || ' ' || content || ' ' || scope) LIKE '%' || LOWER($4) || '%')`
+	args := []any{groupID, status, memoryType, strings.TrimSpace(query)}
+	var total int
+	if err := db.QueryRowContext(ctx, "SELECT COUNT(*)"+where, args...).Scan(&total); err != nil {
+		return adminMemoryPage{}, fmt.Errorf("count memories: %w", err)
+	}
+	offset := (page - 1) * pageSize
+	querySQL := `SELECT memory_id, scope, type, subject, content, confidence, importance, created_at, expires_at, source_event_id, updated_at` + where + fmt.Sprintf(" ORDER BY created_at DESC LIMIT $%d OFFSET $%d", len(args)+1, len(args)+2)
+	args = append(args, pageSize, offset)
+	rows, err := db.QueryContext(ctx, querySQL, args...)
+	if err != nil {
+		return adminMemoryPage{}, fmt.Errorf("query memories: %w", err)
+	}
+	defer rows.Close()
+	items := make([]adminMemory, 0, pageSize)
+	for rows.Next() {
+		var memory adminMemory
+		var expires sql.NullTime
+		if err := rows.Scan(&memory.ID, &memory.Scope, &memory.Type, &memory.Subject, &memory.Content,
+			&memory.Confidence, &memory.Importance, &memory.CreatedAt, &expires, &memory.SourceEventID, &memory.UpdatedAt); err != nil {
+			return adminMemoryPage{}, err
+		}
+		if expires.Valid {
+			memory.ExpiresAt = &expires.Time
+		}
+		items = append(items, memory)
+	}
+	if err := rows.Err(); err != nil {
+		return adminMemoryPage{}, err
+	}
+	return adminMemoryPage{Items: items, Total: total, Page: page, PageSize: pageSize}, nil
 }
 
 func loadAdminMemes(ctx context.Context, db *sql.DB, groupID int64, query string) ([]adminMeme, error) {

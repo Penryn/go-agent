@@ -1,5 +1,5 @@
 import axios from 'axios'
-import type { ActivityPage, BotSnapshot, EventDetail, MCPServerConfig, MemeRecord, MemoryRecord, TaskPage } from '@/types'
+import type { ActivityPage, BotSnapshot, EventDetail, MCPServerConfig, MemeRecord, MemoryPage, MemoryRecord, TaskPage } from '@/types'
 
 export const api = axios.create({
   baseURL: '/admin/api',
@@ -35,8 +35,8 @@ export async function retryTask(taskID: string, token: string) {
   await api.post(`/tasks/${encodeURIComponent(taskID)}/retry`, undefined, { headers: token ? { Authorization: `Bearer ${token}` } : undefined })
 }
 
-export async function getMemories(groupID: number, status: string, query: string, token: string) {
-  const response = await api.get<MemoryRecord[]>('/memories', { params: { group_id: groupID || undefined, status, q: query.trim() || undefined }, headers: token ? { Authorization: `Bearer ${token}` } : undefined })
+export async function getMemories(groupID: number, status: string, type: string, query: string, page: number, token: string) {
+  const response = await api.get<MemoryPage>('/memories', { params: { group_id: groupID || undefined, status, type: type || undefined, q: query.trim() || undefined, page }, headers: token ? { Authorization: `Bearer ${token}` } : undefined })
   return response.data
 }
 

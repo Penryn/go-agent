@@ -81,6 +81,13 @@ export interface MemoryRecord {
   updated_at: string
 }
 
+export interface MemoryPage {
+  items: MemoryRecord[]
+  total: number
+  page: number
+  page_size: number
+}
+
 export interface MemeRecord {
   meme_id: string
   group_id: number
