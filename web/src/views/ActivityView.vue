@@ -1,12 +1,14 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import { storeToRefs } from 'pinia'
 import { activityText, relativeTime } from '@/lib/format'
 import { getEventDetail } from '@/lib/api'
 import type { EventDetail } from '@/types'
 import { useDashboardStore } from '@/stores/dashboard'
+import { useRoute } from 'vue-router'
 
 const store = useDashboardStore()
+const route = useRoute()
 const { snapshot } = storeToRefs(store)
 const filter = ref('all')
 const detail = ref<EventDetail>()
@@ -24,6 +26,11 @@ async function openDetail(eventID: string) {
   if (!eventID) return
   detail.value = await getEventDetail(eventID, store.token)
 }
+
+onMounted(() => {
+  const eventID = route.query.event_id
+  if (typeof eventID === 'string') void openDetail(eventID)
+})
 </script>
 
 <template>
