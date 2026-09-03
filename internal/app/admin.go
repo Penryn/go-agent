@@ -35,16 +35,17 @@ type adminDashboard struct {
 }
 
 type adminSnapshot struct {
-	UpdatedAt     time.Time             `json:"updated_at"`
-	SelectedGroup int64                 `json:"selected_group"`
-	Status        adminStatus           `json:"status"`
-	Stats         adminStats            `json:"stats"`
-	Persona       adminPersona          `json:"persona"`
-	Groups        []adminGroup          `json:"groups"`
-	Memories      []adminMemory         `json:"memories"`
-	Relationships []adminRelationship   `json:"relationships"`
-	Activity      []adminActivity       `json:"activity"`
-	Retrieval     adminRetrievalMetrics `json:"retrieval"`
+	UpdatedAt     time.Time              `json:"updated_at"`
+	SelectedGroup int64                  `json:"selected_group"`
+	Status        adminStatus            `json:"status"`
+	Stats         adminStats             `json:"stats"`
+	Persona       adminPersona           `json:"persona"`
+	Groups        []adminGroup           `json:"groups"`
+	Memories      []adminMemory          `json:"memories"`
+	Relationships []adminRelationship    `json:"relationships"`
+	Activity      []adminActivity        `json:"activity"`
+	Retrieval     adminRetrievalMetrics  `json:"retrieval"`
+	ModelUsage    adminModelUsageMetrics `json:"model_usage"`
 }
 
 type adminStatus struct {
@@ -131,16 +132,17 @@ type adminActivity struct {
 }
 
 type adminEventDetail struct {
-	EventID    string                 `json:"event_id"`
-	MessageID  string                 `json:"message_id"`
-	GroupID    int64                  `json:"group_id"`
-	UserID     int64                  `json:"user_id"`
-	Kind       string                 `json:"kind"`
-	Text       string                 `json:"text"`
-	Sender     string                 `json:"sender"`
-	OccurredAt time.Time              `json:"occurred_at"`
-	Decision   *adminDecisionDetail   `json:"decision,omitempty"`
-	Retrievals []adminRetrievalDetail `json:"retrievals"`
+	EventID     string                  `json:"event_id"`
+	MessageID   string                  `json:"message_id"`
+	GroupID     int64                   `json:"group_id"`
+	UserID      int64                   `json:"user_id"`
+	Kind        string                  `json:"kind"`
+	Text        string                  `json:"text"`
+	Sender      string                  `json:"sender"`
+	OccurredAt  time.Time               `json:"occurred_at"`
+	Decision    *adminDecisionDetail    `json:"decision,omitempty"`
+	Retrievals  []adminRetrievalDetail  `json:"retrievals"`
+	ModelUsages []adminModelUsageDetail `json:"model_usages"`
 }
 
 type adminDecisionDetail struct {
@@ -163,6 +165,18 @@ type adminRetrievalDetail struct {
 	CreatedAt      time.Time `json:"created_at"`
 }
 
+type adminModelUsageDetail struct {
+	TraceID        string    `json:"trace_id"`
+	Iteration      int       `json:"iteration"`
+	InputTokens    int       `json:"input_tokens"`
+	OutputTokens   int       `json:"output_tokens"`
+	DurationMS     int64     `json:"duration_ms"`
+	Tools          []string  `json:"tools"`
+	UsageAvailable bool      `json:"usage_available"`
+	Error          string    `json:"error"`
+	CreatedAt      time.Time `json:"created_at"`
+}
+
 type adminRetrievalMetrics struct {
 	Queries           int     `json:"queries"`
 	QueriesWithHits   int     `json:"queries_with_hits"`
@@ -171,6 +185,14 @@ type adminRetrievalMetrics struct {
 	FeedbackQueries   int     `json:"feedback_queries"`
 	SelectedQueries   int     `json:"selected_queries"`
 	SelectionRate     float64 `json:"selection_rate"`
+}
+
+type adminModelUsageMetrics struct {
+	Calls         int     `json:"calls"`
+	InputTokens   int64   `json:"input_tokens"`
+	OutputTokens  int64   `json:"output_tokens"`
+	AvgDurationMS float64 `json:"avg_duration_ms"`
+	ErrorCalls    int     `json:"error_calls"`
 }
 
 func newAdminHandler(db *sql.DB, state ports.RuntimeStateStore, facts ports.PersonaFactStore, definition personadomain.PersonaDefinition, cfg config.Config, connected func() bool, mcp *toolsvc.MCPManager) http.Handler {
@@ -420,12 +442,34 @@ func (d *adminDashboard) snapshot(ctx context.Context, selectedGroup int64) (adm
 	if err != nil {
 		return adminSnapshot{}, err
 	}
+	modelUsage, err := d.loadModelUsageMetrics(ctx, selectedGroup)
+	if err != nil {
+		return adminSnapshot{}, err
+	}
 	return adminSnapshot{
 		UpdatedAt: time.Now(), SelectedGroup: selectedGroup,
 		Status: adminStatus{Mode: d.cfg.App.Mode, QQEnabled: d.cfg.QQ.Enabled, QQConnected: d.connected != nil && d.connected(), SelfID: d.cfg.QQ.SelfID, DatabaseOK: d.db.PingContext(ctx) == nil},
 		Stats:  stats, Persona: persona, Groups: groups, Memories: memories,
-		Relationships: relationships, Activity: activity, Retrieval: retrieval,
+		Relationships: relationships, Activity: activity, Retrieval: retrieval, ModelUsage: modelUsage,
 	}, nil
+}
+
+func (d *adminDashboard) loadModelUsageMetrics(ctx context.Context, groupID int64) (adminModelUsageMetrics, error) {
+	var metrics adminModelUsageMetrics
+	var avg sql.NullFloat64
+	err := d.db.QueryRowContext(ctx, `
+		SELECT COUNT(*), COALESCE(SUM(input_tokens), 0), COALESCE(SUM(output_tokens), 0), AVG(duration_ms),
+		       COUNT(*) FILTER (WHERE error <> '')
+		FROM model_usage_records
+		WHERE created_at > NOW() - INTERVAL '24 hours' AND ($1 = 0 OR group_id = $1)
+	`, groupID).Scan(&metrics.Calls, &metrics.InputTokens, &metrics.OutputTokens, &avg, &metrics.ErrorCalls)
+	if err != nil {
+		return metrics, fmt.Errorf("model usage metrics: %w", err)
+	}
+	if avg.Valid {
+		metrics.AvgDurationMS = avg.Float64
+	}
+	return metrics, nil
 }
 
 func (d *adminDashboard) loadRetrievalMetrics(ctx context.Context, groupID int64) (adminRetrievalMetrics, error) {
@@ -438,7 +482,7 @@ func (d *adminDashboard) loadRetrievalMetrics(ctx context.Context, groupID int64
 		       COUNT(*) FILTER (WHERE outcome <> ''),
 		       COUNT(*) FILTER (WHERE jsonb_array_length(selected_memory_ids_json) > 0)
 		FROM retrieval_traces
-		WHERE $1 = 0 OR group_id = $1
+		WHERE created_at > NOW() - INTERVAL '24 hours' AND ($1 = 0 OR group_id = $1)
 	`, groupID).Scan(&metrics.Queries, &metrics.QueriesWithHits, &avg, &metrics.FeedbackQueries, &metrics.SelectedQueries)
 	if err != nil {
 		return metrics, fmt.Errorf("retrieval metrics: %w", err)
@@ -611,13 +655,13 @@ func (d *adminDashboard) loadActivity(ctx context.Context, groupID int64) ([]adm
 			SELECT event_id, occurred_at AS at, group_id, 'message' AS type, kind AS label,
 			       COALESCE(NULLIF(sender_group_card, ''), NULLIF(sender_qq_nickname, ''), user_id::text) AS subject,
 			       LEFT(text_content, 300) AS detail
-			FROM messages WHERE $1 = 0 OR group_id = $1
+			FROM messages WHERE occurred_at > NOW() - INTERVAL '24 hours' AND ($1 = 0 OR group_id = $1)
 			UNION ALL
 			SELECT event_id, created_at, group_id, 'decision', chosen_action, outcome, LEFT(interpretation, 300)
-			FROM thought_records WHERE $1 = 0 OR group_id = $1
+			FROM thought_records WHERE created_at > NOW() - INTERVAL '24 hours' AND ($1 = 0 OR group_id = $1)
 			UNION ALL
 			SELECT '', updated_at, 0, 'task', kind, status, LEFT(COALESCE(last_error, ''), 300)
-			FROM async_outbox
+			FROM async_outbox WHERE updated_at > NOW() - INTERVAL '24 hours'
 		) activity
 		ORDER BY at DESC LIMIT 80
 	`, groupID)
@@ -660,6 +704,7 @@ func loadAdminEventDetail(ctx context.Context, db *sql.DB, eventID string) (admi
 	}
 	defer rows.Close()
 	detail.Retrievals = []adminRetrievalDetail{}
+	detail.ModelUsages = []adminModelUsageDetail{}
 	for rows.Next() {
 		var item adminRetrievalDetail
 		var hits, selected []byte
@@ -672,6 +717,26 @@ func loadAdminEventDetail(ctx context.Context, db *sql.DB, eventID string) (admi
 	}
 	if err := rows.Err(); err != nil {
 		return detail, err
+	}
+	modelRows, err := db.QueryContext(ctx, `
+		SELECT trace_id, iteration, input_tokens, output_tokens, duration_ms, tools_json, usage_available, error, created_at
+		FROM model_usage_records WHERE trace_id IN (SELECT trace_id FROM retrieval_traces WHERE event_id = $1) OR trace_id = $1
+		ORDER BY created_at ASC
+	`, eventID)
+	if err == nil {
+		defer modelRows.Close()
+		for modelRows.Next() {
+			var item adminModelUsageDetail
+			var tools []byte
+			if err := modelRows.Scan(&item.TraceID, &item.Iteration, &item.InputTokens, &item.OutputTokens, &item.DurationMS, &tools, &item.UsageAvailable, &item.Error, &item.CreatedAt); err != nil {
+				return detail, err
+			}
+			_ = json.Unmarshal(tools, &item.Tools)
+			detail.ModelUsages = append(detail.ModelUsages, item)
+		}
+		if err := modelRows.Err(); err != nil {
+			return detail, err
+		}
 	}
 	var decision adminDecisionDetail
 	var evidence []byte

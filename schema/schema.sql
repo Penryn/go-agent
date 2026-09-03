@@ -166,6 +166,31 @@ CREATE TABLE IF NOT EXISTS retrieval_traces (
 CREATE INDEX IF NOT EXISTS idx_retrieval_traces_group_created ON retrieval_traces (group_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_retrieval_traces_event ON retrieval_traces (event_id);
 
+CREATE TABLE IF NOT EXISTS model_usage_records (
+  id BIGSERIAL PRIMARY KEY,
+  trace_id VARCHAR(128) NOT NULL,
+  group_id BIGINT NOT NULL,
+  user_id BIGINT NOT NULL,
+  trigger VARCHAR(128) NOT NULL,
+  phase VARCHAR(128) NOT NULL,
+  iteration INT NOT NULL,
+  input_tokens INT NOT NULL DEFAULT 0,
+  cached_tokens INT NOT NULL DEFAULT 0,
+  cache_miss_tokens INT NOT NULL DEFAULT 0,
+  output_tokens INT NOT NULL DEFAULT 0,
+  reasoning_tokens INT NOT NULL DEFAULT 0,
+  duration_ms BIGINT NOT NULL DEFAULT 0,
+  tools_json JSONB NOT NULL,
+  usage_available BOOLEAN NOT NULL DEFAULT FALSE,
+  error TEXT NOT NULL DEFAULT '',
+  sent BOOLEAN NOT NULL DEFAULT FALSE,
+  final_action VARCHAR(64) NOT NULL DEFAULT '',
+  drop_reason VARCHAR(128) NOT NULL DEFAULT '',
+  created_at TIMESTAMPTZ NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_model_usage_group_created ON model_usage_records (group_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_model_usage_trace ON model_usage_records (trace_id);
+
 CREATE TABLE IF NOT EXISTS runtime_mcp_config (
   config_id SMALLINT PRIMARY KEY DEFAULT 1 CHECK (config_id = 1),
   servers_json JSONB NOT NULL,

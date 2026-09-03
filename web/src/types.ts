@@ -32,6 +32,7 @@ export interface BotSnapshot {
     selected_queries: number
     selection_rate: number
   }
+  model_usage: { calls: number; input_tokens: number; output_tokens: number; avg_duration_ms: number; error_calls: number }
 }
 
 export interface MCPServerConfig {
@@ -116,4 +117,5 @@ export interface EventDetail {
   occurred_at: string
   decision?: { thought_id: string; action: string; outcome: string; interpretation: string; evidence: string[]; uncertainty: number; created_at: string }
   retrievals: { trace_id: string; query: string; candidate_count: number; hit_memory_ids: string[]; selected_ids: string[]; outcome: string; created_at: string }[]
+  model_usages: { trace_id: string; iteration: number; input_tokens: number; output_tokens: number; duration_ms: number; tools: string[]; usage_available: boolean; error: string; created_at: string }[]
 }

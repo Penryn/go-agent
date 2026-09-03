@@ -10,6 +10,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"time"
 
 	openaimodel "github.com/cloudwego/eino-ext/components/model/openai"
 	modelcomponent "github.com/cloudwego/eino/components/model"
@@ -41,6 +42,12 @@ type Call struct {
 	Tools           []string
 	UsageAvailable  bool
 	Error           string
+	DurationMS      int64
+	startedAt       time.Time
+}
+
+type Sink interface {
+	SaveModelUsage(context.Context, Metadata, Call, FinalState, time.Time) error
 }
 
 type Recorder struct {
@@ -48,6 +55,7 @@ type Recorder struct {
 	metadata Metadata
 	calls    []*Call
 	flushed  bool
+	sink     Sink
 }
 
 type recorderKey struct{}
@@ -60,6 +68,12 @@ func WithRecorder(ctx context.Context, metadata Metadata) (context.Context, *Rec
 func FromContext(ctx context.Context) *Recorder {
 	recorder, _ := ctx.Value(recorderKey{}).(*Recorder)
 	return recorder
+}
+
+func (r *Recorder) SetSink(sink Sink) {
+	if r != nil {
+		r.sink = sink
+	}
 }
 
 // Calls returns a stable copy for tests and future metrics exporters.
@@ -84,7 +98,7 @@ func (r *Recorder) begin() *Call {
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	call := &Call{Iteration: len(r.calls) + 1}
+	call := &Call{Iteration: len(r.calls) + 1, startedAt: time.Now()}
 	r.calls = append(r.calls, call)
 	return call
 }
@@ -97,6 +111,9 @@ func (r *Recorder) update(call *Call, message *schema.Message, callErr error) {
 	defer r.mu.Unlock()
 	if callErr != nil {
 		call.Error = callErr.Error()
+	}
+	if !call.startedAt.IsZero() {
+		call.DurationMS = time.Since(call.startedAt).Milliseconds()
 	}
 	if message == nil {
 		return
@@ -132,6 +149,7 @@ func (r *Recorder) Flush(final FinalState) {
 	}
 	r.flushed = true
 	metadata := r.metadata
+	sink := r.sink
 	calls := make([]Call, 0, len(r.calls))
 	for _, call := range r.calls {
 		copy := *call
@@ -141,6 +159,9 @@ func (r *Recorder) Flush(final FinalState) {
 	r.mu.Unlock()
 
 	for _, call := range calls {
+		if sink != nil {
+			_ = sink.SaveModelUsage(context.Background(), metadata, call, final, time.Now())
+		}
 		slog.Info("main model usage",
 			"trace_id", metadata.TraceID,
 			"group_id", metadata.GroupID,
@@ -160,6 +181,7 @@ func (r *Recorder) Flush(final FinalState) {
 			"final_action", final.Action,
 			"drop_reason", final.DropReason,
 			"error", call.Error,
+			"duration_ms", call.DurationMS,
 		)
 	}
 }

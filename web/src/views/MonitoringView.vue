@@ -14,6 +14,7 @@ const taskFailureRate = computed(() => tasks.value.length ? taskFailures.value /
 const replyActions = computed(() => decisions.value.filter((item) => /reply|react|meme|poke/i.test(item.label)).length)
 const decisionReplyRate = computed(() => decisions.value.length ? replyActions.value / decisions.value.length : 0)
 const retrieval = computed(() => snapshot.value?.retrieval || { queries: 0, queries_with_hits: 0, hit_rate: 0, avg_candidate_count: 0, feedback_queries: 0, selected_queries: 0, selection_rate: 0 })
+const modelUsage = computed(() => snapshot.value?.model_usage || { calls: 0, input_tokens: 0, output_tokens: 0, avg_duration_ms: 0, error_calls: 0 })
 </script>
 
 <template>
@@ -28,6 +29,7 @@ const retrieval = computed(() => snapshot.value?.retrieval || { queries: 0, quer
       <article class="monitor-card" data-tone="violet"><span>检索命中率</span><strong>{{ Math.round(retrieval.hit_rate * 100) }}%</strong><small>{{ retrieval.queries_with_hits }} / {{ retrieval.queries }} 次有结果</small></article>
       <article class="monitor-card" data-tone="blue"><span>平均候选数</span><strong>{{ retrieval.avg_candidate_count.toFixed(1) }}</strong><small>{{ retrieval.queries }} 次检索</small></article>
       <article class="monitor-card" data-tone="mint"><span>召回采用率</span><strong>{{ Math.round(retrieval.selection_rate * 100) }}%</strong><small>{{ retrieval.selected_queries }} / {{ retrieval.queries_with_hits }} 次进入决策</small></article>
+      <article class="monitor-card" data-tone="amber"><span>模型平均耗时</span><strong>{{ Math.round(modelUsage.avg_duration_ms) }}ms</strong><small>近 24 小时 · {{ modelUsage.calls }} 次调用</small></article>
     </section>
 
     <section class="monitor-panels">
@@ -43,6 +45,11 @@ const retrieval = computed(() => snapshot.value?.retrieval || { queries: 0, quer
         <div class="quality-row"><span>检索次数</span><strong>{{ retrieval.queries }}</strong></div>
         <div class="quality-row"><span>有反馈的检索</span><strong>{{ retrieval.feedback_queries }}</strong></div>
         <p>采用率表示召回内容进入最终决策上下文，不代表记忆内容一定正确；正确率仍需人工标注或用户反馈。</p>
+      </article>
+      <article class="monitor-detail">
+        <div class="panel-title"><div><span>MODEL USAGE</span><h3>模型用量（近 24 小时）</h3></div><el-tag effect="plain">{{ modelUsage.error_calls }} 次错误</el-tag></div>
+        <div class="quality-row"><span>输入 token</span><strong>{{ modelUsage.input_tokens.toLocaleString() }}</strong></div>
+        <div class="quality-row"><span>输出 token</span><strong>{{ modelUsage.output_tokens.toLocaleString() }}</strong></div>
       </article>
     </section>
   </section>

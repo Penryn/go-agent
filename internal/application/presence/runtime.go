@@ -513,6 +513,9 @@ func (r *Runtime) processWithValidation(ctx context.Context, envelope conversati
 		Trigger: candidate.Intent,
 		Phase:   "reply_planner",
 	})
+	if sink, ok := r.thoughts.(modelusage.Sink); ok {
+		usageRecorder.SetSink(sink)
+	}
 	usageFinal := modelusage.FinalState{}
 	defer func() { usageRecorder.Flush(usageFinal) }()
 
