@@ -120,12 +120,13 @@ func Default() Config {
 		}},
 		Storage: StorageConfig{
 			Postgres: PostgresConfig{
-				Host:      "127.0.0.1",
-				Port:      5432,
-				Database:  "qqbot",
-				User:      "qqbot",
-				SSLMode:   "disable",
-				VectorDim: 2048,
+				Host:                       "127.0.0.1",
+				Port:                       5432,
+				Database:                   "qqbot",
+				User:                       "qqbot",
+				SSLMode:                    "disable",
+				VectorDim:                  2048,
+				ObservabilityRetentionDays: 30,
 			},
 		},
 		QQ: QQConfig{
@@ -158,6 +159,9 @@ func Load(path string) (Config, error) {
 }
 
 func Validate(cfg Config) error {
+	if cfg.Storage.Postgres.ObservabilityRetentionDays < 0 {
+		return errors.New("storage.postgres.observability_retention_days must be >= 0")
+	}
 	if cfg.Storage.Postgres.VectorDim > 0 && cfg.Storage.Postgres.VectorDim != 2048 {
 		return errors.New("storage.postgres.vector_dim must be 2048 for the configured halfvec schema")
 	}

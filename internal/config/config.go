@@ -127,6 +127,8 @@ type PostgresConfig struct {
 	// VectorDim 是 pgvector 向量列维度，须与 embedding 模型输出严格一致。
 	// 启动时校验与表结构一致，不一致拒绝启动。
 	VectorDim int `yaml:"vector_dim"`
+	// ObservabilityRetentionDays controls cleanup of high-volume traces and task history. 0 disables cleanup.
+	ObservabilityRetentionDays int `yaml:"observability_retention_days"`
 }
 
 func (c PostgresConfig) DSN() string {

@@ -318,6 +318,8 @@ storage:
     ssl_mode: disable
     # embedding 模型输出维度；必须与 halfvec schema 一致，维度不匹配会拒绝索引。
     vector_dim: 2048
+    # 检索/模型/任务观测数据保留天数，0 表示关闭自动清理。
+    observability_retention_days: 30
 
 qq:
   # 为 false 时，不连接 NapCat，也不发真实 OneBot 动作，适合本地最小链路验证。

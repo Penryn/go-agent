@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"strings"
 	"sync"
@@ -14,6 +15,7 @@ import (
 	"github.com/phlin/go-agent/internal/adapters/inmemory"
 	modeladapter "github.com/phlin/go-agent/internal/adapters/model"
 	outboundnapcat "github.com/phlin/go-agent/internal/adapters/outbound/napcat"
+	postgresstore "github.com/phlin/go-agent/internal/adapters/storage/postgres"
 	actionsvc "github.com/phlin/go-agent/internal/application/action"
 	contextsvc "github.com/phlin/go-agent/internal/application/context"
 	learningsvc "github.com/phlin/go-agent/internal/application/learning"
@@ -317,6 +319,15 @@ func New(ctx context.Context, cfg config.Config) (*App, error) {
 		return nil, fmt.Errorf("register learning outbox handler: %w", err)
 	}
 	learningSvc.RegisterJobs(sched, cfg.QQ.GroupWhitelist)
+	if retentionDays := cfg.Storage.Postgres.ObservabilityRetentionDays; retentionDays > 0 {
+		prune := func(jobCtx context.Context) error {
+			return postgresstore.PruneObservability(jobCtx, stores.db, retentionDays)
+		}
+		if err := prune(ctx); err != nil {
+			slog.Warn("app: observability cleanup failed", "error", err)
+		}
+		sched.Register("observability-retention", 24*time.Hour, prune)
+	}
 
 	app := &App{
 		cfg:          cfg,
