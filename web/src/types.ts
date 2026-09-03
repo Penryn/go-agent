@@ -23,6 +23,15 @@ export interface BotSnapshot {
   memories: MemoryRecord[]
   relationships: Relationship[]
   activity: Activity[]
+  retrieval: {
+    queries: number
+    queries_with_hits: number
+    hit_rate: number
+    avg_candidate_count: number
+    feedback_queries: number
+    selected_queries: number
+    selection_rate: number
+  }
 }
 
 export interface PersonaFact {

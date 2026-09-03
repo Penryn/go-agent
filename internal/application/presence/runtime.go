@@ -646,6 +646,17 @@ func (r *Runtime) processWithValidation(ctx context.Context, envelope conversati
 		if err := r.thoughts.SaveThought(ctx, thought); err != nil {
 			slog.Warn("human runtime: record thought failed", "group_id", envelope.Event.GroupID, "err", err)
 		}
+		if traceStore, ok := r.thoughts.(ports.RetrievalTraceStore); ok {
+			selectedIDs := make([]string, 0, len(snapshot.RelevantMemories))
+			for _, memory := range snapshot.RelevantMemories {
+				if memory.MemoryID != "" {
+					selectedIDs = append(selectedIDs, memory.MemoryID)
+				}
+			}
+			if err := traceStore.UpdateRetrievalTrace(ctx, envelope.Event.EventID, selectedIDs, outcome); err != nil {
+				slog.Warn("human runtime: update retrieval trace failed", "group_id", envelope.Event.GroupID, "err", err)
+			}
+		}
 	}
 	if r.turns != nil {
 		if err := r.turns.AfterTurn(ctx, snapshot, decision, receipt); err != nil {

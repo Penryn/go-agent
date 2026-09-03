@@ -10,6 +10,7 @@ import (
 	"slices"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/cloudwego/eino/components/tool"
@@ -37,6 +38,7 @@ type Runtime struct {
 	memeSvc           *memesvc.Service
 	retriever         *retrievalsvc.Service
 	external          []registeredTool
+	externalMu        sync.RWMutex
 	approvals         *WriteApprovalStore
 }
 
@@ -109,7 +111,9 @@ func (r *Runtime) availableTools(session replydomain.ToolContext) []registeredTo
 			terminal: isTerminalTool(candidate.Name()),
 		})
 	}
+	r.externalMu.RLock()
 	external := append([]registeredTool(nil), r.external...)
+	r.externalMu.RUnlock()
 	sort.SliceStable(external, func(i, j int) bool { return external[i].name < external[j].name })
 	for _, candidate := range external {
 		// External tools remain opt-in. Their definitions are loaded at startup,
@@ -195,6 +199,8 @@ func isTerminalTool(name string) bool {
 // RegisterTools adds tools discovered at startup (for example MCP and Codex)
 // while preserving the existing per-group allowlist behavior.
 func (r *Runtime) RegisterTools(ctx context.Context, tools ...tool.BaseTool) error {
+	r.externalMu.Lock()
+	defer r.externalMu.Unlock()
 	known := make(map[string]bool, len(r.external)+13)
 	for _, candidate := range r.allReplyTools() {
 		known[candidate.Name()] = true
@@ -222,6 +228,48 @@ func (r *Runtime) RegisterTools(ctx context.Context, tools ...tool.BaseTool) err
 		known[info.Name] = true
 		r.external = append(r.external, registeredTool{name: info.Name, tool: candidate, external: true})
 	}
+	return nil
+}
+
+// ReplaceMCPTools atomically swaps tools discovered from MCP servers while
+// retaining other external tools such as the Codex delegate.
+func (r *Runtime) ReplaceMCPTools(ctx context.Context, tools ...tool.BaseTool) error {
+	r.externalMu.Lock()
+	defer r.externalMu.Unlock()
+
+	known := make(map[string]bool, len(r.external)+13)
+	for _, candidate := range r.allReplyTools() {
+		known[candidate.Name()] = true
+	}
+	for _, candidate := range r.knowledgeTools(replydomain.ToolContext{}) {
+		known[candidate.Name()] = true
+	}
+	for _, candidate := range r.profileTools(replydomain.ToolContext{}) {
+		known[candidate.Name()] = true
+	}
+	retained := make([]registeredTool, 0, len(r.external))
+	for _, candidate := range r.external {
+		if strings.HasPrefix(candidate.name, "mcp_") {
+			continue
+		}
+		known[candidate.name] = true
+		retained = append(retained, candidate)
+	}
+	for _, candidate := range tools {
+		info, err := candidate.Info(ctx)
+		if err != nil {
+			return fmt.Errorf("read MCP tool info: %w", err)
+		}
+		if info == nil || strings.TrimSpace(info.Name) == "" {
+			return errors.New("MCP tool name is required")
+		}
+		if known[info.Name] {
+			return fmt.Errorf("duplicate tool name %q", info.Name)
+		}
+		known[info.Name] = true
+		retained = append(retained, registeredTool{name: info.Name, tool: candidate, external: true})
+	}
+	r.external = retained
 	return nil
 }
 
@@ -590,6 +638,8 @@ func (t *queryMemoryTool) InvokableRun(ctx context.Context, argumentsInJSON stri
 		TopK:    clamp(args.TopK, 1, 5),
 		Scope:   args.Scope,
 		Types:   args.MemoryTypes,
+		TraceID: t.session.TraceID,
+		EventID: t.session.TriggerEventID,
 	}
 	if t.retriever == nil {
 		return "", errors.New("query_memory: retriever is not configured")

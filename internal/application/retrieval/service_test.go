@@ -7,10 +7,10 @@ import (
 	"testing"
 
 	postgresstore "github.com/phlin/go-agent/internal/adapters/storage/postgres"
-	"github.com/phlin/go-agent/internal/testsupport"
 	"github.com/phlin/go-agent/internal/application/ports"
 	mediadomain "github.com/phlin/go-agent/internal/domain/media"
 	memorydomain "github.com/phlin/go-agent/internal/domain/memory"
+	"github.com/phlin/go-agent/internal/testsupport"
 )
 
 type vectorMemoryFake struct {

@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"sort"
 	"strings"
+	"time"
 
 	"golang.org/x/sync/errgroup"
 
@@ -33,6 +34,7 @@ type Service struct {
 	memoryVector ports.VectorMemoryStore
 	memeVector   ports.VectorMemeStore
 	cfg          Config
+	traceStore   ports.RetrievalTraceStore
 }
 
 func New(memoryStore ports.MemoryStore, memeStore ports.MemeStore, memoryVector ports.VectorMemoryStore, memeVector ports.VectorMemeStore, cfg Config) *Service {
@@ -42,7 +44,8 @@ func New(memoryStore ports.MemoryStore, memeStore ports.MemeStore, memoryVector 
 	if cfg.MemeCandidateK <= 0 {
 		cfg.MemeCandidateK = 30
 	}
-	return &Service{memoryStore: memoryStore, memeStore: memeStore, memoryVector: memoryVector, memeVector: memeVector, cfg: cfg}
+	traceStore, _ := memoryStore.(ports.RetrievalTraceStore)
+	return &Service{memoryStore: memoryStore, memeStore: memeStore, memoryVector: memoryVector, memeVector: memeVector, cfg: cfg, traceStore: traceStore}
 }
 
 func (s *Service) SearchMemories(ctx context.Context, query ports.MemoryQuery) ([]memorydomain.MemoryRecord, error) {
@@ -85,6 +88,27 @@ func (s *Service) SearchMemories(ctx context.Context, query ports.MemoryQuery) (
 		return nil, errors.Join(wrapTrackError("memory lexical search", lexicalErr), wrapTrackError("memory vector search", semanticErr))
 	}
 	results := mergeMemoryResults(lexical, semantic, query.TopK)
+	if s.traceStore != nil && query.EventID != "" {
+		seen := make(map[string]struct{}, len(lexical)+len(semantic))
+		for _, record := range append(append([]memorydomain.MemoryRecord{}, lexical...), semantic...) {
+			if record.MemoryID != "" {
+				seen[record.MemoryID] = struct{}{}
+			}
+		}
+		hits := make([]string, 0, len(results))
+		for _, record := range results {
+			if record.MemoryID != "" {
+				hits = append(hits, record.MemoryID)
+			}
+		}
+		traceID := fmt.Sprintf("retrieval-%s-%d", query.TraceID, time.Now().UnixNano())
+		if err := s.traceStore.SaveRetrievalTrace(ctx, ports.RetrievalTrace{
+			TraceID: traceID, EventID: query.EventID, GroupID: query.GroupID, UserID: query.UserID,
+			Query: query.Query, CandidateCount: len(seen), HitMemoryIDs: hits, CreatedAt: time.Now(),
+		}); err != nil {
+			slog.WarnContext(ctx, "retrieval: save trace failed", "err", err)
+		}
+	}
 	slog.DebugContext(ctx, "retrieval: memory search completed",
 		"candidate_k", candidateK,
 		"lexical_candidates", len(lexical),

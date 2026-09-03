@@ -151,6 +151,21 @@ CREATE TABLE IF NOT EXISTS thought_records (
 );
 CREATE INDEX IF NOT EXISTS idx_thought_records_group_created ON thought_records (group_id, created_at);
 
+CREATE TABLE IF NOT EXISTS retrieval_traces (
+  trace_id VARCHAR(128) PRIMARY KEY,
+  event_id VARCHAR(128) NOT NULL,
+  group_id BIGINT NOT NULL,
+  user_id BIGINT NOT NULL,
+  query TEXT NOT NULL,
+  candidate_count INT NOT NULL DEFAULT 0,
+  hit_memory_ids_json JSONB NOT NULL,
+  selected_memory_ids_json JSONB NOT NULL,
+  outcome VARCHAR(64) NOT NULL DEFAULT '',
+  created_at TIMESTAMPTZ NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_retrieval_traces_group_created ON retrieval_traces (group_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_retrieval_traces_event ON retrieval_traces (event_id);
+
 CREATE TABLE IF NOT EXISTS async_outbox (
   task_id VARCHAR(128) PRIMARY KEY,
   kind VARCHAR(64) NOT NULL,

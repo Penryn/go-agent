@@ -30,6 +30,28 @@ type MemoryQuery struct {
 	TopK    int
 	Scope   string
 	Types   []string
+	TraceID string
+	EventID string
+}
+
+// RetrievalTraceStore records the inputs and outputs of memory retrieval so
+// operators can measure search quality without logging model chain-of-thought.
+type RetrievalTraceStore interface {
+	SaveRetrievalTrace(ctx context.Context, trace RetrievalTrace) error
+	UpdateRetrievalTrace(ctx context.Context, eventID string, selectedIDs []string, outcome string) error
+}
+
+type RetrievalTrace struct {
+	TraceID        string
+	EventID        string
+	GroupID        int64
+	UserID         int64
+	Query          string
+	CandidateCount int
+	HitMemoryIDs   []string
+	SelectedIDs    []string
+	Outcome        string
+	CreatedAt      time.Time
 }
 
 type MemeQuery struct {

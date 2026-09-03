@@ -31,15 +31,16 @@ type adminDashboard struct {
 }
 
 type adminSnapshot struct {
-	UpdatedAt     time.Time           `json:"updated_at"`
-	SelectedGroup int64               `json:"selected_group"`
-	Status        adminStatus         `json:"status"`
-	Stats         adminStats          `json:"stats"`
-	Persona       adminPersona        `json:"persona"`
-	Groups        []adminGroup        `json:"groups"`
-	Memories      []adminMemory       `json:"memories"`
-	Relationships []adminRelationship `json:"relationships"`
-	Activity      []adminActivity     `json:"activity"`
+	UpdatedAt     time.Time             `json:"updated_at"`
+	SelectedGroup int64                 `json:"selected_group"`
+	Status        adminStatus           `json:"status"`
+	Stats         adminStats            `json:"stats"`
+	Persona       adminPersona          `json:"persona"`
+	Groups        []adminGroup          `json:"groups"`
+	Memories      []adminMemory         `json:"memories"`
+	Relationships []adminRelationship   `json:"relationships"`
+	Activity      []adminActivity       `json:"activity"`
+	Retrieval     adminRetrievalMetrics `json:"retrieval"`
 }
 
 type adminStatus struct {
@@ -107,6 +108,16 @@ type adminActivity struct {
 	Label   string    `json:"label"`
 	Subject string    `json:"subject"`
 	Detail  string    `json:"detail"`
+}
+
+type adminRetrievalMetrics struct {
+	Queries           int     `json:"queries"`
+	QueriesWithHits   int     `json:"queries_with_hits"`
+	HitRate           float64 `json:"hit_rate"`
+	AvgCandidateCount float64 `json:"avg_candidate_count"`
+	FeedbackQueries   int     `json:"feedback_queries"`
+	SelectedQueries   int     `json:"selected_queries"`
+	SelectionRate     float64 `json:"selection_rate"`
 }
 
 func newAdminHandler(db *sql.DB, state ports.RuntimeStateStore, facts ports.PersonaFactStore, definition personadomain.PersonaDefinition, cfg config.Config, connected func() bool) http.Handler {
@@ -215,12 +226,43 @@ func (d *adminDashboard) snapshot(ctx context.Context, selectedGroup int64) (adm
 	if err != nil {
 		return adminSnapshot{}, err
 	}
+	retrieval, err := d.loadRetrievalMetrics(ctx, selectedGroup)
+	if err != nil {
+		return adminSnapshot{}, err
+	}
 	return adminSnapshot{
 		UpdatedAt: time.Now(), SelectedGroup: selectedGroup,
 		Status: adminStatus{Mode: d.cfg.App.Mode, QQEnabled: d.cfg.QQ.Enabled, QQConnected: d.connected != nil && d.connected(), SelfID: d.cfg.QQ.SelfID},
 		Stats:  stats, Persona: persona, Groups: groups, Memories: memories,
-		Relationships: relationships, Activity: activity,
+		Relationships: relationships, Activity: activity, Retrieval: retrieval,
 	}, nil
+}
+
+func (d *adminDashboard) loadRetrievalMetrics(ctx context.Context, groupID int64) (adminRetrievalMetrics, error) {
+	var metrics adminRetrievalMetrics
+	var avg sql.NullFloat64
+	err := d.db.QueryRowContext(ctx, `
+		SELECT COUNT(*),
+		       COUNT(*) FILTER (WHERE jsonb_array_length(hit_memory_ids_json) > 0),
+		       AVG(candidate_count),
+		       COUNT(*) FILTER (WHERE outcome <> ''),
+		       COUNT(*) FILTER (WHERE jsonb_array_length(selected_memory_ids_json) > 0)
+		FROM retrieval_traces
+		WHERE $1 = 0 OR group_id = $1
+	`, groupID).Scan(&metrics.Queries, &metrics.QueriesWithHits, &avg, &metrics.FeedbackQueries, &metrics.SelectedQueries)
+	if err != nil {
+		return metrics, fmt.Errorf("retrieval metrics: %w", err)
+	}
+	if avg.Valid {
+		metrics.AvgCandidateCount = avg.Float64
+	}
+	if metrics.Queries > 0 {
+		metrics.HitRate = float64(metrics.QueriesWithHits) / float64(metrics.Queries)
+	}
+	if metrics.QueriesWithHits > 0 {
+		metrics.SelectionRate = float64(metrics.SelectedQueries) / float64(metrics.QueriesWithHits)
+	}
+	return metrics, nil
 }
 
 func (d *adminDashboard) loadGroups(ctx context.Context) ([]adminGroup, error) {
@@ -228,7 +270,7 @@ func (d *adminDashboard) loadGroups(ctx context.Context) ([]adminGroup, error) {
 		WITH ids AS (
 			SELECT group_id FROM messages UNION SELECT group_id FROM member_profiles
 			UNION SELECT group_id FROM relationships UNION SELECT group_id FROM group_working_memory
-			UNION SELECT group_id FROM thought_records
+			UNION SELECT group_id FROM thought_records UNION SELECT group_id FROM retrieval_traces
 		), message_stats AS (
 			SELECT group_id, COUNT(*) AS messages, MAX(occurred_at) AS last_activity FROM messages GROUP BY group_id
 		), member_stats AS (

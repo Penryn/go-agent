@@ -104,6 +104,8 @@ func (s *Service) BuildSnapshot(ctx context.Context, envelope conversationdomain
 		UserID:  envelope.Event.UserID,
 		Query:   envelope.Event.Text,
 		TopK:    s.memoryTopK,
+		TraceID: envelope.TraceID,
+		EventID: envelope.Event.EventID,
 	})
 	if err != nil {
 		return conversationdomain.ContextSnapshot{}, fmt.Errorf("query memories: %w", err)
