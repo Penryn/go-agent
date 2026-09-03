@@ -24,6 +24,9 @@ export async function getMemes(groupID, query, token) {
     const response = await api.get('/memes', { params: { group_id: groupID || undefined, q: query.trim() || undefined }, headers: token ? { Authorization: `Bearer ${token}` } : undefined });
     return response.data;
 }
+export async function deleteMeme(memeID, token) {
+    await api.delete(`/memes/${encodeURIComponent(memeID)}`, { headers: token ? { Authorization: `Bearer ${token}` } : undefined });
+}
 export async function getMCPConfig(token) {
     const response = await api.get('/mcp', {
         headers: token ? { Authorization: `Bearer ${token}` } : undefined,

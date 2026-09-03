@@ -826,6 +826,7 @@ input {
 .meme-motion { position: absolute; top: 10px; right: 10px; padding: 3px 6px; border: 1px solid rgba(168, 242, 208, 0.3); border-radius: 5px; background: rgba(8, 11, 16, 0.75); color: var(--mint); font-size: 9px; }
 .meme-copy { padding: 13px 14px 12px; }
 .meme-card-head { justify-content: space-between; color: var(--muted); font-size: 9px; }
+.meme-card-head .meme-delete { margin-left: auto; padding: 0 2px; }
 .meme-card h3 { margin: 11px 0 4px; overflow: hidden; font-size: 14px; text-overflow: ellipsis; white-space: nowrap; }
 .meme-card p { display: -webkit-box; min-height: 36px; margin: 0; overflow: hidden; color: #aeb7c2; font-size: 11px; line-height: 1.6; -webkit-box-orient: vertical; -webkit-line-clamp: 2; }
 .meme-tags { display: flex; flex-wrap: wrap; gap: 5px; margin: 11px 0 13px; }

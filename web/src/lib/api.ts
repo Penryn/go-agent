@@ -1,6 +1,5 @@
 import axios from 'axios'
-import type { BotSnapshot, EventDetail, MCPServerConfig, TaskRecord } from '@/types'
-import type { MemeRecord } from '@/types'
+import type { BotSnapshot, EventDetail, MCPServerConfig, MemeRecord, TaskRecord } from '@/types'
 
 export const api = axios.create({
   baseURL: '/admin/api',
@@ -33,6 +32,12 @@ export async function getMemes(groupID: number, query: string, token: string) {
     headers: token ? { Authorization: `Bearer ${token}` } : undefined,
   })
   return response.data
+}
+
+export async function deleteMeme(memeID: string, token: string) {
+  await api.delete(`/memes/${encodeURIComponent(memeID)}`, {
+    headers: token ? { Authorization: `Bearer ${token}` } : undefined,
+  })
 }
 
 export async function getMCPConfig(token: string) {

@@ -250,6 +250,10 @@ func (h *adminHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.handleEventDetail(w, r)
 		return
 	}
+	if strings.HasPrefix(r.URL.Path, "/admin/api/memes/") {
+		h.handleMeme(w, r)
+		return
+	}
 	switch r.URL.Path {
 	case "/admin":
 		http.Redirect(w, r, "/admin/", http.StatusTemporaryRedirect)
@@ -273,6 +277,62 @@ func (h *adminHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Security-Policy", "default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src 'self'; img-src 'self' data: https: http:")
 		h.assets.ServeHTTP(w, r)
 	}
+}
+
+func (h *adminHandler) handleMeme(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodDelete {
+		w.Header().Set("Allow", http.MethodDelete)
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if !h.authorized(r) {
+		http.Error(w, "admin token required", http.StatusUnauthorized)
+		return
+	}
+	memeID, err := url.PathUnescape(strings.TrimPrefix(r.URL.Path, "/admin/api/memes/"))
+	if err != nil || memeID == "" || strings.Contains(memeID, "/") {
+		http.Error(w, "invalid meme_id", http.StatusBadRequest)
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 4*time.Second)
+	defer cancel()
+	tx, err := h.db.BeginTx(ctx, nil)
+	if err != nil {
+		http.Error(w, "delete meme: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	defer tx.Rollback()
+	if _, err = tx.ExecContext(ctx, `DELETE FROM meme_descriptors WHERE meme_id = $1`, memeID); err != nil {
+		http.Error(w, "delete meme descriptor: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	if _, err = tx.ExecContext(ctx, `DELETE FROM meme_vectors WHERE meme_id = $1`, memeID); err != nil {
+		http.Error(w, "delete meme vector: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	if _, err = tx.ExecContext(ctx, `DELETE FROM async_outbox WHERE kind = 'meme_vector_index' AND payload_json->>'meme_id' = $1`, memeID); err != nil {
+		http.Error(w, "delete meme tasks: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	result, err := tx.ExecContext(ctx, `DELETE FROM meme_assets WHERE meme_id = $1`, memeID)
+	if err != nil {
+		http.Error(w, "delete meme asset: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	deleted, err := result.RowsAffected()
+	if err != nil {
+		http.Error(w, "delete meme: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	if deleted == 0 {
+		http.NotFound(w, r)
+		return
+	}
+	if err := tx.Commit(); err != nil {
+		http.Error(w, "delete meme: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
 
 func (h *adminHandler) handleMemes(w http.ResponseWriter, r *http.Request) {

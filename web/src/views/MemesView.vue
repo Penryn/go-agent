@@ -1,9 +1,9 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from 'vue'
 import { storeToRefs } from 'pinia'
-import { Picture, Refresh, Search } from '@element-plus/icons-vue'
-import { ElMessage } from 'element-plus'
-import { getMemes } from '@/lib/api'
+import { Delete, Picture, Refresh, Search } from '@element-plus/icons-vue'
+import { ElMessage, ElMessageBox } from 'element-plus'
+import { deleteMeme, getMemes } from '@/lib/api'
 import { relativeTime } from '@/lib/format'
 import type { MemeRecord } from '@/types'
 import { useDashboardStore } from '@/stores/dashboard'
@@ -13,6 +13,7 @@ const { selectedGroup, token } = storeToRefs(store)
 const memes = ref<MemeRecord[]>([])
 const query = ref('')
 const loading = ref(false)
+const deleting = ref('')
 let searchTimer: number | undefined
 
 const sentCount = computed(() => memes.value.reduce((total, item) => total + item.send_count, 0))
@@ -31,6 +32,24 @@ async function load() {
 
 function dudRate(item: MemeRecord) {
   return item.send_count ? Math.round(item.dud_count / item.send_count * 100) : 0
+}
+
+async function remove(item: MemeRecord) {
+  try {
+    await ElMessageBox.confirm(`删除“${item.title || '未命名表情包'}”后，Bot 将不再检索或发送它。原始群消息不会被删除。`, '删除表情包', { type: 'warning', confirmButtonText: '删除', cancelButtonText: '取消' })
+  } catch {
+    return
+  }
+  deleting.value = item.meme_id
+  try {
+    await deleteMeme(item.meme_id, token.value)
+    memes.value = memes.value.filter((candidate) => candidate.meme_id !== item.meme_id)
+    ElMessage.success('表情包已删除')
+  } catch (error) {
+    ElMessage.error(`删除失败：${error instanceof Error ? error.message : String(error)}`)
+  } finally {
+    deleting.value = ''
+  }
 }
 
 watch(selectedGroup, load)
@@ -58,7 +77,7 @@ onMounted(load)
           <span v-if="item.animated" class="meme-motion">GIF</span>
         </div>
         <div class="meme-copy">
-          <div class="meme-card-head"><el-tag effect="plain" size="small">群 {{ item.group_id || '全局' }}</el-tag><span>{{ relativeTime(item.created_at) }}</span></div>
+          <div class="meme-card-head"><el-tag effect="plain" size="small">群 {{ item.group_id || '全局' }}</el-tag><span>{{ relativeTime(item.created_at) }}</span><el-button class="meme-delete" link type="danger" :icon="Delete" :loading="deleting === item.meme_id" aria-label="删除表情包" @click.stop="remove(item)" /></div>
           <h3>{{ item.title || '未命名表情包' }}</h3>
           <p>{{ item.summary || '暂无视觉摘要' }}</p>
           <div class="meme-tags"><span v-for="tag in [...item.emotion_tags, ...item.scene_tags, ...item.keywords].slice(0, 5)" :key="tag">{{ tag }}</span></div>
