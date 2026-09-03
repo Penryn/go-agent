@@ -139,6 +139,13 @@ export interface Activity {
   detail: string
 }
 
+export interface ActivityPage {
+  items: Activity[]
+  total: number
+  page: number
+  page_size: number
+}
+
 export interface EventDetail {
   event_id: string
   message_id: string

@@ -170,6 +170,13 @@ type adminActivity struct {
 	Detail  string    `json:"detail"`
 }
 
+type adminActivityPage struct {
+	Items    []adminActivity `json:"items"`
+	Total    int             `json:"total"`
+	Page     int             `json:"page"`
+	PageSize int             `json:"page_size"`
+}
+
 type adminEventDetail struct {
 	EventID     string                  `json:"event_id"`
 	MessageID   string                  `json:"message_id"`
@@ -295,6 +302,8 @@ func (h *adminHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.handleMemes(w, r)
 	case "/admin/api/tasks":
 		h.handleTasks(w, r)
+	case "/admin/api/activity":
+		h.handleActivity(w, r)
 	case "/admin/api/memories":
 		h.handleMemories(w, r)
 	default:
@@ -309,6 +318,72 @@ func (h *adminHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Security-Policy", "default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src 'self'; img-src 'self' data: https: http:")
 		h.assets.ServeHTTP(w, r)
 	}
+}
+
+func (h *adminHandler) handleActivity(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if !h.authorized(r) {
+		http.Error(w, "admin token required", http.StatusUnauthorized)
+		return
+	}
+	groupID := int64(0)
+	if raw := strings.TrimSpace(r.URL.Query().Get("group_id")); raw != "" {
+		parsed, err := strconv.ParseInt(raw, 10, 64)
+		if err != nil || parsed < 0 {
+			http.Error(w, "invalid group_id", http.StatusBadRequest)
+			return
+		}
+		groupID = parsed
+	}
+	windowMinutes := 1440
+	if raw := strings.TrimSpace(r.URL.Query().Get("window_minutes")); raw != "" {
+		parsed, err := strconv.Atoi(raw)
+		if err != nil || !slices.Contains([]int{10, 60, 1440}, parsed) {
+			http.Error(w, "invalid window_minutes", http.StatusBadRequest)
+			return
+		}
+		windowMinutes = parsed
+	}
+	activityType := strings.TrimSpace(r.URL.Query().Get("type"))
+	if activityType != "" && !slices.Contains([]string{"message", "decision"}, activityType) {
+		http.Error(w, "invalid type", http.StatusBadRequest)
+		return
+	}
+	page, pageSize, err := parseAdminPage(r)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 4*time.Second)
+	defer cancel()
+	result, err := loadAdminActivityPage(ctx, h.db, groupID, windowMinutes, activityType, page, pageSize)
+	if err != nil {
+		http.Error(w, "load activity: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, result)
+}
+
+func parseAdminPage(r *http.Request) (int, int, error) {
+	page, pageSize := 1, 50
+	if raw := strings.TrimSpace(r.URL.Query().Get("page")); raw != "" {
+		parsed, err := strconv.Atoi(raw)
+		if err != nil || parsed < 1 || parsed > 100000 {
+			return 0, 0, errors.New("invalid page")
+		}
+		page = parsed
+	}
+	if raw := strings.TrimSpace(r.URL.Query().Get("page_size")); raw != "" {
+		parsed, err := strconv.Atoi(raw)
+		if err != nil || parsed < 1 || parsed > 100 {
+			return 0, 0, errors.New("invalid page_size")
+		}
+		pageSize = parsed
+	}
+	return page, pageSize, nil
 }
 
 func (h *adminHandler) handleMemories(w http.ResponseWriter, r *http.Request) {
@@ -1052,6 +1127,45 @@ func (d *adminDashboard) loadActivity(ctx context.Context, groupID int64, window
 		activity = append(activity, item)
 	}
 	return activity, rows.Err()
+}
+
+func loadAdminActivityPage(ctx context.Context, db *sql.DB, groupID int64, windowMinutes int, activityType string, page, pageSize int) (adminActivityPage, error) {
+	const source = `
+		SELECT event_id, at, group_id, type, label, subject, detail FROM (
+			SELECT event_id, occurred_at AS at, group_id, 'message' AS type, kind AS label,
+			       COALESCE(NULLIF(sender_group_card, ''), NULLIF(sender_qq_nickname, ''), user_id::text) AS subject,
+			       LEFT(text_content, 300) AS detail
+			FROM messages WHERE occurred_at > NOW() - ($1 || ' minutes')::interval AND ($2 = 0 OR group_id = $2)
+			UNION ALL
+			SELECT event_id, created_at, group_id, 'decision', chosen_action, outcome, LEFT(interpretation, 300)
+			FROM thought_records WHERE created_at > NOW() - ($1 || ' minutes')::interval AND ($2 = 0 OR group_id = $2)
+		) activity`
+	args := []any{windowMinutes, groupID, activityType}
+	where := " WHERE ($3 = '' OR type = $3)"
+	var total int
+	if err := db.QueryRowContext(ctx, "SELECT COUNT(*) FROM ("+source+") activity"+where, args...).Scan(&total); err != nil {
+		return adminActivityPage{}, fmt.Errorf("count activity: %w", err)
+	}
+	offset := (page - 1) * pageSize
+	query := "SELECT event_id, at, group_id, type, label, subject, detail FROM (" + source + ") activity" + where + fmt.Sprintf(" ORDER BY at DESC LIMIT $%d OFFSET $%d", len(args)+1, len(args)+2)
+	args = append(args, pageSize, offset)
+	rows, err := db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return adminActivityPage{}, fmt.Errorf("query activity: %w", err)
+	}
+	defer rows.Close()
+	items := make([]adminActivity, 0, pageSize)
+	for rows.Next() {
+		var item adminActivity
+		if err := rows.Scan(&item.EventID, &item.At, &item.GroupID, &item.Type, &item.Label, &item.Subject, &item.Detail); err != nil {
+			return adminActivityPage{}, err
+		}
+		items = append(items, item)
+	}
+	if err := rows.Err(); err != nil {
+		return adminActivityPage{}, err
+	}
+	return adminActivityPage{Items: items, Total: total, Page: page, PageSize: pageSize}, nil
 }
 
 func loadAdminEventDetail(ctx context.Context, db *sql.DB, eventID string) (adminEventDetail, error) {

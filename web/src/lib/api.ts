@@ -1,5 +1,5 @@
 import axios from 'axios'
-import type { BotSnapshot, EventDetail, MCPServerConfig, MemeRecord, MemoryRecord, TaskPage } from '@/types'
+import type { ActivityPage, BotSnapshot, EventDetail, MCPServerConfig, MemeRecord, MemoryRecord, TaskPage } from '@/types'
 
 export const api = axios.create({
   baseURL: '/admin/api',
@@ -18,6 +18,11 @@ export async function getEventDetail(eventID: string, token: string) {
   const response = await api.get<EventDetail>(`/events/${encodeURIComponent(eventID)}`, {
     headers: token ? { Authorization: `Bearer ${token}` } : undefined,
   })
+  return response.data
+}
+
+export async function getActivity(groupID: number, windowMinutes: number, type: string, page: number, token: string) {
+  const response = await api.get<ActivityPage>('/activity', { params: { group_id: groupID || undefined, window_minutes: windowMinutes, type: type === 'all' ? undefined : type, page }, headers: token ? { Authorization: `Bearer ${token}` } : undefined })
   return response.data
 }
 

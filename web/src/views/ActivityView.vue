@@ -1,33 +1,54 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import { storeToRefs } from 'pinia'
 import { activityText, relativeTime } from '@/lib/format'
-import { getEventDetail } from '@/lib/api'
-import type { EventDetail } from '@/types'
+import { getActivity, getEventDetail } from '@/lib/api'
+import type { Activity, EventDetail } from '@/types'
 import { useDashboardStore } from '@/stores/dashboard'
 import { useRoute } from 'vue-router'
 
 const store = useDashboardStore()
 const route = useRoute()
-const { snapshot } = storeToRefs(store)
+const { selectedGroup, windowMinutes } = storeToRefs(store)
 const filter = ref('all')
+const rows = ref<Activity[]>([])
+const total = ref(0)
+const page = ref(1)
+const loading = ref(false)
+const loadError = ref('')
 const detail = ref<EventDetail>()
 const detailVisible = computed({ get: () => !!detail.value, set: (value: boolean) => { if (!value) detail.value = undefined } })
-const rows = computed(() => (snapshot.value?.activity || []).filter((item) => filter.value === 'all' || item.type === filter.value))
 const counts = computed(() => {
-  const activity = snapshot.value?.activity || []
+  const activity = rows.value
   return {
     message: activity.filter((item) => item.type === 'message').length,
     decision: activity.filter((item) => item.type === 'decision').length,
   }
 })
 
+async function load(nextPage = page.value) {
+  loading.value = true
+  page.value = nextPage
+  loadError.value = ''
+  try {
+    const result = await getActivity(selectedGroup.value, windowMinutes.value, filter.value, page.value, store.token)
+    rows.value = result.items
+    total.value = result.total
+  } catch (error) {
+    loadError.value = error instanceof Error ? error.message : String(error)
+  } finally {
+    loading.value = false
+  }
+}
+
 async function openDetail(eventID: string) {
   if (!eventID) return
   detail.value = await getEventDetail(eventID, store.token)
 }
 
+watch([selectedGroup, windowMinutes, filter], () => { void load(1) })
 onMounted(() => {
+  void load()
   const eventID = route.query.event_id
   if (typeof eventID === 'string') void openDetail(eventID)
 })
@@ -35,19 +56,21 @@ onMounted(() => {
 
 <template>
   <section class="glass-panel page-panel">
-    <div class="page-panel-head"><div><span>EVENT STREAM</span><h2>运行记录</h2><p>消息与决策时间线；后台任务请到任务队列查看</p></div><el-segmented v-model="filter" :options="[{ label: '全部', value: 'all' }, { label: '消息', value: 'message' }, { label: '决策', value: 'decision' }]" /></div>
+    <div class="page-panel-head"><div><span>EVENT STREAM</span><h2>运行记录</h2><p>消息与决策时间线；后台任务请到任务队列查看 · 共 {{ total }} 条</p></div><el-segmented v-model="filter" :options="[{ label: '全部', value: 'all' }, { label: '消息', value: 'message' }, { label: '决策', value: 'decision' }]" /></div>
     <div class="activity-summary" aria-label="记录分类统计">
-      <button :class="{ active: filter === 'message' }" @click="filter = 'message'"><span class="summary-mark message" /><strong>{{ counts.message }}</strong><span>消息输入</span></button>
-      <button :class="{ active: filter === 'decision' }" @click="filter = 'decision'"><span class="summary-mark decision" /><strong>{{ counts.decision }}</strong><span>Bot 决策</span></button>
+      <button :class="{ active: filter === 'message' }" @click="filter = 'message'"><span class="summary-mark message" /><strong>{{ counts.message }}</strong><span>本页消息</span></button>
+      <button :class="{ active: filter === 'decision' }" @click="filter = 'decision'"><span class="summary-mark decision" /><strong>{{ counts.decision }}</strong><span>本页决策</span></button>
     </div>
-    <div v-if="rows.length" class="timeline">
+    <el-alert v-if="loadError" :title="`读取运行记录失败：${loadError}`" type="error" :closable="false" show-icon />
+    <div v-loading="loading" v-if="rows.length" class="timeline">
       <article v-for="item in rows" :key="`${item.type}-${item.at}-${item.subject}`" class="timeline-item" :class="{ clickable: !!item.event_id }" @click="openDetail(item.event_id)">
         <div class="timeline-rail"><i :data-type="item.type" /></div>
         <time>{{ relativeTime(item.at) }}</time>
         <div class="timeline-copy"><div><el-tag effect="plain" round>{{ activityText(item.type) }}</el-tag><span>{{ item.label }}<template v-if="item.group_id"> · 群 {{ item.group_id }}</template></span></div><h3>{{ item.subject || item.label }}</h3><p>{{ item.detail || '—' }}</p></div>
       </article>
     </div>
-    <el-empty v-else description="暂无运行记录" />
+    <el-empty v-else-if="!loading" description="暂无运行记录" />
+    <el-pagination v-if="total > 50" class="activity-pagination" layout="prev, pager, next" :current-page="page" :page-size="50" :total="total" @current-change="load" />
   </section>
 
   <el-dialog v-model="detailVisible" title="单次对话 / 决策详情" width="min(720px, calc(100vw - 28px))">

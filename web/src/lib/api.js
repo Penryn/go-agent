@@ -16,6 +16,10 @@ export async function getEventDetail(eventID, token) {
     });
     return response.data;
 }
+export async function getActivity(groupID, windowMinutes, type, page, token) {
+    const response = await api.get('/activity', { params: { group_id: groupID || undefined, window_minutes: windowMinutes, type: type === 'all' ? undefined : type, page }, headers: token ? { Authorization: `Bearer ${token}` } : undefined });
+    return response.data;
+}
 export async function getTasks(status, token, page = 1) {
     const response = await api.get('/tasks', { params: { ...(status ? { status } : {}), page }, headers: token ? { Authorization: `Bearer ${token}` } : undefined });
     return response.data;
