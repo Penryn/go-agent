@@ -186,6 +186,7 @@ CREATE TABLE IF NOT EXISTS model_usage_records (
   reasoning_tokens INT NOT NULL DEFAULT 0,
   duration_ms BIGINT NOT NULL DEFAULT 0,
   tools_json JSONB NOT NULL,
+  tool_calls_json JSONB NOT NULL DEFAULT '[]'::jsonb,
   usage_available BOOLEAN NOT NULL DEFAULT FALSE,
   error TEXT NOT NULL DEFAULT '',
   sent BOOLEAN NOT NULL DEFAULT FALSE,
@@ -194,6 +195,7 @@ CREATE TABLE IF NOT EXISTS model_usage_records (
   created_at TIMESTAMPTZ NOT NULL
 );
 ALTER TABLE model_usage_records ADD COLUMN IF NOT EXISTS event_id VARCHAR(128) NOT NULL DEFAULT '';
+ALTER TABLE model_usage_records ADD COLUMN IF NOT EXISTS tool_calls_json JSONB NOT NULL DEFAULT '[]'::jsonb;
 CREATE INDEX IF NOT EXISTS idx_model_usage_group_created ON model_usage_records (group_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_model_usage_trace ON model_usage_records (trace_id);
 CREATE INDEX IF NOT EXISTS idx_model_usage_event ON model_usage_records (event_id);

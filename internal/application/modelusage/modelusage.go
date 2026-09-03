@@ -5,6 +5,7 @@ package modelusage
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"reflect"
 	"slices"
@@ -14,6 +15,7 @@ import (
 
 	openaimodel "github.com/cloudwego/eino-ext/components/model/openai"
 	modelcomponent "github.com/cloudwego/eino/components/model"
+	toolcomponent "github.com/cloudwego/eino/components/tool"
 	"github.com/cloudwego/eino/schema"
 )
 
@@ -41,10 +43,19 @@ type Call struct {
 	OutputTokens    int
 	ReasoningTokens int
 	Tools           []string
+	ToolCalls       []ToolCall
 	UsageAvailable  bool
 	Error           string
 	DurationMS      int64
 	startedAt       time.Time
+}
+
+type ToolCall struct {
+	Name       string
+	Arguments  string
+	Result     string
+	DurationMS int64
+	Error      string
 }
 
 type Sink interface {
@@ -88,6 +99,7 @@ func (r *Recorder) Calls() []Call {
 	for _, call := range r.calls {
 		copy := *call
 		copy.Tools = slices.Clone(call.Tools)
+		copy.ToolCalls = slices.Clone(call.ToolCalls)
 		result = append(result, copy)
 	}
 	return result
@@ -135,6 +147,78 @@ func (r *Recorder) update(call *Call, message *schema.Message, callErr error) {
 			call.Tools = append(call.Tools, name)
 		}
 	}
+}
+
+func (r *Recorder) RecordTool(name, arguments, result string, duration time.Duration, callErr error) {
+	if r == nil {
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if len(r.calls) == 0 {
+		return
+	}
+	item := ToolCall{Name: strings.TrimSpace(name), Arguments: summarizeJSON(arguments), Result: summarizeJSON(result), DurationMS: duration.Milliseconds()}
+	if callErr != nil {
+		item.Error = callErr.Error()
+	}
+	r.calls[len(r.calls)-1].ToolCalls = append(r.calls[len(r.calls)-1].ToolCalls, item)
+}
+
+func summarizeJSON(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return "empty"
+	}
+	var value any
+	if json.Unmarshal([]byte(raw), &value) != nil {
+		return "text"
+	}
+	switch typed := value.(type) {
+	case map[string]any:
+		keys := make([]string, 0, len(typed))
+		for key := range typed {
+			keys = append(keys, key)
+		}
+		slices.Sort(keys)
+		return "object keys: " + strings.Join(keys, ", ")
+	case []any:
+		return fmt.Sprintf("array length: %d", len(typed))
+	case string:
+		return fmt.Sprintf("string length: %d", len(typed))
+	case nil:
+		return "null"
+	default:
+		return fmt.Sprintf("%T", value)
+	}
+}
+
+type observedTool struct {
+	inner toolcomponent.InvokableTool
+	name  string
+}
+
+func WrapTool(candidate toolcomponent.BaseTool) toolcomponent.BaseTool {
+	invokable, ok := candidate.(toolcomponent.InvokableTool)
+	if !ok {
+		return candidate
+	}
+	name := "unknown"
+	if info, err := candidate.Info(context.Background()); err == nil && info != nil && strings.TrimSpace(info.Name) != "" {
+		name = info.Name
+	}
+	return &observedTool{inner: invokable, name: name}
+}
+
+func (t *observedTool) Info(ctx context.Context) (*schema.ToolInfo, error) { return t.inner.Info(ctx) }
+
+func (t *observedTool) InvokableRun(ctx context.Context, argumentsInJSON string, opts ...toolcomponent.Option) (string, error) {
+	started := time.Now()
+	result, err := t.inner.InvokableRun(ctx, argumentsInJSON, opts...)
+	if recorder := FromContext(ctx); recorder != nil {
+		recorder.RecordTool(t.name, argumentsInJSON, result, time.Since(started), err)
+	}
+	return result, err
 }
 
 // Flush emits one structured log entry per actual model invocation. It is

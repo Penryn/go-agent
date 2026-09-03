@@ -1007,6 +1007,7 @@ input {
 .retrieval-row { align-items: center; padding: 10px; border: 1px solid var(--line); border-radius: 8px; }
 .retrieval-row b, .retrieval-row small { display: block; }
 .retrieval-row small { color: var(--muted); margin-top: 4px; }
+.tool-call-list { display: grid; gap: 3px; margin-top: 6px; }
 
 .monitor-grid {
   display: grid;

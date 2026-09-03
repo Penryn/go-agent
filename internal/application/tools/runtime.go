@@ -18,6 +18,7 @@ import (
 
 	memesvc "github.com/phlin/go-agent/internal/application/meme"
 	memsvc "github.com/phlin/go-agent/internal/application/memory"
+	modelusagesvc "github.com/phlin/go-agent/internal/application/modelusage"
 	"github.com/phlin/go-agent/internal/application/ports"
 	retrievalsvc "github.com/phlin/go-agent/internal/application/retrieval"
 	"github.com/phlin/go-agent/internal/application/textutil"
@@ -158,7 +159,7 @@ func (r *Runtime) Tools(session replydomain.ToolContext) []tool.BaseTool {
 	available := r.availableTools(session)
 	result := make([]tool.BaseTool, 0, len(available))
 	for _, candidate := range available {
-		result = append(result, candidate.tool)
+		result = append(result, modelusagesvc.WrapTool(candidate.tool))
 	}
 	return result
 }

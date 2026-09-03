@@ -3,11 +3,22 @@ package modelusage
 import (
 	"context"
 	"io"
+	"strings"
 	"testing"
 
 	modelcomponent "github.com/cloudwego/eino/components/model"
+	toolcomponent "github.com/cloudwego/eino/components/tool"
 	"github.com/cloudwego/eino/schema"
 )
+
+type fakeTool struct{}
+
+func (fakeTool) Info(context.Context) (*schema.ToolInfo, error) {
+	return &schema.ToolInfo{Name: "search"}, nil
+}
+func (fakeTool) InvokableRun(context.Context, string, ...toolcomponent.Option) (string, error) {
+	return `{"secret":"hidden","ok":true}`, nil
+}
 
 type fakeModel struct {
 	response *schema.Message
@@ -70,6 +81,29 @@ func TestWrapRecordsStreamingUsage(t *testing.T) {
 	calls := recorder.Calls()
 	if len(calls) != 1 || calls[0].InputTokens != 40 || calls[0].OutputTokens != 5 {
 		t.Fatalf("unexpected calls: %+v", calls)
+	}
+}
+
+func TestWrapToolRecordsRedactedSummary(t *testing.T) {
+	ctx, recorder := WithRecorder(context.Background(), Metadata{TraceID: "trace-tool"})
+	model := Wrap(fakeModel{response: schema.AssistantMessage("ready", nil)})
+	if _, err := model.Generate(ctx, []*schema.Message{schema.UserMessage("hello")}); err != nil {
+		t.Fatal(err)
+	}
+	wrapped, ok := WrapTool(fakeTool{}).(toolcomponent.InvokableTool)
+	if !ok {
+		t.Fatal("wrapped tool is not invokable")
+	}
+	if _, err := wrapped.InvokableRun(ctx, `{"query":"secret","group_id":1}`); err != nil {
+		t.Fatal(err)
+	}
+	calls := recorder.Calls()
+	if len(calls) != 1 || len(calls[0].ToolCalls) != 1 {
+		t.Fatalf("unexpected tool calls: %+v", calls)
+	}
+	toolCall := calls[0].ToolCalls[0]
+	if toolCall.Name != "search" || toolCall.DurationMS < 0 || !strings.Contains(toolCall.Arguments, "group_id") || strings.Contains(toolCall.Arguments, "secret") || strings.Contains(toolCall.Result, "hidden") {
+		t.Fatalf("unexpected redacted tool summary: %+v", toolCall)
 	}
 }
 
