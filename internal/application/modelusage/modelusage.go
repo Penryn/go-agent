@@ -19,6 +19,7 @@ import (
 
 type Metadata struct {
 	TraceID string
+	EventID string
 	GroupID int64
 	UserID  int64
 	Trigger string

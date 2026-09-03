@@ -168,6 +168,7 @@ CREATE INDEX IF NOT EXISTS idx_retrieval_traces_event ON retrieval_traces (event
 
 CREATE TABLE IF NOT EXISTS model_usage_records (
   id BIGSERIAL PRIMARY KEY,
+  event_id VARCHAR(128) NOT NULL DEFAULT '',
   trace_id VARCHAR(128) NOT NULL,
   group_id BIGINT NOT NULL,
   user_id BIGINT NOT NULL,
@@ -188,8 +189,10 @@ CREATE TABLE IF NOT EXISTS model_usage_records (
   drop_reason VARCHAR(128) NOT NULL DEFAULT '',
   created_at TIMESTAMPTZ NOT NULL
 );
+ALTER TABLE model_usage_records ADD COLUMN IF NOT EXISTS event_id VARCHAR(128) NOT NULL DEFAULT '';
 CREATE INDEX IF NOT EXISTS idx_model_usage_group_created ON model_usage_records (group_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_model_usage_trace ON model_usage_records (trace_id);
+CREATE INDEX IF NOT EXISTS idx_model_usage_event ON model_usage_records (event_id);
 
 CREATE TABLE IF NOT EXISTS runtime_mcp_config (
   config_id SMALLINT PRIMARY KEY DEFAULT 1 CHECK (config_id = 1),

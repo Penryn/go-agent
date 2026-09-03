@@ -908,7 +908,7 @@ func loadAdminEventDetail(ctx context.Context, db *sql.DB, eventID string) (admi
 	}
 	modelRows, err := db.QueryContext(ctx, `
 		SELECT trace_id, iteration, input_tokens, output_tokens, duration_ms, tools_json, usage_available, error, created_at
-		FROM model_usage_records WHERE trace_id IN (SELECT trace_id FROM retrieval_traces WHERE event_id = $1) OR trace_id = $1
+		FROM model_usage_records WHERE event_id = $1
 		ORDER BY created_at ASC
 	`, eventID)
 	if err == nil {

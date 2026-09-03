@@ -508,6 +508,7 @@ func (r *Runtime) processWithValidation(ctx context.Context, envelope conversati
 
 	ctx, usageRecorder := modelusage.WithRecorder(ctx, modelusage.Metadata{
 		TraceID: envelope.TraceID,
+		EventID: envelope.Event.EventID,
 		GroupID: envelope.Event.GroupID,
 		UserID:  envelope.Event.UserID,
 		Trigger: candidate.Intent,
