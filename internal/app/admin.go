@@ -175,6 +175,7 @@ type adminEventDetail struct {
 	Text        string                  `json:"text"`
 	Sender      string                  `json:"sender"`
 	OccurredAt  time.Time               `json:"occurred_at"`
+	DurationMS  int64                   `json:"duration_ms"`
 	Decision    *adminDecisionDetail    `json:"decision,omitempty"`
 	Retrievals  []adminRetrievalDetail  `json:"retrievals"`
 	ModelUsages []adminModelUsageDetail `json:"model_usages"`
@@ -1102,6 +1103,7 @@ func loadAdminEventDetail(ctx context.Context, db *sql.DB, eventID string) (admi
 		FROM thought_records WHERE event_id = $1 ORDER BY created_at DESC LIMIT 1
 	`, eventID).Scan(&decision.ThoughtID, &decision.Action, &decision.Outcome, &decision.Interpretation, &evidence, &decision.Uncertainty, &decision.CreatedAt)
 	if errors.Is(err, sql.ErrNoRows) {
+		setAdminEventDuration(&detail)
 		return detail, nil
 	}
 	if err != nil {
@@ -1109,7 +1111,28 @@ func loadAdminEventDetail(ctx context.Context, db *sql.DB, eventID string) (admi
 	}
 	_ = json.Unmarshal(evidence, &decision.Evidence)
 	detail.Decision = &decision
+	setAdminEventDuration(&detail)
 	return detail, nil
+}
+
+func setAdminEventDuration(detail *adminEventDetail) {
+	latest := detail.OccurredAt
+	if detail.Decision != nil && detail.Decision.CreatedAt.After(latest) {
+		latest = detail.Decision.CreatedAt
+	}
+	for _, item := range detail.Retrievals {
+		if item.CreatedAt.After(latest) {
+			latest = item.CreatedAt
+		}
+	}
+	for _, item := range detail.ModelUsages {
+		if item.CreatedAt.After(latest) {
+			latest = item.CreatedAt
+		}
+	}
+	if latest.After(detail.OccurredAt) {
+		detail.DurationMS = latest.Sub(detail.OccurredAt).Milliseconds()
+	}
 }
 
 const adminHTML = `<!doctype html>

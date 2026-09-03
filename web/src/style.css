@@ -983,6 +983,7 @@ input {
 .table-sub { display: block; color: var(--muted); margin-top: 3px; font-size: 10px; }
 .task-error { color: var(--muted); white-space: pre-wrap; overflow-wrap: anywhere; }
 .detail-meta, .detail-grid, .retrieval-row { display: flex; justify-content: space-between; gap: 12px; }
+.detail-meta { flex-wrap: wrap; }
 .detail-meta, .detail-section small { color: var(--muted); font-size: 12px; }
 .detail-section { padding: 14px 0; border-bottom: 1px solid var(--line); }
 .detail-label { display: block; color: var(--muted); font-size: 11px; margin-bottom: 8px; }
