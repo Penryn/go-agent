@@ -224,6 +224,7 @@ type adminModelUsageMetrics struct {
 type adminWindowMetrics struct {
 	Decisions       int `json:"decisions"`
 	ActionDecisions int `json:"action_decisions"`
+	Replies         int `json:"replies"`
 	Tasks           int `json:"tasks"`
 	FailedTasks     int `json:"failed_tasks"`
 }
@@ -645,9 +646,10 @@ func (d *adminDashboard) loadWindowMetrics(ctx context.Context, groupID int64, w
 		SELECT
 			(SELECT COUNT(*) FROM thought_records WHERE created_at > NOW() - ($2 || ' minutes')::interval AND ($1 = 0 OR group_id = $1)),
 			(SELECT COUNT(*) FROM thought_records WHERE created_at > NOW() - ($2 || ' minutes')::interval AND ($1 = 0 OR group_id = $1) AND chosen_action <> 'silent'),
+			(SELECT COUNT(*) FROM thought_records WHERE created_at > NOW() - ($2 || ' minutes')::interval AND ($1 = 0 OR group_id = $1) AND outcome = 'sent'),
 			(SELECT COUNT(*) FROM async_outbox WHERE updated_at > NOW() - ($2 || ' minutes')::interval),
 			(SELECT COUNT(*) FROM async_outbox WHERE updated_at > NOW() - ($2 || ' minutes')::interval AND (status = 'dead_letter' OR last_error <> ''))
-	`, groupID, windowMinutes).Scan(&metrics.Decisions, &metrics.ActionDecisions, &metrics.Tasks, &metrics.FailedTasks)
+	`, groupID, windowMinutes).Scan(&metrics.Decisions, &metrics.ActionDecisions, &metrics.Replies, &metrics.Tasks, &metrics.FailedTasks)
 	if err != nil {
 		return metrics, fmt.Errorf("window metrics: %w", err)
 	}

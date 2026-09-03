@@ -15,6 +15,7 @@ const taskFailureRate = computed(() => tasks.value ? taskFailures.value / tasks.
 const decisionReplyRate = computed(() => decisions.value ? (snapshot.value?.window_metrics.action_decisions ?? 0) / decisions.value : 0)
 const retrieval = computed(() => snapshot.value?.retrieval || { queries: 0, queries_with_hits: 0, hit_rate: 0, avg_candidate_count: 0, feedback_queries: 0, selected_queries: 0, selection_rate: 0 })
 const modelUsage = computed(() => snapshot.value?.model_usage || { calls: 0, input_tokens: 0, output_tokens: 0, avg_duration_ms: 0, error_calls: 0 })
+const windowMinutesLabel = computed(() => windowMinutes.value === 1440 ? '近 24 小时' : windowMinutes.value === 60 ? '近 1 小时' : '近 10 分钟')
 </script>
 
 <template>
@@ -22,7 +23,7 @@ const modelUsage = computed(() => snapshot.value?.model_usage || { calls: 0, inp
     <div class="page-panel-head"><div><span>OBSERVABILITY</span><h2>监控指标</h2><p>检索质量与后续决策采用情况</p></div><el-segmented v-model="windowMinutes" :options="[{ label: '10 分钟', value: 10 }, { label: '1 小时', value: 60 }, { label: '24 小时', value: 1440 }]" @change="store.setWindow" /></div>
 
     <section class="monitor-grid">
-      <article class="monitor-card" data-tone="mint"><span>近 10 分钟发言</span><strong>{{ snapshot?.persona.runtime.replies_last_10min ?? 0 }}</strong><small>当前群聊</small></article>
+      <article class="monitor-card" data-tone="mint"><span>窗口内实际发言</span><strong>{{ snapshot?.window_metrics.replies ?? 0 }}</strong><small>{{ windowMinutesLabel }} · outcome=sent</small></article>
       <article class="monitor-card" data-tone="violet"><span>决策中有动作</span><strong>{{ Math.round(decisionReplyRate * 100) }}%</strong><small>{{ decisions }} 条决策记录</small></article>
       <article class="monitor-card" data-tone="amber"><span>记忆平均置信度</span><strong>{{ avgConfidence.toFixed(2) }}</strong><small>{{ memories.length }} 条有效记忆</small></article>
       <article class="monitor-card" data-tone="blue"><span>任务失败占比</span><strong>{{ Math.round(taskFailureRate * 100) }}%</strong><small>{{ tasks }} 条任务记录</small></article>
