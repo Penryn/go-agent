@@ -24,6 +24,11 @@ type MCPTools struct {
 	sessions []*mcp.ClientSession
 }
 
+type MCPToolInfo struct {
+	Name        string `json:"name"`
+	Description string `json:"description"`
+}
+
 // MCPManager owns the replaceable MCP connection set. It never mutates the
 // active set until the replacement has connected and its tools are registered.
 type MCPManager struct {
@@ -42,6 +47,24 @@ func (m *MCPManager) Servers() []config.MCPServerConfig {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	return cloneMCPServers(m.servers)
+}
+
+func (m *MCPManager) ToolInfos(ctx context.Context) ([]MCPToolInfo, error) {
+	m.mu.RLock()
+	active := m.active
+	m.mu.RUnlock()
+	if active == nil {
+		return []MCPToolInfo{}, nil
+	}
+	result := make([]MCPToolInfo, 0, len(active.Tools))
+	for _, candidate := range active.Tools {
+		info, err := candidate.Info(ctx)
+		if err != nil {
+			return nil, err
+		}
+		result = append(result, MCPToolInfo{Name: info.Name, Description: info.Desc})
+	}
+	return result, nil
 }
 
 func (m *MCPManager) Apply(ctx context.Context, servers []config.MCPServerConfig) error {

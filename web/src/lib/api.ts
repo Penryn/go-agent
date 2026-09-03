@@ -1,5 +1,5 @@
 import axios from 'axios'
-import type { ActivityPage, BotSnapshot, EventDetail, MCPServerConfig, MemePage, MemoryPage, MetricSeries, RelationshipPage, TaskPage } from '@/types'
+import type { ActivityPage, BotSnapshot, EventDetail, MCPServerConfig, MCPToolInfo, MemePage, MemoryPage, MetricSeries, RelationshipPage, TaskPage } from '@/types'
 
 export const api = axios.create({
   baseURL: '/admin/api',
@@ -71,14 +71,14 @@ export async function deleteMeme(memeID: string, token: string) {
 }
 
 export async function getMCPConfig(token: string) {
-  const response = await api.get<{ servers: MCPServerConfig[] }>('/mcp', {
+  const response = await api.get<{ servers: MCPServerConfig[]; tools: MCPToolInfo[] }>('/mcp', {
     headers: token ? { Authorization: `Bearer ${token}` } : undefined,
   })
   return response.data
 }
 
 export async function updateMCPConfig(servers: MCPServerConfig[], token: string) {
-  const response = await api.put<{ servers: MCPServerConfig[] }>('/mcp', { servers }, {
+  const response = await api.put<{ servers: MCPServerConfig[]; tools: MCPToolInfo[] }>('/mcp', { servers }, {
     headers: token ? { Authorization: `Bearer ${token}` } : undefined,
     timeout: 25000,
   })

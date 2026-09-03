@@ -49,6 +49,11 @@ export interface MCPServerConfig {
   timeout: string
 }
 
+export interface MCPToolInfo {
+  name: string
+  description: string
+}
+
 export interface PersonaFact {
   fact_id: string
   key: string

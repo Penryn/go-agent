@@ -863,6 +863,14 @@ input {
   gap: 10px;
 }
 
+.mcp-tool-list { margin-bottom: 14px; padding: 13px 14px; border: 1px solid var(--line); border-radius: 12px; background: rgba(8, 11, 16, 0.28); }
+.mcp-tool-list-head { display: flex; justify-content: space-between; gap: 12px; margin-bottom: 10px; color: var(--muted); font-size: 10px; }
+.mcp-tool-list-head strong { color: var(--text); font-size: 12px; }
+.mcp-tool-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 8px; }
+.mcp-tool { min-width: 0; padding: 9px 10px; border: 1px solid var(--line); border-radius: 8px; background: rgba(255, 255, 255, 0.025); }
+.mcp-tool code { display: block; overflow: hidden; color: var(--mint); font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
+.mcp-tool p { display: -webkit-box; margin: 5px 0 0; overflow: hidden; color: var(--muted); font-size: 10px; line-height: 1.5; -webkit-box-orient: vertical; -webkit-line-clamp: 2; }
+
 .mcp-card {
   padding: 16px;
   border: 1px solid var(--line);

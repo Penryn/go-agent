@@ -821,6 +821,7 @@ func (h *adminHandler) handleEventDetail(w http.ResponseWriter, r *http.Request)
 
 type adminMCPConfig struct {
 	Servers []config.MCPServerConfig `json:"servers"`
+	Tools   []toolsvc.MCPToolInfo     `json:"tools"`
 }
 
 func (h *adminHandler) handleMCP(w http.ResponseWriter, r *http.Request) {
@@ -834,7 +835,14 @@ func (h *adminHandler) handleMCP(w http.ResponseWriter, r *http.Request) {
 	}
 	switch r.Method {
 	case http.MethodGet:
-		writeJSON(w, adminMCPConfig{Servers: h.mcp.Servers()})
+		ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
+		defer cancel()
+		tools, err := h.mcp.ToolInfos(ctx)
+		if err != nil {
+			http.Error(w, "load MCP tools: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+		writeJSON(w, adminMCPConfig{Servers: h.mcp.Servers(), Tools: tools})
 	case http.MethodPut:
 		var payload adminMCPConfig
 		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 256<<10)).Decode(&payload); err != nil {
@@ -857,7 +865,12 @@ func (h *adminHandler) handleMCP(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "persist MCP config: "+err.Error(), http.StatusInternalServerError)
 			return
 		}
-		writeJSON(w, adminMCPConfig{Servers: h.mcp.Servers()})
+		tools, err := h.mcp.ToolInfos(ctx)
+		if err != nil {
+			http.Error(w, "load MCP tools: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+		writeJSON(w, adminMCPConfig{Servers: h.mcp.Servers(), Tools: tools})
 	default:
 		w.Header().Set("Allow", "GET, PUT")
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)

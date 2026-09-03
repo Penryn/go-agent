@@ -5,12 +5,13 @@ import { Plus, Delete, Refresh } from '@element-plus/icons-vue'
 import { storeToRefs } from 'pinia'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { getMCPConfig, updateMCPConfig } from '@/lib/api'
-import type { MCPServerConfig } from '@/types'
+import type { MCPServerConfig, MCPToolInfo } from '@/types'
 import { useDashboardStore } from '@/stores/dashboard'
 
 const store = useDashboardStore()
 const { token } = storeToRefs(store)
 const servers = ref<MCPServerConfig[]>([])
+const tools = ref<MCPToolInfo[]>([])
 const loading = ref(false)
 const saving = ref(false)
 const savedFingerprint = ref('')
@@ -32,6 +33,7 @@ async function load(force = false) {
   try {
     const result = await getMCPConfig(token.value)
     servers.value = result.servers
+    tools.value = result.tools || []
     savedFingerprint.value = JSON.stringify(servers.value)
   } catch (error) {
     ElMessage.error(`读取 MCP 配置失败：${error instanceof Error ? error.message : String(error)}`)
@@ -68,6 +70,7 @@ async function save() {
   try {
     const result = await updateMCPConfig(servers.value, token.value)
     servers.value = result.servers
+    tools.value = result.tools || []
     savedFingerprint.value = JSON.stringify(servers.value)
     ElMessage.success('MCP 配置已应用')
   } catch (error) {
@@ -109,6 +112,7 @@ onBeforeRouteLeave(async () => {
     </div>
 
     <div class="mcp-toolbar"><span>{{ servers.length }} 个服务</span><el-button link type="primary" :icon="Plus" @click="servers.push(blankServer())">添加服务</el-button></div>
+    <div v-if="tools.length" class="mcp-tool-list"><div class="mcp-tool-list-head"><strong>已注册工具</strong><span>{{ tools.length }} 个实际可调用</span></div><div class="mcp-tool-grid"><article v-for="tool in tools" :key="tool.name" class="mcp-tool"><code>{{ tool.name }}</code><p>{{ tool.description || '暂无描述' }}</p></article></div></div>
     <el-empty v-if="!servers.length && !loading" description="尚未配置 MCP 服务" />
     <div v-else class="mcp-list">
       <article v-for="(server, index) in servers" :key="index" class="mcp-card">
