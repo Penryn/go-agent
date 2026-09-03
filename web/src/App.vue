@@ -11,15 +11,11 @@ const route = useRoute()
 const tokenInput = ref('')
 const pageTitle = computed(() => String(route.meta.title ?? '实时概览'))
 
-const nav = [
-  { to: '/', label: '实时概览', icon: DataAnalysis },
-  { to: '/memory', label: '长期记忆', icon: Memo },
-  { to: '/relations', label: '群友关系', icon: User },
-  { to: '/activity', label: '运行记录', icon: ChatDotRound },
-  { to: '/tasks', label: '任务队列', icon: List },
-  { to: '/memes', label: '表情包库', icon: Picture },
-  { to: '/monitoring', label: '监控指标', icon: TrendCharts },
-  { to: '/mcp', label: 'MCP 工具', icon: Setting },
+const navSections = [
+  { label: '运营', items: [{ to: '/', label: '实时概览', icon: DataAnalysis }, { to: '/activity', label: '运行记录', icon: ChatDotRound }, { to: '/tasks', label: '任务队列', icon: List }] },
+  { label: '知识', items: [{ to: '/memory', label: '长期记忆', icon: Memo }, { to: '/relations', label: '群友关系', icon: User }, { to: '/memes', label: '表情包库', icon: Picture }] },
+  { label: '观测', items: [{ to: '/monitoring', label: '监控指标', icon: TrendCharts }] },
+  { label: '配置', items: [{ to: '/mcp', label: 'MCP 工具', icon: Setting }] },
 ]
 
 function saveToken() {
@@ -42,10 +38,13 @@ onUnmounted(store.stopPolling)
       </div>
 
       <nav class="nav-list" aria-label="后台导航">
-        <RouterLink v-for="item in nav" :key="item.to" :to="item.to" class="nav-item">
-          <el-icon><component :is="item.icon" /></el-icon>
-          <span>{{ item.label }}</span>
-        </RouterLink>
+        <section v-for="section in navSections" :key="section.label" class="nav-section">
+          <span class="nav-section-label">{{ section.label }}</span>
+          <RouterLink v-for="item in section.items" :key="item.to" :to="item.to" class="nav-item">
+            <el-icon><component :is="item.icon" /></el-icon>
+            <span>{{ item.label }}</span>
+          </RouterLink>
+        </section>
       </nav>
 
       <div class="sidebar-status">

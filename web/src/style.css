@@ -137,7 +137,20 @@ input {
 
 .nav-list {
   display: grid;
+  gap: 17px;
+}
+
+.nav-section {
+  display: grid;
   gap: 5px;
+}
+
+.nav-section-label {
+  padding: 0 13px 3px;
+  color: var(--muted);
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.16em;
 }
 
 .nav-item {
@@ -1386,6 +1399,8 @@ input {
   .sidebar { position: fixed; z-index: 10; top: auto; right: 10px; bottom: 10px; left: 10px; width: auto; height: 58px; flex-direction: row; align-items: center; padding: 7px; border: 1px solid var(--line-bright); border-radius: 18px; background: rgba(13, 17, 23, 0.9); box-shadow: 0 20px 50px rgba(0, 0, 0, 0.45); }
   .brand-lockup, .sidebar-status { display: none; }
   .nav-list { display: flex; width: 100%; gap: 3px; overflow-x: auto; }
+  .nav-section { display: contents; }
+  .nav-section-label { display: none; }
   .nav-item { flex: 0 0 52px; height: 42px; }
   .nav-item.router-link-active::before { display: none; }
   .main-stage { padding: 18px 12px 90px; }
