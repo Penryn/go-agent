@@ -124,6 +124,8 @@ type VectorIndexTask struct {
 	Revision int64  `json:"revision"`
 }
 
+const globalMemeGroupID int64 = 0
+
 // ObserveEvent 观察群聊事件，将图片/贴纸收入表情包库。
 // descriptors 是 visionSvc.Understand 已经计算好的视觉描述，可为 nil（降级到默认描述符）。
 func (s *Service) ObserveEvent(ctx context.Context, event conversationdomain.ConversationEvent, descriptors []mediadomain.MediaDescriptor) error {
@@ -135,15 +137,15 @@ func (s *Service) ObserveEvent(ctx context.Context, event conversationdomain.Con
 	// 结算观察窗内挂着的表情；超窗冷场的记一次哑弹。
 	s.settleDudsOnActivity(ctx, time.Now())
 
-	// D-3: per_group_limit 写入前清理超额记录
+	// 全局表情池写入前清理超额记录。配置名保留 per_group_limit 以兼容旧配置。
 	if s.cfg.PerGroupLimit > 0 {
-		count, err := s.store.CountMemesByGroup(ctx, event.GroupID)
+		count, err := s.store.CountMemesByGroup(ctx, globalMemeGroupID)
 		if err != nil {
-			slog.Warn("meme.ObserveEvent: CountMemesByGroup failed", "group_id", event.GroupID, "err", err)
+			slog.Warn("meme.ObserveEvent: CountMemesByGroup failed", "group_id", globalMemeGroupID, "err", err)
 		} else if count >= s.cfg.PerGroupLimit {
 			excess := count - s.cfg.PerGroupLimit + 1
-			if delErr := s.store.DeleteOldestMemes(ctx, event.GroupID, excess); delErr != nil {
-				slog.Warn("meme.ObserveEvent: DeleteOldestMemes failed", "group_id", event.GroupID, "err", delErr)
+			if delErr := s.store.DeleteOldestMemes(ctx, globalMemeGroupID, excess); delErr != nil {
+				slog.Warn("meme.ObserveEvent: DeleteOldestMemes failed", "group_id", globalMemeGroupID, "err", delErr)
 			}
 		}
 	}
@@ -163,10 +165,31 @@ func (s *Service) ObserveEvent(ctx context.Context, event conversationdomain.Con
 			slog.Debug("meme: skip attachment that cannot be persisted", "attachment_id", attachment.AttachmentID, "url", attachment.URL, "err", err)
 			continue
 		}
+		// URL attachments are hashed after download. Use that hash as the
+		// canonical identity so the database uniqueness constraint and the
+		// idempotent meme projection agree even when the same bytes arrive
+		// through different URLs.
+		if strings.TrimSpace(contentHash) != "" {
+			memeID = "meme-" + contentHash
+			// Keep retrying old URL-addressed records safe: if this content was
+			// already stored before content-addressed IDs were introduced, reuse
+			// its existing primary key instead of colliding on content_hash.
+			if lookup, ok := s.store.(interface {
+				FindMemeIDByContentHash(context.Context, string) (string, error)
+			}); ok {
+				existingID, lookupErr := lookup.FindMemeIDByContentHash(ctx, contentHash)
+				if lookupErr != nil {
+					return lookupErr
+				}
+				if existingID != "" {
+					memeID = existingID
+				}
+			}
+		}
 		memeDescriptor := buildMemeDescriptor(memeID, attachment, []mediadomain.MediaDescriptor{descriptor}, s.cfg.CandidateThreshold)
 		memeAsset := mediadomain.MemeAsset{
 			MemeID:         memeID,
-			GroupID:        event.GroupID,
+			GroupID:        globalMemeGroupID,
 			SourceEventID:  event.EventID,
 			ObjectKey:      objectKey,
 			FileExt:        fileExt(objectKey),
@@ -174,7 +197,7 @@ func (s *Service) ObserveEvent(ctx context.Context, event conversationdomain.Con
 			PerceptualHash: coalesce(attachment.ContentHash, memeID),
 			Width:          attachment.Width,
 			Height:         attachment.Height,
-			Animated:       strings.EqualFold(fileExt(attachment.ObjectKey), ".gif"),
+			Animated:       strings.EqualFold(fileExt(objectKey), ".gif"),
 			Status:         "approved",
 			CreatedAt:      time.Now(),
 		}
@@ -182,7 +205,7 @@ func (s *Service) ObserveEvent(ctx context.Context, event conversationdomain.Con
 		// Vector indexing is durable background work when an outbox is configured.
 		if s.vectorStore != nil {
 			indexText := memeDescriptor.IndexText()
-			groupID := event.GroupID
+			groupID := globalMemeGroupID
 			if s.outbox != nil {
 				revision := time.Now().UnixNano()
 				memeAsset.Revision = revision
@@ -362,7 +385,7 @@ func (s *Service) sendPath(objectKey string) string {
 	return filepath.Join(s.cfg.StoragePath, objectKey)
 }
 
-func (s *Service) persistAttachment(ctx context.Context, memeID string, attachment mediadomain.MultimodalAttachment) (string, string, error) {
+func (s *Service) persistAttachment(ctx context.Context, _ string, attachment mediadomain.MultimodalAttachment) (string, string, error) {
 	if strings.TrimSpace(attachment.URL) == "" {
 		if strings.TrimSpace(attachment.ObjectKey) == "" {
 			return "", "", errors.New("attachment has no URL or object key")
@@ -399,7 +422,6 @@ func (s *Service) persistAttachment(ctx context.Context, memeID string, attachme
 	if ext == "" {
 		ext = ".jpg"
 	}
-	name := memeID + ext
 	tmp, err := os.CreateTemp(s.cfg.StoragePath, ".meme-*")
 	if err != nil {
 		return "", "", fmt.Errorf("create meme temp file: %w", err)
@@ -424,6 +446,9 @@ func (s *Service) persistAttachment(ctx context.Context, memeID string, attachme
 	if err := tmp.Close(); err != nil {
 		return "", "", fmt.Errorf("close meme temp file: %w", err)
 	}
+	// The content hash is available only after reading the body. Naming the
+	// durable file from it prevents duplicate files for equivalent URLs.
+	name := "meme-" + hex.EncodeToString(hash.Sum(nil)) + ext
 	if err := os.Rename(tmpPath, filepath.Join(s.cfg.StoragePath, name)); err != nil {
 		return "", "", fmt.Errorf("save meme file: %w", err)
 	}

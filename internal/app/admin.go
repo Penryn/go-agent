@@ -1329,13 +1329,13 @@ func (d *adminDashboard) loadRetrievalMetrics(ctx context.Context, groupID int64
 func (d *adminDashboard) loadGroups(ctx context.Context) ([]adminGroup, error) {
 	rows, err := d.db.QueryContext(ctx, `
 		WITH ids AS (
-			SELECT group_id FROM messages UNION SELECT group_id FROM member_profiles
-			UNION SELECT group_id FROM relationships UNION SELECT group_id FROM group_working_memory
-			UNION SELECT group_id FROM thought_records UNION SELECT group_id FROM retrieval_traces
+			SELECT group_id FROM messages WHERE group_id > 0 UNION SELECT group_id FROM member_profiles WHERE group_id > 0
+			UNION SELECT group_id FROM relationships WHERE group_id > 0 UNION SELECT group_id FROM group_working_memory WHERE group_id > 0
+			UNION SELECT group_id FROM thought_records WHERE group_id > 0 UNION SELECT group_id FROM retrieval_traces WHERE group_id > 0
 		), message_stats AS (
-			SELECT group_id, COUNT(*) AS messages, MAX(occurred_at) AS last_activity FROM messages GROUP BY group_id
+			SELECT group_id, COUNT(*) AS messages, MAX(occurred_at) AS last_activity FROM messages WHERE group_id > 0 GROUP BY group_id
 		), member_stats AS (
-			SELECT group_id, COUNT(*) AS members FROM member_profiles GROUP BY group_id
+			SELECT group_id, COUNT(*) AS members FROM member_profiles WHERE group_id > 0 GROUP BY group_id
 		)
 		SELECT ids.group_id, COALESCE(ms.messages, 0), COALESCE(ps.members, 0),
 		       COALESCE(gwm.state_json->>'active_topic', ''), ms.last_activity
@@ -1364,6 +1364,9 @@ func (d *adminDashboard) loadGroups(ctx context.Context) ([]adminGroup, error) {
 		return nil, err
 	}
 	for _, groupID := range d.cfg.QQ.GroupWhitelist {
+		if groupID <= 0 {
+			continue
+		}
 		if _, ok := byID[groupID]; !ok {
 			byID[groupID] = adminGroup{GroupID: groupID}
 		}
@@ -1436,7 +1439,7 @@ func (d *adminDashboard) loadStats(ctx context.Context) (adminStats, error) {
 	var stats adminStats
 	err := d.db.QueryRowContext(ctx, `
 		SELECT
-			(SELECT COUNT(DISTINCT group_id) FROM messages),
+			(SELECT COUNT(DISTINCT group_id) FROM messages WHERE group_id > 0),
 			(SELECT COUNT(*) FROM member_profiles),
 			(SELECT COUNT(*) FROM memories WHERE expires_at IS NULL OR expires_at > NOW()),
 			(SELECT COUNT(*) FROM async_outbox WHERE status IN ('pending', 'running', 'retry'))
@@ -1554,7 +1557,7 @@ func loadAdminMemePage(ctx context.Context, db *sql.DB, groupID int64, query str
 	query = strings.TrimSpace(query)
 	where := ` FROM meme_assets a
 		JOIN meme_descriptors d ON d.meme_id = a.meme_id
-		WHERE ($1 = 0 OR a.group_id = $1)
+		WHERE ($1 = 0 OR a.group_id = 0)
 		  AND ($2 = '' OR d.title ILIKE '%' || $2 || '%' OR d.summary ILIKE '%' || $2 || '%'
 		       OR d.keywords_json::text ILIKE '%' || $2 || '%'
 		       OR d.emotion_tags_json::text ILIKE '%' || $2 || '%'
@@ -1655,10 +1658,10 @@ func (d *adminDashboard) loadActivity(ctx context.Context, groupID int64, window
 			SELECT event_id, occurred_at AS at, group_id, 'message' AS type, kind AS label,
 			       COALESCE(NULLIF(sender_group_card, ''), NULLIF(sender_qq_nickname, ''), user_id::text) AS subject,
 			       LEFT(text_content, 300) AS detail
-			FROM messages WHERE occurred_at > NOW() - make_interval(mins => $2) AND ($1 = 0 OR group_id = $1)
+			FROM messages WHERE group_id > 0 AND occurred_at > NOW() - make_interval(mins => $2) AND ($1 = 0 OR group_id = $1)
 			UNION ALL
 			SELECT event_id, created_at, group_id, 'decision', chosen_action, outcome, LEFT(interpretation, 300)
-			FROM thought_records WHERE created_at > NOW() - make_interval(mins => $2) AND ($1 = 0 OR group_id = $1)
+			FROM thought_records WHERE group_id > 0 AND created_at > NOW() - make_interval(mins => $2) AND ($1 = 0 OR group_id = $1)
 		) activity
 		ORDER BY at DESC LIMIT 80
 	`, groupID, windowMinutes)
@@ -1683,10 +1686,10 @@ func loadAdminActivityPage(ctx context.Context, db *sql.DB, groupID int64, windo
 			SELECT event_id, occurred_at AS at, group_id, 'message' AS type, kind AS label,
 			       COALESCE(NULLIF(sender_group_card, ''), NULLIF(sender_qq_nickname, ''), user_id::text) AS subject,
 			       LEFT(text_content, 300) AS detail
-			FROM messages WHERE occurred_at > NOW() - make_interval(mins => $1) AND ($2 = 0 OR group_id = $2)
+			FROM messages WHERE group_id > 0 AND occurred_at > NOW() - make_interval(mins => $1) AND ($2 = 0 OR group_id = $2)
 			UNION ALL
 			SELECT event_id, created_at, group_id, 'decision', chosen_action, outcome, LEFT(interpretation, 300)
-			FROM thought_records WHERE created_at > NOW() - make_interval(mins => $1) AND ($2 = 0 OR group_id = $2)
+			FROM thought_records WHERE group_id > 0 AND created_at > NOW() - make_interval(mins => $1) AND ($2 = 0 OR group_id = $2)
 		) activity`
 	args := []any{windowMinutes, groupID, activityType}
 	where := " WHERE ($3 = '' OR type = $3)"

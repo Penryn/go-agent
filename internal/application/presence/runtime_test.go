@@ -207,6 +207,43 @@ func TestProcessRawEventLetsOrdinaryContentReachPlanner(t *testing.T) {
 	}
 }
 
+func TestProcessRawEventIgnoresMetaAndInvalidGroups(t *testing.T) {
+	ctx := context.Background()
+	working := group_actor.NewManager(ingress.NewMemoryEventLog())
+	defer working.Close()
+	runtime := New(ctx, normalizer.New("onebot", 123456, nil), working, nil, nil, nil,
+		action.New(inmemory.NewSender(), nil, nil), Config{SelfID: 123456})
+	defer runtime.Close()
+
+	tests := []struct {
+		name    string
+		payload string
+	}{
+		{
+			name:    "meta event",
+			payload: `{"post_type":"meta_event","meta_event_type":"heartbeat","time":1710000000,"group_id":100,"user_id":200}`,
+		},
+		{
+			name:    "invalid group",
+			payload: `{"post_type":"message","message_type":"private","time":1710000000,"group_id":0,"user_id":200,"message_id":"private-1","message":[{"type":"text","data":{"text":"hello"}}]}`,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			outcome, err := runtime.ProcessRawEvent(ctx, []byte(tt.payload))
+			if err != nil {
+				t.Fatalf("process raw event: %v", err)
+			}
+			if outcome.Decision.Action != policydomain.ActionSilent || outcome.Receipt.Sent {
+				t.Fatalf("event was not ignored: %+v", outcome)
+			}
+		})
+	}
+	if ids := working.GroupIDs(); len(ids) != 0 {
+		t.Fatalf("ignored events created working groups: %v", ids)
+	}
+}
+
 func TestRateLimitAppliesBeforeModelDeliberation(t *testing.T) {
 	ctx := context.Background()
 	cfg := config.Default()

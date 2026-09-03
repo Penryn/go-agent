@@ -163,6 +163,24 @@ func TestEventsAndMemories(t *testing.T) {
 	}
 }
 
+func TestArchiveEventRejectsInvalidGroup(t *testing.T) {
+	ctx := context.Background()
+	db := setupPostgres(t)
+	store := NewStore(db)
+
+	err := store.ArchiveEvent(ctx, conversationdomain.ConversationEvent{EventID: "invalid-group", GroupID: 0})
+	if err == nil {
+		t.Fatal("expected invalid group_id to be rejected")
+	}
+	var count int
+	if err := db.QueryRowContext(ctx, "SELECT COUNT(*) FROM messages WHERE event_id = 'invalid-group'").Scan(&count); err != nil {
+		t.Fatalf("count invalid event: %v", err)
+	}
+	if count != 0 {
+		t.Fatalf("invalid event was persisted: %d", count)
+	}
+}
+
 func TestProfiles(t *testing.T) {
 	ctx := context.Background()
 	db := setupPostgres(t)

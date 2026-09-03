@@ -206,6 +206,9 @@ func nullableError(err error) any {
 }
 
 func (s *Store) ArchiveEvent(ctx context.Context, event conversationdomain.ConversationEvent) error {
+	if event.GroupID <= 0 {
+		return fmt.Errorf("archive event: invalid group_id %d", event.GroupID)
+	}
 	segmentsJSON, err := json.Marshal(event.Segments)
 	if err != nil {
 		return err
@@ -659,6 +662,18 @@ func (s *Store) UpsertMeme(ctx context.Context, asset mediadomain.MemeAsset, des
 		return err
 	}
 	return tx.Commit()
+}
+
+// FindMemeIDByContentHash returns the primary key used by an existing asset.
+// It lets callers remain compatible with records created before IDs became
+// content-addressed.
+func (s *Store) FindMemeIDByContentHash(ctx context.Context, contentHash string) (string, error) {
+	var memeID string
+	err := s.db.QueryRowContext(ctx, `SELECT meme_id FROM meme_assets WHERE content_hash = $1`, contentHash).Scan(&memeID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", nil
+	}
+	return memeID, err
 }
 
 // UpsertMemeAndEnqueueVector makes the meme fact and its vector projection

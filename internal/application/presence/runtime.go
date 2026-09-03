@@ -714,10 +714,13 @@ func (r *Runtime) normalize(payload []byte) (conversationdomain.EventEnvelope, e
 }
 
 func (r *Runtime) shouldIgnore(envelope conversationdomain.EventEnvelope) bool {
+	if envelope.Event.Kind == conversationdomain.EventMeta || envelope.Event.GroupID <= 0 {
+		return true
+	}
 	if envelope.Event.UserID != 0 && envelope.Event.UserID == envelope.SelfID {
 		return true
 	}
-	if len(r.whitelist) == 0 || envelope.Event.GroupID == 0 {
+	if len(r.whitelist) == 0 {
 		return false
 	}
 	_, ok := r.whitelist[envelope.Event.GroupID]

@@ -111,7 +111,7 @@ func Default() Config {
 			StoragePath:        "./memes",
 			MaxSizeMB:          10,
 			RepeatCooldown:     "10m",
-			PreferGroupScoped:  true,
+			PreferGroupScoped:  false,
 		},
 		Multimodal: MultimodalConfig{
 			DownloadTimeout: "10s",

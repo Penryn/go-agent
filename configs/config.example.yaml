@@ -268,6 +268,7 @@ meme:
   # 是否自动收藏群内表情包候选。
   auto_collect: true
   candidate_threshold: 0.6
+  # 全局表情池容量上限；字段名保留以兼容旧配置。
   per_group_limit: 5000
   search_top_k: 5
   # 表情包图片本地存储目录；管理后台和发送动作均使用本地文件。
@@ -275,7 +276,8 @@ meme:
   max_size_mb: 10
   # 同一张表情包重复发送冷却。
   repeat_cooldown: 10m
-  prefer_group_scoped: true
+  # 兼容旧配置；表情包当前统一使用全局池。
+  prefer_group_scoped: false
   # 表情包语义向量搜索阈值。
   semantic_threshold: 0.72
 

@@ -2,6 +2,9 @@ package meme
 
 import (
 	"context"
+	"crypto/sha1"
+	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -40,6 +43,13 @@ func TestObserveEventAndBuildSendSegments(t *testing.T) {
 	if err != nil {
 		t.Fatalf("observe event: %v", err)
 	}
+	asset, _, err := store.GetMeme(context.Background(), "meme-hash-a1")
+	if err != nil {
+		t.Fatalf("get meme: %v", err)
+	}
+	if asset.GroupID != 0 {
+		t.Fatalf("expected globally scoped meme, got group %d", asset.GroupID)
+	}
 
 	results, err := service.Search(context.Background(), ports.MemeQuery{GroupID: 1, Query: "测试", TopK: 3})
 	if err != nil {
@@ -73,7 +83,11 @@ func TestObserveEventDownloadsURLToConfiguredStorage(t *testing.T) {
 	}, []mediadomain.MediaDescriptor{{AttachmentID: "download", Kind: mediadomain.MediaSticker, Confidence: 1}}); err != nil {
 		t.Fatalf("observe event: %v", err)
 	}
-	asset, _, err := store.GetMeme(context.Background(), buildMemeID(mediadomain.MultimodalAttachment{AttachmentID: "download", Kind: mediadomain.MediaSticker, URL: server.URL}))
+	results, err := store.SearchMemes(context.Background(), ports.MemeQuery{GroupID: 1, TopK: 10})
+	if err != nil || len(results) != 1 {
+		t.Fatalf("expected one stored meme, results=%+v err=%v", results, err)
+	}
+	asset, _, err := store.GetMeme(context.Background(), results[0].MemeID)
 	if err != nil {
 		t.Fatalf("get meme: %v", err)
 	}
@@ -86,6 +100,68 @@ func TestObserveEventDownloadsURLToConfiguredStorage(t *testing.T) {
 	segments, err := service.BuildSendSegments(context.Background(), asset.MemeID, "", "")
 	if err != nil || len(segments) != 1 || segments[0].Data["file"] != filepath.Join(storage, asset.ObjectKey) {
 		t.Fatalf("expected absolute send path, segments=%#v err=%v", segments, err)
+	}
+}
+
+func TestObserveEventDeduplicatesSameContentFromDifferentURLs(t *testing.T) {
+	store := testsupport.NewStore(t)
+	storage := t.TempDir()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "image/png")
+		_, _ = w.Write([]byte("same-image-bytes"))
+	}))
+	defer server.Close()
+	svc := New(store, config.MemeConfig{AutoCollect: true, StoragePath: storage, MaxSizeMB: 1})
+	descriptor := mediadomain.MediaDescriptor{Kind: mediadomain.MediaSticker, Confidence: 1}
+	for _, id := range []string{"first", "second"} {
+		err := svc.ObserveEvent(context.Background(), conversationdomain.ConversationEvent{
+			EventID: "event-" + id, GroupID: 1,
+			Attachments: []mediadomain.MultimodalAttachment{{
+				AttachmentID: id, Kind: mediadomain.MediaSticker, URL: server.URL + "/" + id,
+			}},
+		}, []mediadomain.MediaDescriptor{{AttachmentID: id, Kind: descriptor.Kind, Confidence: descriptor.Confidence}})
+		if err != nil {
+			t.Fatalf("observe %s: %v", id, err)
+		}
+	}
+	results, err := store.SearchMemes(context.Background(), ports.MemeQuery{GroupID: 1, TopK: 10})
+	if err != nil {
+		t.Fatalf("search memes: %v", err)
+	}
+	if len(results) != 1 {
+		t.Fatalf("expected one deduplicated meme, got %d: %+v", len(results), results)
+	}
+	if _, err := os.Stat(filepath.Join(storage, results[0].MemeID+".png")); err != nil {
+		t.Fatalf("expected content-addressed file: %v", err)
+	}
+}
+
+func TestObserveEventReusesLegacyIDForDuplicateContent(t *testing.T) {
+	store := testsupport.NewStore(t)
+	storage := t.TempDir()
+	content := []byte("legacy-image-bytes")
+	hash := sha1.Sum(content)
+	contentHash := hex.EncodeToString(hash[:])
+	legacyID := "meme-legacy-url-id"
+	if err := store.UpsertMeme(context.Background(), mediadomain.MemeAsset{
+		MemeID: legacyID, GroupID: 1, ObjectKey: "legacy.webp", ContentHash: contentHash, Status: "approved",
+	}, mediadomain.MemeDescriptor{MemeID: legacyID, Summary: "旧记录"}); err != nil {
+		t.Fatalf("seed legacy meme: %v", err)
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "image/webp")
+		_, _ = w.Write(content)
+	}))
+	defer server.Close()
+	svc := New(store, config.MemeConfig{AutoCollect: true, StoragePath: storage, MaxSizeMB: 1})
+	if err := svc.ObserveEvent(context.Background(), conversationdomain.ConversationEvent{
+		EventID: "legacy-retry", GroupID: 1,
+		Attachments: []mediadomain.MultimodalAttachment{{AttachmentID: "retry", Kind: mediadomain.MediaSticker, URL: server.URL}},
+	}, []mediadomain.MediaDescriptor{{AttachmentID: "retry", Kind: mediadomain.MediaSticker, Confidence: 1}}); err != nil {
+		t.Fatalf("observe legacy duplicate: %v", err)
+	}
+	if _, _, err := store.GetMeme(context.Background(), legacyID); err != nil {
+		t.Fatalf("legacy meme should remain addressable: %v", err)
 	}
 }
 
@@ -247,6 +323,13 @@ func TestObserveEventUsesOutboxForVectorIndex(t *testing.T) {
 	}
 	if len(claimed) != 1 || claimed[0].Kind != "meme_vector_index" {
 		t.Fatalf("expected one meme_vector_index task, got %+v", claimed)
+	}
+	var task VectorIndexTask
+	if err := json.Unmarshal(claimed[0].Payload, &task); err != nil {
+		t.Fatalf("decode vector task: %v", err)
+	}
+	if task.GroupID != 0 {
+		t.Fatalf("expected global vector task, got group %d", task.GroupID)
 	}
 	if indexer.calls != 0 {
 		t.Fatalf("vector index should be deferred to outbox handler, calls=%d", indexer.calls)
