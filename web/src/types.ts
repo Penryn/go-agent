@@ -1,6 +1,7 @@
 export interface BotSnapshot {
   updated_at: string
   window_minutes: number
+  window_metrics: { decisions: number; action_decisions: number; tasks: number; failed_tasks: number }
   selected_group: number
   status: { mode: string; qq_enabled: boolean; qq_connected: boolean; self_id: number; database_ok: boolean }
   stats: { groups: number; members: number; memories: number; pending_tasks: number }

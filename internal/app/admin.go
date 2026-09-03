@@ -47,6 +47,7 @@ type adminSnapshot struct {
 	Retrieval     adminRetrievalMetrics  `json:"retrieval"`
 	ModelUsage    adminModelUsageMetrics `json:"model_usage"`
 	WindowMinutes int                    `json:"window_minutes"`
+	WindowMetrics adminWindowMetrics     `json:"window_metrics"`
 }
 
 type adminStatus struct {
@@ -218,6 +219,13 @@ type adminModelUsageMetrics struct {
 	OutputTokens  int64   `json:"output_tokens"`
 	AvgDurationMS float64 `json:"avg_duration_ms"`
 	ErrorCalls    int     `json:"error_calls"`
+}
+
+type adminWindowMetrics struct {
+	Decisions       int `json:"decisions"`
+	ActionDecisions int `json:"action_decisions"`
+	Tasks           int `json:"tasks"`
+	FailedTasks     int `json:"failed_tasks"`
 }
 
 func newAdminHandler(db *sql.DB, state ports.RuntimeStateStore, facts ports.PersonaFactStore, definition personadomain.PersonaDefinition, cfg config.Config, connected func() bool, mcp *toolsvc.MCPManager) http.Handler {
@@ -581,12 +589,31 @@ func (d *adminDashboard) snapshotWindow(ctx context.Context, selectedGroup int64
 	if err != nil {
 		return adminSnapshot{}, err
 	}
+	windowMetrics, err := d.loadWindowMetrics(ctx, selectedGroup, windowMinutes)
+	if err != nil {
+		return adminSnapshot{}, err
+	}
 	return adminSnapshot{
 		UpdatedAt: time.Now(), SelectedGroup: selectedGroup,
 		Status: adminStatus{Mode: d.cfg.App.Mode, QQEnabled: d.cfg.QQ.Enabled, QQConnected: d.connected != nil && d.connected(), SelfID: d.cfg.QQ.SelfID, DatabaseOK: d.db.PingContext(ctx) == nil},
 		Stats:  stats, Persona: persona, Groups: groups, Memories: memories,
-		Relationships: relationships, Activity: activity, Retrieval: retrieval, ModelUsage: modelUsage, WindowMinutes: windowMinutes,
+		Relationships: relationships, Activity: activity, Retrieval: retrieval, ModelUsage: modelUsage, WindowMinutes: windowMinutes, WindowMetrics: windowMetrics,
 	}, nil
+}
+
+func (d *adminDashboard) loadWindowMetrics(ctx context.Context, groupID int64, windowMinutes int) (adminWindowMetrics, error) {
+	var metrics adminWindowMetrics
+	err := d.db.QueryRowContext(ctx, `
+		SELECT
+			(SELECT COUNT(*) FROM thought_records WHERE created_at > NOW() - ($2 || ' minutes')::interval AND ($1 = 0 OR group_id = $1)),
+			(SELECT COUNT(*) FROM thought_records WHERE created_at > NOW() - ($2 || ' minutes')::interval AND ($1 = 0 OR group_id = $1) AND chosen_action <> 'silent'),
+			(SELECT COUNT(*) FROM async_outbox WHERE updated_at > NOW() - ($2 || ' minutes')::interval),
+			(SELECT COUNT(*) FROM async_outbox WHERE updated_at > NOW() - ($2 || ' minutes')::interval AND (status = 'dead_letter' OR last_error <> ''))
+	`, groupID, windowMinutes).Scan(&metrics.Decisions, &metrics.ActionDecisions, &metrics.Tasks, &metrics.FailedTasks)
+	if err != nil {
+		return metrics, fmt.Errorf("window metrics: %w", err)
+	}
+	return metrics, nil
 }
 
 func (d *adminDashboard) loadModelUsageMetrics(ctx context.Context, groupID int64, windowMinutes int) (adminModelUsageMetrics, error) {

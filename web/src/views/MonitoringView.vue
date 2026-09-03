@@ -6,14 +6,13 @@ import { useDashboardStore } from '@/stores/dashboard'
 const store = useDashboardStore()
 const { snapshot, windowMinutes } = storeToRefs(store)
 const memories = computed(() => snapshot.value?.memories || [])
-const decisions = computed(() => (snapshot.value?.activity || []).filter((item) => item.type === 'decision'))
-const tasks = computed(() => (snapshot.value?.activity || []).filter((item) => item.type === 'task'))
+const decisions = computed(() => snapshot.value?.window_metrics.decisions ?? 0)
+const tasks = computed(() => snapshot.value?.window_metrics.tasks ?? 0)
 const avgConfidence = computed(() => memories.value.length ? memories.value.reduce((sum, item) => sum + item.confidence, 0) / memories.value.length : 0)
 const avgImportance = computed(() => memories.value.length ? memories.value.reduce((sum, item) => sum + item.importance, 0) / memories.value.length : 0)
-const taskFailures = computed(() => tasks.value.filter((item) => /failed|error|dead/i.test(item.subject)).length)
-const taskFailureRate = computed(() => tasks.value.length ? taskFailures.value / tasks.value.length : 0)
-const replyActions = computed(() => decisions.value.filter((item) => /reply|react|meme|poke/i.test(item.label)).length)
-const decisionReplyRate = computed(() => decisions.value.length ? replyActions.value / decisions.value.length : 0)
+const taskFailures = computed(() => snapshot.value?.window_metrics.failed_tasks ?? 0)
+const taskFailureRate = computed(() => tasks.value ? taskFailures.value / tasks.value : 0)
+const decisionReplyRate = computed(() => decisions.value ? (snapshot.value?.window_metrics.action_decisions ?? 0) / decisions.value : 0)
 const retrieval = computed(() => snapshot.value?.retrieval || { queries: 0, queries_with_hits: 0, hit_rate: 0, avg_candidate_count: 0, feedback_queries: 0, selected_queries: 0, selection_rate: 0 })
 const modelUsage = computed(() => snapshot.value?.model_usage || { calls: 0, input_tokens: 0, output_tokens: 0, avg_duration_ms: 0, error_calls: 0 })
 </script>
@@ -24,13 +23,13 @@ const modelUsage = computed(() => snapshot.value?.model_usage || { calls: 0, inp
 
     <section class="monitor-grid">
       <article class="monitor-card" data-tone="mint"><span>近 10 分钟发言</span><strong>{{ snapshot?.persona.runtime.replies_last_10min ?? 0 }}</strong><small>当前群聊</small></article>
-      <article class="monitor-card" data-tone="violet"><span>决策中有动作</span><strong>{{ Math.round(decisionReplyRate * 100) }}%</strong><small>{{ decisions.length }} 条决策记录</small></article>
+      <article class="monitor-card" data-tone="violet"><span>决策中有动作</span><strong>{{ Math.round(decisionReplyRate * 100) }}%</strong><small>{{ decisions }} 条决策记录</small></article>
       <article class="monitor-card" data-tone="amber"><span>记忆平均置信度</span><strong>{{ avgConfidence.toFixed(2) }}</strong><small>{{ memories.length }} 条有效记忆</small></article>
-      <article class="monitor-card" data-tone="blue"><span>任务失败占比</span><strong>{{ Math.round(taskFailureRate * 100) }}%</strong><small>{{ tasks.length }} 条任务记录</small></article>
+      <article class="monitor-card" data-tone="blue"><span>任务失败占比</span><strong>{{ Math.round(taskFailureRate * 100) }}%</strong><small>{{ tasks }} 条任务记录</small></article>
       <article class="monitor-card" data-tone="violet"><span>检索命中率</span><strong>{{ Math.round(retrieval.hit_rate * 100) }}%</strong><small>{{ retrieval.queries_with_hits }} / {{ retrieval.queries }} 次有结果</small></article>
       <article class="monitor-card" data-tone="blue"><span>平均候选数</span><strong>{{ retrieval.avg_candidate_count.toFixed(1) }}</strong><small>{{ retrieval.queries }} 次检索</small></article>
       <article class="monitor-card" data-tone="mint"><span>召回采用率</span><strong>{{ Math.round(retrieval.selection_rate * 100) }}%</strong><small>{{ retrieval.selected_queries }} / {{ retrieval.queries_with_hits }} 次进入决策</small></article>
-      <article class="monitor-card" data-tone="amber"><span>模型平均耗时</span><strong>{{ Math.round(modelUsage.avg_duration_ms) }}ms</strong><small>近 24 小时 · {{ modelUsage.calls }} 次调用</small></article>
+      <article class="monitor-card" data-tone="amber"><span>模型平均耗时</span><strong>{{ Math.round(modelUsage.avg_duration_ms) }}ms</strong><small>当前窗口 · {{ modelUsage.calls }} 次调用</small></article>
     </section>
 
     <section class="monitor-panels">
