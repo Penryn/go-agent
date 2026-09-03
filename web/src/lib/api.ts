@@ -1,5 +1,5 @@
 import axios from 'axios'
-import type { BotSnapshot, EventDetail, MCPServerConfig, MemeRecord, MemoryRecord, TaskRecord } from '@/types'
+import type { BotSnapshot, EventDetail, MCPServerConfig, MemeRecord, MemoryRecord, TaskPage } from '@/types'
 
 export const api = axios.create({
   baseURL: '/admin/api',
@@ -21,9 +21,13 @@ export async function getEventDetail(eventID: string, token: string) {
   return response.data
 }
 
-export async function getTasks(status: string, token: string) {
-  const response = await api.get<TaskRecord[]>('/tasks', { params: status ? { status } : undefined, headers: token ? { Authorization: `Bearer ${token}` } : undefined })
+export async function getTasks(status: string, token: string, page = 1) {
+  const response = await api.get<TaskPage>('/tasks', { params: { ...(status ? { status } : {}), page }, headers: token ? { Authorization: `Bearer ${token}` } : undefined })
   return response.data
+}
+
+export async function retryTask(taskID: string, token: string) {
+  await api.post(`/tasks/${encodeURIComponent(taskID)}/retry`, undefined, { headers: token ? { Authorization: `Bearer ${token}` } : undefined })
 }
 
 export async function getMemories(groupID: number, status: string, query: string, token: string) {

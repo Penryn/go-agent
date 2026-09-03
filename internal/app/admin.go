@@ -135,6 +135,13 @@ type adminTask struct {
 	UpdatedAt   time.Time `json:"updated_at"`
 }
 
+type adminTaskPage struct {
+	Items    []adminTask `json:"items"`
+	Total    int         `json:"total"`
+	Page     int         `json:"page"`
+	PageSize int         `json:"page_size"`
+}
+
 type adminRelationship struct {
 	GroupID        int64     `json:"group_id"`
 	UserID         int64     `json:"user_id"`
@@ -261,6 +268,10 @@ func (h *adminHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	if strings.HasPrefix(r.URL.Path, "/admin/api/memes/") {
 		h.handleMeme(w, r)
+		return
+	}
+	if strings.HasPrefix(r.URL.Path, "/admin/api/tasks/") {
+		h.handleTask(w, r)
 		return
 	}
 	switch r.URL.Path {
@@ -425,15 +436,40 @@ func (h *adminHandler) handleTasks(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid status", http.StatusBadRequest)
 		return
 	}
+	page := 1
+	if raw := strings.TrimSpace(r.URL.Query().Get("page")); raw != "" {
+		parsed, err := strconv.Atoi(raw)
+		if err != nil || parsed < 1 || parsed > 100000 {
+			http.Error(w, "invalid page", http.StatusBadRequest)
+			return
+		}
+		page = parsed
+	}
+	pageSize := 50
+	if raw := strings.TrimSpace(r.URL.Query().Get("page_size")); raw != "" {
+		parsed, err := strconv.Atoi(raw)
+		if err != nil || parsed < 1 || parsed > 100 {
+			http.Error(w, "invalid page_size", http.StatusBadRequest)
+			return
+		}
+		pageSize = parsed
+	}
 	ctx, cancel := context.WithTimeout(r.Context(), 4*time.Second)
 	defer cancel()
-	query := `SELECT task_id, kind, status, attempts, max_attempts, available_at, COALESCE(last_error, ''), created_at, updated_at FROM async_outbox`
+	where := ""
 	args := []any{}
 	if status != "" {
-		query += " WHERE status = $1"
+		where = " WHERE status = $1"
 		args = append(args, status)
 	}
-	query += " ORDER BY updated_at DESC LIMIT 200"
+	var total int
+	if err := h.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM async_outbox"+where, args...).Scan(&total); err != nil {
+		http.Error(w, "count tasks: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	offset := (page - 1) * pageSize
+	query := "SELECT task_id, kind, status, attempts, max_attempts, available_at, COALESCE(last_error, ''), created_at, updated_at FROM async_outbox" + where + fmt.Sprintf(" ORDER BY updated_at DESC LIMIT $%d OFFSET $%d", len(args)+1, len(args)+2)
+	args = append(args, pageSize, offset)
 	rows, err := h.db.QueryContext(ctx, query, args...)
 	if err != nil {
 		http.Error(w, "load tasks: "+err.Error(), http.StatusInternalServerError)
@@ -453,7 +489,51 @@ func (h *adminHandler) handleTasks(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	writeJSON(w, tasks)
+	writeJSON(w, adminTaskPage{Items: tasks, Total: total, Page: page, PageSize: pageSize})
+}
+
+func (h *adminHandler) handleTask(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		w.Header().Set("Allow", http.MethodPost)
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if !h.authorized(r) {
+		http.Error(w, "admin token required", http.StatusUnauthorized)
+		return
+	}
+	rawTaskPath := strings.TrimPrefix(r.URL.Path, "/admin/api/tasks/")
+	if !strings.HasSuffix(rawTaskPath, "/retry") {
+		http.NotFound(w, r)
+		return
+	}
+	taskID, err := url.PathUnescape(strings.TrimSuffix(rawTaskPath, "/retry"))
+	if err != nil || taskID == "" || strings.Contains(taskID, "/") {
+		http.Error(w, "invalid task_id", http.StatusBadRequest)
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 4*time.Second)
+	defer cancel()
+	result, err := h.db.ExecContext(ctx, `
+		UPDATE async_outbox
+		SET status = 'pending', attempts = 0, available_at = NOW(), locked_until = NULL,
+		    locked_by = NULL, last_error = NULL, updated_at = NOW()
+		WHERE task_id = $1 AND status = 'dead_letter'
+	`, taskID)
+	if err != nil {
+		http.Error(w, "retry task: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		http.Error(w, "retry task: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	if affected == 0 {
+		http.Error(w, "task is not a dead letter or does not exist", http.StatusConflict)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
 
 func (h *adminHandler) handleEventDetail(w http.ResponseWriter, r *http.Request) {

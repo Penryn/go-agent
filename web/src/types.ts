@@ -110,6 +110,13 @@ export interface TaskRecord {
   available_at: string; last_error: string; created_at: string; updated_at: string
 }
 
+export interface TaskPage {
+  items: TaskRecord[]
+  total: number
+  page: number
+  page_size: number
+}
+
 export interface Relationship {
   group_id: number
   user_id: number

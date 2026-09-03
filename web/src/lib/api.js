@@ -16,9 +16,12 @@ export async function getEventDetail(eventID, token) {
     });
     return response.data;
 }
-export async function getTasks(status, token) {
-    const response = await api.get('/tasks', { params: status ? { status } : undefined, headers: token ? { Authorization: `Bearer ${token}` } : undefined });
+export async function getTasks(status, token, page = 1) {
+    const response = await api.get('/tasks', { params: { ...(status ? { status } : {}), page }, headers: token ? { Authorization: `Bearer ${token}` } : undefined });
     return response.data;
+}
+export async function retryTask(taskID, token) {
+    await api.post(`/tasks/${encodeURIComponent(taskID)}/retry`, undefined, { headers: token ? { Authorization: `Bearer ${token}` } : undefined });
 }
 export async function getMemories(groupID, status, query, token) {
     const response = await api.get('/memories', { params: { group_id: groupID || undefined, status, q: query.trim() || undefined }, headers: token ? { Authorization: `Bearer ${token}` } : undefined });
