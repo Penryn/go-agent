@@ -25,9 +25,10 @@ func Default() Config {
 			ActorIdleTTL: "30m",
 		},
 		Models: ModelsConfig{
-			Main:      ModelProviderConfig{Provider: "ark", Timeout: "20s"},
-			Vision:    ModelProviderConfig{Provider: "ark", Timeout: "15s"},
-			Embedding: ModelProviderConfig{Provider: "ark", Timeout: "15s", Dimensions: 2048},
+			Main:                ModelProviderConfig{Provider: "ark", Timeout: "20s"},
+			Vision:              ModelProviderConfig{Provider: "ark", Timeout: "15s"},
+			Embedding:           ModelProviderConfig{Provider: "ark", Timeout: "15s", Dimensions: 2048},
+			HealthProbeInterval: "10m",
 		},
 		Persona: personadomain.PersonaConfig{
 			ID:          "main",

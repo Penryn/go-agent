@@ -19,13 +19,7 @@ const loading = ref(false)
 const loadError = ref('')
 const detail = ref<EventDetail>()
 const detailVisible = computed({ get: () => !!detail.value, set: (value: boolean) => { if (!value) detail.value = undefined } })
-const counts = computed(() => {
-  const activity = rows.value
-  return {
-    message: activity.filter((item) => item.type === 'message').length,
-    decision: activity.filter((item) => item.type === 'decision').length,
-  }
-})
+const counts = ref({ message: 0, decision: 0 })
 
 async function load(nextPage = page.value) {
   loading.value = true
@@ -35,6 +29,7 @@ async function load(nextPage = page.value) {
     const result = await getActivity(selectedGroup.value, windowMinutes.value, filter.value, page.value, store.token)
     rows.value = result.items
     total.value = result.total
+    counts.value = { message: result.message_count, decision: result.decision_count }
   } catch (error) {
     loadError.value = error instanceof Error ? error.message : String(error)
   } finally {

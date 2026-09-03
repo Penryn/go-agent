@@ -180,6 +180,8 @@ export interface Activity {
 export interface ActivityPage {
   items: Activity[]
   total: number
+  message_count: number
+  decision_count: number
   page: number
   page_size: number
 }

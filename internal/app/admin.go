@@ -34,6 +34,7 @@ type adminDashboard struct {
 	connected         func() bool
 	mainModelReady    bool
 	vectorSearchReady bool
+	health            *capabilityHealth
 }
 
 type adminSnapshot struct {
@@ -200,10 +201,12 @@ type adminActivity struct {
 }
 
 type adminActivityPage struct {
-	Items    []adminActivity `json:"items"`
-	Total    int             `json:"total"`
-	Page     int             `json:"page"`
-	PageSize int             `json:"page_size"`
+	Items         []adminActivity `json:"items"`
+	Total         int             `json:"total"`
+	MessageCount  int             `json:"message_count"`
+	DecisionCount int             `json:"decision_count"`
+	Page          int             `json:"page"`
+	PageSize      int             `json:"page_size"`
 }
 
 type adminEventDetail struct {
@@ -307,8 +310,8 @@ type adminMetricSeries struct {
 	Points []adminMetricPoint `json:"points"`
 }
 
-func newAdminHandler(db *sql.DB, state ports.RuntimeStateStore, facts ports.PersonaFactStore, definition personadomain.PersonaDefinition, cfg config.Config, connected func() bool, mcp *toolsvc.MCPManager, mainModelReady, vectorSearchReady bool) http.Handler {
-	dashboard := &adminDashboard{db: db, state: state, facts: facts, definition: definition, cfg: cfg, connected: connected, mainModelReady: mainModelReady, vectorSearchReady: vectorSearchReady}
+func newAdminHandler(db *sql.DB, state ports.RuntimeStateStore, facts ports.PersonaFactStore, definition personadomain.PersonaDefinition, cfg config.Config, connected func() bool, mcp *toolsvc.MCPManager, mainModelReady, vectorSearchReady bool, health *capabilityHealth) http.Handler {
+	dashboard := &adminDashboard{db: db, state: state, facts: facts, definition: definition, cfg: cfg, connected: connected, mainModelReady: mainModelReady, vectorSearchReady: vectorSearchReady, health: health}
 	assets, _ := fs.Sub(adminAssets, "adminui/dist")
 	return &adminHandler{
 		token:      strings.TrimSpace(cfg.Server.AdminToken),
@@ -999,6 +1002,12 @@ func (d *adminDashboard) loadCapabilityHealth(ctx context.Context) (string, stri
 	mainStatus := capabilityStatus(d.mainModelReady, "not_configured")
 	vectorStatus := capabilityStatus(d.vectorSearchReady, "disabled")
 	var mainCheckedAt, vectorCheckedAt sql.NullTime
+	if d.health != nil {
+		mainStatus, vectorStatus, mainChecked, vectorChecked := d.health.snapshot()
+		if mainChecked != nil || vectorChecked != nil {
+			return mainStatus, vectorStatus, mainChecked, vectorChecked, nil
+		}
+	}
 	var mainError bool
 	err := d.db.QueryRowContext(ctx, `
 		SELECT created_at, (COALESCE(error, '') <> '')
@@ -1502,6 +1511,10 @@ func loadAdminActivityPage(ctx context.Context, db *sql.DB, groupID int64, windo
 	if err := db.QueryRowContext(ctx, "SELECT COUNT(*) FROM ("+source+") activity"+where, args...).Scan(&total); err != nil {
 		return adminActivityPage{}, fmt.Errorf("count activity: %w", err)
 	}
+	var messageCount, decisionCount int
+	if err := db.QueryRowContext(ctx, "SELECT COUNT(*) FILTER (WHERE type = 'message'), COUNT(*) FILTER (WHERE type = 'decision') FROM ("+source+") activity", windowMinutes, groupID).Scan(&messageCount, &decisionCount); err != nil {
+		return adminActivityPage{}, fmt.Errorf("count activity types: %w", err)
+	}
 	offset := (page - 1) * pageSize
 	query := "SELECT event_id, at, group_id, type, label, subject, detail FROM (" + source + ") activity" + where + fmt.Sprintf(" ORDER BY at DESC LIMIT $%d OFFSET $%d", len(args)+1, len(args)+2)
 	args = append(args, pageSize, offset)
@@ -1521,7 +1534,7 @@ func loadAdminActivityPage(ctx context.Context, db *sql.DB, groupID int64, windo
 	if err := rows.Err(); err != nil {
 		return adminActivityPage{}, err
 	}
-	return adminActivityPage{Items: items, Total: total, Page: page, PageSize: pageSize}, nil
+	return adminActivityPage{Items: items, Total: total, MessageCount: messageCount, DecisionCount: decisionCount, Page: page, PageSize: pageSize}, nil
 }
 
 func loadAdminEventDetail(ctx context.Context, db *sql.DB, eventID string) (adminEventDetail, error) {
@@ -1621,45 +1634,3 @@ func setAdminEventDuration(detail *adminEventDetail) {
 		detail.DurationMS = latest.Sub(detail.OccurredAt).Milliseconds()
 	}
 }
-
-const adminHTML = `<!doctype html>
-<html lang="zh-CN">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Bot 实时控制台</title>
-<link rel="stylesheet" href="/admin/theme.css">
-<style>
-:root{color-scheme:dark;--bg:#0b0d12;--panel:#131720;--line:#252b38;--muted:#8d97a8;--text:#f3f5f7;--accent:#8bf0c8;--purple:#a99cff;--amber:#f4c675;--red:#ff7f8d}*{box-sizing:border-box}body{margin:0;background:radial-gradient(circle at 12% 0,#19232a 0,transparent 32%),var(--bg);font:14px/1.55 ui-sans-serif,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;color:var(--text)}button,input,select{font:inherit}.shell{max-width:1480px;margin:auto;padding:26px}.top{display:flex;align-items:center;justify-content:space-between;gap:20px;margin-bottom:22px}.brand{display:flex;align-items:center;gap:13px}.mark{width:42px;height:42px;border-radius:14px;display:grid;place-items:center;background:linear-gradient(135deg,var(--accent),var(--purple));color:#07110e;font-weight:900;font-size:20px}.brand h1{font-size:18px;margin:0}.brand p{margin:1px 0 0;color:var(--muted);font-size:12px}.tools{display:flex;align-items:center;gap:10px}.live{display:flex;align-items:center;gap:7px;color:var(--accent);font-size:12px}.dot{width:7px;height:7px;border-radius:50%;background:var(--accent);box-shadow:0 0 14px var(--accent)}select,.tokenbox input{background:#11151d;border:1px solid var(--line);color:var(--text);border-radius:10px;padding:9px 12px}.stats{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:12px}.stat,.panel{background:color-mix(in srgb,var(--panel) 94%,transparent);border:1px solid var(--line);border-radius:16px}.stat{padding:17px}.stat small{color:var(--muted)}.stat strong{display:block;font-size:27px;margin-top:3px;letter-spacing:-1px}.grid{display:grid;grid-template-columns:1fr 1.25fr;gap:12px}.panel{padding:18px;min-width:0}.wide{grid-column:1/-1}.panelhead{display:flex;align-items:center;justify-content:space-between;margin-bottom:15px}.panelhead h2{font-size:14px;margin:0}.panelhead span{font-size:11px;color:var(--muted)}.persona{display:flex;gap:15px;align-items:flex-start}.avatar{flex:none;width:62px;height:62px;border-radius:20px;display:grid;place-items:center;background:linear-gradient(145deg,#283237,#171b27);font-size:24px;border:1px solid #3a4450}.persona h3{font-size:20px;margin:0 0 3px}.persona p{color:var(--muted);margin:0;max-width:640px}.pills{display:flex;gap:7px;flex-wrap:wrap;margin-top:12px}.pill,.tag{padding:4px 8px;border-radius:999px;background:#1b222c;color:#c9d0d9;font-size:11px;border:1px solid #2a3340}.pill b{color:var(--accent);font-weight:600}.facts{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;margin-top:16px}.fact{padding:10px 11px;border-radius:11px;background:#0e1219}.fact small{display:block;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.fact div{margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.relations{display:grid;gap:9px;max-height:390px;overflow:auto}.relation{display:grid;grid-template-columns:minmax(110px,1fr) 1.4fr auto;align-items:center;gap:12px;padding:10px 0;border-bottom:1px solid var(--line)}.relation:last-child{border:0}.name{min-width:0}.name b,.name small{display:block;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.name small{color:var(--muted)}.bar{height:6px;border-radius:9px;background:#262d37;overflow:hidden}.bar i{display:block;height:100%;background:linear-gradient(90deg,var(--purple),var(--accent));border-radius:9px}.score{font-variant-numeric:tabular-nums;color:var(--accent)}.tabs{display:flex;gap:7px}.tabs button{border:1px solid var(--line);color:var(--muted);background:transparent;border-radius:9px;padding:6px 10px;cursor:pointer}.tabs button.on{color:#0c1411;background:var(--accent);border-color:var(--accent)}.feed{display:grid;gap:8px;max-height:520px;overflow:auto}.entry{display:grid;grid-template-columns:82px 76px minmax(110px,.6fr) 2fr;gap:10px;align-items:start;padding:10px 0;border-bottom:1px solid var(--line)}.entry time,.entry small{color:var(--muted)}.entry .detail{color:#d8dde4;white-space:pre-wrap;overflow-wrap:anywhere}.badge{justify-self:start;padding:2px 7px;border-radius:6px;font-size:10px;background:#222a35;color:#bfc7d2}.badge.decision{background:#2b2741;color:#c9c0ff}.badge.task{background:#352d1f;color:#f2cc87}.memories{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px;max-height:520px;overflow:auto}.memory{border:1px solid var(--line);border-radius:12px;padding:12px;background:#0f131a}.memory .meta{display:flex;justify-content:space-between;gap:8px;color:var(--muted);font-size:10px}.memory h4{margin:9px 0 4px;font-size:13px}.memory p{margin:0;color:#c8cfd8;display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden}.empty{padding:38px 12px;text-align:center;color:var(--muted)}.tokenbox{position:fixed;inset:0;background:#080a0dcc;backdrop-filter:blur(10px);display:none;place-items:center;z-index:5}.tokenbox.show{display:grid}.tokenbox form{width:min(390px,calc(100vw - 32px));padding:24px;background:var(--panel);border:1px solid var(--line);border-radius:18px}.tokenbox h2{margin:0 0 5px}.tokenbox p{color:var(--muted);margin:0 0 16px}.tokenbox input{width:100%;margin-bottom:10px}.tokenbox button{width:100%;border:0;border-radius:10px;padding:10px;background:var(--accent);color:#07110e;font-weight:700;cursor:pointer}.error{color:var(--red);font-size:12px;margin-top:10px}@media(max-width:900px){.stats{grid-template-columns:repeat(2,1fr)}.grid{grid-template-columns:1fr}.wide{grid-column:auto}.memories{grid-template-columns:1fr 1fr}.entry{grid-template-columns:70px 65px 1fr}.entry .detail{grid-column:2/-1}}@media(max-width:560px){.shell{padding:16px}.top{align-items:flex-start}.tools{align-items:flex-end;flex-direction:column}.memories,.facts{grid-template-columns:1fr}.relation{grid-template-columns:1fr 1fr auto}.entry{grid-template-columns:62px 1fr}.entry .detail{grid-column:1/-1}.entry .subject{display:none}}
-</style>
-</head>
-<body>
-<main class="shell">
-  <header class="top"><div class="brand"><div class="mark" id="avatarTop">芙</div><div><span class="eyebrow">FUFU OBSERVATORY · LIVE</span><h1>Bot 实时控制台</h1><p id="subtitle">身份、记忆与群聊关系</p></div></div><div class="tools"><div class="live"><i class="dot"></i><span id="updated">连接中</span></div><select id="group" aria-label="选择群聊"></select></div></header>
-  <section class="stats"><article class="stat"><small>群聊</small><strong id="groups">—</strong></article><article class="stat"><small>群友</small><strong id="members">—</strong></article><article class="stat"><small>有效记忆</small><strong id="memoryCount">—</strong></article><article class="stat"><small>后台任务</small><strong id="tasks">—</strong></article></section>
-  <section class="grid">
-    <article class="panel"><div class="panelhead"><h2>此刻身份</h2><span id="mode"></span></div><div id="persona"></div></article>
-    <article class="panel"><div class="panelhead"><h2>群友好感度</h2><span>主观关系状态</span></div><div class="relations" id="relations"></div></article>
-    <article class="panel wide"><div class="panelhead"><h2>实时记录</h2><div class="tabs"><button class="on" data-tab="activity">运行日志</button><button data-tab="memory">记忆</button></div></div><div id="activity" class="feed"></div><div id="memories" class="memories" hidden></div></article>
-  </section>
-</main>
-<div class="tokenbox" id="tokenbox"><form id="tokenform"><h2>访问令牌</h2><p>后台数据受保护，请输入 server.admin_token。</p><input id="token" type="password" autocomplete="current-password" placeholder="Admin token"><button>进入后台</button><div class="error" id="autherror"></div></form></div>
-<script>
-const $=id=>document.getElementById(id), esc=v=>String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
-let token=sessionStorage.getItem('bot-admin-token')||'', group=0, busy=false;
-const ago=value=>{if(!value||value.startsWith('0001-'))return '暂无';const d=new Date(value),s=Math.max(0,(Date.now()-d)/1000);if(s<60)return Math.floor(s)+' 秒前';if(s<3600)return Math.floor(s/60)+' 分钟前';if(s<86400)return Math.floor(s/3600)+' 小时前';return d.toLocaleDateString('zh-CN')};
-const mood=v=>({happy:'开心',steady:'平稳',withdrawn:'低落',aggro:'有点烦'}[v]||v||'平稳'), energy=v=>({high:'充沛',normal:'正常',low:'偏低',tired:'疲惫'}[v]||v||'正常'), talk=v=>v<=-.2?'偏低':v>=.2?'偏高':'中性';
-function render(d){
-  $('updated').textContent='刚刚更新';$('groups').textContent=d.stats.groups;$('members').textContent=d.stats.members;$('memoryCount').textContent=d.stats.memories;$('tasks').textContent=d.stats.pending_tasks;
-  $('mode').textContent=(d.status.qq_connected?'QQ 在线':'QQ 未连接')+' · '+esc(d.status.mode);$('subtitle').textContent=(d.persona.name||'Bot')+' / '+(d.selected_group?'群 '+d.selected_group:'暂无群聊');$('avatarTop').textContent=(d.persona.name||'B').slice(0,1);
-  const old=String(group||d.selected_group||0);$('group').innerHTML=(d.groups.length?d.groups:[{group_id:0,members:0,messages:0}]).map(g=>'<option value="'+g.group_id+'">'+(g.group_id?'群 '+g.group_id:'暂无群聊')+' · '+g.members+' 人</option>').join('');$('group').value=old;$('group').disabled=!d.groups.length;group=Number($('group').value)||0;
-  const p=d.persona, facts=(p.facts||[]).map(f=>'<div class="fact"><small>'+esc(f.key)+'</small><div title="'+esc(f.value)+'">'+esc(f.value)+'</div></div>').join('');
-  $('persona').innerHTML='<div class="persona"><div class="avatar">'+esc((p.name||'B').slice(0,1))+'</div><div><h3>'+esc(p.name)+'</h3><p>'+esc(p.description)+'</p><div class="pills"><span class="pill">情绪 <b>'+esc(mood(p.mood))+'</b></span><span class="pill">精力 <b>'+esc(energy(p.energy))+'</b></span><span class="pill">发言倾向 <b>'+talk(p.talk_bias||0)+'</b></span><span class="pill">状态 <b>'+esc(p.runtime.state||'observing')+'</b></span></div></div></div><div class="facts">'+facts+'</div>';
-  $('relations').innerHTML=(d.relationships||[]).map(r=>'<div class="relation"><div class="name"><b>'+esc(r.name)+'</b><small>'+esc(r.user_id)+' · '+r.message_count+' 条消息</small></div><div><div class="bar"><i style="width:'+Math.round(r.affinity*100)+'%"></i></div><small>熟悉度 '+Number(r.familiarity).toFixed(2)+'</small></div><div class="score">'+Math.round(r.affinity*100)+'</div></div>').join('')||'<div class="empty">还没有形成群友关系</div>';
-  $('activity').innerHTML=(d.activity||[]).map(a=>'<div class="entry"><time>'+ago(a.at)+'</time><span class="badge '+esc(a.type)+'">'+esc(a.type==='message'?'消息':'决策')+'</span><div class="subject"><b>'+esc(a.subject||a.label)+'</b><br><small>'+esc(a.label)+(a.group_id?' · 群 '+a.group_id:'')+'</small></div><div class="detail">'+esc(a.detail||'—')+'</div></div>').join('')||'<div class="empty">暂无运行记录</div>';
-  $('memories').innerHTML=(d.memories||[]).map(m=>'<article class="memory"><div class="meta"><span class="tag">'+esc(m.type)+'</span><span>'+ago(m.created_at)+'</span></div><h4>'+esc(m.subject||m.scope)+'</h4><p>'+esc(m.content)+'</p></article>').join('')||'<div class="empty">暂无有效记忆</div>';
-}
-async function load(){if(busy)return;busy=true;try{const headers=token?{Authorization:'Bearer '+token}:{};const url='/admin/api/snapshot'+(group?'?group_id='+group:'');const r=await fetch(url,{headers});if(r.status===401){$('tokenbox').classList.add('show');return}if(!r.ok)throw new Error(await r.text());render(await r.json());$('autherror').textContent='';$('tokenbox').classList.remove('show')}catch(e){$('updated').textContent='连接异常';$('autherror').textContent=String(e.message||e)}finally{busy=false}}
-$('group').addEventListener('change',()=>{group=Number($('group').value)||0;load()});$('tokenform').addEventListener('submit',e=>{e.preventDefault();token=$('token').value.trim();sessionStorage.setItem('bot-admin-token',token);load()});document.querySelectorAll('[data-tab]').forEach(b=>b.addEventListener('click',()=>{document.querySelectorAll('[data-tab]').forEach(x=>x.classList.toggle('on',x===b));const memory=b.dataset.tab==='memory';$('activity').hidden=memory;$('memories').hidden=!memory}));load();setInterval(load,3000);
-</script>
-</body></html>`

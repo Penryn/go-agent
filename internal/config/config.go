@@ -60,6 +60,8 @@ type ModelsConfig struct {
 	Main      ModelProviderConfig `yaml:"main"`
 	Vision    ModelProviderConfig `yaml:"vision"`
 	Embedding ModelProviderConfig `yaml:"embedding"`
+	// HealthProbeInterval controls low-frequency provider probes. Empty/0 disables probes.
+	HealthProbeInterval string `yaml:"health_probe_interval"`
 }
 
 type MemoryConfig struct {

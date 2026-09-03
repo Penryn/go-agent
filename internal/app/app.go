@@ -345,7 +345,15 @@ func New(ctx context.Context, cfg config.Config) (*App, error) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", app.handleHealth)
 	mainModelReady := strings.TrimSpace(cfg.Models.Main.APIKey) != "" && strings.TrimSpace(cfg.Models.Main.Model) != ""
-	adminHandler := newAdminHandler(stores.db, stores.state, stores.personaFacts, personaDefinition, cfg, app.qqConnected, mcpManager, mainModelReady, vectorGraph.memory != nil)
+	vectorSearchReady := vectorGraph.memory != nil
+	health := newCapabilityHealth(mainModelReady, vectorSearchReady)
+	adminHandler := newAdminHandler(stores.db, stores.state, stores.personaFacts, personaDefinition, cfg, app.qqConnected, mcpManager, mainModelReady, vectorSearchReady, health)
+	probeInterval := textutil.ParseDurationOr(cfg.Models.HealthProbeInterval, 0)
+	if probeInterval > 0 && (mainModelReady || vectorSearchReady) {
+		sched.Register("provider-health-probe", probeInterval, func(jobCtx context.Context) error {
+			return probeProviders(jobCtx, modelFactory, health, mainModelReady, vectorSearchReady)
+		})
+	}
 	mux.Handle("/admin", adminHandler)
 	mux.Handle("/admin/", adminHandler)
 

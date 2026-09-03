@@ -1,5 +1,6 @@
 <script setup lang="ts">
-import { onMounted, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
+import { onBeforeRouteLeave } from 'vue-router'
 import { Plus, Delete, Refresh } from '@element-plus/icons-vue'
 import { storeToRefs } from 'pinia'
 import { ElMessage, ElMessageBox } from 'element-plus'
@@ -12,15 +13,26 @@ const { token } = storeToRefs(store)
 const servers = ref<MCPServerConfig[]>([])
 const loading = ref(false)
 const saving = ref(false)
+const savedFingerprint = ref('')
+const dirty = computed(() => JSON.stringify(servers.value) !== savedFingerprint.value)
 
 function blankServer(): MCPServerConfig {
   return { name: '', enabled: true, required: false, transport: 'stdio', command: '', args: [], url: '', tools: [], timeout: '15s' }
 }
 
-async function load() {
+async function load(force = false) {
+  if (force && dirty.value) {
+    try {
+      await ElMessageBox.confirm('当前有未保存的 MCP 修改，刷新会丢失这些修改。', '确认刷新', { type: 'warning', confirmButtonText: '刷新', cancelButtonText: '取消' })
+    } catch {
+      return
+    }
+  }
   loading.value = true
   try {
-    servers.value = (await getMCPConfig(token.value)).servers
+    const result = await getMCPConfig(token.value)
+    servers.value = result.servers
+    savedFingerprint.value = JSON.stringify(servers.value)
   } catch (error) {
     ElMessage.error(`读取 MCP 配置失败：${error instanceof Error ? error.message : String(error)}`)
   } finally {
@@ -28,15 +40,35 @@ async function load() {
   }
 }
 
+function validate() {
+  const seen = new Set<string>()
+  for (const server of servers.value) {
+    if (!server.enabled) continue
+    const name = server.name.trim()
+    if (!name) return '启用的服务必须填写名称'
+    if (seen.has(name)) return `服务名称重复：${name}`
+    seen.add(name)
+    if (server.transport === 'stdio' && !server.command.trim()) return `${name} 必须填写命令`
+    if (server.transport === 'http' && !server.url.trim()) return `${name} 必须填写 URL`
+  }
+  return ''
+}
+
 function remove(index: number) {
   servers.value.splice(index, 1)
 }
 
 async function save() {
+  const validationError = validate()
+  if (validationError) {
+    ElMessage.error(validationError)
+    return
+  }
   saving.value = true
   try {
     const result = await updateMCPConfig(servers.value, token.value)
     servers.value = result.servers
+    savedFingerprint.value = JSON.stringify(servers.value)
     ElMessage.success('MCP 配置已应用')
   } catch (error) {
     ElMessage.error(`应用失败，旧配置仍在运行：${error instanceof Error ? error.message : String(error)}`)
@@ -51,13 +83,29 @@ async function confirmSave() {
 }
 
 onMounted(load)
+function beforeUnload(event: BeforeUnloadEvent) {
+  if (!dirty.value) return
+  event.preventDefault()
+  event.returnValue = ''
+}
+onMounted(() => window.addEventListener('beforeunload', beforeUnload))
+onBeforeUnmount(() => window.removeEventListener('beforeunload', beforeUnload))
+onBeforeRouteLeave(async () => {
+  if (!dirty.value) return true
+  try {
+    await ElMessageBox.confirm('当前有未保存的 MCP 修改，离开页面会丢失这些修改。', '确认离开', { type: 'warning', confirmButtonText: '离开', cancelButtonText: '留下' })
+    return true
+  } catch {
+    return false
+  }
+})
 </script>
 
 <template>
   <section class="glass-panel page-panel mcp-page">
     <div class="page-panel-head">
       <div><span>TOOL CONNECTIONS</span><h2>MCP 工具</h2><p>配置只影响 MCP；数据库、模型和 QQ 连接仍由启动配置管理。</p></div>
-      <div class="mcp-actions"><el-button :icon="Refresh" :loading="loading" @click="load">刷新</el-button><el-button type="primary" :loading="saving" @click="confirmSave">应用配置</el-button></div>
+      <div class="mcp-actions"><el-button :icon="Refresh" :loading="loading" @click="load(true)">刷新</el-button><el-button type="primary" :disabled="!dirty" :loading="saving" @click="confirmSave">应用配置</el-button></div>
     </div>
 
     <div class="mcp-toolbar"><span>{{ servers.length }} 个服务</span><el-button link type="primary" :icon="Plus" @click="servers.push(blankServer())">添加服务</el-button></div>

@@ -21,6 +21,8 @@ runtime:
   actor_idle_ttl: 30m
 
 models:
+  # 供应商主动探活间隔；会产生真实请求和少量 token，设为 0 关闭。
+  health_probe_interval: 10m
   # Main Persona Agent 使用的主模型。
   main:
     # 未指定 provider 时运行时默认按 ark 处理；也可使用 openai 接入 OpenAI 兼容 API。
