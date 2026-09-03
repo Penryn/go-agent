@@ -2,11 +2,12 @@
 import { computed } from 'vue'
 import { storeToRefs } from 'pinia'
 import { useDashboardStore } from '@/stores/dashboard'
-import { activityText, energyText, moodText, relativeTime, talkBiasText } from '@/lib/format'
+import { energyText, moodText, talkBiasText } from '@/lib/format'
 
 const store = useDashboardStore()
 const { snapshot, loading } = storeToRefs(store)
 const persona = computed(() => snapshot.value?.persona)
+const groups = computed(() => [...(snapshot.value?.groups || [])].sort((a, b) => b.messages - a.messages))
 const stats = computed(() => [
   { label: '活跃群聊', value: snapshot.value?.stats.groups ?? 0, code: 'GROUPS', tone: 'mint' },
   { label: '已识别群友', value: snapshot.value?.stats.members ?? 0, code: 'PEOPLE', tone: 'violet' },
@@ -47,27 +48,27 @@ const stats = computed(() => [
         </div>
       </article>
 
-      <article class="glass-panel relation-panel">
-        <div class="panel-title"><div><span>RELATIONSHIP</span><h2>群友好感度</h2></div><RouterLink to="/relations">查看全部</RouterLink></div>
-        <div v-if="snapshot?.relationships.length" class="relation-list">
-          <div v-for="(item, index) in snapshot.relationships.slice(0, 6)" :key="item.user_id" class="relation-row">
-            <div class="rank">{{ String(index + 1).padStart(2, '0') }}</div>
-            <div class="member"><strong>{{ item.name }}</strong><span>{{ item.message_count }} 条消息 · {{ relativeTime(item.last_interact_at) }}</span></div>
-            <div class="affinity"><el-progress :percentage="Math.round(item.affinity * 100)" :show-text="false" :stroke-width="5" /><span>{{ Math.round(item.affinity * 100) }}</span></div>
-          </div>
+      <article class="glass-panel runtime-panel">
+        <div class="panel-title"><div><span>RUNTIME HEALTH</span><h2>运行体征</h2></div><el-tag :type="snapshot?.status.qq_connected ? 'success' : 'danger'" effect="plain">{{ snapshot?.status.qq_connected ? '正常' : '需检查' }}</el-tag></div>
+        <div class="health-status"><span class="health-dot" :data-online="snapshot?.status.qq_connected === true" /><div><strong>{{ snapshot?.status.qq_connected ? 'QQ 连接稳定' : 'QQ 连接中断' }}</strong><span>{{ snapshot?.status.mode || '—' }} · 账号 {{ snapshot?.status.self_id || '—' }}</span></div></div>
+        <div class="runtime-metrics">
+          <div><span>当前状态</span><strong>{{ persona?.runtime.state || '—' }}</strong></div>
+          <div><span>近 10 分钟发言</span><strong>{{ persona?.runtime.replies_last_10min ?? 0 }}</strong></div>
+          <div><span>兴趣标签</span><strong>{{ persona?.interests.length ?? 0 }}</strong></div>
         </div>
-        <el-empty v-else description="还没有形成群友关系" :image-size="70" />
+        <div class="runtime-note">首页只保留健康信号；详细决策与任务请到运行记录查看。</div>
       </article>
 
-      <article class="glass-panel activity-panel">
-        <div class="panel-title"><div><span>ACTIVITY</span><h2>最近运行记录</h2></div><RouterLink to="/activity">打开时间线</RouterLink></div>
-        <div v-if="snapshot?.activity.length" class="activity-stream">
-          <div v-for="item in snapshot.activity.slice(0, 8)" :key="`${item.type}-${item.at}-${item.subject}`" class="activity-row">
-            <i :data-type="item.type" /><time>{{ relativeTime(item.at) }}</time><el-tag size="small" effect="plain">{{ activityText(item.type) }}</el-tag>
-            <div><strong>{{ item.subject || item.label }}</strong><span>{{ item.detail || '—' }}</span></div>
+      <article class="glass-panel groups-panel">
+        <div class="panel-title"><div><span>GROUP COVERAGE</span><h2>群聊状态</h2></div><span class="panel-hint">按消息量排序</span></div>
+        <div v-if="groups.length" class="group-list">
+          <div v-for="group in groups" :key="group.group_id" class="group-row">
+            <div class="group-id"><span>群</span><strong>{{ group.group_id }}</strong></div>
+            <div class="group-topic"><strong>{{ group.active_topic || '暂无活跃话题' }}</strong><span>{{ group.members }} 位群友 · {{ group.messages }} 条消息</span></div>
+            <div class="group-load"><div class="load-track"><i :style="{ width: `${Math.min(100, Math.max(8, group.messages / Math.max(1, groups[0]?.messages || 1) * 100))}%` }" /></div><span>{{ group.messages }}</span></div>
           </div>
         </div>
-        <el-empty v-else description="暂无运行记录" :image-size="70" />
+        <el-empty v-else description="还没有接入群聊" :image-size="70" />
       </article>
     </section>
   </el-skeleton>
