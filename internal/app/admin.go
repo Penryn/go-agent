@@ -137,15 +137,21 @@ type adminMeme struct {
 }
 
 type adminTask struct {
-	ID          string    `json:"id"`
-	Kind        string    `json:"kind"`
-	Status      string    `json:"status"`
-	Attempts    int       `json:"attempts"`
-	MaxAttempts int       `json:"max_attempts"`
-	AvailableAt time.Time `json:"available_at"`
-	LastError   string    `json:"last_error"`
-	CreatedAt   time.Time `json:"created_at"`
-	UpdatedAt   time.Time `json:"updated_at"`
+	ID          string           `json:"id"`
+	Kind        string           `json:"kind"`
+	Status      string           `json:"status"`
+	Attempts    int              `json:"attempts"`
+	MaxAttempts int              `json:"max_attempts"`
+	AvailableAt time.Time        `json:"available_at"`
+	LastError   string           `json:"last_error"`
+	CreatedAt   time.Time        `json:"created_at"`
+	UpdatedAt   time.Time        `json:"updated_at"`
+	Context     adminTaskContext `json:"context"`
+}
+
+type adminTaskContext struct {
+	GroupID     int64    `json:"group_id,omitempty"`
+	PayloadKeys []string `json:"payload_keys"`
 }
 
 type adminTaskPage struct {
@@ -565,7 +571,7 @@ func (h *adminHandler) handleTasks(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	offset := (page - 1) * pageSize
-	query := "SELECT task_id, kind, status, attempts, max_attempts, available_at, COALESCE(last_error, ''), created_at, updated_at FROM async_outbox" + where + fmt.Sprintf(" ORDER BY updated_at DESC LIMIT $%d OFFSET $%d", len(args)+1, len(args)+2)
+	query := "SELECT task_id, kind, status, attempts, max_attempts, available_at, COALESCE(last_error, ''), created_at, updated_at, payload_json FROM async_outbox" + where + fmt.Sprintf(" ORDER BY updated_at DESC LIMIT $%d OFFSET $%d", len(args)+1, len(args)+2)
 	args = append(args, pageSize, offset)
 	rows, err := h.db.QueryContext(ctx, query, args...)
 	if err != nil {
@@ -576,10 +582,12 @@ func (h *adminHandler) handleTasks(w http.ResponseWriter, r *http.Request) {
 	tasks := []adminTask{}
 	for rows.Next() {
 		var task adminTask
-		if err := rows.Scan(&task.ID, &task.Kind, &task.Status, &task.Attempts, &task.MaxAttempts, &task.AvailableAt, &task.LastError, &task.CreatedAt, &task.UpdatedAt); err != nil {
+		var payload json.RawMessage
+		if err := rows.Scan(&task.ID, &task.Kind, &task.Status, &task.Attempts, &task.MaxAttempts, &task.AvailableAt, &task.LastError, &task.CreatedAt, &task.UpdatedAt, &payload); err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
+		task.Context = summarizeTaskPayload(payload)
 		tasks = append(tasks, task)
 	}
 	if err := rows.Err(); err != nil {
@@ -587,6 +595,26 @@ func (h *adminHandler) handleTasks(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, adminTaskPage{Items: tasks, Total: total, Page: page, PageSize: pageSize})
+}
+
+func summarizeTaskPayload(payload []byte) adminTaskContext {
+	var fields map[string]json.RawMessage
+	if json.Unmarshal(payload, &fields) != nil {
+		return adminTaskContext{PayloadKeys: []string{}}
+	}
+	keys := make([]string, 0, len(fields))
+	for key := range fields {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	context := adminTaskContext{PayloadKeys: keys}
+	if raw, ok := fields["group_id"]; ok {
+		var groupID int64
+		if json.Unmarshal(raw, &groupID) == nil && groupID > 0 {
+			context.GroupID = groupID
+		}
+	}
+	return context
 }
 
 func (h *adminHandler) handleTask(w http.ResponseWriter, r *http.Request) {

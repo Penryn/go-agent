@@ -2,12 +2,26 @@ package app
 
 import (
 	"context"
+	"encoding/json"
 	"io/fs"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 )
+
+func TestSummarizeTaskPayload(t *testing.T) {
+	got := summarizeTaskPayload([]byte(`{"text":"hidden","group_id":42,"z":true,"a":1}`))
+	if got.GroupID != 42 || len(got.PayloadKeys) != 4 || got.PayloadKeys[0] != "a" || got.PayloadKeys[3] != "z" {
+		t.Fatalf("unexpected task context: %+v", got)
+	}
+	if _, err := json.Marshal(got); err != nil {
+		t.Fatal(err)
+	}
+	if invalid := summarizeTaskPayload([]byte(`not-json`)); len(invalid.PayloadKeys) != 0 || invalid.GroupID != 0 {
+		t.Fatalf("unexpected invalid payload summary: %+v", invalid)
+	}
+}
 
 func TestAdminHandlerServesVueAppAndProtectsData(t *testing.T) {
 	assets, err := fs.Sub(adminAssets, "adminui/dist")

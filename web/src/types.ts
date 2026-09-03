@@ -115,6 +115,7 @@ export interface MemeRecord {
 export interface TaskRecord {
   id: string; kind: string; status: string; attempts: number; max_attempts: number
   available_at: string; last_error: string; created_at: string; updated_at: string
+  context: { group_id?: number; payload_keys: string[] }
 }
 
 export interface TaskPage {
