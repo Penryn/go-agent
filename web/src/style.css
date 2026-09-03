@@ -1079,6 +1079,13 @@ input {
   background: rgba(255, 255, 255, 0.02);
 }
 
+.monitor-trend { margin-bottom: 8px; }
+.trend-list { display: grid; gap: 8px; margin-top: 16px; }
+.trend-row { display: grid; grid-template-columns: 48px minmax(80px, 1fr) minmax(180px, .8fr); align-items: center; gap: 10px; min-height: 22px; }
+.trend-row time, .trend-row > span { color: var(--muted); font-size: 10px; }
+.trend-track { height: 7px; overflow: hidden; border-radius: 8px; background: rgba(255, 255, 255, 0.07); }
+.trend-track i { display: block; height: 100%; border-radius: inherit; background: var(--mint); }
+
 .monitor-detail h3 {
   margin: 3px 0 0;
   font-size: 15px;
@@ -1413,6 +1420,8 @@ input {
   .activity-stream, .fact-grid, .memory-grid { grid-template-columns: 1fr; }
   .monitor-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .monitor-panels { grid-template-columns: 1fr; }
+  .trend-row { grid-template-columns: 44px minmax(0, 1fr); }
+  .trend-row > span { grid-column: 2; }
   .group-row { grid-template-columns: 82px minmax(0, 1fr); }
   .group-load { grid-column: 2; }
   .page-panel-head { align-items: flex-start; flex-direction: column; }

@@ -1,10 +1,14 @@
 <script setup lang="ts">
-import { computed } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import { storeToRefs } from 'pinia'
 import { useDashboardStore } from '@/stores/dashboard'
+import { getMetrics } from '@/lib/api'
 
 const store = useDashboardStore()
 const { snapshot, windowMinutes } = storeToRefs(store)
+const trendPoints = ref<Awaited<ReturnType<typeof getMetrics>>['points']>([])
+const trendLoading = ref(false)
+const trendError = ref('')
 const memories = computed(() => snapshot.value?.memories || [])
 const decisions = computed(() => snapshot.value?.window_metrics.decisions ?? 0)
 const tasks = computed(() => snapshot.value?.window_metrics.tasks ?? 0)
@@ -16,6 +20,20 @@ const decisionReplyRate = computed(() => decisions.value ? (snapshot.value?.wind
 const retrieval = computed(() => snapshot.value?.retrieval || { queries: 0, queries_with_hits: 0, hit_rate: 0, avg_candidate_count: 0, result_recorded_queries: 0, selected_queries: 0, selection_rate: 0 })
 const modelUsage = computed(() => snapshot.value?.model_usage || { calls: 0, input_tokens: 0, output_tokens: 0, avg_duration_ms: 0, error_calls: 0 })
 const windowMinutesLabel = computed(() => windowMinutes.value === 1440 ? '近 24 小时' : windowMinutes.value === 60 ? '近 1 小时' : '近 10 分钟')
+const trendMaxQueries = computed(() => Math.max(1, ...trendPoints.value.map((point) => point.queries)))
+async function loadTrend() {
+  trendLoading.value = true
+  trendError.value = ''
+  try {
+    trendPoints.value = (await getMetrics(store.selectedGroup, windowMinutes.value, store.token)).points
+  } catch (error) {
+    trendError.value = error instanceof Error ? error.message : String(error)
+  } finally {
+    trendLoading.value = false
+  }
+}
+watch([() => store.selectedGroup, windowMinutes], () => { void loadTrend() })
+onMounted(loadTrend)
 </script>
 
 <template>
@@ -31,6 +49,19 @@ const windowMinutesLabel = computed(() => windowMinutes.value === 1440 ? '近 24
       <article class="monitor-card" data-tone="blue"><span>平均候选数</span><strong>{{ retrieval.avg_candidate_count.toFixed(1) }}</strong><small>{{ retrieval.queries }} 次检索</small></article>
       <article class="monitor-card" data-tone="mint"><span>召回采用率</span><strong>{{ Math.round(retrieval.selection_rate * 100) }}%</strong><small>{{ retrieval.selected_queries }} / {{ retrieval.queries_with_hits }} 次进入决策</small></article>
       <article class="monitor-card" data-tone="amber"><span>模型平均耗时</span><strong>{{ Math.round(modelUsage.avg_duration_ms) }}ms</strong><small>当前窗口 · {{ modelUsage.calls }} 次调用</small></article>
+    </section>
+
+    <section class="monitor-detail monitor-trend">
+      <div class="panel-title"><div><span>WINDOW TREND</span><h3>运行趋势</h3></div><span class="panel-hint">检索量与实际发言</span></div>
+      <el-alert v-if="trendError" :title="`读取趋势失败：${trendError}`" type="error" :closable="false" show-icon />
+      <div v-loading="trendLoading" class="trend-list">
+        <div v-for="point in trendPoints" :key="point.at" class="trend-row">
+          <time>{{ new Date(point.at).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' }) }}</time>
+          <div class="trend-track"><i :style="{ width: `${point.queries / trendMaxQueries * 100}%` }" /></div>
+          <span>{{ point.queries }} 次检索 · {{ point.replies }} 次发言 · {{ point.model_calls }} 次模型调用</span>
+        </div>
+      </div>
+      <el-empty v-if="!trendLoading && !trendPoints.length" description="暂无趋势数据" :image-size="48" />
     </section>
 
     <section class="monitor-panels">

@@ -39,6 +39,10 @@ export async function getRelationships(groupID, query, page, token) {
     const response = await api.get('/relationships', { params: { group_id: groupID || undefined, q: query.trim() || undefined, page }, headers: token ? { Authorization: `Bearer ${token}` } : undefined });
     return response.data;
 }
+export async function getMetrics(groupID, windowMinutes, token) {
+    const response = await api.get('/metrics', { params: { group_id: groupID || undefined, window_minutes: windowMinutes }, headers: token ? { Authorization: `Bearer ${token}` } : undefined });
+    return response.data;
+}
 export async function deleteMeme(memeID, token) {
     await api.delete(`/memes/${encodeURIComponent(memeID)}`, { headers: token ? { Authorization: `Bearer ${token}` } : undefined });
 }

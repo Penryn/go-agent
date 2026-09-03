@@ -1,5 +1,5 @@
 import axios from 'axios'
-import type { ActivityPage, BotSnapshot, EventDetail, MCPServerConfig, MemePage, MemoryPage, RelationshipPage, TaskPage } from '@/types'
+import type { ActivityPage, BotSnapshot, EventDetail, MCPServerConfig, MemePage, MemoryPage, MetricSeries, RelationshipPage, TaskPage } from '@/types'
 
 export const api = axios.create({
   baseURL: '/admin/api',
@@ -51,6 +51,14 @@ export async function getMemes(groupID: number, query: string, page: number, tok
 export async function getRelationships(groupID: number, query: string, page: number, token: string) {
   const response = await api.get<RelationshipPage>('/relationships', {
     params: { group_id: groupID || undefined, q: query.trim() || undefined, page },
+    headers: token ? { Authorization: `Bearer ${token}` } : undefined,
+  })
+  return response.data
+}
+
+export async function getMetrics(groupID: number, windowMinutes: number, token: string) {
+  const response = await api.get<MetricSeries>('/metrics', {
+    params: { group_id: groupID || undefined, window_minutes: windowMinutes },
     headers: token ? { Authorization: `Bearer ${token}` } : undefined,
   })
   return response.data

@@ -151,6 +151,22 @@ export interface RelationshipPage {
   page_size: number
 }
 
+export interface MetricPoint {
+  at: string
+  queries: number
+  queries_with_hits: number
+  selected_queries: number
+  decisions: number
+  replies: number
+  model_calls: number
+  model_errors: number
+  avg_duration_ms: number
+}
+
+export interface MetricSeries {
+  points: MetricPoint[]
+}
+
 export interface Activity {
   event_id: string
   at: string

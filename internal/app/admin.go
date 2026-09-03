@@ -282,6 +282,22 @@ type adminWindowMetrics struct {
 	FailedTasks     int `json:"failed_tasks"`
 }
 
+type adminMetricPoint struct {
+	At              time.Time `json:"at"`
+	Queries         int       `json:"queries"`
+	QueriesWithHits int       `json:"queries_with_hits"`
+	SelectedQueries int       `json:"selected_queries"`
+	Decisions       int       `json:"decisions"`
+	Replies         int       `json:"replies"`
+	ModelCalls      int       `json:"model_calls"`
+	ModelErrors     int       `json:"model_errors"`
+	AvgDurationMS   float64   `json:"avg_duration_ms"`
+}
+
+type adminMetricSeries struct {
+	Points []adminMetricPoint `json:"points"`
+}
+
 func newAdminHandler(db *sql.DB, state ports.RuntimeStateStore, facts ports.PersonaFactStore, definition personadomain.PersonaDefinition, cfg config.Config, connected func() bool, mcp *toolsvc.MCPManager, mainModelReady, vectorSearchReady bool) http.Handler {
 	dashboard := &adminDashboard{db: db, state: state, facts: facts, definition: definition, cfg: cfg, connected: connected, mainModelReady: mainModelReady, vectorSearchReady: vectorSearchReady}
 	assets, _ := fs.Sub(adminAssets, "adminui/dist")
@@ -339,6 +355,8 @@ func (h *adminHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.handleTasks(w, r)
 	case "/admin/api/activity":
 		h.handleActivity(w, r)
+	case "/admin/api/metrics":
+		h.handleMetrics(w, r)
 	case "/admin/api/memories":
 		h.handleMemories(w, r)
 	default:
@@ -400,6 +418,44 @@ func (h *adminHandler) handleActivity(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, result)
+}
+
+func (h *adminHandler) handleMetrics(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		w.Header().Set("Allow", http.MethodGet)
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if !h.authorized(r) {
+		http.Error(w, "admin token required", http.StatusUnauthorized)
+		return
+	}
+	groupID := int64(0)
+	if raw := strings.TrimSpace(r.URL.Query().Get("group_id")); raw != "" {
+		parsed, err := strconv.ParseInt(raw, 10, 64)
+		if err != nil || parsed < 0 {
+			http.Error(w, "invalid group_id", http.StatusBadRequest)
+			return
+		}
+		groupID = parsed
+	}
+	windowMinutes := 1440
+	if raw := strings.TrimSpace(r.URL.Query().Get("window_minutes")); raw != "" {
+		parsed, err := strconv.Atoi(raw)
+		if err != nil || !slices.Contains([]int{10, 60, 1440}, parsed) {
+			http.Error(w, "invalid window_minutes", http.StatusBadRequest)
+			return
+		}
+		windowMinutes = parsed
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 4*time.Second)
+	defer cancel()
+	series, err := loadAdminMetricSeries(ctx, h.db, groupID, windowMinutes)
+	if err != nil {
+		http.Error(w, "load metrics: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, series)
 }
 
 func parseAdminPage(r *http.Request) (int, int, error) {
@@ -1017,6 +1073,61 @@ func (d *adminDashboard) loadWindowMetrics(ctx context.Context, groupID int64, w
 		return metrics, fmt.Errorf("window metrics: %w", err)
 	}
 	return metrics, nil
+}
+
+func loadAdminMetricSeries(ctx context.Context, db *sql.DB, groupID int64, windowMinutes int) (adminMetricSeries, error) {
+	bucket, interval := "hour", "1 hour"
+	if windowMinutes <= 60 {
+		bucket, interval = "minute", "1 minute"
+	}
+	start := time.Now().Add(-time.Duration(windowMinutes) * time.Minute)
+	rows, err := db.QueryContext(ctx, `
+		WITH buckets AS (
+			SELECT generate_series(date_trunc($3, $1::timestamptz), date_trunc($3, NOW()), $4::interval) AS at
+		), retrieval AS (
+			SELECT date_trunc($3, created_at) AS at, COUNT(*) AS queries,
+			       COUNT(*) FILTER (WHERE jsonb_array_length(hit_memory_ids_json) > 0) AS hits,
+			       COUNT(*) FILTER (WHERE jsonb_array_length(selected_memory_ids_json) > 0) AS selected
+			FROM retrieval_traces WHERE created_at >= $1 AND ($2 = 0 OR group_id = $2)
+			GROUP BY 1
+		), decisions AS (
+			SELECT date_trunc($3, created_at) AS at, COUNT(*) AS decisions,
+			       COUNT(*) FILTER (WHERE outcome = 'sent') AS replies
+			FROM thought_records WHERE created_at >= $1 AND ($2 = 0 OR group_id = $2)
+			GROUP BY 1
+		), model AS (
+			SELECT date_trunc($3, created_at) AS at, COUNT(*) AS calls,
+			       COUNT(*) FILTER (WHERE error <> '') AS errors,
+			       AVG(duration_ms) AS avg_duration
+			FROM model_usage_records WHERE created_at >= $1 AND ($2 = 0 OR group_id = $2)
+			GROUP BY 1
+		)
+		SELECT b.at, COALESCE(r.queries, 0), COALESCE(r.hits, 0), COALESCE(r.selected, 0),
+		       COALESCE(d.decisions, 0), COALESCE(d.replies, 0), COALESCE(m.calls, 0),
+		       COALESCE(m.errors, 0), COALESCE(m.avg_duration, 0)
+		FROM buckets b
+		LEFT JOIN retrieval r USING (at)
+		LEFT JOIN decisions d USING (at)
+		LEFT JOIN model m USING (at)
+		ORDER BY b.at ASC
+	`, start, groupID, bucket, interval)
+	if err != nil {
+		return adminMetricSeries{}, fmt.Errorf("query metric series: %w", err)
+	}
+	defer rows.Close()
+	points := make([]adminMetricPoint, 0, windowMinutes/5+2)
+	for rows.Next() {
+		var point adminMetricPoint
+		if err := rows.Scan(&point.At, &point.Queries, &point.QueriesWithHits, &point.SelectedQueries,
+			&point.Decisions, &point.Replies, &point.ModelCalls, &point.ModelErrors, &point.AvgDurationMS); err != nil {
+			return adminMetricSeries{}, err
+		}
+		points = append(points, point)
+	}
+	if err := rows.Err(); err != nil {
+		return adminMetricSeries{}, err
+	}
+	return adminMetricSeries{Points: points}, nil
 }
 
 func (d *adminDashboard) loadModelUsageMetrics(ctx context.Context, groupID int64, windowMinutes int) (adminModelUsageMetrics, error) {
