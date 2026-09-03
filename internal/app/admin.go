@@ -214,6 +214,9 @@ type adminModelUsageDetail struct {
 	Tools          []string  `json:"tools"`
 	UsageAvailable bool      `json:"usage_available"`
 	Error          string    `json:"error"`
+	Sent           bool      `json:"sent"`
+	FinalAction    string    `json:"final_action"`
+	DropReason     string    `json:"drop_reason"`
 	CreatedAt      time.Time `json:"created_at"`
 }
 
@@ -1090,7 +1093,7 @@ func loadAdminEventDetail(ctx context.Context, db *sql.DB, eventID string) (admi
 		return detail, err
 	}
 	modelRows, err := db.QueryContext(ctx, `
-		SELECT trace_id, iteration, input_tokens, output_tokens, duration_ms, tools_json, usage_available, error, created_at
+		SELECT trace_id, iteration, input_tokens, output_tokens, duration_ms, tools_json, usage_available, error, sent, final_action, drop_reason, created_at
 		FROM model_usage_records WHERE event_id = $1
 		ORDER BY created_at ASC
 	`, eventID)
@@ -1099,7 +1102,7 @@ func loadAdminEventDetail(ctx context.Context, db *sql.DB, eventID string) (admi
 		for modelRows.Next() {
 			var item adminModelUsageDetail
 			var tools []byte
-			if err := modelRows.Scan(&item.TraceID, &item.Iteration, &item.InputTokens, &item.OutputTokens, &item.DurationMS, &tools, &item.UsageAvailable, &item.Error, &item.CreatedAt); err != nil {
+			if err := modelRows.Scan(&item.TraceID, &item.Iteration, &item.InputTokens, &item.OutputTokens, &item.DurationMS, &tools, &item.UsageAvailable, &item.Error, &item.Sent, &item.FinalAction, &item.DropReason, &item.CreatedAt); err != nil {
 				return detail, err
 			}
 			_ = json.Unmarshal(tools, &item.Tools)
