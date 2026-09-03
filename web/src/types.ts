@@ -30,7 +30,7 @@ export interface BotSnapshot {
     queries_with_hits: number
     hit_rate: number
     avg_candidate_count: number
-    feedback_queries: number
+    result_recorded_queries: number
     selected_queries: number
     selection_rate: number
   }

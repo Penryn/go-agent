@@ -214,13 +214,13 @@ type adminModelUsageDetail struct {
 }
 
 type adminRetrievalMetrics struct {
-	Queries           int     `json:"queries"`
-	QueriesWithHits   int     `json:"queries_with_hits"`
-	HitRate           float64 `json:"hit_rate"`
-	AvgCandidateCount float64 `json:"avg_candidate_count"`
-	FeedbackQueries   int     `json:"feedback_queries"`
-	SelectedQueries   int     `json:"selected_queries"`
-	SelectionRate     float64 `json:"selection_rate"`
+	Queries               int     `json:"queries"`
+	QueriesWithHits       int     `json:"queries_with_hits"`
+	HitRate               float64 `json:"hit_rate"`
+	AvgCandidateCount     float64 `json:"avg_candidate_count"`
+	ResultRecordedQueries int     `json:"result_recorded_queries"`
+	SelectedQueries       int     `json:"selected_queries"`
+	SelectionRate         float64 `json:"selection_rate"`
 }
 
 type adminModelUsageMetrics struct {
@@ -786,7 +786,7 @@ func (d *adminDashboard) loadRetrievalMetrics(ctx context.Context, groupID int64
 		       COUNT(*) FILTER (WHERE jsonb_array_length(selected_memory_ids_json) > 0)
 		FROM retrieval_traces
 		WHERE created_at > NOW() - ($2 || ' minutes')::interval AND ($1 = 0 OR group_id = $1)
-	`, groupID, windowMinutes).Scan(&metrics.Queries, &metrics.QueriesWithHits, &avg, &metrics.FeedbackQueries, &metrics.SelectedQueries)
+	`, groupID, windowMinutes).Scan(&metrics.Queries, &metrics.QueriesWithHits, &avg, &metrics.ResultRecordedQueries, &metrics.SelectedQueries)
 	if err != nil {
 		return metrics, fmt.Errorf("retrieval metrics: %w", err)
 	}

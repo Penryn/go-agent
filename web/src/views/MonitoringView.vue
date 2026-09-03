@@ -13,7 +13,7 @@ const avgImportance = computed(() => memories.value.length ? memories.value.redu
 const taskFailures = computed(() => snapshot.value?.window_metrics.failed_tasks ?? 0)
 const taskFailureRate = computed(() => tasks.value ? taskFailures.value / tasks.value : 0)
 const decisionReplyRate = computed(() => decisions.value ? (snapshot.value?.window_metrics.action_decisions ?? 0) / decisions.value : 0)
-const retrieval = computed(() => snapshot.value?.retrieval || { queries: 0, queries_with_hits: 0, hit_rate: 0, avg_candidate_count: 0, feedback_queries: 0, selected_queries: 0, selection_rate: 0 })
+const retrieval = computed(() => snapshot.value?.retrieval || { queries: 0, queries_with_hits: 0, hit_rate: 0, avg_candidate_count: 0, result_recorded_queries: 0, selected_queries: 0, selection_rate: 0 })
 const modelUsage = computed(() => snapshot.value?.model_usage || { calls: 0, input_tokens: 0, output_tokens: 0, avg_duration_ms: 0, error_calls: 0 })
 const windowMinutesLabel = computed(() => windowMinutes.value === 1440 ? '近 24 小时' : windowMinutes.value === 60 ? '近 1 小时' : '近 10 分钟')
 </script>
@@ -44,7 +44,7 @@ const windowMinutesLabel = computed(() => windowMinutes.value === 1440 ? '近 24
       <article class="monitor-detail monitor-gap">
         <div class="panel-title"><div><span>RETRIEVAL TELEMETRY</span><h3>检索与召回</h3></div><el-tag effect="plain">已接入</el-tag></div>
         <div class="quality-row"><span>检索次数</span><strong>{{ retrieval.queries }}</strong></div>
-        <div class="quality-row"><span>有反馈的检索</span><strong>{{ retrieval.feedback_queries }}</strong></div>
+        <div class="quality-row"><span>已回写结果</span><strong>{{ retrieval.result_recorded_queries }}</strong></div>
         <p>采用率表示召回内容进入最终决策上下文，不代表记忆内容一定正确；正确率仍需人工标注或用户反馈。</p>
       </article>
       <article class="monitor-detail">
