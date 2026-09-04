@@ -5,6 +5,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	postgresstore "github.com/phlin/go-agent/internal/adapters/storage/postgres"
 	"github.com/phlin/go-agent/internal/application/ports"
@@ -76,6 +77,18 @@ func TestSearchMemoriesUsesBM25AndVectorWithRRF(t *testing.T) {
 	}
 	if len(results) != 2 || results[0].MemoryID != "lexical" || results[1].MemoryID != "semantic" {
 		t.Fatalf("unexpected hybrid results: %+v", results)
+	}
+}
+
+func TestMergeMemoryResultsAppliesFinalDomainRanking(t *testing.T) {
+	old := time.Now().Add(-120 * 24 * time.Hour)
+	results := mergeMemoryResults(
+		[]memorydomain.MemoryRecord{{MemoryID: "old", CreatedAt: old, Importance: 0.1, Confidence: 0.2}},
+		[]memorydomain.MemoryRecord{{MemoryID: "useful", CreatedAt: time.Now(), Importance: 1, Confidence: 1}},
+		2,
+	)
+	if len(results) != 2 || results[0].MemoryID != "useful" {
+		t.Fatalf("final ranking ignored memory quality: %+v", results)
 	}
 }
 

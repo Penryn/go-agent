@@ -273,20 +273,87 @@ func mergeRRF[T any](lexical, semantic []T, limit int, id func(T) string, better
 }
 
 func mergeMemoryResults(lexical, semantic []memorydomain.MemoryRecord, limit int) []memorydomain.MemoryRecord {
-	return mergeRRF(lexical, semantic, limit,
-		func(r memorydomain.MemoryRecord) string {
-			if r.MemoryID != "" {
-				return r.MemoryID
+	byID := make(map[string]*memoryRankItem, len(lexical)+len(semantic))
+	for _, track := range [][]memorydomain.MemoryRecord{lexical, semantic} {
+		for rank, record := range track {
+			key := record.MemoryID
+			if key == "" {
+				key = record.Scope + "\x00" + record.Subject + "\x00" + record.Content
 			}
-			return r.Scope + "\x00" + r.Subject + "\x00" + r.Content
-		},
-		func(cur, next memorydomain.MemoryRecord) memorydomain.MemoryRecord {
-			if cur.Content == "" && next.Content != "" {
-				return next
+			entry := byID[key]
+			if entry == nil {
+				entry = &memoryRankItem{record: record, order: len(byID)}
+				byID[key] = entry
+			} else if entry.record.Content == "" && record.Content != "" {
+				entry.record = record
 			}
-			return cur
-		},
-	)
+			entry.rrf += 1 / (rrfK + float64(rank+1))
+		}
+	}
+	items := make([]memoryRankItem, 0, len(byID))
+	for _, item := range byID {
+		items = append(items, *item)
+	}
+	maxRRF := 0.0
+	for _, item := range items {
+		if item.rrf > maxRRF {
+			maxRRF = item.rrf
+		}
+	}
+	now := time.Now()
+	sort.SliceStable(items, func(i, j int) bool {
+		left := memoryFinalScore(items[i], maxRRF, now)
+		right := memoryFinalScore(items[j], maxRRF, now)
+		if left == right {
+			return items[i].order < items[j].order
+		}
+		return left > right
+	})
+	if limit > 0 && len(items) > limit {
+		items = items[:limit]
+	}
+	results := make([]memorydomain.MemoryRecord, len(items))
+	for i := range items {
+		results[i] = items[i].record
+	}
+	return results
+}
+
+type memoryRankItem struct {
+	record memorydomain.MemoryRecord
+	rrf    float64
+	order  int
+}
+
+// memoryFinalScore keeps RRF as the recall signal, then applies domain-aware
+// soft ranking so an old, low-confidence hit cannot beat a fresh useful fact.
+func memoryFinalScore(item memoryRankItem, maxRRF float64, now time.Time) float64 {
+	rrf := 0.0
+	if maxRRF > 0 {
+		rrf = item.rrf / maxRRF
+	}
+	importance := clamp01(item.record.Importance)
+	confidence := clamp01(item.record.Confidence)
+	recency := 0.0
+	if !item.record.CreatedAt.IsZero() {
+		ageDays := now.Sub(item.record.CreatedAt).Hours() / 24
+		if ageDays < 0 {
+			ageDays = 0
+		}
+		recency = 1 / (1 + ageDays/(30*maxFloat(importance, 0.1)))
+	}
+	return 0.55*rrf + 0.20*recency + 0.15*importance + 0.10*confidence
+}
+
+func clamp01(value float64) float64 {
+	return max(0, min(1, value))
+}
+
+func maxFloat(left, right float64) float64 {
+	if left > right {
+		return left
+	}
+	return right
 }
 
 func mergeMemeResults(lexical, semantic []mediadomain.MemeSearchResult, limit int) []mediadomain.MemeSearchResult {
