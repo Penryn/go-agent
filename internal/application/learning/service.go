@@ -45,10 +45,11 @@ type Output struct {
 }
 
 type Service struct {
-	store  ports.MemoryStore
-	state  ports.LearningStateStore
-	mem    *memsvc.Service
-	outbox ports.TaskSubmitter
+	store      ports.MemoryStore
+	state      ports.LearningStateStore
+	candidates ports.LearningCandidateStore
+	mem        *memsvc.Service
+	outbox     ports.TaskSubmitter
 }
 
 type Option func(*Service)
@@ -58,7 +59,8 @@ func WithOutbox(runtime ports.TaskSubmitter) Option {
 }
 
 func New(_ context.Context, store ports.MemoryStore, state ports.LearningStateStore, mem *memsvc.Service, opts ...Option) (*Service, error) {
-	service := &Service{store: store, state: state, mem: mem}
+	candidates, _ := state.(ports.LearningCandidateStore)
+	service := &Service{store: store, state: state, candidates: candidates, mem: mem}
 	for _, opt := range opts {
 		opt(service)
 	}
@@ -128,7 +130,21 @@ func (s *Service) learnGroup(ctx context.Context, groupID int64) error {
 		return err
 	}
 	if len(out.Candidates) > 0 {
-		if err := s.applyLearning(ctx, out.Candidates); err != nil {
+		if s.candidates != nil {
+			for _, candidate := range out.Candidates {
+				candidate.Status = "staged"
+				if err := s.candidates.UpsertLearningCandidate(ctx, candidate); err != nil {
+					return err
+				}
+			}
+			staged, err := s.candidates.ListLearningCandidates(ctx, groupID, 200)
+			if err != nil {
+				return err
+			}
+			if err := s.applyLearning(ctx, staged); err != nil {
+				return err
+			}
+		} else if err := s.applyLearning(ctx, out.Candidates); err != nil {
 			return err
 		}
 	}
@@ -171,6 +187,11 @@ func (s *Service) applyLearning(ctx context.Context, candidates []memorydomain.L
 			Confidence:    candidate.Confidence,
 		}); err != nil {
 			return err
+		}
+		if s.candidates != nil {
+			if err := s.candidates.UpdateLearningCandidateStatus(ctx, candidate.ID, "promoted"); err != nil {
+				return err
+			}
 		}
 	}
 	return nil
@@ -223,9 +244,11 @@ func extractCandidates(_ context.Context, input Input) (Output, error) {
 
 	output := Output{}
 	// emit 是四类候选共用的构造点：字段完全同构，只差 ID 前缀和语义标注。
-	emit := func(idPrefix, kind, value, meaning string, evidence int, eventIDs []string, conf float64, targetUser int64) {
+	emit := func(_ string, kind, value, meaning string, evidence int, eventIDs []string, conf float64, targetUser int64) {
+		raw := fmt.Sprintf("candidate-%d-%d-%s-%s", input.GroupID, targetUser, kind, value)
+		sum := sha256.Sum256([]byte(raw))
 		output.Candidates = append(output.Candidates, memorydomain.LearningCandidate{
-			ID:              idPrefix + value,
+			ID:              fmt.Sprintf("candidate-%x", sum[:8]),
 			GroupID:         input.GroupID,
 			Kind:            kind,
 			Value:           value,

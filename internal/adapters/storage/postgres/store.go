@@ -25,6 +25,7 @@ import (
 var (
 	_ ports.MemoryStore                 = (*Store)(nil)
 	_ ports.LearningStateStore          = (*Store)(nil)
+	_ ports.LearningCandidateStore      = (*Store)(nil)
 	_ ports.ThoughtStore                = (*Store)(nil)
 	_ ports.RetrievalTraceStore         = (*Store)(nil)
 	_ ports.MemeStore                   = (*Store)(nil)

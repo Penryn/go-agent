@@ -111,6 +111,7 @@ CREATE TABLE IF NOT EXISTS meme_descriptors (
 CREATE TABLE IF NOT EXISTS learning_candidates (
   id VARCHAR(128) PRIMARY KEY,
   group_id BIGINT NOT NULL,
+  target_user_id BIGINT NOT NULL DEFAULT 0,
   kind VARCHAR(64) NOT NULL,
   value TEXT NOT NULL,
   meaning TEXT NOT NULL,
@@ -120,6 +121,8 @@ CREATE TABLE IF NOT EXISTS learning_candidates (
   status VARCHAR(32) NOT NULL,
   created_at TIMESTAMPTZ NOT NULL
 );
+ALTER TABLE learning_candidates ADD COLUMN IF NOT EXISTS target_user_id BIGINT NOT NULL DEFAULT 0;
+CREATE INDEX IF NOT EXISTS idx_learning_candidates_group_status ON learning_candidates (group_id, status, created_at);
 
 CREATE TABLE IF NOT EXISTS learning_watermarks (
   group_id BIGINT NOT NULL,

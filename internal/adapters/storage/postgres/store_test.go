@@ -181,6 +181,30 @@ func TestArchiveEventRejectsInvalidGroup(t *testing.T) {
 	}
 }
 
+func TestLearningCandidateLifecycle(t *testing.T) {
+	ctx := context.Background()
+	store := testsupport.NewStore(t)
+	candidate := memorydomain.LearningCandidate{
+		ID: "candidate-lifecycle", GroupID: 1, Kind: "group_slang", Value: "离谱",
+		Meaning: "群内高频表达", EvidenceCount: 3, ExampleEventIDs: []string{"event-1"},
+		Confidence: 0.8, Status: "staged", CreatedAt: time.Now(),
+	}
+	if err := store.UpsertLearningCandidate(ctx, candidate); err != nil {
+		t.Fatalf("upsert candidate: %v", err)
+	}
+	staged, err := store.ListLearningCandidates(ctx, 1, 10)
+	if err != nil || len(staged) != 1 || staged[0].Status != "staged" {
+		t.Fatalf("staged candidates = %#v, err=%v", staged, err)
+	}
+	if err := store.UpdateLearningCandidateStatus(ctx, candidate.ID, "promoted"); err != nil {
+		t.Fatalf("promote candidate: %v", err)
+	}
+	remaining, err := store.ListLearningCandidates(ctx, 1, 10)
+	if err != nil || len(remaining) != 0 {
+		t.Fatalf("promoted candidate still listed: %#v, err=%v", remaining, err)
+	}
+}
+
 func TestProfiles(t *testing.T) {
 	ctx := context.Background()
 	db := setupPostgres(t)

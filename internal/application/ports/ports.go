@@ -136,6 +136,14 @@ type LearningStateStore interface {
 	SaveLearningWatermark(ctx context.Context, watermark memorydomain.LearningWatermark) error
 }
 
+// LearningCandidateStore persists extracted facts before they are promoted to
+// long-term memory, so retries and operator review do not lose the evidence.
+type LearningCandidateStore interface {
+	UpsertLearningCandidate(ctx context.Context, candidate memorydomain.LearningCandidate) error
+	ListLearningCandidates(ctx context.Context, groupID int64, limit int) ([]memorydomain.LearningCandidate, error)
+	UpdateLearningCandidateStatus(ctx context.Context, id, status string) error
+}
+
 type MemeStore interface {
 	UpsertMeme(ctx context.Context, asset mediadomain.MemeAsset, descriptor mediadomain.MemeDescriptor) error
 	SearchMemes(ctx context.Context, query MemeQuery) ([]mediadomain.MemeSearchResult, error)
