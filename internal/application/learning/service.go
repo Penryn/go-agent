@@ -122,7 +122,7 @@ func (s *Service) learnGroup(ctx context.Context, groupID int64) error {
 	if err != nil {
 		return err
 	}
-	if len(events) < 10 {
+	if len(events) == 0 {
 		return nil
 	}
 	out, err := s.Run(ctx, Input{GroupID: groupID, Events: events})
@@ -131,11 +131,21 @@ func (s *Service) learnGroup(ctx context.Context, groupID int64) error {
 	}
 	if len(out.Candidates) > 0 {
 		if s.candidates != nil {
+			existing, err := s.candidates.ListLearningCandidates(ctx, groupID, 200)
+			if err != nil {
+				return err
+			}
+			byID := make(map[string]memorydomain.LearningCandidate, len(existing))
+			for _, candidate := range existing {
+				byID[candidate.ID] = candidate
+			}
 			for _, candidate := range out.Candidates {
+				candidate = mergeCandidateEvidence(byID[candidate.ID], candidate)
 				candidate.Status = "staged"
 				if err := s.candidates.UpsertLearningCandidate(ctx, candidate); err != nil {
 					return err
 				}
+				byID[candidate.ID] = candidate
 			}
 			staged, err := s.candidates.ListLearningCandidates(ctx, groupID, 200)
 			if err != nil {
@@ -156,6 +166,47 @@ func (s *Service) learnGroup(ctx context.Context, groupID int64) error {
 		EventID:    last.EventID,
 		UpdatedAt:  time.Now(),
 	})
+}
+
+func mergeCandidateEvidence(existing, incoming memorydomain.LearningCandidate) memorydomain.LearningCandidate {
+	if existing.ID == "" {
+		return incoming
+	}
+	seen := make(map[string]struct{}, len(existing.ExampleEventIDs)+len(incoming.ExampleEventIDs))
+	for _, id := range existing.ExampleEventIDs {
+		if id != "" {
+			seen[id] = struct{}{}
+		}
+	}
+	newEvidence := 0
+	mergedIDs := append([]string(nil), existing.ExampleEventIDs...)
+	for _, id := range incoming.ExampleEventIDs {
+		if id == "" {
+			continue
+		}
+		if _, ok := seen[id]; ok {
+			continue
+		}
+		seen[id] = struct{}{}
+		newEvidence++
+		if len(mergedIDs) < 32 {
+			mergedIDs = append(mergedIDs, id)
+		}
+	}
+	if newEvidence == 0 {
+		incoming.EvidenceCount = existing.EvidenceCount
+	} else {
+		incoming.EvidenceCount = existing.EvidenceCount + newEvidence
+	}
+	incoming.ExampleEventIDs = mergedIDs
+	if incoming.Confidence < existing.Confidence {
+		incoming.Confidence = existing.Confidence
+	}
+	if incoming.Meaning == "" {
+		incoming.Meaning = existing.Meaning
+	}
+	incoming.CreatedAt = existing.CreatedAt
+	return incoming
 }
 
 // applyLearning 把置信度达标的学习候选写入长期记忆。MemoryID 由
@@ -326,7 +377,7 @@ func extractNgrams(text string, senderID int64, eventID string, counter map[stri
 			}
 			counter[gram].count++
 			counter[gram].senders[senderID] = struct{}{}
-			if eventID != "" && len(counter[gram].eventIDs) < 3 {
+			if eventID != "" && len(counter[gram].eventIDs) < 32 {
 				counter[gram].eventIDs = append(counter[gram].eventIDs, eventID)
 			}
 		}

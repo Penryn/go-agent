@@ -5,9 +5,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/phlin/go-agent/internal/testsupport"
 	memsvc "github.com/phlin/go-agent/internal/application/memory"
 	conversationdomain "github.com/phlin/go-agent/internal/domain/conversation"
+	memorydomain "github.com/phlin/go-agent/internal/domain/memory"
+	"github.com/phlin/go-agent/internal/testsupport"
 )
 
 func TestRun(t *testing.T) {
@@ -75,5 +76,41 @@ func TestLearnGroupAdvancesDurableWatermark(t *testing.T) {
 	}
 	if next.EventID != watermark.EventID || !next.OccurredAt.Equal(watermark.OccurredAt) {
 		t.Fatalf("watermark changed without new facts: before=%+v after=%+v", watermark, next)
+	}
+}
+
+func TestLearnGroupAdvancesWatermarkForSmallBatch(t *testing.T) {
+	ctx := context.Background()
+	store := testsupport.NewStore(t)
+	service, err := New(ctx, store, store, memsvc.New(store))
+	if err != nil {
+		t.Fatalf("new learning service: %v", err)
+	}
+	for i := 0; i < 2; i++ {
+		if err := store.ArchiveEvent(ctx, conversationdomain.ConversationEvent{
+			EventID: "small-" + string(rune('a'+i)), GroupID: 2, UserID: int64(i + 1),
+			TimestampUnix: int64(200 + i), Text: "普通消息",
+		}); err != nil {
+			t.Fatalf("archive event: %v", err)
+		}
+	}
+	if err := service.ProcessGroup(ctx, 2); err != nil {
+		t.Fatalf("process small batch: %v", err)
+	}
+	watermark, err := store.GetLearningWatermark(ctx, 2, "learning_extract")
+	if err != nil || watermark.EventID != "small-b" {
+		t.Fatalf("watermark = %+v, err=%v", watermark, err)
+	}
+}
+
+func TestMergeCandidateEvidenceIsIdempotent(t *testing.T) {
+	base := memorydomain.LearningCandidate{ID: "c", EvidenceCount: 3, ExampleEventIDs: []string{"a", "b"}, CreatedAt: time.Now()}
+	merged := mergeCandidateEvidence(base, memorydomain.LearningCandidate{ID: "c", EvidenceCount: 3, ExampleEventIDs: []string{"b", "c"}})
+	if merged.EvidenceCount != 4 || len(merged.ExampleEventIDs) != 3 {
+		t.Fatalf("merged candidate = %+v", merged)
+	}
+	retry := mergeCandidateEvidence(merged, memorydomain.LearningCandidate{ID: "c", EvidenceCount: 3, ExampleEventIDs: []string{"b", "c"}})
+	if retry.EvidenceCount != merged.EvidenceCount {
+		t.Fatalf("retry changed evidence count: before=%d after=%d", merged.EvidenceCount, retry.EvidenceCount)
 	}
 }
