@@ -71,33 +71,27 @@ func New(
 }
 
 func (s *Service) BuildSnapshot(ctx context.Context, envelope conversationdomain.EventEnvelope, mediaDescriptors []mediadomain.MediaDescriptor) (conversationdomain.ContextSnapshot, error) {
-	var recentTurns []conversationdomain.ConversationEvent
+	observeLimit := s.policy.AutonomyPolicy().ObserveWindowSize
 	var working presencedomain.GroupWorkingMemory
+	var liveTurns []conversationdomain.ConversationEvent
 	if s.workingMemory != nil {
 		var wmErr error
 		working, wmErr = s.workingMemory.Snapshot(ctx, envelope.Event.GroupID)
 		if wmErr != nil {
 			return conversationdomain.ContextSnapshot{}, fmt.Errorf("load working memory: %w", wmErr)
 		}
-		recentTurns = make([]conversationdomain.ConversationEvent, 0, len(working.RecentTail))
+		liveTurns = make([]conversationdomain.ConversationEvent, 0, len(working.RecentTail))
 		for _, record := range working.RecentTail {
-			recentTurns = append(recentTurns, record.Event)
-		}
-		// Working memory is process-local. Merge the archive to preserve the
-		// conversation tail immediately after a restart and while the actor has
-		// not yet observed a full window of new events.
-		archived, err := s.memoryStore.RecentEvents(ctx, envelope.Event.GroupID, s.policy.AutonomyPolicy().ObserveWindowSize)
-		if err != nil {
-			return conversationdomain.ContextSnapshot{}, fmt.Errorf("load archived events: %w", err)
-		}
-		recentTurns = mergeRecentTurns(archived, recentTurns, s.policy.AutonomyPolicy().ObserveWindowSize)
-	} else {
-		var err error
-		recentTurns, err = s.memoryStore.RecentEvents(ctx, envelope.Event.GroupID, s.policy.AutonomyPolicy().ObserveWindowSize)
-		if err != nil {
-			return conversationdomain.ContextSnapshot{}, fmt.Errorf("load recent events: %w", err)
+			liveTurns = append(liveTurns, record.Event)
 		}
 	}
+	// Archive is authoritative across restarts. Always merge it with the live
+	// actor tail and the triggering event, which may arrive before Observe.
+	archived, err := s.memoryStore.RecentEvents(ctx, envelope.Event.GroupID, observeLimit)
+	if err != nil {
+		return conversationdomain.ContextSnapshot{}, fmt.Errorf("load archived events: %w", err)
+	}
+	recentTurns := mergeRecentTurns(archived, append(liveTurns, envelope.Event), observeLimit)
 
 	relevantMemories, err := s.retriever.SearchMemories(ctx, ports.MemoryQuery{
 		GroupID: envelope.Event.GroupID,
@@ -146,7 +140,10 @@ func (s *Service) BuildSnapshot(ctx context.Context, envelope conversationdomain
 	projection := conversationdomain.ProjectionMetadata{
 		Name:     "group_working_memory+archive",
 		Version:  working.Version,
-		Complete: true,
+		Complete: observeLimit <= 0 || len(archived) < observeLimit,
+	}
+	if len(archived) >= observeLimit && observeLimit > 0 {
+		projection.RecentTruncated = true
 	}
 	if len(recentTurns) > 0 {
 		last := recentTurns[len(recentTurns)-1]
