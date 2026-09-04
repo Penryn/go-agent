@@ -2,6 +2,7 @@ package learning
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -112,5 +113,25 @@ func TestMergeCandidateEvidenceIsIdempotent(t *testing.T) {
 	retry := mergeCandidateEvidence(merged, memorydomain.LearningCandidate{ID: "c", EvidenceCount: 3, ExampleEventIDs: []string{"b", "c"}})
 	if retry.EvidenceCount != merged.EvidenceCount {
 		t.Fatalf("retry changed evidence count: before=%d after=%d", merged.EvidenceCount, retry.EvidenceCount)
+	}
+}
+
+func TestRunExtractsBehaviorLearningSignals(t *testing.T) {
+	output, err := extractCandidates(context.Background(), Input{GroupID: 1, Events: []conversationdomain.ConversationEvent{
+		{EventID: "behavior-1", UserID: 7, Text: "以后别在晚上@我"},
+		{EventID: "behavior-2", UserID: 7, Text: "不对，应该是周末再提醒"},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	seen := map[string]bool{}
+	for _, candidate := range output.Candidates {
+		seen[candidate.Kind] = true
+		if strings.Contains(candidate.Kind, "behavior") && len(candidate.ExampleEventIDs) == 0 {
+			t.Fatalf("behavior candidate lost evidence: %+v", candidate)
+		}
+	}
+	if !seen["behavior_rule"] || !seen["behavior_correction"] {
+		t.Fatalf("behavior signals were not extracted: %+v", output.Candidates)
 	}
 }

@@ -228,14 +228,15 @@ func (s *Service) applyLearning(ctx context.Context, candidates []memorydomain.L
 			evidenceEventID = candidate.ExampleEventIDs[0]
 		}
 		if _, err := s.mem.MarkIntent(ctx, memsvc.WriteIntent{
-			MemoryID:      fmt.Sprintf("memory-%x", sum[:8]),
-			Scope:         scope,
-			MemoryType:    candidate.Kind,
-			Subject:       candidate.Value,
-			Content:       candidate.Meaning,
-			SourceEventID: evidenceEventID,
-			Importance:    float64(candidate.EvidenceCount) / 20,
-			Confidence:    candidate.Confidence,
+			MemoryID:       fmt.Sprintf("memory-%x", sum[:8]),
+			Scope:          scope,
+			MemoryType:     candidate.Kind,
+			Subject:        candidate.Value,
+			Content:        candidate.Meaning,
+			SourceEventID:  evidenceEventID,
+			SourceEventIDs: append([]string(nil), candidate.ExampleEventIDs...),
+			Importance:     float64(candidate.EvidenceCount) / 20,
+			Confidence:     candidate.Confidence,
 		}); err != nil {
 			return err
 		}
@@ -257,9 +258,25 @@ func extractCandidates(_ context.Context, input Input) (Output, error) {
 	replyTexts := map[string]int{}
 	// memeTexts 记录图片/sticker 前的文本，用于提取 reaction_pattern/meme_trigger。
 	memeTexts := map[string]int{}
+	// behaviorTexts 记录明确的互动偏好或纠正语句；这类信号即使只出现一次
+	// 也有较高信息量，作为行为学习候选进入同一生命周期。
+	behaviorTexts := map[string]*phraseStats{}
 
 	for i, event := range input.Events {
 		text := strings.TrimSpace(event.Text)
+		if kind, ok := behaviorSignal(text); ok {
+			key := kind + "\x00" + text
+			stats := behaviorTexts[key]
+			if stats == nil {
+				stats = &phraseStats{senders: map[int64]struct{}{}}
+				behaviorTexts[key] = stats
+			}
+			stats.count++
+			stats.senders[event.UserID] = struct{}{}
+			if event.EventID != "" && len(stats.eventIDs) < 32 {
+				stats.eventIDs = append(stats.eventIDs, event.EventID)
+			}
+		}
 
 		// 统计群级 n-gram
 		extractNgrams(text, event.UserID, event.EventID, counter)
@@ -353,7 +370,40 @@ func extractCandidates(_ context.Context, input Input) (Output, error) {
 		emit("candidate-meme-", "reaction_pattern", text, "[meme_trigger] 触发表情包发送的上文", count, nil, math.Min(1.0, 0.5+float64(count)/10), 0)
 	}
 
+	// behavior_rule / behavior_correction capture explicit interaction policy,
+	// which is stronger evidence than frequency and can promote after one event.
+	for key, stats := range behaviorTexts {
+		parts := strings.SplitN(key, "\x00", 2)
+		if len(parts) != 2 || stats.count == 0 {
+			continue
+		}
+		meaning := "显式互动行为偏好"
+		if parts[0] == "behavior_correction" {
+			meaning = "显式纠正信号，后续行为应避免重复"
+		}
+		conf := math.Min(1.0, 0.8+float64(stats.count-1)/10)
+		emit("candidate-behavior-", parts[0], parts[1], meaning, stats.count, stats.eventIDs, conf, 0)
+	}
+
 	return output, nil
+}
+
+func behaviorSignal(text string) (string, bool) {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return "", false
+	}
+	for _, marker := range []string{"不对", "不是", "更正", "纠正", "应该是"} {
+		if strings.Contains(text, marker) {
+			return "behavior_correction", true
+		}
+	}
+	for _, prefix := range []string{"以后", "请", "不要", "别再", "别", "记得"} {
+		if strings.HasPrefix(text, prefix) && len([]rune(text)) >= len([]rune(prefix))+2 {
+			return "behavior_rule", true
+		}
+	}
+	return "", false
 }
 
 // extractNgrams 从 text 中提取 2-8 字的 n-gram 子串，更新到 counter 中。
