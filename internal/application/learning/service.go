@@ -38,6 +38,7 @@ type phraseStats struct {
 type Input struct {
 	GroupID int64
 	Events  []conversationdomain.ConversationEvent
+	Signals []memorydomain.BehaviorSignal
 }
 
 type Output struct {
@@ -125,7 +126,22 @@ func (s *Service) learnGroup(ctx context.Context, groupID int64) error {
 	if len(events) == 0 {
 		return nil
 	}
-	out, err := s.Run(ctx, Input{GroupID: groupID, Events: events})
+	var signals []memorydomain.BehaviorSignal
+	if thoughts, ok := s.state.(ports.ThoughtStore); ok {
+		if records, thoughtErr := thoughts.RecentThoughts(ctx, groupID, 50); thoughtErr == nil {
+			for _, record := range records {
+				if record.EventID == "" || record.ChosenAction == "" || record.Outcome == "" {
+					continue
+				}
+				signals = append(signals, memorydomain.BehaviorSignal{
+					Kind: "behavior_feedback", Value: record.ChosenAction,
+					Meaning: "行为结果: " + record.Outcome, EventID: record.EventID,
+					Source: "thought_record", Weight: 0.8, CreatedAt: record.CreatedAt,
+				})
+			}
+		}
+	}
+	out, err := s.Run(ctx, Input{GroupID: groupID, Events: events, Signals: signals})
 	if err != nil {
 		return err
 	}
@@ -262,6 +278,9 @@ func extractCandidates(_ context.Context, input Input) (Output, error) {
 	behaviorTexts := map[string]*phraseStats{}
 
 	for i, event := range input.Events {
+		if event.Origin == "outbound" {
+			continue
+		}
 		text := strings.TrimSpace(event.Text)
 		if kind, ok := behaviorSignal(text); ok {
 			key := kind + "\x00" + text
@@ -399,6 +418,13 @@ func extractCandidates(_ context.Context, input Input) (Output, error) {
 		conf := math.Min(1.0, 0.8+float64(stats.count-1)/10)
 		emit("candidate-behavior-", parts[0], parts[1], meaning, stats.count, stats.eventIDs, conf, 0)
 	}
+	for _, signal := range input.Signals {
+		if strings.TrimSpace(signal.Value) == "" || signal.EventID == "" {
+			continue
+		}
+		conf := math.Min(0.95, 0.6+signal.Weight*0.2)
+		emit("candidate-feedback-", signal.Kind, signal.Value, signal.Meaning, 1, []string{signal.EventID}, conf, 0)
+	}
 
 	return output, nil
 }
@@ -412,6 +438,9 @@ func behaviorSignal(text string) (string, bool) {
 		if strings.Contains(text, marker) {
 			return "behavior_correction", true
 		}
+	}
+	if strings.HasPrefix(text, "请问") || strings.HasPrefix(text, "请教") {
+		return "", false
 	}
 	for _, prefix := range []string{"以后", "请", "不要", "别再", "别", "记得"} {
 		if strings.HasPrefix(text, prefix) && len([]rune(text)) >= len([]rune(prefix))+2 {

@@ -135,3 +135,15 @@ func TestRunExtractsBehaviorLearningSignals(t *testing.T) {
 		t.Fatalf("behavior signals were not extracted: %+v", output.Candidates)
 	}
 }
+
+func TestRunExtractsTypedBehaviorFeedback(t *testing.T) {
+	output, err := extractCandidates(context.Background(), Input{GroupID: 1, Signals: []memorydomain.BehaviorSignal{{
+		Kind: "behavior_feedback", Value: "reply", Meaning: "行为结果: sent", EventID: "thought-1", Weight: 0.8,
+	}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(output.Candidates) != 1 || output.Candidates[0].Kind != "behavior_feedback" || len(output.Candidates[0].ExampleEventIDs) != 1 {
+		t.Fatalf("typed feedback was not converted to candidate: %+v", output.Candidates)
+	}
+}

@@ -41,6 +41,16 @@ type LearningCandidate struct {
 	TargetUserID int64 `json:"target_user_id,omitempty" yaml:"target_user_id,omitempty"`
 }
 
+type BehaviorSignal struct {
+	Kind      string    `json:"kind" yaml:"kind"`
+	Value     string    `json:"value" yaml:"value"`
+	Meaning   string    `json:"meaning" yaml:"meaning"`
+	EventID   string    `json:"event_id,omitempty" yaml:"event_id,omitempty"`
+	Source    string    `json:"source" yaml:"source"`
+	Weight    float64   `json:"weight" yaml:"weight"`
+	CreatedAt time.Time `json:"created_at" yaml:"created_at"`
+}
+
 // LearningWatermark records the last archived fact consumed by one learning
 // projector. The timestamp and event ID form a stable cursor when several
 // OneBot events share the same second.
