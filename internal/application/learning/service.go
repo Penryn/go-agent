@@ -254,10 +254,9 @@ func extractCandidates(_ context.Context, input Input) (Output, error) {
 	counter := map[string]*phraseStats{}
 	// userCounter 按用户分组统计，用于提取 user_catchphrase。
 	userCounter := map[int64]map[string]*phraseStats{}
-	// replyTexts 记录回复消息的前置文本，用于提取 reaction_pattern/conversation。
-	replyTexts := map[string]int{}
-	// memeTexts 记录图片/sticker 前的文本，用于提取 reaction_pattern/meme_trigger。
-	memeTexts := map[string]int{}
+	// replyTexts/memeTexts 同时保留证据事件，供 candidate evidence ledger 去重。
+	replyTexts := map[string]*phraseStats{}
+	memeTexts := map[string]*phraseStats{}
 	// behaviorTexts 记录明确的互动偏好或纠正语句；这类信号即使只出现一次
 	// 也有较高信息量，作为行为学习候选进入同一生命周期。
 	behaviorTexts := map[string]*phraseStats{}
@@ -291,7 +290,15 @@ func extractCandidates(_ context.Context, input Input) (Output, error) {
 
 		// 提取回复套路前置文本（reaction_pattern/conversation）
 		if event.ReplyToMessageID != "" && text != "" {
-			replyTexts[text]++
+			stats := replyTexts[text]
+			if stats == nil {
+				stats = &phraseStats{senders: map[int64]struct{}{}}
+				replyTexts[text] = stats
+			}
+			stats.count++
+			if event.EventID != "" && len(stats.eventIDs) < 32 {
+				stats.eventIDs = append(stats.eventIDs, event.EventID)
+			}
 		}
 
 		// 提取触发图片/sticker 的前置文本（reaction_pattern/meme_trigger）
@@ -305,7 +312,15 @@ func extractCandidates(_ context.Context, input Input) (Output, error) {
 		if hasMedia && i > 0 {
 			prevText := strings.TrimSpace(input.Events[i-1].Text)
 			if len([]rune(prevText)) >= 2 && len([]rune(prevText)) <= 20 {
-				memeTexts[prevText]++
+				stats := memeTexts[prevText]
+				if stats == nil {
+					stats = &phraseStats{senders: map[int64]struct{}{}}
+					memeTexts[prevText] = stats
+				}
+				stats.count++
+				if event.EventID != "" && len(stats.eventIDs) < 32 {
+					stats.eventIDs = append(stats.eventIDs, event.EventID)
+				}
 			}
 		}
 	}
@@ -355,19 +370,19 @@ func extractCandidates(_ context.Context, input Input) (Output, error) {
 	}
 
 	// reaction_pattern/conversation（回复套路，count>=2）
-	for text, count := range replyTexts {
-		if count < 2 {
+	for text, stats := range replyTexts {
+		if stats.count < 2 {
 			continue
 		}
-		emit("candidate-reply-", "reaction_pattern", text, "[conversation] 群内高频回复套路", count, nil, math.Min(1.0, 0.5+float64(count)/10), 0)
+		emit("candidate-reply-", "reaction_pattern", text, "[conversation] 群内高频回复套路", stats.count, stats.eventIDs, math.Min(1.0, 0.5+float64(stats.count)/10), 0)
 	}
 
 	// reaction_pattern/meme_trigger（触发图片的前置文本，count>=2）
-	for text, count := range memeTexts {
-		if count < 2 {
+	for text, stats := range memeTexts {
+		if stats.count < 2 {
 			continue
 		}
-		emit("candidate-meme-", "reaction_pattern", text, "[meme_trigger] 触发表情包发送的上文", count, nil, math.Min(1.0, 0.5+float64(count)/10), 0)
+		emit("candidate-meme-", "reaction_pattern", text, "[meme_trigger] 触发表情包发送的上文", stats.count, stats.eventIDs, math.Min(1.0, 0.5+float64(stats.count)/10), 0)
 	}
 
 	// behavior_rule / behavior_correction capture explicit interaction policy,

@@ -138,6 +138,14 @@ CREATE TABLE IF NOT EXISTS learning_candidates (
 ALTER TABLE learning_candidates ADD COLUMN IF NOT EXISTS target_user_id BIGINT NOT NULL DEFAULT 0;
 CREATE INDEX IF NOT EXISTS idx_learning_candidates_group_status ON learning_candidates (group_id, status, created_at);
 
+CREATE TABLE IF NOT EXISTS learning_candidate_evidence (
+  candidate_id VARCHAR(128) NOT NULL REFERENCES learning_candidates(id) ON DELETE CASCADE,
+  event_id VARCHAR(128) NOT NULL,
+  observed_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  PRIMARY KEY (candidate_id, event_id)
+);
+CREATE INDEX IF NOT EXISTS idx_learning_candidate_evidence_event ON learning_candidate_evidence (event_id);
+
 CREATE TABLE IF NOT EXISTS learning_watermarks (
   group_id BIGINT NOT NULL,
   kind VARCHAR(64) NOT NULL,

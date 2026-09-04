@@ -213,6 +213,13 @@ func TestLearningCandidateLifecycle(t *testing.T) {
 	if err := store.UpsertLearningCandidate(ctx, candidate); err != nil {
 		t.Fatalf("upsert candidate: %v", err)
 	}
+	if err := store.UpsertLearningCandidate(ctx, candidate); err != nil {
+		t.Fatalf("idempotent candidate upsert: %v", err)
+	}
+	var evidenceCount int
+	if err := store.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM learning_candidate_evidence WHERE candidate_id = $1`, candidate.ID).Scan(&evidenceCount); err != nil || evidenceCount != 1 {
+		t.Fatalf("candidate evidence ledger = %d, err=%v", evidenceCount, err)
+	}
 	staged, err := store.ListLearningCandidates(ctx, 1, 10)
 	if err != nil || len(staged) != 1 || staged[0].Status != "staged" {
 		t.Fatalf("staged candidates = %#v, err=%v", staged, err)

@@ -137,7 +137,12 @@ func (s *Store) UpsertLearningCandidate(ctx context.Context, candidate memorydom
 	if candidate.Status == "" {
 		candidate.Status = "staged"
 	}
-	_, err = s.db.ExecContext(ctx, `
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err = tx.ExecContext(ctx, `
 		INSERT INTO learning_candidates (
 			id, group_id, target_user_id, kind, value, meaning, evidence_count,
 			example_event_ids_json, confidence, status, created_at
@@ -148,8 +153,30 @@ func (s *Store) UpsertLearningCandidate(ctx context.Context, candidate memorydom
 			example_event_ids_json = EXCLUDED.example_event_ids_json,
 			confidence = EXCLUDED.confidence
 	`, candidate.ID, candidate.GroupID, candidate.TargetUserID, candidate.Kind, candidate.Value,
-		candidate.Meaning, candidate.EvidenceCount, evidence, candidate.Confidence, candidate.Status, candidate.CreatedAt)
-	return err
+		candidate.Meaning, candidate.EvidenceCount, evidence, candidate.Confidence, candidate.Status, candidate.CreatedAt); err != nil {
+		return err
+	}
+	for _, eventID := range candidate.ExampleEventIDs {
+		if eventID == "" {
+			continue
+		}
+		if _, err := tx.ExecContext(ctx, `
+			INSERT INTO learning_candidate_evidence (candidate_id, event_id)
+			VALUES ($1, $2) ON CONFLICT DO NOTHING
+		`, candidate.ID, eventID); err != nil {
+			return err
+		}
+	}
+	if len(candidate.ExampleEventIDs) > 0 {
+		if _, err := tx.ExecContext(ctx, `
+			UPDATE learning_candidates SET evidence_count = GREATEST(evidence_count, (
+				SELECT COUNT(*) FROM learning_candidate_evidence WHERE candidate_id = $1
+			)) WHERE id = $1
+		`, candidate.ID); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
 }
 
 func (s *Store) ListLearningCandidates(ctx context.Context, groupID int64, limit int) ([]memorydomain.LearningCandidate, error) {
