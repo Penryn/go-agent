@@ -152,6 +152,7 @@ type LearningCandidateStore interface {
 	UpsertLearningCandidate(ctx context.Context, candidate memorydomain.LearningCandidate) error
 	ListLearningCandidates(ctx context.Context, groupID int64, limit int) ([]memorydomain.LearningCandidate, error)
 	UpdateLearningCandidateStatus(ctx context.Context, id, status string) error
+	MarkLearningCandidatePromoted(ctx context.Context, id, memoryID string, promotedAt time.Time) error
 }
 
 type MemeStore interface {

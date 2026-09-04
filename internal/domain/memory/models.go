@@ -24,16 +24,18 @@ type MemoryRecord struct {
 }
 
 type LearningCandidate struct {
-	ID              string    `json:"id" yaml:"id"`
-	GroupID         int64     `json:"group_id" yaml:"group_id"`
-	Kind            string    `json:"kind" yaml:"kind"`
-	Value           string    `json:"value" yaml:"value"`
-	Meaning         string    `json:"meaning" yaml:"meaning"`
-	EvidenceCount   int       `json:"evidence_count" yaml:"evidence_count"`
-	ExampleEventIDs []string  `json:"example_event_ids" yaml:"example_event_ids"`
-	Confidence      float64   `json:"confidence" yaml:"confidence"`
-	Status          string    `json:"status" yaml:"status"`
-	CreatedAt       time.Time `json:"created_at" yaml:"created_at"`
+	ID               string     `json:"id" yaml:"id"`
+	GroupID          int64      `json:"group_id" yaml:"group_id"`
+	Kind             string     `json:"kind" yaml:"kind"`
+	Value            string     `json:"value" yaml:"value"`
+	Meaning          string     `json:"meaning" yaml:"meaning"`
+	EvidenceCount    int        `json:"evidence_count" yaml:"evidence_count"`
+	ExampleEventIDs  []string   `json:"example_event_ids" yaml:"example_event_ids"`
+	Confidence       float64    `json:"confidence" yaml:"confidence"`
+	Status           string     `json:"status" yaml:"status"`
+	PromotedMemoryID string     `json:"promoted_memory_id,omitempty" yaml:"promoted_memory_id,omitempty"`
+	PromotedAt       *time.Time `json:"promoted_at,omitempty" yaml:"promoted_at,omitempty"`
+	CreatedAt        time.Time  `json:"created_at" yaml:"created_at"`
 	// TargetUserID 非零时表示该候选属于特定用户（如 user_catchphrase），Scope 写 group:{GroupID}:user:{TargetUserID}。
 	// 零值表示群级别候选。
 	TargetUserID int64 `json:"target_user_id,omitempty" yaml:"target_user_id,omitempty"`

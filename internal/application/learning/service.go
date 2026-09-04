@@ -241,7 +241,7 @@ func (s *Service) applyLearning(ctx context.Context, candidates []memorydomain.L
 			return err
 		}
 		if s.candidates != nil {
-			if err := s.candidates.UpdateLearningCandidateStatus(ctx, candidate.ID, "promoted"); err != nil {
+			if err := s.candidates.MarkLearningCandidatePromoted(ctx, candidate.ID, fmt.Sprintf("memory-%x", sum[:8]), time.Now()); err != nil {
 				return err
 			}
 		}

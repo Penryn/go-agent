@@ -145,15 +145,16 @@ func (s *Store) UpsertLearningCandidate(ctx context.Context, candidate memorydom
 	if _, err = tx.ExecContext(ctx, `
 		INSERT INTO learning_candidates (
 			id, group_id, target_user_id, kind, value, meaning, evidence_count,
-			example_event_ids_json, confidence, status, created_at
-		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+			example_event_ids_json, confidence, status, promoted_memory_id, promoted_at, created_at
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
 		ON CONFLICT (id) DO UPDATE SET
 			meaning = EXCLUDED.meaning,
 			evidence_count = GREATEST(learning_candidates.evidence_count, EXCLUDED.evidence_count),
 			example_event_ids_json = EXCLUDED.example_event_ids_json,
-			confidence = EXCLUDED.confidence
+		confidence = EXCLUDED.confidence
 	`, candidate.ID, candidate.GroupID, candidate.TargetUserID, candidate.Kind, candidate.Value,
-		candidate.Meaning, candidate.EvidenceCount, evidence, candidate.Confidence, candidate.Status, candidate.CreatedAt); err != nil {
+		candidate.Meaning, candidate.EvidenceCount, evidence, candidate.Confidence, candidate.Status,
+		candidate.PromotedMemoryID, nullableTime(candidate.PromotedAt), candidate.CreatedAt); err != nil {
 		return err
 	}
 	for _, eventID := range candidate.ExampleEventIDs {
@@ -185,7 +186,7 @@ func (s *Store) ListLearningCandidates(ctx context.Context, groupID int64, limit
 	}
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT id, group_id, target_user_id, kind, value, meaning, evidence_count,
-		       example_event_ids_json, confidence, status, created_at
+		       example_event_ids_json, confidence, status, promoted_memory_id, promoted_at, created_at
 		FROM learning_candidates
 		WHERE group_id = $1 AND status IN ('staged', 'accepted')
 		ORDER BY created_at ASC, id ASC
@@ -199,13 +200,17 @@ func (s *Store) ListLearningCandidates(ctx context.Context, groupID int64, limit
 	for rows.Next() {
 		var candidate memorydomain.LearningCandidate
 		var evidence []byte
+		var promotedAt sql.NullTime
 		if err := rows.Scan(&candidate.ID, &candidate.GroupID, &candidate.TargetUserID, &candidate.Kind,
 			&candidate.Value, &candidate.Meaning, &candidate.EvidenceCount, &evidence,
-			&candidate.Confidence, &candidate.Status, &candidate.CreatedAt); err != nil {
+			&candidate.Confidence, &candidate.Status, &candidate.PromotedMemoryID, &promotedAt, &candidate.CreatedAt); err != nil {
 			return nil, err
 		}
 		if err := json.Unmarshal(evidence, &candidate.ExampleEventIDs); err != nil {
 			return nil, err
+		}
+		if promotedAt.Valid {
+			candidate.PromotedAt = &promotedAt.Time
 		}
 		result = append(result, candidate)
 	}
@@ -217,6 +222,27 @@ func (s *Store) UpdateLearningCandidateStatus(ctx context.Context, id, status st
 		return errors.New("learning candidate: id and status are required")
 	}
 	result, err := s.db.ExecContext(ctx, `UPDATE learning_candidates SET status = $1 WHERE id = $2`, status, id)
+	if err != nil {
+		return err
+	}
+	if affected, _ := result.RowsAffected(); affected == 0 {
+		return errors.New("learning candidate: not found")
+	}
+	return nil
+}
+
+func (s *Store) MarkLearningCandidatePromoted(ctx context.Context, id, memoryID string, promotedAt time.Time) error {
+	if id == "" || memoryID == "" {
+		return errors.New("learning candidate: id and memory_id are required")
+	}
+	if promotedAt.IsZero() {
+		promotedAt = time.Now()
+	}
+	result, err := s.db.ExecContext(ctx, `
+		UPDATE learning_candidates
+		SET status = 'promoted', promoted_memory_id = $1, promoted_at = $2
+		WHERE id = $3
+	`, memoryID, promotedAt, id)
 	if err != nil {
 		return err
 	}

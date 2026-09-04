@@ -227,6 +227,9 @@ func TestLearningCandidateLifecycle(t *testing.T) {
 	if err := store.UpdateLearningCandidateStatus(ctx, candidate.ID, "promoted"); err != nil {
 		t.Fatalf("promote candidate: %v", err)
 	}
+	if err := store.MarkLearningCandidatePromoted(ctx, candidate.ID, "memory-promoted", time.Now()); err != nil {
+		t.Fatalf("record promoted memory: %v", err)
+	}
 	remaining, err := store.ListLearningCandidates(ctx, 1, 10)
 	if err != nil || len(remaining) != 0 {
 		t.Fatalf("promoted candidate still listed: %#v, err=%v", remaining, err)
