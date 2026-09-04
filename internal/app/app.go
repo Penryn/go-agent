@@ -290,7 +290,7 @@ func New(ctx context.Context, cfg config.Config) (*App, error) {
 		humanRuntime.SetThoughtStore(thoughtStore)
 		contextService.WithThoughtStore(thoughtStore)
 	}
-	humanRuntime.SetMemoryStore(stores.memory)
+	humanRuntime.SetMemoryRetriever(hybridRetrieval)
 
 	// Scheduler：注册所有定时任务
 	sched := scheduler.New()

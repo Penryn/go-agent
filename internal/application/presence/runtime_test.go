@@ -20,6 +20,7 @@ import (
 	retrievalsvc "github.com/phlin/go-agent/internal/application/retrieval"
 	"github.com/phlin/go-agent/internal/config"
 	conversationdomain "github.com/phlin/go-agent/internal/domain/conversation"
+	memorydomain "github.com/phlin/go-agent/internal/domain/memory"
 	personadomain "github.com/phlin/go-agent/internal/domain/persona"
 	policydomain "github.com/phlin/go-agent/internal/domain/policy"
 	presencedomain "github.com/phlin/go-agent/internal/domain/presence"
@@ -445,5 +446,22 @@ func TestProactiveCandidateRequiresIdleAndTopic(t *testing.T) {
 	}
 	if !candidate.DueAt.After(idle) || candidate.ExpiresAt.Before(candidate.DueAt) {
 		t.Fatalf("proactive candidate timing broken: due=%v expires=%v", candidate.DueAt, candidate.ExpiresAt)
+	}
+}
+
+func TestRecallWorthyMemoryUsesRetrievalGateway(t *testing.T) {
+	ctx := context.Background()
+	store := testsupport.NewStore(t)
+	if err := store.UpsertMemory(ctx, memorydomain.MemoryRecord{
+		MemoryID: "old-joke", Scope: "group:1", Content: "那次露营下雨了", Importance: 0.9,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	r := &Runtime{
+		retriever: retrievalsvc.New(store, store, nil, nil, retrievalsvc.Config{}),
+		ctx:       ctx,
+	}
+	if got := r.recallWorthyMemory(1); got != "那次露营下雨了" {
+		t.Fatalf("unexpected recalled memory: %q", got)
 	}
 }

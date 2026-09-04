@@ -19,6 +19,7 @@ import (
 	"github.com/phlin/go-agent/internal/application/ports"
 	"github.com/phlin/go-agent/internal/application/presence/deliberation"
 	groupactor "github.com/phlin/go-agent/internal/application/presence/group_actor"
+	retrievalsvc "github.com/phlin/go-agent/internal/application/retrieval"
 	conversationdomain "github.com/phlin/go-agent/internal/domain/conversation"
 	policydomain "github.com/phlin/go-agent/internal/domain/policy"
 	presencedomain "github.com/phlin/go-agent/internal/domain/presence"
@@ -106,8 +107,8 @@ type Runtime struct {
 	canon         *personasvc.CanonService
 	executor      *action.Service
 	thoughts      ports.ThoughtStore
-	// memories 供主动开口时从长期记忆挑旧梗；nil 时跳过。
-	memories               ports.MemoryStore
+	// retriever 供主动开口时从长期记忆挑旧梗；nil 时跳过。
+	retriever              *retrievalsvc.Service
 	eventObservers         []EventObserverFunc
 	completedTurnObservers []CompletedTurnObserverFunc
 	whitelist              map[int64]struct{}
@@ -130,9 +131,9 @@ type Runtime struct {
 // optional so replay and in-memory callers can keep the runtime lightweight.
 func (r *Runtime) SetThoughtStore(store ports.ThoughtStore) { r.thoughts = store }
 
-// SetMemoryStore enables proactive memory recall during idle revival. Optional;
-// nil keeps the proactive loop limited to OpenLoops / ActiveTopic.
-func (r *Runtime) SetMemoryStore(store ports.MemoryStore) { r.memories = store }
+// SetMemoryRetriever enables proactive memory recall during idle revival.
+// Optional; nil keeps the proactive loop limited to OpenLoops / ActiveTopic.
+func (r *Runtime) SetMemoryRetriever(retriever *retrievalsvc.Service) { r.retriever = retriever }
 
 func (r *Runtime) SetConfirmationObserver(observer ConfirmationObserver) { r.confirmations = observer }
 
@@ -427,10 +428,10 @@ func (r *Runtime) proactiveCandidate(groupID int64, now time.Time) (presencedoma
 // recallWorthyMemory 从长期记忆里挑一条适合冷场提起的旧事。
 // 只取重要性 >= 0.6 的（低分闲事硬提会显得奇怪），失败静默。
 func (r *Runtime) recallWorthyMemory(groupID int64) string {
-	if r.memories == nil {
+	if r.retriever == nil {
 		return ""
 	}
-	records, err := r.memories.QueryMemories(r.ctx, ports.MemoryQuery{
+	records, err := r.retriever.SearchMemories(r.ctx, ports.MemoryQuery{
 		GroupID: groupID,
 		TopK:    3,
 	})
