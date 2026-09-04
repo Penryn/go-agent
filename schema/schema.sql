@@ -1,5 +1,6 @@
 CREATE TABLE IF NOT EXISTS messages (
   event_id VARCHAR(128) PRIMARY KEY,
+  origin VARCHAR(16) NOT NULL DEFAULT 'inbound',
   group_id BIGINT NOT NULL,
   user_id BIGINT NOT NULL,
   sender_qq_nickname VARCHAR(255) NOT NULL DEFAULT '',
@@ -18,6 +19,7 @@ CREATE TABLE IF NOT EXISTS messages (
 );
 ALTER TABLE messages ADD COLUMN IF NOT EXISTS sender_qq_nickname VARCHAR(255) NOT NULL DEFAULT '';
 ALTER TABLE messages ADD COLUMN IF NOT EXISTS sender_group_card VARCHAR(255) NOT NULL DEFAULT '';
+ALTER TABLE messages ADD COLUMN IF NOT EXISTS origin VARCHAR(16) NOT NULL DEFAULT 'inbound';
 CREATE INDEX IF NOT EXISTS idx_messages_group_occurred ON messages (group_id, occurred_at);
 CREATE INDEX IF NOT EXISTS idx_messages_message_id ON messages (message_id);
 

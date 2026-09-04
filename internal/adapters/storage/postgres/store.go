@@ -211,6 +211,9 @@ func (s *Store) ArchiveEvent(ctx context.Context, event conversationdomain.Conve
 	if event.GroupID <= 0 {
 		return fmt.Errorf("archive event: invalid group_id %d", event.GroupID)
 	}
+	if event.Origin == "" {
+		event.Origin = "inbound"
+	}
 	segmentsJSON, err := json.Marshal(event.Segments)
 	if err != nil {
 		return err
@@ -227,12 +230,13 @@ func (s *Store) ArchiveEvent(ctx context.Context, event conversationdomain.Conve
 
 	_, err = s.db.ExecContext(ctx, `
 		INSERT INTO messages (
-			event_id, group_id, user_id, sender_qq_nickname, sender_group_card,
+			event_id, origin, group_id, user_id, sender_qq_nickname, sender_group_card,
 			message_id, reply_to_message_id, kind, text_content,
 			segments_json, attachments_json, mentioned_bot, named_bot, is_reply_to_bot,
 			occurred_at, created_at
-		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)
 		ON CONFLICT (event_id) DO UPDATE SET
+			origin = EXCLUDED.origin,
 			sender_qq_nickname = EXCLUDED.sender_qq_nickname,
 			sender_group_card = EXCLUDED.sender_group_card,
 			text_content = EXCLUDED.text_content,
@@ -242,7 +246,7 @@ func (s *Store) ArchiveEvent(ctx context.Context, event conversationdomain.Conve
 			named_bot = EXCLUDED.named_bot,
 			is_reply_to_bot = EXCLUDED.is_reply_to_bot,
 			occurred_at = EXCLUDED.occurred_at
-	`, event.EventID, event.GroupID, event.UserID, event.Sender.QQNickname, event.Sender.GroupCard,
+	`, event.EventID, event.Origin, event.GroupID, event.UserID, event.Sender.QQNickname, event.Sender.GroupCard,
 		event.MessageID, nullableString(event.ReplyToMessageID), event.Kind, event.Text, segmentsJSON, attachmentsJSON,
 		event.MentionedBot, event.NamedBot, event.IsReplyToBot, occurredAt, time.Now())
 	return err
@@ -254,7 +258,7 @@ func (s *Store) RecentEvents(ctx context.Context, groupID int64, limit int) ([]c
 	}
 
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT event_id, group_id, user_id, sender_qq_nickname, sender_group_card,
+		SELECT event_id, origin, group_id, user_id, sender_qq_nickname, sender_group_card,
 		       message_id, reply_to_message_id, kind, text_content,
 		       segments_json, attachments_json, mentioned_bot, named_bot, is_reply_to_bot, occurred_at
 		FROM messages
@@ -288,7 +292,7 @@ func (s *Store) EventsAfter(ctx context.Context, groupID int64, after time.Time,
 		limit = 200
 	}
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT event_id, group_id, user_id, sender_qq_nickname, sender_group_card,
+		SELECT event_id, origin, group_id, user_id, sender_qq_nickname, sender_group_card,
 		       message_id, reply_to_message_id, kind, text_content,
 		       segments_json, attachments_json, mentioned_bot, named_bot, is_reply_to_bot, occurred_at
 		FROM messages
@@ -324,6 +328,7 @@ func scanEvent(rows *sql.Rows) (conversationdomain.ConversationEvent, error) {
 	)
 	if err := rows.Scan(
 		&event.EventID,
+		&event.Origin,
 		&event.GroupID,
 		&event.UserID,
 		&event.Sender.QQNickname,

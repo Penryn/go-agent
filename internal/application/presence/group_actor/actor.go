@@ -98,6 +98,7 @@ func (m *Manager) Observe(ctx context.Context, record presencedomain.EventRecord
 	if record.Origin == "" {
 		record.Origin = presencedomain.OriginInbound
 	}
+	record.Event.Origin = string(record.Origin)
 	// The durable archive is the source of truth for received facts. Write it
 	// before advancing the in-memory deduplication cursor so a transient store
 	// failure can be retried with the same event ID.
@@ -157,7 +158,11 @@ func (m *Manager) Replay(ctx context.Context, groupID int64, after time.Time, af
 		if event.TimestampUnix == 0 {
 			timestamp = time.Now()
 		}
-		record := presencedomain.EventRecord{EventID: event.EventID, GroupID: groupID, UserID: event.UserID, Origin: presencedomain.OriginInbound, Timestamp: timestamp, Event: event}
+		origin := presencedomain.OriginInbound
+		if event.Origin == string(presencedomain.OriginOutbound) {
+			origin = presencedomain.OriginOutbound
+		}
+		record := presencedomain.EventRecord{EventID: event.EventID, GroupID: groupID, UserID: event.UserID, Origin: origin, Timestamp: timestamp, Event: event}
 		a.memory = reduce(a.memory, record, a.tailSize)
 		a.seen[event.EventID] = struct{}{}
 	}

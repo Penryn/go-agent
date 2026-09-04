@@ -105,6 +105,7 @@ func TestEventsAndMemories(t *testing.T) {
 
 	event := conversationdomain.ConversationEvent{
 		EventID: fmt.Sprintf("event-%d", time.Now().UnixNano()),
+		Origin:  "outbound",
 		GroupID: 1,
 		UserID:  2,
 		Sender: conversationdomain.SenderIdentity{
@@ -132,6 +133,9 @@ func TestEventsAndMemories(t *testing.T) {
 	}
 	if events[0].Sender.QQNickname != "alice-qq" || events[0].Sender.GroupCard != "alice-card" {
 		t.Fatalf("sender identity did not roundtrip: %+v", events[0].Sender)
+	}
+	if events[0].Origin != "outbound" {
+		t.Fatalf("event origin did not roundtrip: %q", events[0].Origin)
 	}
 	after, err := store.EventsAfter(ctx, 1, time.Now().Add(-time.Hour), "", 10)
 	if err != nil {

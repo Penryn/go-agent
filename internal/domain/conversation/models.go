@@ -36,6 +36,7 @@ type SenderIdentity struct {
 
 type ConversationEvent struct {
 	EventID          string                             `json:"event_id" yaml:"event_id"`
+	Origin           string                             `json:"origin,omitempty" yaml:"origin,omitempty"`
 	GroupID          int64                              `json:"group_id" yaml:"group_id"`
 	UserID           int64                              `json:"user_id" yaml:"user_id"`
 	Sender           SenderIdentity                     `json:"sender,omitempty" yaml:"sender,omitempty"`
