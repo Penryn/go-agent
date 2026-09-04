@@ -14,14 +14,18 @@ import (
 type WriteIntent struct {
 	// MemoryID 可选；非空时 MarkIntent 直接使用该值作为记录主键，实现幂等写入（相同 ID 的写入会覆盖而非新增）。
 	// 空时自动生成基于时间戳的唯一 ID（原有行为）。
-	MemoryID      string
-	Scope         string
-	MemoryType    string
-	Subject       string
-	Content       string
-	SourceEventID string
-	Importance    float64
-	Confidence    float64
+	MemoryID           string
+	Scope              string
+	MemoryType         string
+	Subject            string
+	Content            string
+	SourceEventID      string
+	SourceEventIDs     []string
+	SourceSessionID    string
+	Origin             string
+	SupersedesMemoryID string
+	Importance         float64
+	Confidence         float64
 }
 
 // Option 是 Service 的函数式配置项。
@@ -73,16 +77,26 @@ func (s *Service) MarkIntent(ctx context.Context, intent WriteIntent) (memorydom
 		memoryID = fmt.Sprintf("memory-%d", time.Now().UnixNano())
 	}
 	record := memorydomain.MemoryRecord{
-		MemoryID:      memoryID,
-		Scope:         intent.Scope,
-		Type:          intent.MemoryType,
-		Subject:       intent.Subject,
-		Content:       intent.Content,
-		SourceEventID: intent.SourceEventID,
-		Confidence:    intent.Confidence,
-		Importance:    intent.Importance,
-		CreatedAt:     time.Now(),
-		ExpiresAt:     s.resolveExpiresAt(intent.MemoryType),
+		MemoryID:           memoryID,
+		Scope:              intent.Scope,
+		Type:               intent.MemoryType,
+		Subject:            intent.Subject,
+		Content:            intent.Content,
+		SourceEventID:      intent.SourceEventID,
+		SourceEventIDs:     append([]string(nil), intent.SourceEventIDs...),
+		SourceSessionID:    intent.SourceSessionID,
+		Origin:             intent.Origin,
+		SupersedesMemoryID: intent.SupersedesMemoryID,
+		Confidence:         intent.Confidence,
+		Importance:         intent.Importance,
+		CreatedAt:          time.Now(),
+		ExpiresAt:          s.resolveExpiresAt(intent.MemoryType),
+	}
+	if record.Origin == "" {
+		record.Origin = "agent"
+	}
+	if record.SourceEventID != "" && len(record.SourceEventIDs) == 0 {
+		record.SourceEventIDs = []string{record.SourceEventID}
 	}
 	record.Revision = record.CreatedAt.UnixNano()
 

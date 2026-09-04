@@ -3,6 +3,7 @@ package postgresstore
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"strings"
 
@@ -91,8 +92,9 @@ func (s *VectorStore) SearchMemories(ctx context.Context, query ports.MemoryQuer
 	}
 
 	statement := `
-		SELECT m.memory_id, m.scope, m.type, m.subject, m.content, m.source_event_id, m.descriptor_ref,
-		       m.confidence, m.importance, m.revision, m.created_at, m.expires_at,
+		SELECT m.memory_id, m.scope, m.type, m.subject, m.content, m.source_event_id, m.source_event_ids_json,
+		       m.source_session_id, m.origin, m.supersedes_memory_id, m.descriptor_ref,
+		       m.confidence, m.importance, m.revision, m.created_at, m.expires_at, m.recall_count, m.last_recalled_at,
 		       1 - (v.embedding <=> $1) AS similarity
 		FROM memory_vectors v
 		JOIN memories m ON m.memory_id = v.memory_id
@@ -127,16 +129,24 @@ func (s *VectorStore) SearchMemories(ctx context.Context, query ports.MemoryQuer
 	records := []memorydomain.MemoryRecord{}
 	for rows.Next() {
 		var (
-			record     memorydomain.MemoryRecord
-			expiresAt  sql.NullTime
-			similarity float64
+			record                    memorydomain.MemoryRecord
+			expiresAt, lastRecalledAt sql.NullTime
+			eventIDs                  []byte
+			similarity                float64
 		)
-		if err := rows.Scan(&record.MemoryID, &record.Scope, &record.Type, &record.Subject, &record.Content, &record.SourceEventID, &record.DescriptorRef,
-			&record.Confidence, &record.Importance, &record.Revision, &record.CreatedAt, &expiresAt, &similarity); err != nil {
+		if err := rows.Scan(&record.MemoryID, &record.Scope, &record.Type, &record.Subject, &record.Content, &record.SourceEventID, &eventIDs,
+			&record.SourceSessionID, &record.Origin, &record.SupersedesMemoryID, &record.DescriptorRef,
+			&record.Confidence, &record.Importance, &record.Revision, &record.CreatedAt, &expiresAt, &record.RecallCount, &lastRecalledAt, &similarity); err != nil {
 			return nil, err
 		}
 		if expiresAt.Valid {
 			record.ExpiresAt = &expiresAt.Time
+		}
+		if lastRecalledAt.Valid {
+			record.LastRecalledAt = &lastRecalledAt.Time
+		}
+		if err := json.Unmarshal(eventIDs, &record.SourceEventIDs); err != nil {
+			return nil, err
 		}
 		records = append(records, record)
 	}

@@ -141,15 +141,19 @@ func TestEventsAndMemories(t *testing.T) {
 	}
 
 	record := memorydomain.MemoryRecord{
-		MemoryID:      fmt.Sprintf("memory-%d", time.Now().UnixNano()),
-		Scope:         "group:1",
-		Type:          "preference",
-		Subject:       "梗",
-		Content:       "这个群爱聊旧梗",
-		SourceEventID: event.EventID,
-		Confidence:    0.9,
-		Importance:    0.8,
-		CreatedAt:     time.Now(),
+		MemoryID:           fmt.Sprintf("memory-%d", time.Now().UnixNano()),
+		Scope:              "group:1",
+		Type:               "preference",
+		Subject:            "梗",
+		Content:            "这个群爱聊旧梗",
+		SourceEventID:      event.EventID,
+		SourceEventIDs:     []string{event.EventID, "event-evidence-2"},
+		SourceSessionID:    "session-1",
+		Origin:             "learning",
+		SupersedesMemoryID: "memory-previous",
+		Confidence:         0.9,
+		Importance:         0.8,
+		CreatedAt:          time.Now(),
 	}
 	if err := store.UpsertMemory(ctx, record); err != nil {
 		t.Fatalf("upsert memory: %v", err)
@@ -160,6 +164,18 @@ func TestEventsAndMemories(t *testing.T) {
 	}
 	if len(records) != 1 {
 		t.Fatalf("expected 1 memory, got %d", len(records))
+	}
+	if records[0].SourceEventID != event.EventID || len(records[0].SourceEventIDs) != 2 ||
+		records[0].SourceSessionID != "session-1" || records[0].Origin != "learning" ||
+		records[0].SupersedesMemoryID != "memory-previous" {
+		t.Fatalf("memory provenance did not roundtrip: %+v", records[0])
+	}
+	if err := store.RecordMemoryRecall(ctx, []string{record.MemoryID}, time.Now()); err != nil {
+		t.Fatalf("record memory recall: %v", err)
+	}
+	recalled, err := store.QueryMemories(ctx, ports.MemoryQuery{GroupID: 1, Scope: "group:1", TopK: 3})
+	if err != nil || len(recalled) != 1 || recalled[0].RecallCount != 1 || recalled[0].LastRecalledAt == nil {
+		t.Fatalf("memory recall metadata did not roundtrip: records=%+v err=%v", recalled, err)
 	}
 }
 
@@ -183,7 +199,7 @@ func TestArchiveEventRejectsInvalidGroup(t *testing.T) {
 
 func TestLearningCandidateLifecycle(t *testing.T) {
 	ctx := context.Background()
-	store := testsupport.NewStore(t)
+	store := NewStore(setupPostgres(t))
 	candidate := memorydomain.LearningCandidate{
 		ID: "candidate-lifecycle", GroupID: 1, Kind: "group_slang", Value: "离谱",
 		Meaning: "群内高频表达", EvidenceCount: 3, ExampleEventIDs: []string{"event-1"},

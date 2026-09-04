@@ -24,6 +24,7 @@ import (
 
 var (
 	_ ports.MemoryStore                 = (*Store)(nil)
+	_ ports.MemoryRecallStore           = (*Store)(nil)
 	_ ports.LearningStateStore          = (*Store)(nil)
 	_ ports.LearningCandidateStore      = (*Store)(nil)
 	_ ports.ThoughtStore                = (*Store)(nil)
@@ -363,6 +364,21 @@ func (s *Store) UpsertMemory(ctx context.Context, record memorydomain.MemoryReco
 	return upsertMemoryExec(ctx, s.db, record)
 }
 
+func (s *Store) RecordMemoryRecall(ctx context.Context, memoryIDs []string, recalledAt time.Time) error {
+	if len(memoryIDs) == 0 {
+		return nil
+	}
+	if recalledAt.IsZero() {
+		recalledAt = time.Now()
+	}
+	_, err := s.db.ExecContext(ctx, `
+		UPDATE memories
+		SET recall_count = recall_count + 1, last_recalled_at = $1
+		WHERE memory_id = ANY($2)
+	`, recalledAt, memoryIDs)
+	return err
+}
+
 type sqlExecer interface {
 	ExecContext(context.Context, string, ...any) (sql.Result, error)
 }
@@ -377,25 +393,38 @@ func upsertMemoryExec(ctx context.Context, execer sqlExecer, record memorydomain
 	if revision <= 0 {
 		revision = createdAt.UnixNano()
 	}
+	eventIDs, err := json.Marshal(record.SourceEventIDs)
+	if err != nil {
+		return err
+	}
+	if record.Origin == "" {
+		record.Origin = "agent"
+	}
 
-	_, err := execer.ExecContext(ctx, `
+	_, err = execer.ExecContext(ctx, `
 		INSERT INTO memories (
-			memory_id, scope, type, subject, content, source_event_id, descriptor_ref,
+			memory_id, scope, type, subject, content, source_event_id, source_event_ids_json,
+			source_session_id, origin, supersedes_memory_id, descriptor_ref,
 			confidence, importance, revision, created_at, expires_at, updated_at
-		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)
 		ON CONFLICT (memory_id) DO UPDATE SET
 			scope = EXCLUDED.scope,
 			type = EXCLUDED.type,
 			subject = EXCLUDED.subject,
 			content = EXCLUDED.content,
 			source_event_id = EXCLUDED.source_event_id,
+			source_event_ids_json = EXCLUDED.source_event_ids_json,
+			source_session_id = EXCLUDED.source_session_id,
+			origin = EXCLUDED.origin,
+			supersedes_memory_id = EXCLUDED.supersedes_memory_id,
 			descriptor_ref = EXCLUDED.descriptor_ref,
 			confidence = EXCLUDED.confidence,
 			importance = EXCLUDED.importance,
 			revision = EXCLUDED.revision,
 			expires_at = EXCLUDED.expires_at,
 			updated_at = EXCLUDED.updated_at
-	`, record.MemoryID, record.Scope, record.Type, record.Subject, record.Content, record.SourceEventID, record.DescriptorRef,
+	`, record.MemoryID, record.Scope, record.Type, record.Subject, record.Content, record.SourceEventID, eventIDs,
+		record.SourceSessionID, record.Origin, record.SupersedesMemoryID, record.DescriptorRef,
 		record.Confidence, record.Importance, revision, createdAt, nullableTime(record.ExpiresAt), now)
 	return err
 }
@@ -445,8 +474,9 @@ func (s *Store) UpsertMemoryAndEnqueueVector(ctx context.Context, record memoryd
 
 func (s *Store) QueryMemories(ctx context.Context, query ports.MemoryQuery) ([]memorydomain.MemoryRecord, error) {
 	base := `
-		SELECT memory_id, scope, type, subject, content, source_event_id, descriptor_ref,
-		       confidence, importance, revision, created_at, expires_at
+		SELECT memory_id, scope, type, subject, content, source_event_id, source_event_ids_json,
+		       source_session_id, origin, supersedes_memory_id, descriptor_ref,
+		       confidence, importance, revision, created_at, expires_at, recall_count, last_recalled_at
 		FROM memories
 		WHERE 1=1
 	`
@@ -490,8 +520,9 @@ func (s *Store) QueryMemories(ctx context.Context, query ports.MemoryQuery) ([]m
 	records := []memorydomain.MemoryRecord{}
 	for rows.Next() {
 		var (
-			record    memorydomain.MemoryRecord
-			expiresAt sql.NullTime
+			record                    memorydomain.MemoryRecord
+			expiresAt, lastRecalledAt sql.NullTime
+			eventIDs                  []byte
 		)
 		if err := rows.Scan(
 			&record.MemoryID,
@@ -500,17 +531,29 @@ func (s *Store) QueryMemories(ctx context.Context, query ports.MemoryQuery) ([]m
 			&record.Subject,
 			&record.Content,
 			&record.SourceEventID,
+			&eventIDs,
+			&record.SourceSessionID,
+			&record.Origin,
+			&record.SupersedesMemoryID,
 			&record.DescriptorRef,
 			&record.Confidence,
 			&record.Importance,
 			&record.Revision,
 			&record.CreatedAt,
 			&expiresAt,
+			&record.RecallCount,
+			&lastRecalledAt,
 		); err != nil {
 			return nil, err
 		}
 		if expiresAt.Valid {
 			record.ExpiresAt = &expiresAt.Time
+		}
+		if lastRecalledAt.Valid {
+			record.LastRecalledAt = &lastRecalledAt.Time
+		}
+		if err := json.Unmarshal(eventIDs, &record.SourceEventIDs); err != nil {
+			return nil, err
 		}
 		records = append(records, record)
 	}

@@ -72,6 +72,10 @@ type MemoryStore interface {
 	QueryMemories(ctx context.Context, query MemoryQuery) ([]memorydomain.MemoryRecord, error)
 }
 
+type MemoryRecallStore interface {
+	RecordMemoryRecall(ctx context.Context, memoryIDs []string, recalledAt time.Time) error
+}
+
 // AtomicMemoryProjectionStore commits the authoritative memory and its durable
 // vector projection task in one database transaction.
 type AtomicMemoryProjectionStore interface {

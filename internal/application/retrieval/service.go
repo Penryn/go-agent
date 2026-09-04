@@ -35,6 +35,7 @@ type Service struct {
 	memeVector   ports.VectorMemeStore
 	cfg          Config
 	traceStore   ports.RetrievalTraceStore
+	recallStore  ports.MemoryRecallStore
 }
 
 func New(memoryStore ports.MemoryStore, memeStore ports.MemeStore, memoryVector ports.VectorMemoryStore, memeVector ports.VectorMemeStore, cfg Config) *Service {
@@ -45,7 +46,8 @@ func New(memoryStore ports.MemoryStore, memeStore ports.MemeStore, memoryVector 
 		cfg.MemeCandidateK = 30
 	}
 	traceStore, _ := memoryStore.(ports.RetrievalTraceStore)
-	return &Service{memoryStore: memoryStore, memeStore: memeStore, memoryVector: memoryVector, memeVector: memeVector, cfg: cfg, traceStore: traceStore}
+	recallStore, _ := memoryStore.(ports.MemoryRecallStore)
+	return &Service{memoryStore: memoryStore, memeStore: memeStore, memoryVector: memoryVector, memeVector: memeVector, cfg: cfg, traceStore: traceStore, recallStore: recallStore}
 }
 
 func (s *Service) SearchMemories(ctx context.Context, query ports.MemoryQuery) ([]memorydomain.MemoryRecord, error) {
@@ -88,6 +90,17 @@ func (s *Service) SearchMemories(ctx context.Context, query ports.MemoryQuery) (
 		return nil, errors.Join(wrapTrackError("memory lexical search", lexicalErr), wrapTrackError("memory vector search", semanticErr))
 	}
 	results := mergeMemoryResults(lexical, semantic, query.TopK)
+	if s.recallStore != nil && len(results) > 0 {
+		ids := make([]string, 0, len(results))
+		for _, record := range results {
+			if record.MemoryID != "" {
+				ids = append(ids, record.MemoryID)
+			}
+		}
+		if err := s.recallStore.RecordMemoryRecall(ctx, ids, time.Now()); err != nil {
+			slog.WarnContext(ctx, "retrieval: record memory recall failed", "err", err)
+		}
+	}
 	if s.traceStore != nil && query.EventID != "" {
 		seen := make(map[string]struct{}, len(lexical)+len(semantic))
 		for _, record := range append(append([]memorydomain.MemoryRecord{}, lexical...), semantic...) {

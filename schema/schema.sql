@@ -28,17 +28,29 @@ CREATE TABLE IF NOT EXISTS memories (
   subject VARCHAR(255) NOT NULL,
   content TEXT NOT NULL,
   source_event_id VARCHAR(128) NOT NULL,
+  source_event_ids_json JSONB NOT NULL DEFAULT '[]'::jsonb,
+  source_session_id VARCHAR(128) NOT NULL DEFAULT '',
+  origin VARCHAR(32) NOT NULL DEFAULT 'agent',
+  supersedes_memory_id VARCHAR(128) NOT NULL DEFAULT '',
   descriptor_ref VARCHAR(255) NOT NULL,
   confidence DOUBLE PRECISION NOT NULL,
   importance DOUBLE PRECISION NOT NULL,
   revision BIGINT NOT NULL DEFAULT 1,
   created_at TIMESTAMPTZ NOT NULL,
   expires_at TIMESTAMPTZ NULL,
+  recall_count INT NOT NULL DEFAULT 0,
+  last_recalled_at TIMESTAMPTZ NULL,
   updated_at TIMESTAMPTZ NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_memories_scope_type ON memories (scope, type);
 CREATE INDEX IF NOT EXISTS idx_memories_created ON memories (created_at);
 ALTER TABLE memories ADD COLUMN IF NOT EXISTS revision BIGINT NOT NULL DEFAULT 1;
+ALTER TABLE memories ADD COLUMN IF NOT EXISTS source_event_ids_json JSONB NOT NULL DEFAULT '[]'::jsonb;
+ALTER TABLE memories ADD COLUMN IF NOT EXISTS source_session_id VARCHAR(128) NOT NULL DEFAULT '';
+ALTER TABLE memories ADD COLUMN IF NOT EXISTS origin VARCHAR(32) NOT NULL DEFAULT 'agent';
+ALTER TABLE memories ADD COLUMN IF NOT EXISTS supersedes_memory_id VARCHAR(128) NOT NULL DEFAULT '';
+ALTER TABLE memories ADD COLUMN IF NOT EXISTS recall_count INT NOT NULL DEFAULT 0;
+ALTER TABLE memories ADD COLUMN IF NOT EXISTS last_recalled_at TIMESTAMPTZ NULL;
 
 CREATE TABLE IF NOT EXISTS member_profiles (
   group_id BIGINT NOT NULL,
