@@ -191,6 +191,35 @@ func TestManagerRestoresWorkingMemoryAfterRestart(t *testing.T) {
 	}
 }
 
+func TestManagerReplaysDurableEventsIntoProjection(t *testing.T) {
+	store := testsupport.NewStore(t)
+	ctx := context.Background()
+	for _, event := range []conversationdomain.ConversationEvent{
+		{EventID: "replay-1", GroupID: 12, UserID: 7, Text: "第一条", TimestampUnix: 100},
+		{EventID: "replay-2", GroupID: 12, UserID: 8, Text: "第二条", TimestampUnix: 101},
+	} {
+		if err := store.ArchiveEvent(ctx, event); err != nil {
+			t.Fatal(err)
+		}
+	}
+	manager := NewManager(ingress.NewMemoryEventLog(), WithStateStore(store))
+	defer manager.Close()
+	memory, err := manager.Replay(ctx, 12, time.Unix(0, 0), "", 10)
+	if err != nil {
+		t.Fatalf("replay: %v", err)
+	}
+	if len(memory.RecentTail) != 2 || memory.Version != 2 || memory.Checkpoint.Cursor.EventID != "replay-2" {
+		t.Fatalf("durable replay did not rebuild checkpoint: %+v", memory)
+	}
+	if _, err := manager.Replay(ctx, 12, time.Unix(0, 0), "", 10); err != nil {
+		t.Fatalf("idempotent replay: %v", err)
+	}
+	loaded, err := store.LoadWorkingMemory(ctx, 12)
+	if err != nil || loaded.Version != 2 {
+		t.Fatalf("replayed projection was not persisted: memory=%+v err=%v", loaded, err)
+	}
+}
+
 func TestManagerPersistsPromptSessionThroughActor(t *testing.T) {
 	store := testsupport.NewStore(t)
 	manager := NewManager(ingress.NewMemoryEventLog(), WithStateStore(store))

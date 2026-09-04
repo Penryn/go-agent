@@ -47,6 +47,12 @@ type WorkingMemoryStore interface {
 	SaveWorkingMemory(context.Context, presencedomain.GroupWorkingMemory) error
 }
 
+// EventReplayStore is the optional durable event source used to rebuild a
+// projection after its cache is lost or intentionally invalidated.
+type EventReplayStore interface {
+	EventsAfter(context.Context, int64, time.Time, string, int) ([]conversationdomain.ConversationEvent, error)
+}
+
 // WithArchive mirrors every observed event into the durable conversation
 // store. The event log remains the fast perception path; archive failures are
 // returned so callers can retry without losing the in-memory observation.
@@ -121,6 +127,46 @@ func (m *Manager) Snapshot(ctx context.Context, groupID int64) (presencedomain.G
 		return presencedomain.GroupWorkingMemory{}, err
 	}
 	return a.snapshot(), nil
+}
+
+// Replay rebuilds the group projection from durable events after a cursor.
+// Existing tail events are deduplicated by event ID, so replay is safe to
+// retry and can be used after a partial cache write.
+func (m *Manager) Replay(ctx context.Context, groupID int64, after time.Time, afterEventID string, limit int) (presencedomain.GroupWorkingMemory, error) {
+	source, ok := m.state.(EventReplayStore)
+	if !ok {
+		return presencedomain.GroupWorkingMemory{}, errors.New("group actor: event replay store is not configured")
+	}
+	events, err := source.EventsAfter(ctx, groupID, after, afterEventID, limit)
+	if err != nil {
+		return presencedomain.GroupWorkingMemory{}, err
+	}
+	a, err := m.actor(ctx, groupID)
+	if err != nil {
+		return presencedomain.GroupWorkingMemory{}, err
+	}
+	a.mu.Lock()
+	for _, event := range events {
+		if event.EventID == "" {
+			continue
+		}
+		if _, seen := a.seen[event.EventID]; seen {
+			continue
+		}
+		timestamp := time.Unix(event.TimestampUnix, 0)
+		if event.TimestampUnix == 0 {
+			timestamp = time.Now()
+		}
+		record := presencedomain.EventRecord{EventID: event.EventID, GroupID: groupID, UserID: event.UserID, Origin: presencedomain.OriginInbound, Timestamp: timestamp, Event: event}
+		a.memory = reduce(a.memory, record, a.tailSize)
+		a.seen[event.EventID] = struct{}{}
+	}
+	memory := cloneMemory(a.memory)
+	a.mu.Unlock()
+	if err := m.save(ctx, memory); err != nil {
+		return presencedomain.GroupWorkingMemory{}, err
+	}
+	return memory, nil
 }
 
 // UpdatePromptSession persists the model-visible conversation for one group.
@@ -498,6 +544,12 @@ func (a *actor) pruneSeen(tail []presencedomain.EventRecord) {
 func reduce(memory presencedomain.GroupWorkingMemory, record presencedomain.EventRecord, tailSize int) presencedomain.GroupWorkingMemory {
 	memory.Version++
 	memory.LastUpdatedAt = record.Timestamp
+	memory.Checkpoint = presencedomain.ProjectionCheckpoint{
+		Name:      "group_working_memory",
+		Version:   memory.Version,
+		Cursor:    conversationdomain.ContextCursor{EventID: record.EventID, TimestampUnix: record.Timestamp.Unix()},
+		UpdatedAt: record.Timestamp,
+	}
 	memory.RecentTail = append(memory.RecentTail, record)
 	if len(memory.RecentTail) > tailSize {
 		memory.RecentTail = memory.RecentTail[len(memory.RecentTail)-tailSize:]

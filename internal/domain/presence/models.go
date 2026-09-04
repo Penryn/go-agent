@@ -48,6 +48,16 @@ type GroupWorkingMemory struct {
 	MediaByEvent  map[string][]mediadomain.MediaDescriptor `json:"media_by_event"`
 	LastUpdatedAt time.Time                                `json:"last_updated_at"`
 	PromptSession conversationdomain.PromptSession         `json:"prompt_session,omitempty"`
+	Checkpoint    ProjectionCheckpoint                     `json:"checkpoint"`
+}
+
+// ProjectionCheckpoint identifies the durable boundary represented by the
+// rebuildable working-memory cache.
+type ProjectionCheckpoint struct {
+	Name      string                           `json:"name"`
+	Version   uint64                           `json:"version"`
+	Cursor    conversationdomain.ContextCursor `json:"cursor"`
+	UpdatedAt time.Time                        `json:"updated_at"`
 }
 
 type CandidateStatus string
