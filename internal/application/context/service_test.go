@@ -5,10 +5,38 @@ import (
 	"testing"
 	"time"
 
+	"github.com/phlin/go-agent/internal/application/ports"
+	groupactor "github.com/phlin/go-agent/internal/application/presence/group_actor"
+	"github.com/phlin/go-agent/internal/application/presence/ingress"
 	conversationdomain "github.com/phlin/go-agent/internal/domain/conversation"
+	memorydomain "github.com/phlin/go-agent/internal/domain/memory"
 	personadomain "github.com/phlin/go-agent/internal/domain/persona"
+	presencedomain "github.com/phlin/go-agent/internal/domain/presence"
 	"github.com/phlin/go-agent/internal/testsupport"
 )
+
+type replayMemoryStore struct {
+	recent, delta           []conversationdomain.ConversationEvent
+	recentCalls, deltaCalls int
+}
+
+func (s *replayMemoryStore) ArchiveEvent(stdcontext.Context, conversationdomain.ConversationEvent) error {
+	return nil
+}
+func (s *replayMemoryStore) RecentEvents(stdcontext.Context, int64, int) ([]conversationdomain.ConversationEvent, error) {
+	s.recentCalls++
+	return s.recent, nil
+}
+func (s *replayMemoryStore) UpsertMemory(stdcontext.Context, memorydomain.MemoryRecord) error {
+	return nil
+}
+func (s *replayMemoryStore) QueryMemories(stdcontext.Context, ports.MemoryQuery) ([]memorydomain.MemoryRecord, error) {
+	return nil, nil
+}
+func (s *replayMemoryStore) EventsAfter(stdcontext.Context, int64, time.Time, string, int) ([]conversationdomain.ConversationEvent, error) {
+	s.deltaCalls++
+	return s.delta, nil
+}
 
 func TestMergeRecentTurnsOrdersAndBoundsTheProjection(t *testing.T) {
 	merged := mergeRecentTurns(
@@ -25,6 +53,50 @@ func TestMergeRecentTurnsOrdersAndBoundsTheProjection(t *testing.T) {
 	)
 	if len(merged) != 3 || merged[0].EventID != "b" || merged[1].EventID != "c" || merged[2].EventID != "d" {
 		t.Fatalf("unexpected recent turns: %+v", merged)
+	}
+}
+
+func TestRestoreRecentTurnsUsesCheckpointDelta(t *testing.T) {
+	ctx := stdcontext.Background()
+	store := &replayMemoryStore{delta: []conversationdomain.ConversationEvent{{EventID: "delta", TimestampUnix: 20}}}
+	manager := groupactor.NewManager(ingress.NewMemoryEventLog())
+	defer manager.Close()
+	base := time.Unix(10, 0)
+	if _, err := manager.Observe(ctx, presencedomain.EventRecord{
+		EventID: "base", GroupID: 1, Timestamp: base,
+		Event: conversationdomain.ConversationEvent{EventID: "base", GroupID: 1, TimestampUnix: 10},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	service := &Service{memoryStore: store, workingMemory: manager}
+	recent, turns, truncated, err := service.restoreRecentTurns(ctx, conversationdomain.EventEnvelope{
+		Event: conversationdomain.ConversationEvent{EventID: "current", GroupID: 1, TimestampUnix: 30},
+	}, 5)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if recent.Version != 1 || len(turns) != 3 || turns[1].EventID != "delta" || turns[2].EventID != "current" || truncated {
+		t.Fatalf("unexpected incremental restore: memory=%+v turns=%+v truncated=%v", recent, turns, truncated)
+	}
+	if store.deltaCalls != 1 || store.recentCalls != 0 {
+		t.Fatalf("unexpected archive calls: delta=%d recent=%d", store.deltaCalls, store.recentCalls)
+	}
+}
+
+func TestRestoreRecentTurnsFallsBackWithoutCheckpoint(t *testing.T) {
+	ctx := stdcontext.Background()
+	store := &replayMemoryStore{recent: []conversationdomain.ConversationEvent{{EventID: "archived", TimestampUnix: 10}}}
+	manager := groupactor.NewManager(ingress.NewMemoryEventLog())
+	defer manager.Close()
+	service := &Service{memoryStore: store, workingMemory: manager}
+	_, turns, _, err := service.restoreRecentTurns(ctx, conversationdomain.EventEnvelope{
+		Event: conversationdomain.ConversationEvent{EventID: "current", GroupID: 1, TimestampUnix: 20},
+	}, 5)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(turns) != 2 || turns[0].EventID != "archived" || store.recentCalls != 1 || store.deltaCalls != 0 {
+		t.Fatalf("checkpoint fallback failed: turns=%+v recent=%d delta=%d", turns, store.recentCalls, store.deltaCalls)
 	}
 }
 
