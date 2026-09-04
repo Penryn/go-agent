@@ -72,7 +72,7 @@ func (s *Service) Run(ctx context.Context, input Input) (Output, error) {
 	if err != nil {
 		return Output{}, err
 	}
-	return filterCandidates(out), nil
+	return out, nil
 }
 
 // RegisterJobs 向调度器注册学习相关定时任务，模式与 persona.Service.RegisterJobs 一致。
@@ -442,16 +442,4 @@ func hasTopicSuffix(phrase string) bool {
 		}
 	}
 	return false
-}
-
-// filterCandidates 丢弃置信度不足的候选（与 applyLearning 的阈值一致）。
-func filterCandidates(input Output) Output {
-	filtered := input.Candidates[:0]
-	for _, candidate := range input.Candidates {
-		if candidate.Confidence >= 0.7 {
-			filtered = append(filtered, candidate)
-		}
-	}
-	input.Candidates = filtered
-	return input
 }
