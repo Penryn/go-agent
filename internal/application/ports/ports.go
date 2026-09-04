@@ -42,18 +42,24 @@ type RetrievalTraceStore interface {
 }
 
 type RetrievalTrace struct {
-	TraceID        string
-	EventID        string
-	GroupID        int64
-	UserID         int64
-	Query          string
-	CandidateCount int
-	HitMemoryIDs   []string
-	SelectedIDs    []string
-	Outcome        string
-	VectorEnabled  bool
-	VectorError    bool
-	CreatedAt      time.Time
+	TraceID         string
+	EventID         string
+	GroupID         int64
+	UserID          int64
+	Query           string
+	CandidateCount  int
+	HitMemoryIDs    []string
+	SelectedIDs     []string
+	Outcome         string
+	VectorEnabled   bool
+	VectorError     bool
+	LexicalRanks    map[string]int
+	VectorRanks     map[string]int
+	CandidateScores map[string]float64
+	LatencyMS       int64
+	DegradedTracks  []string
+	SelectionReason string
+	CreatedAt       time.Time
 }
 
 type MemeQuery struct {

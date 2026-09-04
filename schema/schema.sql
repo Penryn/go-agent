@@ -178,10 +178,22 @@ CREATE TABLE IF NOT EXISTS retrieval_traces (
 	outcome VARCHAR(64) NOT NULL DEFAULT '',
 	vector_enabled BOOLEAN NOT NULL DEFAULT FALSE,
 	vector_error BOOLEAN NOT NULL DEFAULT FALSE,
+	lexical_ranks_json JSONB NOT NULL DEFAULT '{}'::jsonb,
+	vector_ranks_json JSONB NOT NULL DEFAULT '{}'::jsonb,
+	candidate_scores_json JSONB NOT NULL DEFAULT '{}'::jsonb,
+	latency_ms BIGINT NOT NULL DEFAULT 0,
+	degraded_tracks_json JSONB NOT NULL DEFAULT '[]'::jsonb,
+	selection_reason VARCHAR(255) NOT NULL DEFAULT '',
 	created_at TIMESTAMPTZ NOT NULL
 );
 ALTER TABLE retrieval_traces ADD COLUMN IF NOT EXISTS vector_enabled BOOLEAN NOT NULL DEFAULT FALSE;
 ALTER TABLE retrieval_traces ADD COLUMN IF NOT EXISTS vector_error BOOLEAN NOT NULL DEFAULT FALSE;
+ALTER TABLE retrieval_traces ADD COLUMN IF NOT EXISTS lexical_ranks_json JSONB NOT NULL DEFAULT '{}'::jsonb;
+ALTER TABLE retrieval_traces ADD COLUMN IF NOT EXISTS vector_ranks_json JSONB NOT NULL DEFAULT '{}'::jsonb;
+ALTER TABLE retrieval_traces ADD COLUMN IF NOT EXISTS candidate_scores_json JSONB NOT NULL DEFAULT '{}'::jsonb;
+ALTER TABLE retrieval_traces ADD COLUMN IF NOT EXISTS latency_ms BIGINT NOT NULL DEFAULT 0;
+ALTER TABLE retrieval_traces ADD COLUMN IF NOT EXISTS degraded_tracks_json JSONB NOT NULL DEFAULT '[]'::jsonb;
+ALTER TABLE retrieval_traces ADD COLUMN IF NOT EXISTS selection_reason VARCHAR(255) NOT NULL DEFAULT '';
 CREATE INDEX IF NOT EXISTS idx_retrieval_traces_group_created ON retrieval_traces (group_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_retrieval_traces_event ON retrieval_traces (event_id);
 

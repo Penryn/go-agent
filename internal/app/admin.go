@@ -248,13 +248,19 @@ type adminDecisionDetail struct {
 }
 
 type adminRetrievalDetail struct {
-	TraceID        string    `json:"trace_id"`
-	Query          string    `json:"query"`
-	CandidateCount int       `json:"candidate_count"`
-	HitMemoryIDs   []string  `json:"hit_memory_ids"`
-	SelectedIDs    []string  `json:"selected_ids"`
-	Outcome        string    `json:"outcome"`
-	CreatedAt      time.Time `json:"created_at"`
+	TraceID         string             `json:"trace_id"`
+	Query           string             `json:"query"`
+	CandidateCount  int                `json:"candidate_count"`
+	HitMemoryIDs    []string           `json:"hit_memory_ids"`
+	SelectedIDs     []string           `json:"selected_ids"`
+	Outcome         string             `json:"outcome"`
+	LexicalRanks    map[string]int     `json:"lexical_ranks"`
+	VectorRanks     map[string]int     `json:"vector_ranks"`
+	CandidateScores map[string]float64 `json:"candidate_scores"`
+	LatencyMS       int64              `json:"latency_ms"`
+	DegradedTracks  []string           `json:"degraded_tracks"`
+	SelectionReason string             `json:"selection_reason"`
+	CreatedAt       time.Time          `json:"created_at"`
 }
 
 type adminModelUsageDetail struct {
@@ -1739,7 +1745,8 @@ func loadAdminEventDetail(ctx context.Context, db *sql.DB, eventID string) (admi
 		detail.Sender = nickname.String
 	}
 	rows, err := db.QueryContext(ctx, `
-		SELECT trace_id, query, candidate_count, hit_memory_ids_json, selected_memory_ids_json, outcome, created_at
+		SELECT trace_id, query, candidate_count, hit_memory_ids_json, selected_memory_ids_json, outcome,
+		       lexical_ranks_json, vector_ranks_json, candidate_scores_json, latency_ms, degraded_tracks_json, selection_reason, created_at
 		FROM retrieval_traces WHERE event_id = $1 ORDER BY created_at ASC
 	`, eventID)
 	if err != nil {
@@ -1750,12 +1757,17 @@ func loadAdminEventDetail(ctx context.Context, db *sql.DB, eventID string) (admi
 	detail.ModelUsages = []adminModelUsageDetail{}
 	for rows.Next() {
 		var item adminRetrievalDetail
-		var hits, selected []byte
-		if err := rows.Scan(&item.TraceID, &item.Query, &item.CandidateCount, &hits, &selected, &item.Outcome, &item.CreatedAt); err != nil {
+		var hits, selected, lexicalRanks, vectorRanks, candidateScores, degradedTracks []byte
+		if err := rows.Scan(&item.TraceID, &item.Query, &item.CandidateCount, &hits, &selected, &item.Outcome,
+			&lexicalRanks, &vectorRanks, &candidateScores, &item.LatencyMS, &degradedTracks, &item.SelectionReason, &item.CreatedAt); err != nil {
 			return detail, err
 		}
 		_ = json.Unmarshal(hits, &item.HitMemoryIDs)
 		_ = json.Unmarshal(selected, &item.SelectedIDs)
+		_ = json.Unmarshal(lexicalRanks, &item.LexicalRanks)
+		_ = json.Unmarshal(vectorRanks, &item.VectorRanks)
+		_ = json.Unmarshal(candidateScores, &item.CandidateScores)
+		_ = json.Unmarshal(degradedTracks, &item.DegradedTracks)
 		detail.Retrievals = append(detail.Retrievals, item)
 	}
 	if err := rows.Err(); err != nil {

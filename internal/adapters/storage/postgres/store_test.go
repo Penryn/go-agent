@@ -3,6 +3,7 @@ package postgresstore
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"path/filepath"
 	"testing"
@@ -218,6 +219,41 @@ func TestLearningCandidateLifecycle(t *testing.T) {
 	remaining, err := store.ListLearningCandidates(ctx, 1, 10)
 	if err != nil || len(remaining) != 0 {
 		t.Fatalf("promoted candidate still listed: %#v, err=%v", remaining, err)
+	}
+}
+
+func TestRetrievalTraceExtendedFieldsRoundtrip(t *testing.T) {
+	ctx := context.Background()
+	store := NewStore(setupPostgres(t))
+	trace := ports.RetrievalTrace{
+		TraceID: "trace-extended", EventID: "event-trace", GroupID: 1, UserID: 2,
+		Query: "偏好", CandidateCount: 2, HitMemoryIDs: []string{"m1", "m2"},
+		LexicalRanks: map[string]int{"m1": 1}, VectorRanks: map[string]int{"m2": 1},
+		CandidateScores: map[string]float64{"m1": 0.8, "m2": 0.6}, LatencyMS: 12,
+		DegradedTracks: []string{"vector"}, SelectionReason: "rrf+recency+importance+confidence",
+	}
+	if err := store.SaveRetrievalTrace(ctx, trace); err != nil {
+		t.Fatalf("save retrieval trace: %v", err)
+	}
+	var lexicalRanks, vectorRanks, candidateScores, degradedTracks []byte
+	var latency int64
+	var reason string
+	if err := store.db.QueryRowContext(ctx, `
+		SELECT lexical_ranks_json, vector_ranks_json, candidate_scores_json, latency_ms, degraded_tracks_json, selection_reason
+		FROM retrieval_traces WHERE trace_id = $1
+	`, trace.TraceID).Scan(&lexicalRanks, &vectorRanks, &candidateScores, &latency, &degradedTracks, &reason); err != nil {
+		t.Fatalf("load retrieval trace: %v", err)
+	}
+	var gotLexical map[string]int
+	var gotVector map[string]int
+	var gotScores map[string]float64
+	var gotDegraded []string
+	_ = json.Unmarshal(lexicalRanks, &gotLexical)
+	_ = json.Unmarshal(vectorRanks, &gotVector)
+	_ = json.Unmarshal(candidateScores, &gotScores)
+	_ = json.Unmarshal(degradedTracks, &gotDegraded)
+	if gotLexical["m1"] != 1 || gotVector["m2"] != 1 || gotScores["m1"] != 0.8 || latency != 12 || len(gotDegraded) != 1 || reason == "" {
+		t.Fatalf("extended retrieval trace did not roundtrip: lexical=%v vector=%v scores=%v latency=%d degraded=%v reason=%q", gotLexical, gotVector, gotScores, latency, gotDegraded, reason)
 	}
 }
 

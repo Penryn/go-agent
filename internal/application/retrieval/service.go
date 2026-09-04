@@ -51,6 +51,7 @@ func New(memoryStore ports.MemoryStore, memeStore ports.MemeStore, memoryVector 
 }
 
 func (s *Service) SearchMemories(ctx context.Context, query ports.MemoryQuery) ([]memorydomain.MemoryRecord, error) {
+	startedAt := time.Now()
 	query.Query = strings.TrimSpace(query.Query)
 	if query.Scope != "" && !searchcore.MemoryScopeVisible(query.Scope, query.GroupID, query.UserID) {
 		return nil, ErrScopeForbidden
@@ -114,11 +115,33 @@ func (s *Service) SearchMemories(ctx context.Context, query ports.MemoryQuery) (
 				hits = append(hits, record.MemoryID)
 			}
 		}
+		lexicalRanks := memoryTrackRanks(lexical)
+		vectorRanks := memoryTrackRanks(semantic)
+		traceItems, maxRRF := memoryRankItems(lexical, semantic)
+		candidateScores := make(map[string]float64, len(traceItems))
+		for _, item := range traceItems {
+			if item.record.MemoryID != "" {
+				candidateScores[item.record.MemoryID] = memoryFinalScore(item, maxRRF, time.Now())
+			}
+		}
+		degradedTracks := make([]string, 0, 2)
+		if lexicalErr != nil {
+			degradedTracks = append(degradedTracks, "lexical")
+		}
+		if semanticErr != nil {
+			degradedTracks = append(degradedTracks, "vector")
+		}
+		selectionReason := "rrf+recency+importance+confidence"
+		if len(results) == 0 {
+			selectionReason = "no_candidates"
+		}
 		traceID := fmt.Sprintf("retrieval-%s-%d", query.TraceID, time.Now().UnixNano())
 		if err := s.traceStore.SaveRetrievalTrace(ctx, ports.RetrievalTrace{
 			TraceID: traceID, EventID: query.EventID, GroupID: query.GroupID, UserID: query.UserID,
 			Query: query.Query, CandidateCount: len(seen), HitMemoryIDs: hits, CreatedAt: time.Now(),
 			VectorEnabled: vectorEnabled, VectorError: semanticErr != nil,
+			LexicalRanks: lexicalRanks, VectorRanks: vectorRanks, CandidateScores: candidateScores,
+			LatencyMS: time.Since(startedAt).Milliseconds(), DegradedTracks: degradedTracks, SelectionReason: selectionReason,
 		}); err != nil {
 			slog.WarnContext(ctx, "retrieval: save trace failed", "err", err)
 		}
@@ -273,6 +296,27 @@ func mergeRRF[T any](lexical, semantic []T, limit int, id func(T) string, better
 }
 
 func mergeMemoryResults(lexical, semantic []memorydomain.MemoryRecord, limit int) []memorydomain.MemoryRecord {
+	items, maxRRF := memoryRankItems(lexical, semantic)
+	now := time.Now()
+	sort.SliceStable(items, func(i, j int) bool {
+		left := memoryFinalScore(items[i], maxRRF, now)
+		right := memoryFinalScore(items[j], maxRRF, now)
+		if left == right {
+			return items[i].order < items[j].order
+		}
+		return left > right
+	})
+	if limit > 0 && len(items) > limit {
+		items = items[:limit]
+	}
+	results := make([]memorydomain.MemoryRecord, len(items))
+	for i := range items {
+		results[i] = items[i].record
+	}
+	return results
+}
+
+func memoryRankItems(lexical, semantic []memorydomain.MemoryRecord) ([]memoryRankItem, float64) {
 	byID := make(map[string]*memoryRankItem, len(lexical)+len(semantic))
 	for _, track := range [][]memorydomain.MemoryRecord{lexical, semantic} {
 		for rank, record := range track {
@@ -300,23 +344,17 @@ func mergeMemoryResults(lexical, semantic []memorydomain.MemoryRecord, limit int
 			maxRRF = item.rrf
 		}
 	}
-	now := time.Now()
-	sort.SliceStable(items, func(i, j int) bool {
-		left := memoryFinalScore(items[i], maxRRF, now)
-		right := memoryFinalScore(items[j], maxRRF, now)
-		if left == right {
-			return items[i].order < items[j].order
+	return items, maxRRF
+}
+
+func memoryTrackRanks(records []memorydomain.MemoryRecord) map[string]int {
+	ranks := make(map[string]int, len(records))
+	for rank, record := range records {
+		if record.MemoryID != "" {
+			ranks[record.MemoryID] = rank + 1
 		}
-		return left > right
-	})
-	if limit > 0 && len(items) > limit {
-		items = items[:limit]
 	}
-	results := make([]memorydomain.MemoryRecord, len(items))
-	for i := range items {
-		results[i] = items[i].record
-	}
-	return results
+	return ranks
 }
 
 type memoryRankItem struct {

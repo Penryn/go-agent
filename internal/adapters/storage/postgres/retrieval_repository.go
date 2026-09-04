@@ -24,17 +24,38 @@ func (s *Store) SaveRetrievalTrace(ctx context.Context, trace ports.RetrievalTra
 	if err != nil {
 		return err
 	}
+	lexicalRanks, err := json.Marshal(nonNilIntMap(trace.LexicalRanks))
+	if err != nil {
+		return err
+	}
+	vectorRanks, err := json.Marshal(nonNilIntMap(trace.VectorRanks))
+	if err != nil {
+		return err
+	}
+	candidateScores, err := json.Marshal(nonNilFloatMap(trace.CandidateScores))
+	if err != nil {
+		return err
+	}
+	degradedTracks, err := json.Marshal(nonNilStrings(trace.DegradedTracks))
+	if err != nil {
+		return err
+	}
 	_, err = s.db.ExecContext(ctx, `
 		INSERT INTO retrieval_traces (
 			trace_id, event_id, group_id, user_id, query, candidate_count,
-			hit_memory_ids_json, selected_memory_ids_json, outcome, vector_enabled, vector_error, created_at
-		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+			hit_memory_ids_json, selected_memory_ids_json, outcome, vector_enabled, vector_error,
+			lexical_ranks_json, vector_ranks_json, candidate_scores_json, latency_ms, degraded_tracks_json, selection_reason, created_at
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)
 		ON CONFLICT (trace_id) DO UPDATE SET
 			query = EXCLUDED.query, candidate_count = EXCLUDED.candidate_count,
 			hit_memory_ids_json = EXCLUDED.hit_memory_ids_json,
-			vector_enabled = EXCLUDED.vector_enabled, vector_error = EXCLUDED.vector_error
+			vector_enabled = EXCLUDED.vector_enabled, vector_error = EXCLUDED.vector_error,
+			lexical_ranks_json = EXCLUDED.lexical_ranks_json, vector_ranks_json = EXCLUDED.vector_ranks_json,
+			candidate_scores_json = EXCLUDED.candidate_scores_json, latency_ms = EXCLUDED.latency_ms,
+			degraded_tracks_json = EXCLUDED.degraded_tracks_json, selection_reason = EXCLUDED.selection_reason
 	`, trace.TraceID, trace.EventID, trace.GroupID, trace.UserID, trace.Query,
-		trace.CandidateCount, hits, selected, trace.Outcome, trace.VectorEnabled, trace.VectorError, trace.CreatedAt)
+		trace.CandidateCount, hits, selected, trace.Outcome, trace.VectorEnabled, trace.VectorError,
+		lexicalRanks, vectorRanks, candidateScores, trace.LatencyMS, degradedTracks, trace.SelectionReason, trace.CreatedAt)
 	return err
 }
 
@@ -57,6 +78,20 @@ func (s *Store) UpdateRetrievalTrace(ctx context.Context, eventID string, select
 func nonNilStrings(values []string) []string {
 	if values == nil {
 		return []string{}
+	}
+	return values
+}
+
+func nonNilIntMap(values map[string]int) map[string]int {
+	if values == nil {
+		return map[string]int{}
+	}
+	return values
+}
+
+func nonNilFloatMap(values map[string]float64) map[string]float64 {
+	if values == nil {
+		return map[string]float64{}
 	}
 	return values
 }
