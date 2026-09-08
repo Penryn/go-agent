@@ -29,6 +29,7 @@ import (
 	"github.com/phlin/go-agent/internal/application/ports"
 	presenceruntime "github.com/phlin/go-agent/internal/application/presence"
 	presencedeliberation "github.com/phlin/go-agent/internal/application/presence/deliberation"
+	presencefeedback "github.com/phlin/go-agent/internal/application/presence/feedback"
 	presenceactor "github.com/phlin/go-agent/internal/application/presence/group_actor"
 	presenceingress "github.com/phlin/go-agent/internal/application/presence/ingress"
 	presenceperception "github.com/phlin/go-agent/internal/application/presence/perception"
@@ -140,6 +141,9 @@ func New(ctx context.Context, cfg config.Config) (*App, error) {
 		reflectionsvc.NewFeedbackClassifier(eventStoreAdapted),
 	)
 
+	// 创建反馈窗口管理器
+	feedbackWindowManager := presencefeedback.NewWindowManager(relationshipService)
+
 	// presenceManager 配置选项（包含决策引擎依赖）
 	actorOptions := []presenceactor.Option{
 		presenceactor.WithArchive(stores.memory),
@@ -147,6 +151,7 @@ func New(ctx context.Context, cfg config.Config) (*App, error) {
 		presenceactor.WithDecisionEngine(decisionEngine),
 		presenceactor.WithPersonaAssembler(personaAssembler),
 		presenceactor.WithFeedbackCollector(feedbackCollector),
+		presenceactor.WithFeedbackWindowManager(feedbackWindowManager),
 		presenceactor.WithResponsePlanner(responsePlanner),
 		presenceactor.WithResponseExecutor(responseExecutor),
 		presenceactor.WithPersonaID(cfg.Persona.ID),

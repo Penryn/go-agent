@@ -46,6 +46,11 @@ type FeedbackCollector interface {
 	CollectFeedback(ctx context.Context, window *presencedomain.FeedbackWindow) (*feedbackdomain.ActionFeedback, error)
 }
 
+type FeedbackWindowManager interface {
+	OpenWindow(memory *presencedomain.GroupWorkingMemory, botMessageID, decisionID string)
+	CheckInboundEvent(ctx context.Context, memory *presencedomain.GroupWorkingMemory, event conversationdomain.ConversationEvent) error
+}
+
 const defaultTailSize = 32
 const defaultMaxSeen = 2048
 const (
@@ -62,12 +67,13 @@ type Manager struct {
 	idleTTL       time.Duration
 
 	// 新增：社交决策依赖
-	decisionEngine    DecisionEngine
-	personaAssembler  PersonaAssembler
-	responsePlanner   ResponsePlanner
-	responseExecutor  ResponseExecutor
-	feedbackCollector FeedbackCollector
-	personaID         string
+	decisionEngine     DecisionEngine
+	personaAssembler   PersonaAssembler
+	responsePlanner    ResponsePlanner
+	responseExecutor   ResponseExecutor
+	feedbackCollector  FeedbackCollector
+	feedbackManager    FeedbackWindowManager // 反馈窗口管理器
+	personaID          string
 
 	mu     sync.Mutex
 	closed bool
@@ -129,6 +135,10 @@ func WithResponseExecutor(executor ResponseExecutor) Option {
 
 func WithFeedbackCollector(collector FeedbackCollector) Option {
 	return func(m *Manager) { m.feedbackCollector = collector }
+}
+
+func WithFeedbackWindowManager(manager FeedbackWindowManager) Option {
+	return func(m *Manager) { m.feedbackManager = manager }
 }
 
 func WithPersonaID(personaID string) Option {
@@ -275,6 +285,7 @@ func (m *Manager) actor(ctx context.Context, groupID int64) (*actor, error) {
 		m.responsePlanner,
 		m.responseExecutor,
 		m.feedbackCollector,
+		m.feedbackManager,
 		m.personaID,
 	)
 	m.groups[groupID] = a
@@ -381,6 +392,7 @@ type actor struct {
 	responsePlanner   ResponsePlanner
 	responseExecutor  ResponseExecutor
 	feedbackCollector FeedbackCollector
+	feedbackManager   FeedbackWindowManager // 反馈窗口管理器
 	personaID         string
 }
 
@@ -393,6 +405,7 @@ func newActor(
 	responsePlanner ResponsePlanner,
 	responseExecutor ResponseExecutor,
 	feedbackCollector FeedbackCollector,
+	feedbackManager FeedbackWindowManager,
 	personaID string,
 ) *actor {
 	a := &actor{
@@ -406,6 +419,7 @@ func newActor(
 		responsePlanner:   responsePlanner,
 		responseExecutor:  responseExecutor,
 		feedbackCollector: feedbackCollector,
+		feedbackManager:   feedbackManager,
 		personaID:         personaID,
 	}
 	a.lastUsedNano.Store(time.Now().UnixNano())
@@ -441,6 +455,12 @@ func (a *actor) observe(record presencedomain.EventRecord) presencedomain.GroupW
 		a.seen[record.EventID] = struct{}{}
 		a.memory = reduce(a.memory, record, a.tailSize)
 		a.pruneSeen(a.memory.RecentTail)
+	}
+
+	// 新增：检查反馈窗口（仅入站事件）
+	if record.Origin == presencedomain.OriginInbound && a.feedbackManager != nil {
+		// 检查是否属于某个反馈窗口
+		_ = a.feedbackManager.CheckInboundEvent(context.Background(), &a.memory, record.Event)
 	}
 
 	// 新增：异步调用决策引擎（不阻塞事件记录）
@@ -734,8 +754,15 @@ func (a *actor) decideAndRespond(ctx context.Context, evt *presencedomain.EventR
 	if err != nil {
 		return
 	}
-	
-	// 7. 启动反馈窗口（异步）
+
+	// 7. 打开反馈窗口（新机制）
+	if a.feedbackManager != nil && actionID != "" {
+		a.mu.Lock()
+		a.feedbackManager.OpenWindow(&a.memory, actionID, decision.DecisionID)
+		a.mu.Unlock()
+	}
+
+	// 8. 启动旧的反馈收集器（异步，保持向后兼容）
 	if a.feedbackCollector != nil {
 		go a.startFeedbackWindow(ctx, decision.DecisionID, actionID, evt.GroupID)
 	}
