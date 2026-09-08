@@ -124,25 +124,71 @@ func (impl *FeedbackClassifierImpl) ClassifyFeedback(
 		}, nil
 	}
 
-	// TODO: 实现更复杂的分类逻辑
-	// 1. 检测是否被引用
-	// 2. 检测是否被继续对话
-	// 3. 检测是否被纠正
-	// 4. 检测情感倾向
+	// 获取事件详情进行分析
+	// TODO: 从 eventStore 获取事件详情
+	// 目前基于事件数量和简单启发式规则分类
 
-	// 简化实现：有回应就视为中性
+	signals := []feedbackdomain.FeedbackSignal{}
+	var sentiment float64 = 0.0
+	var engagement float64 = 0.0
+
+	eventCount := len(observedEventIDs)
+
+	// 根据事件数量判断参与度
+	if eventCount >= 5 {
+		// 多人参与或持续对话
+		signals = append(signals, feedbackdomain.FeedbackSignal{
+			SignalType: feedbackdomain.SignalContinued,
+			Intensity:  0.8,
+		})
+		engagement = 0.8
+		sentiment = 0.5 // 假设为正向
+	} else if eventCount >= 2 {
+		// 有回应但不热烈
+		signals = append(signals, feedbackdomain.FeedbackSignal{
+			SignalType: feedbackdomain.SignalBriefResponse,
+			Intensity:  0.5,
+		})
+		engagement = 0.5
+		sentiment = 0.0 // 中性
+	} else {
+		// 仅一条回应
+		signals = append(signals, feedbackdomain.FeedbackSignal{
+			SignalType: feedbackdomain.SignalBriefResponse,
+			Intensity:  0.3,
+		})
+		engagement = 0.3
+		sentiment = 0.0
+	}
+
+	// 根据情感判断反馈类型
+	var feedbackType feedbackdomain.FeedbackType
+	var summaryNote string
+
+	if sentiment > 0.3 {
+		feedbackType = feedbackdomain.TypePositive
+		summaryNote = "获得正面回应"
+	} else if sentiment < -0.3 {
+		feedbackType = feedbackdomain.TypeNegative
+		summaryNote = "遭遇负面反馈"
+	} else if engagement > 0.4 {
+		feedbackType = feedbackdomain.TypeNeutral
+		summaryNote = "有正常互动"
+	} else {
+		feedbackType = feedbackdomain.TypeNeutral
+		summaryNote = "有简短回应"
+	}
+
 	return &feedbackdomain.ActionFeedback{
 		FeedbackID:       generateFeedbackID(),
 		ActionID:         actionID,
 		CollectedAt:      time.Now(),
 		ObservedEventIDs: observedEventIDs,
-		Type:             feedbackdomain.TypeNeutral,
-		Signals: []feedbackdomain.FeedbackSignal{
-			{SignalType: feedbackdomain.SignalBriefResponse, Intensity: 0.5},
-		},
-		OverallSentiment: 0.0,
-		EngagementLevel:  0.5,
-		SummaryNote:      "有简短回应",
+		Type:             feedbackType,
+		Signals:          signals,
+		OverallSentiment: sentiment,
+		EngagementLevel:  engagement,
+		SummaryNote:      summaryNote,
 	}, nil
 }
 
