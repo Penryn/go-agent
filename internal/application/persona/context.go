@@ -38,6 +38,9 @@ func (a *ContextAssembler) AssembleContext(
 	// 获取群姿态，不存在则创建默认
 	posture, err := a.postureStore.GetGroupPosture(ctx, personaID, groupID)
 	if err != nil {
+		return nil, err
+	}
+	if posture == nil {
 		// 创建默认姿态
 		posture = &personadomain.GroupPosture{}
 		*posture = personadomain.DefaultGroupPosture(personaID, groupID)
@@ -48,7 +51,10 @@ func (a *ContextAssembler) AssembleContext(
 
 	// 获取即时状态，不存在或过期则创建基线
 	ephemeral, err := a.ephemeralStore.GetEphemeralState(ctx, personaID, groupID)
-	if err != nil || ephemeral.ExpiresAt.Before(time.Now()) {
+	if err != nil {
+		return nil, err
+	}
+	if ephemeral == nil || ephemeral.ExpiresAt.Before(time.Now()) {
 		ephemeral = &personadomain.EphemeralState{}
 		*ephemeral = personadomain.DefaultEphemeralState(personaID, groupID)
 		if err := a.ephemeralStore.UpdateEphemeralState(ctx, ephemeral); err != nil {
