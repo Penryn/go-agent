@@ -13,8 +13,8 @@
 | 记忆声明 | [已完成] | `MemoryClaim` 暂存到 `memory_claims`；工具只接受当前上下文中的证据事件。 |
 | 社交上下文 | [已完成] | `ContextSnapshot` 和 Prompt 已消费关系投影与群场景。 |
 | 角色三层模型 | [部分完成] | 稳定身份和 Persona Canon 已有；群姿态、按群即时状态和 `PersonaContext` 尚未拆出。 |
-| 社交决策引擎 | [未开始] | 仍由 Presence Runtime、策略规则和 AgentPlanner 协同决定。 |
-| 结构化 ResponsePlan | [未开始] | 当前仍通过 `ReplyPlan` 与终结工具完成回复动作。 |
+| 社交决策引擎 | [已完成] | `DecisionEngine` 基于社交上下文评估是否响应；候选系统已移除。 |
+| 结构化 ResponsePlan | [已完成] | `ResponsePlanner` 生成结构化回复计划，包含动作类型、内容和元数据。 |
 | 发送后反馈窗口 | [未开始] | 已记录 `direct_reply` 关系事件，尚未等待后续群消息并分类反馈。 |
 | 管理后台事件视图 | [部分完成] | 关系页已展示 trust/friction，尚未展示关系事件和投影原因。 |
 
