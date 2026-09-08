@@ -204,6 +204,25 @@ type adminRelationshipPage struct {
 	PageSize int                 `json:"page_size"`
 }
 
+type adminRelationshipEvent struct {
+	EventID         string    `json:"event_id"`
+	Kind            string    `json:"kind"`
+	Valence         float64   `json:"valence"`
+	EvidenceEventID string    `json:"evidence_event_id,omitempty"`
+	DecisionID      string    `json:"decision_id,omitempty"`
+	CreatedAt       time.Time `json:"created_at"`
+}
+
+type adminProjectionSnapshot struct {
+	Familiarity    float64   `json:"familiarity"`
+	Affinity       float64   `json:"affinity"`
+	Trust          float64   `json:"trust"`
+	TeaseTolerance float64   `json:"tease_tolerance"`
+	Friction       float64   `json:"friction"`
+	Revision       int64     `json:"revision"`
+	UpdatedAt      time.Time `json:"updated_at"`
+}
+
 type adminActivity struct {
 	EventID string    `json:"event_id"`
 	At      time.Time `json:"at"`
@@ -381,6 +400,10 @@ func (h *adminHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	if strings.HasPrefix(r.URL.Path, "/admin/api/tasks/") {
 		h.handleTask(w, r)
+		return
+	}
+	if strings.HasPrefix(r.URL.Path, "/admin/api/relationships/") {
+		h.handleRelationshipDetail(w, r)
 		return
 	}
 	switch r.URL.Path {
@@ -758,6 +781,71 @@ func (h *adminHandler) handleRelationships(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	writeJSON(w, relationships)
+}
+
+// handleRelationshipDetail 处理单个关系的详细信息请求
+// 路径格式: /admin/api/relationships/{group_id}/{user_id}/events
+//          /admin/api/relationships/{group_id}/{user_id}/projection-history
+func (h *adminHandler) handleRelationshipDetail(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		w.Header().Set("Allow", http.MethodGet)
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if !h.authorized(r) {
+		http.Error(w, "admin token required", http.StatusUnauthorized)
+		return
+	}
+
+	// 解析路径: /admin/api/relationships/{group_id}/{user_id}/{action}
+	pathParts := strings.Split(strings.TrimPrefix(r.URL.Path, "/admin/api/relationships/"), "/")
+	if len(pathParts) < 3 {
+		http.Error(w, "invalid path format", http.StatusBadRequest)
+		return
+	}
+
+	groupID, err := strconv.ParseInt(pathParts[0], 10, 64)
+	if err != nil || groupID <= 0 {
+		http.Error(w, "invalid group_id", http.StatusBadRequest)
+		return
+	}
+
+	userID, err := strconv.ParseInt(pathParts[1], 10, 64)
+	if err != nil || userID <= 0 {
+		http.Error(w, "invalid user_id", http.StatusBadRequest)
+		return
+	}
+
+	action := pathParts[2]
+	ctx, cancel := context.WithTimeout(r.Context(), 4*time.Second)
+	defer cancel()
+
+	switch action {
+	case "events":
+		h.handleRelationshipEvents(w, ctx, groupID, userID)
+	case "projection-history":
+		h.handleRelationshipProjectionHistory(w, ctx, groupID, userID)
+	default:
+		http.Error(w, "unknown action: "+action, http.StatusBadRequest)
+	}
+}
+
+func (h *adminHandler) handleRelationshipEvents(w http.ResponseWriter, ctx context.Context, groupID, userID int64) {
+	events, err := loadRelationshipEvents(ctx, h.db, h.personaID, groupID, userID)
+	if err != nil {
+		http.Error(w, "load relationship events: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, events)
+}
+
+func (h *adminHandler) handleRelationshipProjectionHistory(w http.ResponseWriter, ctx context.Context, groupID, userID int64) {
+	history, err := loadRelationshipProjectionHistory(ctx, h.db, h.personaID, groupID, userID)
+	if err != nil {
+		http.Error(w, "load projection history: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, history)
 }
 
 func (h *adminHandler) handleTasks(w http.ResponseWriter, r *http.Request) {
@@ -1658,6 +1746,64 @@ func loadAdminRelationshipPage(ctx context.Context, db *sql.DB, personaID string
 		return adminRelationshipPage{}, err
 	}
 	return adminRelationshipPage{Items: relationships, Total: total, Page: page, PageSize: pageSize}, nil
+}
+
+// loadRelationshipEvents 加载关系的事件历史
+func loadRelationshipEvents(ctx context.Context, db *sql.DB, personaID string, groupID, userID int64) ([]adminRelationshipEvent, error) {
+	query := `
+		SELECT event_id, kind, valence, evidence_event_id, decision_id, created_at
+		FROM relationship_events
+		WHERE persona_id = $1 AND group_id = $2 AND user_id = $3
+		ORDER BY created_at DESC
+		LIMIT 100
+	`
+	rows, err := db.QueryContext(ctx, query, personaID, groupID, userID)
+	if err != nil {
+		return nil, fmt.Errorf("query relationship events: %w", err)
+	}
+	defer rows.Close()
+
+	events := make([]adminRelationshipEvent, 0)
+	for rows.Next() {
+		var event adminRelationshipEvent
+		var evidenceEventID, decisionID sql.NullString
+		if err := rows.Scan(&event.EventID, &event.Kind, &event.Valence, &evidenceEventID, &decisionID, &event.CreatedAt); err != nil {
+			return nil, err
+		}
+		event.EvidenceEventID = evidenceEventID.String
+		event.DecisionID = decisionID.String
+		events = append(events, event)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return events, nil
+}
+
+// loadRelationshipProjectionHistory 加载关系投影的变化历史
+func loadRelationshipProjectionHistory(ctx context.Context, db *sql.DB, personaID string, groupID, userID int64) ([]adminProjectionSnapshot, error) {
+	query := `
+		SELECT familiarity, affinity, trust, tease_tolerance, friction, revision, updated_at
+		FROM relationships
+		WHERE persona_id = $1 AND group_id = $2 AND user_id = $3
+		ORDER BY revision DESC
+		LIMIT 1
+	`
+	// 注意：当前表结构不存储历史版本，只有最新状态
+	// 如果需要完整历史，需要添加 relationship_history 表
+	var snapshot adminProjectionSnapshot
+	err := db.QueryRowContext(ctx, query, personaID, groupID, userID).Scan(
+		&snapshot.Familiarity, &snapshot.Affinity, &snapshot.Trust,
+		&snapshot.TeaseTolerance, &snapshot.Friction, &snapshot.Revision, &snapshot.UpdatedAt,
+	)
+	if err == sql.ErrNoRows {
+		return []adminProjectionSnapshot{}, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("query relationship: %w", err)
+	}
+
+	return []adminProjectionSnapshot{snapshot}, nil
 }
 
 func (d *adminDashboard) loadActivity(ctx context.Context, groupID int64, windowMinutes int) ([]adminActivity, error) {

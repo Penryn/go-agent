@@ -1,5 +1,5 @@
 import axios from 'axios'
-import type { ActivityPage, BotSnapshot, EventDetail, MCPServerConfig, MCPToolInfo, MemePage, MemoryPage, MetricSeries, RelationshipPage, TaskPage } from '@/types'
+import type { ActivityPage, BotSnapshot, EventDetail, MCPServerConfig, MCPToolInfo, MemePage, MemoryPage, MetricSeries, RelationshipPage, RelationshipEvent, ProjectionSnapshot, TaskPage } from '@/types'
 
 export const api = axios.create({
   baseURL: '/admin/api',
@@ -51,6 +51,20 @@ export async function getMemes(groupID: number, query: string, page: number, tok
 export async function getRelationships(groupID: number, query: string, page: number, token: string) {
   const response = await api.get<RelationshipPage>('/relationships', {
     params: { group_id: groupID || undefined, q: query.trim() || undefined, page },
+    headers: token ? { Authorization: `Bearer ${token}` } : undefined,
+  })
+  return response.data
+}
+
+export async function getRelationshipEvents(groupID: number, userID: number, token: string) {
+  const response = await api.get<RelationshipEvent[]>(`/relationships/${groupID}/${userID}/events`, {
+    headers: token ? { Authorization: `Bearer ${token}` } : undefined,
+  })
+  return response.data
+}
+
+export async function getRelationshipProjectionHistory(groupID: number, userID: number, token: string) {
+  const response = await api.get<ProjectionSnapshot[]>(`/relationships/${groupID}/${userID}/projection-history`, {
     headers: token ? { Authorization: `Bearer ${token}` } : undefined,
   })
   return response.data

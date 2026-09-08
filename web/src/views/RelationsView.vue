@@ -28,19 +28,23 @@ async function load(nextPage = page.value) {
     loading.value = false
   }
 }
-watch(selectedGroup, () => { void load(1) })
-watch(query, () => { void load(1) })
 onMounted(load)
+watch(selectedGroup, () => load(1))
+watch(query, () => {
+  page.value = 1
+  load(1)
+})
 </script>
 
 <template>
-  <section class="glass-panel page-panel">
-    <div class="page-panel-head"><div><span>RELATIONSHIP MAP</span><h2>群友关系</h2><p>好感度是 Bot 的主观关系状态，熟悉度来自实际互动证据 · 共 {{ total }} 条</p></div><el-input v-model="query" :prefix-icon="Search" clearable class="search-box" placeholder="搜索昵称或 QQ" /></div>
-    <el-alert v-if="loadError" :title="`读取关系失败：${loadError}`" type="error" :closable="false" show-icon />
-    <el-table v-loading="loading" :data="rows" class="relation-table" empty-text="还没有关系数据">
-      <el-table-column label="群友" min-width="190"><template #default="{ row }"><div class="table-member"><div>{{ row.name.slice(0, 1) }}</div><span><strong>{{ row.name }}</strong><small>{{ row.user_id }}</small></span></div></template></el-table-column>
-      <el-table-column label="好感度" min-width="190" sortable prop="affinity"><template #default="{ row }"><div class="table-progress"><el-progress :percentage="Math.round(row.affinity * 100)" :stroke-width="6" /><span>{{ row.affinity.toFixed(2) }}</span></div></template></el-table-column>
-      <el-table-column label="熟悉度" width="110" sortable prop="familiarity"><template #default="{ row }">{{ row.familiarity.toFixed(2) }}</template></el-table-column>
+  <section class="view-wrapper">
+    <h2>关系管理</h2>
+    <el-input v-model="query" placeholder="搜索成员名称..." :prefix-icon="Search" clearable @clear="load(1)" />
+    <el-alert v-if="loadError" type="error" :title="loadError" :closable="false" style="margin-top: 1em;" />
+    <el-table :data="rows" stripe style="width: 100%; margin-top: 1em;" v-loading="loading">
+      <el-table-column label="成员" width="180" prop="name" />
+      <el-table-column label="亲密度" width="100" sortable prop="affinity"><template #default="{ row }">{{ row.affinity.toFixed(2) }}</template></el-table-column>
+      <el-table-column label="熟悉度" width="100" sortable prop="familiarity"><template #default="{ row }">{{ row.familiarity.toFixed(2) }}</template></el-table-column>
       <el-table-column label="玩笑容忍" width="110" prop="tease_tolerance"><template #default="{ row }">{{ row.tease_tolerance.toFixed(2) }}</template></el-table-column>
       <el-table-column label="信任" width="90" sortable prop="trust"><template #default="{ row }">{{ row.trust.toFixed(2) }}</template></el-table-column>
       <el-table-column label="摩擦" width="90" sortable prop="friction"><template #default="{ row }">{{ row.friction.toFixed(2) }}</template></el-table-column>
@@ -50,3 +54,14 @@ onMounted(load)
     <el-pagination v-if="total > 50" class="relation-pagination" layout="prev, pager, next" :current-page="page" :page-size="50" :total="total" @current-change="load" />
   </section>
 </template>
+
+<style scoped>
+.view-wrapper {
+  padding: 1em;
+}
+
+.relation-pagination {
+  margin-top: 1em;
+  justify-content: center;
+}
+</style>

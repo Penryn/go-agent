@@ -158,6 +158,25 @@ export interface RelationshipPage {
   page_size: number
 }
 
+export interface RelationshipEvent {
+  event_id: string
+  kind: string
+  valence: number
+  evidence_event_id?: string
+  decision_id?: string
+  created_at: string
+}
+
+export interface ProjectionSnapshot {
+  familiarity: number
+  affinity: number
+  trust: number
+  tease_tolerance: number
+  friction: number
+  revision: number
+  updated_at: string
+}
+
 export interface MetricPoint {
   at: string
   queries: number
