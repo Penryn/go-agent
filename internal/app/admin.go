@@ -214,13 +214,15 @@ type adminRelationshipEvent struct {
 }
 
 type adminProjectionSnapshot struct {
-	Familiarity    float64   `json:"familiarity"`
-	Affinity       float64   `json:"affinity"`
-	Trust          float64   `json:"trust"`
-	TeaseTolerance float64   `json:"tease_tolerance"`
-	Friction       float64   `json:"friction"`
-	Revision       int64     `json:"revision"`
-	UpdatedAt      time.Time `json:"updated_at"`
+	Familiarity     float64   `json:"familiarity"`
+	Affinity        float64   `json:"affinity"`
+	Trust           float64   `json:"trust"`
+	TeaseTolerance  float64   `json:"tease_tolerance"`
+	Friction        float64   `json:"friction"`
+	Revision        int64     `json:"revision"`
+	TriggerEventID  string    `json:"trigger_event_id,omitempty"`
+	TriggerKind     string    `json:"trigger_kind,omitempty"`
+	UpdatedAt       time.Time `json:"updated_at"`
 }
 
 type adminActivity struct {
@@ -1783,27 +1785,59 @@ func loadRelationshipEvents(ctx context.Context, db *sql.DB, personaID string, g
 // loadRelationshipProjectionHistory 加载关系投影的变化历史
 func loadRelationshipProjectionHistory(ctx context.Context, db *sql.DB, personaID string, groupID, userID int64) ([]adminProjectionSnapshot, error) {
 	query := `
-		SELECT familiarity, affinity, trust, tease_tolerance, friction, revision, updated_at
-		FROM relationships
+		SELECT familiarity, affinity, trust, tease_tolerance, friction, revision,
+		       trigger_event_id, trigger_kind, snapshot_at
+		FROM relationship_history
 		WHERE persona_id = $1 AND group_id = $2 AND user_id = $3
 		ORDER BY revision DESC
-		LIMIT 1
+		LIMIT 50
 	`
-	// 注意：当前表结构不存储历史版本，只有最新状态
-	// 如果需要完整历史，需要添加 relationship_history 表
-	var snapshot adminProjectionSnapshot
-	err := db.QueryRowContext(ctx, query, personaID, groupID, userID).Scan(
-		&snapshot.Familiarity, &snapshot.Affinity, &snapshot.Trust,
-		&snapshot.TeaseTolerance, &snapshot.Friction, &snapshot.Revision, &snapshot.UpdatedAt,
-	)
-	if err == sql.ErrNoRows {
-		return []adminProjectionSnapshot{}, nil
-	}
+	rows, err := db.QueryContext(ctx, query, personaID, groupID, userID)
 	if err != nil {
-		return nil, fmt.Errorf("query relationship: %w", err)
+		return nil, fmt.Errorf("query relationship history: %w", err)
+	}
+	defer rows.Close()
+
+	snapshots := make([]adminProjectionSnapshot, 0)
+	for rows.Next() {
+		var snapshot adminProjectionSnapshot
+		var triggerEventID, triggerKind sql.NullString
+		if err := rows.Scan(
+			&snapshot.Familiarity, &snapshot.Affinity, &snapshot.Trust,
+			&snapshot.TeaseTolerance, &snapshot.Friction, &snapshot.Revision,
+			&triggerEventID, &triggerKind, &snapshot.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		snapshot.TriggerEventID = triggerEventID.String
+		snapshot.TriggerKind = triggerKind.String
+		snapshots = append(snapshots, snapshot)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
 	}
 
-	return []adminProjectionSnapshot{snapshot}, nil
+	// 如果历史表为空，降级查询当前状态
+	if len(snapshots) == 0 {
+		var snapshot adminProjectionSnapshot
+		err := db.QueryRowContext(ctx, `
+			SELECT familiarity, affinity, trust, tease_tolerance, friction, revision, updated_at
+			FROM relationships
+			WHERE persona_id = $1 AND group_id = $2 AND user_id = $3
+		`, personaID, groupID, userID).Scan(
+			&snapshot.Familiarity, &snapshot.Affinity, &snapshot.Trust,
+			&snapshot.TeaseTolerance, &snapshot.Friction, &snapshot.Revision, &snapshot.UpdatedAt,
+		)
+		if err == sql.ErrNoRows {
+			return []adminProjectionSnapshot{}, nil
+		}
+		if err != nil {
+			return nil, fmt.Errorf("query current relationship: %w", err)
+		}
+		return []adminProjectionSnapshot{snapshot}, nil
+	}
+
+	return snapshots, nil
 }
 
 func (d *adminDashboard) loadActivity(ctx context.Context, groupID int64, windowMinutes int) ([]adminActivity, error) {

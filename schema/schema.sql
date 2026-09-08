@@ -105,6 +105,27 @@ CREATE TABLE IF NOT EXISTS relationship_events (
 CREATE INDEX IF NOT EXISTS idx_relationship_events_subject
   ON relationship_events (persona_id, group_id, user_id, created_at DESC);
 
+CREATE TABLE IF NOT EXISTS relationship_history (
+  id BIGSERIAL PRIMARY KEY,
+  persona_id VARCHAR(128) NOT NULL,
+  group_id BIGINT NOT NULL,
+  user_id BIGINT NOT NULL,
+  revision BIGINT NOT NULL,
+  familiarity DOUBLE PRECISION NOT NULL,
+  affinity DOUBLE PRECISION NOT NULL,
+  trust DOUBLE PRECISION NOT NULL,
+  tease_tolerance DOUBLE PRECISION NOT NULL,
+  friction DOUBLE PRECISION NOT NULL,
+  trigger_event_id VARCHAR(128) NOT NULL DEFAULT '',
+  trigger_kind VARCHAR(64) NOT NULL DEFAULT '',
+  snapshot_at TIMESTAMPTZ NOT NULL,
+  UNIQUE (persona_id, group_id, user_id, revision)
+);
+CREATE INDEX IF NOT EXISTS idx_relationship_history_subject
+  ON relationship_history (persona_id, group_id, user_id, snapshot_at DESC);
+CREATE INDEX IF NOT EXISTS idx_relationship_history_revision
+  ON relationship_history (persona_id, group_id, user_id, revision DESC);
+
 CREATE TABLE IF NOT EXISTS group_scenes (
   group_id BIGINT PRIMARY KEY,
   scene_json JSONB NOT NULL,

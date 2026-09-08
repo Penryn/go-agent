@@ -112,6 +112,21 @@ func (s *Store) ApplyRelationshipEvent(ctx context.Context, event relationshipdo
 	if err != nil {
 		return false, err
 	}
+
+	// 保存历史快照
+	_, err = tx.ExecContext(ctx, `
+		INSERT INTO relationship_history (
+			persona_id, group_id, user_id, revision, familiarity, affinity, trust,
+			tease_tolerance, friction, trigger_event_id, trigger_kind, snapshot_at
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+		ON CONFLICT (persona_id, group_id, user_id, revision) DO NOTHING
+	`, state.PersonaID, state.GroupID, state.UserID, state.Revision,
+		state.Familiarity, state.Affinity, state.Trust, state.TeaseTolerance, state.Friction,
+		event.EventID, event.Kind, state.UpdatedAt)
+	if err != nil {
+		return false, err
+	}
+
 	if err = tx.Commit(); err != nil {
 		return false, err
 	}
