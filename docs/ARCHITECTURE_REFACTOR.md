@@ -2,6 +2,8 @@
 
 状态标记：`[已完成]` 表示已接入运行时并通过测试；`[部分完成]` 表示已有可运行基础实现但未达到目标边界；`[未开始]` 表示仅保留目标设计。
 
+本文中的状态以当前工作区代码为准。`[已完成]` 和 `[部分完成]` 是已经发生的代码变更；`[未开始]` 和 `[目标]` 只是后续方案，不代表当前系统已经具备对应能力。
+
 ## 实施状态
 
 | 能力 | 状态 | 当前实现 |
@@ -15,6 +17,20 @@
 | 结构化 ResponsePlan | [未开始] | 当前仍通过 `ReplyPlan` 与终结工具完成回复动作。 |
 | 发送后反馈窗口 | [未开始] | 已记录 `direct_reply` 关系事件，尚未等待后续群消息并分类反馈。 |
 | 管理后台事件视图 | [部分完成] | 关系页已展示 trust/friction，尚未展示关系事件和投影原因。 |
+
+## 已落地改动清单
+
+以下内容已经修改代码并接入当前运行时：
+
+| 状态 | 已修改位置 | 已落地内容 |
+| --- | --- | --- |
+| [已完成] | `schema/schema.sql`、`internal/adapters/storage/postgres/social_repository.go` | 新增 `group_scenes`、`relationship_events`、`relationships`、`memory_claims` 的持久化与读取。 |
+| [已完成] | `internal/application/scene` | 增加 `GroupScene` 投影；入站事件和成功出站事件都会推进群场景。 |
+| [已完成] | `internal/application/relationship` | 以关系事件作为证据，在同一 PostgreSQL 事务内更新关系投影，并处理幂等和事务锁。 |
+| [已完成] | `internal/application/memory`、`internal/application/tools` | 增加带证据的 `stage_memory_claim`；增加 `record_relationship_signal`；删除旧的直接记忆意图、好感度和成员画像写入工具。 |
+| [已完成] | `internal/application/context`、`internal/application/prompting` | `ContextSnapshot` 和 Prompt 已消费群场景、关系投影及 `trust`/`friction` 等社交上下文。 |
+| [部分完成] | `internal/app/admin.go`、`web/src/views/RelationsView.vue` | 关系后台已切换到 `trust`、`friction` 等新投影字段；关系事件和投影原因页面尚未完成。 |
+| [已验证] | Go 与前端构建链路 | `go test ./...`、`go vet ./...`、`git diff --check`、`npm run build` 已通过。 |
 
 ## 1. 重新定义项目
 
@@ -34,7 +50,7 @@
 
 因此，架构中心应从 `Agent + Tools` 改为 `Social Character Runtime`。
 
-## 2. 目标架构 [目标]
+## 2. 目标架构 [目标，未完全落地]
 
 ```text
 OneBot Event
@@ -475,7 +491,7 @@ action_feedback
 - 不用更多人格字段掩盖关系模型缺失。
 - 不在检索质量未经真实数据验证前引入 reranker。
 
-已落地的范围以“实施状态”表和各章节标识为准。下一阶段是 `socialdecision`、结构化 `ResponsePlan` 和发送后的反馈窗口。
+已落地的范围以“实施状态”和“已落地改动清单”为准。下一阶段是 `socialdecision`、结构化 `ResponsePlan` 和发送后的反馈窗口。
 
 验收标准不是“模型能调用更多工具”，而是：
 

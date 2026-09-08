@@ -382,3 +382,91 @@ CREATE TABLE IF NOT EXISTS meme_vectors (
 ALTER TABLE meme_vectors ADD COLUMN IF NOT EXISTS source_revision BIGINT NOT NULL DEFAULT 0;
 CREATE INDEX IF NOT EXISTS idx_meme_vectors_group ON meme_vectors (group_id);
 CREATE INDEX IF NOT EXISTS idx_meme_vectors_embedding ON meme_vectors USING hnsw (embedding halfvec_cosine_ops);
+
+-- 群姿态：按群隔离的人格姿态，变化慢于即时状态
+CREATE TABLE IF NOT EXISTS group_persona_postures (
+  persona_id VARCHAR(128) NOT NULL,
+  group_id BIGINT NOT NULL,
+  familiarity DOUBLE PRECISION NOT NULL DEFAULT 0.3,
+  participation_bias DOUBLE PRECISION NOT NULL DEFAULT 0.0,
+  humor_level DOUBLE PRECISION NOT NULL DEFAULT 0.5,
+  helpfulness_bias DOUBLE PRECISION NOT NULL DEFAULT 0.6,
+  formality DOUBLE PRECISION NOT NULL DEFAULT 0.4,
+  trust_in_group DOUBLE PRECISION NOT NULL DEFAULT 0.5,
+  preferred_topics_json JSONB NOT NULL DEFAULT '[]'::jsonb,
+  updated_at TIMESTAMPTZ NOT NULL,
+  revision BIGINT NOT NULL DEFAULT 1,
+  PRIMARY KEY (persona_id, group_id)
+);
+CREATE INDEX IF NOT EXISTS idx_group_persona_postures_group ON group_persona_postures (group_id);
+
+-- 即时状态：按群隔离并自然衰减的即时情绪和精力
+CREATE TABLE IF NOT EXISTS group_persona_ephemeral (
+  persona_id VARCHAR(128) NOT NULL,
+  group_id BIGINT NOT NULL,
+  mood VARCHAR(32) NOT NULL DEFAULT 'steady',
+  energy VARCHAR(32) NOT NULL DEFAULT 'normal',
+  social_patience DOUBLE PRECISION NOT NULL DEFAULT 0.8,
+  last_trigger VARCHAR(255) NOT NULL DEFAULT '',
+  updated_at TIMESTAMPTZ NOT NULL,
+  expires_at TIMESTAMPTZ NOT NULL,
+  PRIMARY KEY (persona_id, group_id)
+);
+CREATE INDEX IF NOT EXISTS idx_group_persona_ephemeral_expires ON group_persona_ephemeral (expires_at);
+
+-- 参与决策记录：替代部分 thought_records，只记录决策和结果
+CREATE TABLE IF NOT EXISTS participation_decisions (
+  decision_id VARCHAR(128) PRIMARY KEY,
+  group_id BIGINT NOT NULL,
+  trigger_event_id VARCHAR(128) NOT NULL,
+  decided_at TIMESTAMPTZ NOT NULL,
+  participate BOOLEAN NOT NULL,
+  reason_code VARCHAR(64) NOT NULL,
+  target_user_id BIGINT,
+  audience VARCHAR(32) NOT NULL DEFAULT 'group',
+  intent VARCHAR(32) NOT NULL DEFAULT 'observe',
+  social_value DOUBLE PRECISION NOT NULL DEFAULT 0.0,
+  interruption_risk DOUBLE PRECISION NOT NULL DEFAULT 0.0,
+  confidence_score DOUBLE PRECISION NOT NULL DEFAULT 0.0,
+  expires_at TIMESTAMPTZ NOT NULL,
+  rule_hits_json JSONB NOT NULL DEFAULT '[]'::jsonb
+);
+CREATE INDEX IF NOT EXISTS idx_participation_decisions_group_decided ON participation_decisions (group_id, decided_at);
+CREATE INDEX IF NOT EXISTS idx_participation_decisions_event ON participation_decisions (trigger_event_id);
+
+-- 动作反馈：发送后收集到的互动反馈
+CREATE TABLE IF NOT EXISTS action_feedbacks (
+  feedback_id VARCHAR(128) PRIMARY KEY,
+  action_id VARCHAR(128) NOT NULL,
+  decision_id VARCHAR(128) NOT NULL,
+  group_id BIGINT NOT NULL,
+  collected_at TIMESTAMPTZ NOT NULL,
+  observed_event_ids_json JSONB NOT NULL DEFAULT '[]'::jsonb,
+  feedback_type VARCHAR(32) NOT NULL,
+  signals_json JSONB NOT NULL DEFAULT '[]'::jsonb,
+  overall_sentiment DOUBLE PRECISION NOT NULL DEFAULT 0.0,
+  engagement_level DOUBLE PRECISION NOT NULL DEFAULT 0.0,
+  key_evidence_event_id VARCHAR(128),
+  summary_note TEXT NOT NULL DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS idx_action_feedbacks_action ON action_feedbacks (action_id);
+CREATE INDEX IF NOT EXISTS idx_action_feedbacks_decision ON action_feedbacks (decision_id);
+CREATE INDEX IF NOT EXISTS idx_action_feedbacks_group_collected ON action_feedbacks (group_id, collected_at);
+
+-- 反馈观察窗口：跟踪正在观察的反馈窗口
+CREATE TABLE IF NOT EXISTS feedback_windows (
+  window_id VARCHAR(128) PRIMARY KEY,
+  decision_id VARCHAR(128) NOT NULL,
+  action_id VARCHAR(128) NOT NULL,
+  group_id BIGINT NOT NULL,
+  sent_at TIMESTAMPTZ NOT NULL,
+  observe_duration_seconds INT NOT NULL,
+  max_events INT NOT NULL,
+  status VARCHAR(32) NOT NULL DEFAULT 'observing',
+  closed_at TIMESTAMPTZ,
+  observed_event_ids_json JSONB NOT NULL DEFAULT '[]'::jsonb,
+  feedback_type VARCHAR(32),
+  feedback_note TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_feedback_windows_status ON feedback_windows (status, sent_at);
+CREATE INDEX IF NOT EXISTS idx_feedback_windows_action ON feedback_windows (action_id);
