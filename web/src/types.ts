@@ -174,6 +174,8 @@ export interface ProjectionSnapshot {
   tease_tolerance: number
   friction: number
   revision: number
+  trigger_event_id?: string
+  trigger_kind?: string
   updated_at: string
 }
 

@@ -51,6 +51,11 @@ watch(query, () => {
       <el-table-column label="互动" width="100" sortable prop="message_count"><template #default="{ row }">{{ row.message_count }} 次</template></el-table-column>
       <el-table-column label="最近互动" width="130"><template #default="{ row }">{{ relativeTime(row.last_interact_at) }}</template></el-table-column>
     </el-table>
+    <el-alert type="info" :closable="false" style="margin-top: 1em;">
+      <template #title>
+        💡 提示：点击行可以查看关系事件历史和投影变化（功能即将上线）
+      </template>
+    </el-alert>
     <el-pagination v-if="total > 50" class="relation-pagination" layout="prev, pager, next" :current-page="page" :page-size="50" :total="total" @current-change="load" />
   </section>
 </template>
