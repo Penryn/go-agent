@@ -9,7 +9,7 @@
 - **部署形态**：单个 Go 进程 `qqbotd`，外接 NapCat 和 PostgreSQL/pgvector。
 - **代码形态**：六边形架构（Ports and Adapters）+ 按业务能力拆分的模块化单体。
 - **运行模型**：事件驱动；每个群一个 Group Actor，同群串行、跨群并发。
-- **AI 调度模型**：消息先进入工作记忆并产生候选，Presence Runtime 再决定是否调用模型和发送动作。
+- **AI 调度模型**：消息进入工作记忆，决策引擎实时评估并通过响应规划器生成回复。
 - **异步模型**：视觉理解、向量索引、学习等可重放副作用通过 PostgreSQL Outbox 执行。
 
 ## 部署拓扑
@@ -73,14 +73,13 @@ NapCat WebSocket
   -> Group Actor Observe
        -> 归档消息事实
        -> 更新 group working memory
-       -> 产生 ThoughtCandidate
   -> perception outbox（图片/视频/表情包）
-  -> Presence Runtime 调度候选
-       -> 到期、抢占、同群串行、模型并发限制
-  -> deliberation
-       -> ContextSnapshot
-       -> memory / meme retrieval
-       -> Agent Planner 或 deterministic fallback
+  -> decision engine
+       -> 基于上下文和社交认知评估
+       -> 决策是否响应及响应类型
+  -> response planner
+       -> 根据决策生成回复计划
+       -> 选择合适的动作类型和内容
   -> action executor
        -> OutputGuard 和策略校验
        -> text / quote / meme / react / poke / recall / silent
@@ -90,7 +89,7 @@ NapCat WebSocket
        -> cooldown、情绪、关系、人格事实更新
 ```
 
-入站路径和回复路径是有意分离的：入站事件必须先落事实和工作记忆；回复是一个可取消、可过期、可沉默的候选任务。
+入站路径和回复路径是有意分离的：入站事件必须先落事实和工作记忆；回复由决策引擎实时评估，不再依赖候选队列系统。
 
 ## Presence Runtime 与 Group Actor
 
@@ -100,8 +99,7 @@ NapCat WebSocket
 
 - 处理同步回放接口 `ProcessRawEvent` 和异步入站接口 `SubmitRaw`；
 - 过滤机器人自身消息、无效事件和非白名单群；
-- 扫描候选并控制 Job timeout、模型全局并发和主动开口；
-- 在模型调用前后检查输出冷却，避免过期候选发送；
+- 协调事件观察者（反思、人格、场景服务等）；
 - 统一处理成功、沉默、取消、过期和异常终态；
 - 在动作完成后写入思考摘要、用量和反思状态。
 
@@ -109,10 +107,11 @@ NapCat WebSocket
 
 - 最近消息尾部和当前消息 burst；
 - 当前话题、未闭环话题；
-- 待处理候选及其状态；
 - 媒体描述、Prompt Session 和 projection checkpoint。
 
-同一群的候选由群锁串行执行，不同群可以并发执行。工作记忆持久化到 `group_working_memory`，Actor 空闲超过 `runtime.actor_idle_ttl` 后可回收并在下次消息到达时恢复。
+同一群的操作由群锁串行执行，不同群可以并发执行。工作记忆持久化到 PostgreSQL，进程重启后可恢复。
+
+决策引擎（`decision_engine`）实时评估是否需要响应，并通过响应规划器（`response_planner`）生成具体的回复计划。化到 `group_working_memory`，Actor 空闲超过 `runtime.actor_idle_ttl` 后可回收并在下次消息到达时恢复。
 
 ## 领域、应用和适配器
 
@@ -223,7 +222,7 @@ ContextSnapshot
 Agent 可以调用信息读取工具，也可以提交经过校验的记忆声明和关系信号，但不能直接修改最终状态或调用 NapCat。只有最终动作工具能产生发送意图，且仍需经过：
 
 1. 群策略和工具白名单；
-2. 候选有效性和输出冷却检查；
+2. 决策引擎评估和输出冷却检查；
 3. OutputGuard 文本清洗与长度限制；
 4. Action Executor 参数校验；
 5. NapCat outbound adapter。
@@ -244,8 +243,8 @@ Go 服务同时提供：
 当前实现的主要边界：
 
 1. 入站事实先归档，再推进内存去重游标。
-2. 同群候选串行，跨群并发；模型调用有全局槽位和超时。
-3. 候选在 stale、expired、cancelled、silent、sent 和 error 路径都进入终态。
+2. 同群操作串行，跨群并发；模型调用有全局槽位和超时。
+3. 决策在 silent、sent 和 error 路径都进入终态，确保每个事件有明确的处理结果。
 4. 可重放副作用进入持久化 Outbox；进程内队列不作为事实来源。
 5. 关闭流程按 Scheduler、Runtime、Outbox、外部连接的顺序收敛。
 6. `internal/architecture/layers_test.go` 自动检查生产代码依赖方向。
