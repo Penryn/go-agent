@@ -139,9 +139,9 @@ confirmed ──失效──> expired
 confirmed ──撤销/忘记──> revoked
 ```
 
-新增证据只能追加证据；不得通过普通 Upsert 把 rejected、revoked、superseded 改回 staged。重新审核使用显式操作和新的 revision，原决定保留。记忆有效状态由声明决定派生，后台不能独立把投影改成另一种状态。
+新增证据只能追加证据；不得通过普通 Upsert 把 rejected、revoked、superseded 改回 staged。重新审核使用显式操作和新的 revision；每次决定追加到 `memory_claim_decisions`，保留前后状态、理由、操作者和时间。该表只审计生命周期，不记录每次读取。记忆有效状态由声明决定派生，后台不能独立把投影改成另一种状态。
 
-确认时在同一 PostgreSQL 事务内完成：锁定声明/事实槽位 → 校验预期 revision → 更新审核决定 → 写有效记忆 → 失效被替代版本 → 投递向量任务。模型调用在事务外完成，事务只做本地校验和持久化。
+确认时在同一 PostgreSQL 事务内完成：锁定声明/事实槽位 → 校验预期 revision → 追加审核决定并更新状态 → 写有效记忆 → 失效被替代版本 → 投递向量任务。决定以声明 ID、revision 和操作 ID 去重。模型调用在事务外完成，事务只做本地校验和持久化。
 
 ### 5.3 默认确认策略
 
@@ -236,6 +236,7 @@ confirmed ──撤销/忘记──> revoked
 | `messages` | 继续保存证据；补可靠归档顺序，保留事件发生时间；不要求先重命名为 conversation_events。 |
 | `memory_claims` | 重建统一声明；主体/事实键、真实有效期、审核原因、revision 和 memory 关联采用新约束。 |
 | `memory_claim_evidence` | 新的证据去重和来源角色权威表；旧候选证据表退出运行。 |
+| `memory_claim_decisions` | 追加确认、拒绝、替代、撤销及重审决定；支持查询“为什么变成当前状态”。 |
 | `memories` | 重建为已确认声明的读取投影；以有效状态、claim 关联和最后证据时间为准。 |
 | `memory_vectors` | 从新记忆重新生成；校验源版本，支持失效清理，不导入旧向量。 |
 | `learning_watermarks` | 新的归档序号、提炼版本与 revision；删除基于 occurred_at/event_id 的学习游标契约。 |

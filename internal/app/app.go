@@ -35,11 +35,13 @@ import (
 	presencereflection "github.com/phlin/go-agent/internal/application/presence/reflection"
 	profilesvc "github.com/phlin/go-agent/internal/application/profile"
 	promptingsvc "github.com/phlin/go-agent/internal/application/prompting"
+	reflectionsvc "github.com/phlin/go-agent/internal/application/reflection"
 	relationshipsvc "github.com/phlin/go-agent/internal/application/relationship"
 	retrievalsvc "github.com/phlin/go-agent/internal/application/retrieval"
 	outboxruntime "github.com/phlin/go-agent/internal/application/runtime/outbox"
 	"github.com/phlin/go-agent/internal/application/runtime/scheduler"
 	scenesvc "github.com/phlin/go-agent/internal/application/scene"
+	socialdecisionsvc "github.com/phlin/go-agent/internal/application/socialdecision"
 	"github.com/phlin/go-agent/internal/application/textutil"
 	toolsvc "github.com/phlin/go-agent/internal/application/tools"
 	"github.com/phlin/go-agent/internal/config"
@@ -275,6 +277,30 @@ func New(ctx context.Context, cfg config.Config) (*App, error) {
 	moodSvc := personasvc.New(stores.state, cfg.Persona.ID)
 	turnObserver := presencereflection.New(stores.state, moodSvc, time.Duration(cfg.Autonomy.MinReplyIntervalSec)*time.Second, policyService)
 	turnObserver.SetRelationshipService(relationshipService)
+
+	// 社交决策引擎：五步决策流程（硬规则/场景/关系/人格/模型）
+	_ = socialdecisionsvc.NewDecisionEngine(
+		&sceneStoreAdapter{stores.scenes},
+		&relationshipStoreAdapter{stores.relationships},
+		stores.posture,
+		stores.ephemeral,
+		socialdecisionsvc.DefaultDecisionConfig(),
+	)
+
+	// PersonaContext 组装器：组装三层人格模型
+	_ = personasvc.NewContextAssembler(
+		stores.posture,
+		stores.ephemeral,
+		&factStoreAdapter{stores.personaFacts},
+	)
+
+	// 反馈收集器：发送后观察和分类反馈
+	eventStoreAdapted := &eventStoreAdapter{stores.memory}
+	_ = reflectionsvc.NewFeedbackClassifier(eventStoreAdapted)
+	_ = reflectionsvc.NewFeedbackCollector(
+		eventStoreAdapted,
+		reflectionsvc.NewFeedbackClassifier(eventStoreAdapted),
+	)
 
 	// Human Presence Runtime owns ingress, per-group working memory, candidate
 	// scheduling, deliberation, realization, and outbound self-observation.

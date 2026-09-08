@@ -239,3 +239,27 @@ type VectorMemeStore interface {
 	// SearchMemes 执行语义检索，返回相似度 >= threshold 的记录（Descriptor 字段为零值）。
 	SearchMemes(ctx context.Context, groupID int64, queryText string, topK int, threshold float64) ([]mediadomain.MemeSearchResult, error)
 }
+
+// PostureStore 持久化群姿态（按群隔离的人格状态）
+type PostureStore interface {
+	GetGroupPosture(ctx context.Context, personaID string, groupID int64) (*personadomain.GroupPosture, error)
+	UpdateGroupPosture(ctx context.Context, posture *personadomain.GroupPosture) error
+}
+
+// EphemeralStateStore 持久化即时状态（短期情绪和精力）
+type EphemeralStateStore interface {
+	GetEphemeralState(ctx context.Context, personaID string, groupID int64) (*personadomain.EphemeralState, error)
+	UpdateEphemeralState(ctx context.Context, state *personadomain.EphemeralState) error
+}
+
+// DecisionStore 持久化参与决策记录
+type DecisionStore interface {
+	SaveDecision(ctx context.Context, decision interface{}) error
+}
+
+// FeedbackStore 持久化反馈记录和观察窗口
+type FeedbackStore interface {
+	SaveFeedback(ctx context.Context, feedback interface{}) error
+	SaveFeedbackWindow(ctx context.Context, window interface{}) error
+}
+

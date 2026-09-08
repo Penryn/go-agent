@@ -25,6 +25,12 @@ type storeBundle struct {
 	claims        ports.MemoryClaimStore
 	learning      ports.LearningStateStore
 	outbox        ports.OutboxStore
+
+	// 新增的社交决策相关存储
+	posture       ports.PostureStore
+	ephemeral     ports.EphemeralStateStore
+	decisions     ports.DecisionStore
+	feedbacks     ports.FeedbackStore
 }
 
 func newStoreBundle(ctx context.Context, cfg config.Config) (*storeBundle, error) {
@@ -53,6 +59,12 @@ func newStoreBundle(ctx context.Context, cfg config.Config) (*storeBundle, error
 
 	// 状态库与关系库共用同一 PG 连接池（阶段 A：替代 Redis StateStore）
 	bundle.state = postgresstore.NewStateStore(db)
+
+	// 新增的社交决策相关存储
+	bundle.posture = postgresstore.NewPostureRepository(db)
+	bundle.ephemeral = postgresstore.NewEphemeralStateRepository(db)
+	bundle.decisions = postgresstore.NewDecisionRepository(db)
+	bundle.feedbacks = postgresstore.NewFeedbackRepository(db)
 
 	return bundle, nil
 }
