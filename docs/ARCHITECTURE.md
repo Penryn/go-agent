@@ -80,10 +80,20 @@ NapCat WebSocket
   -> response planner
        -> 根据决策生成回复计划
        -> 选择合适的动作类型和内容
+       -> 调用 Composer.ComposeResponse 生成自然语言
+            -> 检索相关记忆（最多5条）
+            -> 构建提示词（人格+记忆+意图）
+            -> LLM 生成自然语言回复
+            -> 降级：失败时使用 intent
   -> action executor
        -> OutputGuard 和策略校验
        -> text / quote / meme / react / poke / recall / silent
   -> outbound/napcat
+  -> feedback window
+       -> 发送时打开反馈窗口（30秒观察期）
+       -> 收集窗口内的用户回复
+       -> 情绪分析（LLM 或规则）
+       -> 分类反馈并记录到关系系统
   -> reflection
        -> ThoughtRecord、model usage、retrieval trace
        -> cooldown、情绪、关系、人格事实更新
@@ -336,3 +346,276 @@ go-agent/
 - 改启动和依赖生命周期：`app`
 
 具体可靠性决策见 [`adr/0001-runtime-lifecycle-and-outbox.md`](adr/0001-runtime-lifecycle-and-outbox.md)，RAG 设计见 [`RAG_REFACTOR.md`](RAG_REFACTOR.md)。
+
+---
+
+## 反馈窗口与关系学习
+
+### 反馈窗口机制
+
+实现位于 [`internal/application/presence/feedback/window.go`](../internal/application/presence/feedback/window.go)。
+
+**核心流程：**
+
+1. **打开窗口**：消息发送后自动创建 30 秒观察窗口
+2. **收集事件**：捕获窗口内所有用户回复（最多10条）
+3. **情绪分析**：使用 LLM 或规则分析情绪倾向（-1.0 到 1.0）
+4. **分类反馈**：根据情绪值和参与度分类
+5. **记录关系**：自动记录到关系系统，触发投影更新
+
+**反馈类型：**
+
+- `EventPositiveFeedback` (valence > 0.3)：感谢、赞赏、满意
+- `EventNegativeFeedback` (valence < -0.3)：质疑、拒绝、批评
+- `EventConversationKept` (valence ~0)：对话继续但无明显情绪
+- `EventConversationDropped` (无回复)：被忽略
+
+**情绪分析策略：**
+
+```go
+// 可插拔接口
+type SentimentAnalyzer interface {
+    AnalyzeSentiment(ctx, messages) (float64, error)
+}
+
+// LLM 实现：语义理解，支持复杂表达、反讽、隐含情绪
+type LLMSentimentAnalyzer struct { llm LLMCaller }
+
+// 降级策略：LLM 失败时使用基于关键词的规则分类
+```
+
+**集成点：**
+
+- `group_actor.respond()` 发送时调用 `feedbackManager.OpenWindow()`
+- `group_actor.observe()` 观察时调用 `feedbackManager.CheckInboundEvent()`
+- 窗口自动关闭并调用 `RelationshipService.Apply()` 记录事件
+
+### 关系投影历史追踪
+
+实现位于 [`internal/adapters/storage/postgres/store.go`](../internal/adapters/storage/postgres/store.go)。
+
+**数据模型：**
+
+```sql
+CREATE TABLE relationship_history (
+  id BIGSERIAL PRIMARY KEY,
+  persona_id TEXT NOT NULL,
+  group_id BIGINT NOT NULL,
+  user_id BIGINT NOT NULL,
+  revision BIGINT NOT NULL,
+  
+  -- 投影快照
+  familiarity DOUBLE PRECISION NOT NULL,
+  affinity DOUBLE PRECISION NOT NULL,
+  trust DOUBLE PRECISION NOT NULL,
+  tease_tolerance DOUBLE PRECISION NOT NULL,
+  friction DOUBLE PRECISION NOT NULL,
+  
+  -- 因果信息
+  trigger_event_id TEXT,
+  trigger_kind TEXT,
+  snapshot_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  
+  INDEX (persona_id, group_id, user_id, snapshot_at DESC)
+);
+```
+
+**自动记录机制：**
+
+- 每次调用 `ApplyRelationshipEvent()` 时，在事务中同时：
+  1. 保存关系事件
+  2. 更新关系投影
+  3. 保存历史快照
+- 使用 `ON CONFLICT DO NOTHING` 避免重复记录
+- 记录触发事件 ID 和类型，建立完整因果链
+
+**查询接口：**
+
+- `GET /admin/api/relationships/{group_id}/{user_id}/events` - 关系事件列表
+- `GET /admin/api/relationships/{group_id}/{user_id}/projection-history` - 投影历史快照
+
+**降级策略：**
+
+历史表为空时，查询返回当前关系状态作为唯一版本，确保 API 始终可用。
+
+### 前端可视化
+
+实现位于 [`web/src/views/RelationsView.vue`](../web/src/views/RelationsView.vue)。
+
+**交互功能：**
+
+- 点击关系行展开/收起详情面板
+- 展开行高亮显示，流畅动画过渡
+
+**关系事件时间线：**
+
+- 按时间倒序展示所有事件
+- 事件类型标签（正面/负面/中性）
+- 情绪值颜色编码（绿色正面、红色负面、灰色中性）
+- 显示证据事件 ID 用于追溯
+
+**投影历史视图：**
+
+- 显示最近 50 条历史版本
+- 版本号 + 更新时间 + 触发事件类型
+- 各维度变化对比（↑ 正向变化、↓ 负向变化）
+- 卡片式布局，悬停效果
+
+**数据可视化示例：**
+
+```
+熟悉度: 0.75 ↑ +0.05 (绿色)
+亲密度: 0.80 ↓ -0.10 (红色)
+信任:   0.70 (变化 < 0.01 不显示)
+摩擦:   0.20 ↓ -0.05 (绿色 - 摩擦降低是好的)
+```
+
+---
+
+## 文本生成流程
+
+### Composer 架构
+
+实现位于 [`internal/application/prompting/composer.go`](../internal/application/prompting/composer.go)。
+
+**核心方法：**
+
+```go
+func (c *Composer) ComposeResponse(
+    ctx context.Context,
+    personaCtx *personadomain.PersonaContext,
+    evt *conversationdomain.ConversationEvent,
+    intent string,
+) (string, error)
+```
+
+**生成流程：**
+
+1. **记忆检索**：使用 `MemoryRetriever` 检索相关记忆（最多5条）
+2. **提示词构建**：组装人格、性格、记忆、对话、意图
+3. **LLM 生成**：调用大语言模型生成自然语言回复
+4. **降级保障**：LLM 失败或未配置时使用 intent
+
+**提示词结构：**
+
+```markdown
+# 角色设定
+你是 [人格名称]
+[人格描述]
+
+## 性格特点
+- [特点1]
+- [特点2]
+
+## 行为风格
+[风格描述]
+
+# 相关记忆
+1. [记忆内容1]
+2. [记忆内容2]
+
+# 当前对话
+用户说: [用户消息]
+
+# 回复意图
+[决策引擎生成的 intent]
+
+# 任务
+请根据以上信息，生成一句符合角色人格和说话风格的自然回复。
+要求：
+1. 保持角色的性格特点和说话习惯
+2. 回复要自然、简洁，不超过100字
+3. 只输出回复内容本身，不要包含任何解释或元信息
+4. 如果有相关记忆，可以自然地体现出来
+```
+
+**依赖注入：**
+
+```go
+composer := NewComposer(persona)
+composer.WithLLM(llmAdapter).
+    WithMemoryRetriever(memoryRetriever)
+```
+
+**适配器实现：**
+
+- `llmAdapter`: `modelFactory` → `LLMCaller`
+- `memoryRetrieverAdapter`: `retrievalService` → `MemoryRetriever`
+- `textComposerAdapter`: `Composer` → `planning.TextComposer`
+
+**降级策略：**
+
+- LLM 未配置 → 使用 intent
+- 记忆检索失败 → 继续生成（无记忆上下文）
+- LLM 调用失败 → 降级到 intent
+- 生成结果为空 → 降级到 intent
+
+**示例对比：**
+
+```
+# 之前（模板回复）
+用户: "今天天气怎么样？"
+回复: "回复: 告知天气信息"  # 直接返回 intent
+
+# 现在（LLM 生成）
+用户: "今天天气怎么样？"
+Intent: "告知天气信息"
+记忆: ["用户喜欢晴天", "用户在北京"]
+回复: "今天北京挺晴朗的，适合出门呢～"  # 自然语言 + 记忆
+```
+
+**集成点：**
+
+`response_planner` 调用 `textComposer.ComposeResponse()` 生成回复文本，完全替代之前的模板回复机制。
+
+---
+
+## 数据流总览
+
+完整的消息处理和学习循环：
+
+```text
+用户消息
+  ↓
+[入站] inbound/napcat → normalizer → Presence Runtime
+  ↓
+[观察] Group Actor Observe
+  ├─ 归档事实
+  ├─ 更新工作记忆
+  └─ 检查反馈窗口 (CheckInboundEvent)
+  ↓
+[决策] Decision Engine
+  ├─ 社交认知评估
+  ├─ 场景匹配
+  └─ 输出 Intent
+  ↓
+[生成] Response Planner
+  ├─ Composer.ComposeResponse()
+  │   ├─ 检索记忆（5条）
+  │   ├─ 构建提示词
+  │   └─ LLM 生成
+  └─ 输出 ResponsePlan
+  ↓
+[执行] Action Executor → outbound/napcat
+  ↓
+[反馈窗口] FeedbackWindowManager
+  ├─ OpenWindow (30秒观察)
+  ├─ 收集用户回复
+  ├─ 情绪分析 (LLM/规则)
+  └─ 分类反馈类型
+  ↓
+[关系更新] RelationshipService.Apply()
+  ├─ 保存事件
+  ├─ 更新投影
+  └─ 记录历史快照 [事务]
+  ↓
+[反思] Reflection
+  ├─ ThoughtRecord
+  ├─ 用量统计
+  └─ Cooldown 更新
+  ↓
+[异步任务] Outbox
+  ├─ 向量索引
+  ├─ 学习抽取
+  └─ 人格事实
+```
