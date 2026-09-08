@@ -12,7 +12,9 @@ import (
 
 	"github.com/phlin/go-agent/internal/application/ports"
 	"github.com/phlin/go-agent/internal/application/presence/ingress"
+	socialdecisionsvc "github.com/phlin/go-agent/internal/application/socialdecision"
 	conversationdomain "github.com/phlin/go-agent/internal/domain/conversation"
+	feedbackdomain "github.com/phlin/go-agent/internal/domain/feedback"
 	mediadomain "github.com/phlin/go-agent/internal/domain/media"
 	personadomain "github.com/phlin/go-agent/internal/domain/persona"
 	presencedomain "github.com/phlin/go-agent/internal/domain/presence"
@@ -20,7 +22,7 @@ import (
 
 // 新增：社交决策相关接口
 type DecisionEngine interface {
-	DecideParticipation(ctx context.Context, req DecisionRequest) (*presencedomain.ParticipationDecision, error)
+	DecideParticipation(ctx context.Context, req socialdecisionsvc.DecisionRequest) (*presencedomain.ParticipationDecision, error)
 }
 
 type PersonaAssembler interface {
@@ -42,29 +44,7 @@ type ResponseExecutor interface {
 
 type FeedbackCollector interface {
 	StartFeedbackWindow(ctx context.Context, decisionID, actionID string, groupID int64, sentAt time.Time) (*presencedomain.FeedbackWindow, error)
-	CollectFeedback(ctx context.Context, window *presencedomain.FeedbackWindow) (*FeedbackResult, error)
-}
-
-type DecisionRequest struct {
-	PersonaID      string
-	GroupID        int64
-	TriggerEventID string
-	TargetUserID   int64
-
-	IsSelfMessage              bool
-	SecondsSinceLastBotMessage int
-	ConsecutiveBotMessages     int
-	EventAge                   time.Duration
-
-	IsDirectMention    bool
-	IsQuestionToBot    bool
-	IsFastConversation bool
-}
-
-type FeedbackResult struct {
-	Type              string
-	OverallSentiment  float64
-	EngagementLevel   string
+	CollectFeedback(ctx context.Context, window *presencedomain.FeedbackWindow) (*feedbackdomain.ActionFeedback, error)
 }
 
 const defaultTailSize = 32
@@ -1084,7 +1064,7 @@ func (a *actor) decideAndRespond(ctx context.Context, evt *presencedomain.EventR
 	}
 
 	// 1. 构建决策请求
-	req := DecisionRequest{
+	req := socialdecisionsvc.DecisionRequest{
 		PersonaID:      a.personaID,
 		GroupID:        evt.GroupID,
 		TriggerEventID: evt.EventID,

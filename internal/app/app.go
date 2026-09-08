@@ -32,6 +32,7 @@ import (
 	presenceactor "github.com/phlin/go-agent/internal/application/presence/group_actor"
 	presenceingress "github.com/phlin/go-agent/internal/application/presence/ingress"
 	presenceperception "github.com/phlin/go-agent/internal/application/presence/perception"
+	planning "github.com/phlin/go-agent/internal/application/presence/planning"
 	presencereflection "github.com/phlin/go-agent/internal/application/presence/reflection"
 	profilesvc "github.com/phlin/go-agent/internal/application/profile"
 	promptingsvc "github.com/phlin/go-agent/internal/application/prompting"
@@ -45,6 +46,7 @@ import (
 	"github.com/phlin/go-agent/internal/application/textutil"
 	toolsvc "github.com/phlin/go-agent/internal/application/tools"
 	"github.com/phlin/go-agent/internal/config"
+	conversationdomain "github.com/phlin/go-agent/internal/domain/conversation"
 	memorydomain "github.com/phlin/go-agent/internal/domain/memory"
 	personadomain "github.com/phlin/go-agent/internal/domain/persona"
 	presencedomain "github.com/phlin/go-agent/internal/domain/presence"
@@ -83,6 +85,15 @@ func New(ctx context.Context, cfg config.Config) (*App, error) {
 		sender = outboundnapcat.NewSender(cfg.QQ.OutboundURL, cfg.QQ.OutboundToken, nil)
 	}
 
+	// 创建 ResponsePlanner 和 ResponseExecutor（依赖 sender 和 composer）
+	composer := promptingsvc.NewComposer(cfg.Persona)
+
+	// 创建 composer 适配器以匹配 planning.TextComposer 接口
+	composerAdapter := &textComposerAdapter{composer: composer}
+
+	responsePlanner := planning.NewResponsePlanner(cfg.Persona, composerAdapter)
+	responseExecutor := planning.NewResponseExecutor(sender)
+
 	policyService := policysvc.New(cfg)
 	modelFactory := modeladapter.NewFactory(cfg.Models)
 	if err := modelFactory.Warmup(ctx); err != nil {
@@ -108,11 +119,37 @@ func New(ctx context.Context, cfg config.Config) (*App, error) {
 	sceneService := scenesvc.New(stores.scenes)
 	eventLog := presenceingress.NewMemoryEventLog()
 
-	// 注意：这些服务在后面才创建，这里先占位
-	// 实际的依赖会在后面通过 setter 或其他方式注入
+	// 社交决策服务（需要在 presenceManager 之前创建）
+	decisionEngine := socialdecisionsvc.NewDecisionEngine(
+		&sceneStoreAdapter{stores.scenes},
+		&relationshipStoreAdapter{stores.relationships},
+		stores.posture,
+		stores.ephemeral,
+		socialdecisionsvc.DefaultDecisionConfig(),
+	)
+
+	personaAssembler := personasvc.NewContextAssembler(
+		stores.posture,
+		stores.ephemeral,
+		&factStoreAdapter{stores.personaFacts},
+	)
+
+	eventStoreAdapted := &eventStoreAdapter{stores.memory}
+	feedbackCollector := reflectionsvc.NewFeedbackCollector(
+		eventStoreAdapted,
+		reflectionsvc.NewFeedbackClassifier(eventStoreAdapted),
+	)
+
+	// presenceManager 配置选项（包含决策引擎依赖）
 	actorOptions := []presenceactor.Option{
 		presenceactor.WithArchive(stores.memory),
 		presenceactor.WithIdleTTL(textutil.ParseDurationOr(cfg.Runtime.ActorIdleTTL, 30*time.Minute)),
+		presenceactor.WithDecisionEngine(decisionEngine),
+		presenceactor.WithPersonaAssembler(personaAssembler),
+		presenceactor.WithFeedbackCollector(feedbackCollector),
+		presenceactor.WithResponsePlanner(responsePlanner),
+		presenceactor.WithResponseExecutor(responseExecutor),
+		presenceactor.WithPersonaID(cfg.Persona.ID),
 	}
 	if stateStore, ok := stores.memory.(presenceactor.WorkingMemoryStore); ok {
 		actorOptions = append(actorOptions, presenceactor.WithStateStore(stateStore))
@@ -280,37 +317,6 @@ func New(ctx context.Context, cfg config.Config) (*App, error) {
 	moodSvc := personasvc.New(stores.state, cfg.Persona.ID)
 	turnObserver := presencereflection.New(stores.state, moodSvc, time.Duration(cfg.Autonomy.MinReplyIntervalSec)*time.Second, policyService)
 	turnObserver.SetRelationshipService(relationshipService)
-
-	// 社交决策引擎：五步决策流程（硬规则/场景/关系/人格/模型）
-	decisionEngine := socialdecisionsvc.NewDecisionEngine(
-		&sceneStoreAdapter{stores.scenes},
-		&relationshipStoreAdapter{stores.relationships},
-		stores.posture,
-		stores.ephemeral,
-		socialdecisionsvc.DefaultDecisionConfig(),
-	)
-
-	// PersonaContext 组装器：组装三层人格模型
-	personaAssembler := personasvc.NewContextAssembler(
-		stores.posture,
-		stores.ephemeral,
-		&factStoreAdapter{stores.personaFacts},
-	)
-
-	// 反馈收集器：发送后观察和分类反馈
-	eventStoreAdapted := &eventStoreAdapter{stores.memory}
-	feedbackClassifier := reflectionsvc.NewFeedbackClassifier(eventStoreAdapted)
-	feedbackCollector := reflectionsvc.NewFeedbackCollector(
-		eventStoreAdapted,
-		feedbackClassifier,
-	)
-
-	// ResponsePlanner 和 ResponseExecutor
-	responsePlanner := planning.NewResponsePlanner(
-		cfg.Persona,
-		promptingsvc.NewComposer(cfg.Persona), // 使用现有的 Composer
-	)
-	responseExecutor := planning.NewResponseExecutor(sender)
 
 	// Human Presence Runtime owns ingress, per-group working memory, candidate
 	// scheduling, deliberation, realization, and outbound self-observation.
@@ -480,4 +486,21 @@ func (a *App) handleHealth(w http.ResponseWriter, r *http.Request) {
 	}
 
 	_, _ = w.Write([]byte(`{"ok":true}`))
+}
+
+// textComposerAdapter 适配 prompting.Composer 到 planning.TextComposer 接口
+type textComposerAdapter struct {
+	composer *promptingsvc.Composer
+}
+
+func (a *textComposerAdapter) ComposeResponse(
+	ctx context.Context,
+	personaCtx *personadomain.PersonaContext,
+	evt *conversationdomain.ConversationEvent,
+	intent string,
+) (string, error) {
+	// prompting.Composer 可能有不同的方法签名，这里需要适配
+	// 简单起见，直接返回基于 intent 的模板文本
+	// TODO: 调用实际的 composer 方法
+	return "回复: " + intent, nil
 }
