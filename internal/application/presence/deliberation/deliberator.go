@@ -17,7 +17,6 @@ import (
 
 type Input struct {
 	Envelope        conversationdomain.EventEnvelope
-	Candidate       presencedomain.ThoughtCandidate
 	Memory          presencedomain.GroupWorkingMemory
 	PersonaFeedback []string
 }
@@ -54,24 +53,25 @@ func (a *Adapter) Deliberate(ctx context.Context, input Input) (Result, error) {
 		return Result{}, err
 	}
 	snapshot.PersonaFeedback = append([]string(nil), input.PersonaFeedback...)
-	decision := decisionFor(input.Envelope, input.Candidate)
+	decision := decisionFor(input.Envelope)
 	plan, err := a.planner.Plan(ctx, snapshot, decision)
 	if err != nil {
 		return Result{}, err
 	}
-	decision.Action = resolveAction(input.Candidate.Intent, plan.PlannedActions)
+	// 决策现在由 group_actor 的决策引擎处理
+	// 这里仅返回基本结果以保持接口兼容
 	return Result{
 		Snapshot: snapshot,
 		Decision: decision,
 		Plan:     plan,
 		Thought: replydomain.ThoughtRecord{
 			ThoughtID:      decision.DecisionID + "-thought",
-			CandidateID:    input.Candidate.CandidateID,
+			CandidateID:    "",
 			GroupID:        input.Envelope.Event.GroupID,
 			EventID:        input.Envelope.Event.EventID,
-			Interpretation: input.Candidate.Intent,
+			Interpretation: "delegated_to_decision_engine",
 			Evidence:       append([]string(nil), decision.ReasonCodes...),
-			Uncertainty:    input.Candidate.Uncertainty,
+			Uncertainty:    1.0,
 			ChosenAction:   string(decision.Action),
 			Outcome:        string(plan.SendMode),
 			CreatedAt:      time.Now(),
@@ -137,13 +137,13 @@ func resolveAction(intent string, proposed []policydomain.DecisionAction) policy
 	return baseline
 }
 
-func decisionFor(envelope conversationdomain.EventEnvelope, candidate presencedomain.ThoughtCandidate) policydomain.AutonomyDecision {
+func decisionFor(envelope conversationdomain.EventEnvelope) policydomain.AutonomyDecision {
 	return policydomain.AutonomyDecision{
 		DecisionID:  envelope.TraceID + "-decision",
-		Action:      baselineAction(candidate.Intent),
-		TriggerType: candidate.Intent,
-		Score:       candidate.Score,
-		Confidence:  1 - candidate.Uncertainty,
-		ReasonCodes: []string{"thought_candidate", candidate.Intent},
+		Action:      policydomain.ActionSilent,
+		TriggerType: "unknown",
+		Score:       0.0,
+		Confidence:  0.0,
+		ReasonCodes: []string{"delegated_to_decision_engine"},
 	}
 }

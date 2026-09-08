@@ -6,14 +6,11 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"math/rand/v2"
-	"slices"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/phlin/go-agent/internal/application/action"
-	"github.com/phlin/go-agent/internal/application/modelusage"
 	normalizersvc "github.com/phlin/go-agent/internal/application/normalizer"
 	personasvc "github.com/phlin/go-agent/internal/application/persona"
 	"github.com/phlin/go-agent/internal/application/ports"
@@ -91,7 +88,7 @@ const (
 type Outcome struct {
 	Envelope  conversationdomain.EventEnvelope   `json:"envelope"`
 	Snapshot  conversationdomain.ContextSnapshot `json:"snapshot"`
-	Candidate presencedomain.ThoughtCandidate    `json:"candidate"`
+	Candidate interface{}                        `json:"candidate"` // 已废弃，保留以保持接口兼容
 	Decision  policydomain.AutonomyDecision      `json:"decision"`
 	Plan      replydomain.ReplyPlan              `json:"plan"`
 	Receipt   replydomain.ActionReceipt          `json:"receipt"`
@@ -224,15 +221,15 @@ func (r *Runtime) SubmitRaw(ctx context.Context, payload []byte) error {
 // ScheduleCandidate is the runtime seam for proactive work. The candidate
 // enters the same group mailbox as inbound-derived thoughts and receives the
 // same staleness, throttling, and action validation.
-func (r *Runtime) ScheduleCandidate(ctx context.Context, groupID int64, candidate presencedomain.ThoughtCandidate) error {
-	if r == nil || r.working == nil {
-		return errors.New("human runtime: working memory is nil")
-	}
-	return r.working.EnqueueCandidate(ctx, groupID, candidate)
+// 注意：此方法已废弃，决策现在由 group_actor 的决策引擎处理
+func (r *Runtime) ScheduleCandidate(ctx context.Context, groupID int64, candidate interface{}) error {
+	// No-op: 候选系统已被决策引擎替代
+	return nil
 }
 
 // ProcessRawEvent is the synchronous replay surface. It records the event,
 // then immediately deliberates its highest-value candidate for CLI/tests.
+// 注意：候选逻辑已被决策引擎替代，此方法现在仅记录事件
 func (r *Runtime) ProcessRawEvent(ctx context.Context, payload []byte) (Outcome, error) {
 	envelope, err := r.normalize(payload)
 	if err != nil {
@@ -247,7 +244,7 @@ func (r *Runtime) ProcessRawEvent(ctx context.Context, payload []byte) (Outcome,
 		}
 	}
 	record := toEventRecord(envelope, presencedomain.OriginInbound)
-	memory, err := r.working.Observe(ctx, record)
+	_, err = r.working.Observe(ctx, record)
 	if err != nil {
 		return Outcome{}, fmt.Errorf("observe event: %w", err)
 	}
@@ -258,26 +255,9 @@ func (r *Runtime) ProcessRawEvent(ctx context.Context, payload []byte) (Outcome,
 		r.confirmations.ObserveConfirmation(envelope.Event.GroupID, envelope.Event.UserID, envelope.Event.Text, envelope.ReceivedAt)
 	}
 	r.observeEvent(ctx, envelope.Event)
-	var candidate presencedomain.ThoughtCandidate
-	for i := len(memory.Candidates) - 1; i >= 0; i-- {
-		if slices.Contains(memory.Candidates[i].SourceEventIDs, envelope.Event.EventID) {
-			candidate = memory.Candidates[i]
-			break
-		}
-	}
-	if candidate.CandidateID == "" {
-		return Outcome{Envelope: envelope, Decision: silentDecision(envelope.TraceID, "no_candidate")}, nil
-	}
-	claimed, ok, err := r.working.ClaimCandidate(ctx, envelope.Event.GroupID, candidate.CandidateID)
-	if err != nil {
-		return Outcome{}, fmt.Errorf("claim candidate: %w", err)
-	}
-	if !ok {
-		return Outcome{Envelope: envelope, Candidate: candidate, Decision: silentDecision(envelope.TraceID, "candidate_stale")}, nil
-	}
-	outcome, err := r.process(ctx, envelope, claimed)
-	_ = r.working.Complete(ctx, envelope.Event.GroupID, claimed.CandidateID)
-	return outcome, err
+
+	// 决策现在由 group_actor 的 decideAndRespond 处理
+	return Outcome{Envelope: envelope, Decision: silentDecision(envelope.TraceID, "delegated_to_decision_engine")}, nil
 }
 
 func (r *Runtime) loop(interval, timeout time.Duration) {
@@ -290,38 +270,15 @@ func (r *Runtime) loop(interval, timeout time.Duration) {
 			return
 		case now := <-ticker.C:
 			r.working.PruneIdle(r.ctx, now)
-			for _, groupID := range r.working.GroupIDs() {
-				candidate, ok, err := r.working.ClaimDue(r.ctx, groupID, now)
-				if err != nil || !ok {
-					continue
-				}
-				// 跨群并发直接开 goroutine；同群由 runCandidate 的群锁串行。
-				r.wg.Add(1)
-				go r.runCandidate(groupID, candidate, timeout)
-			}
+			// 候选轮询已被决策引擎替代
 		}
 	}
 }
 
-// runCandidate 失败路径也必须终结候选,避免已认领工作永久占位。
-func (r *Runtime) runCandidate(groupID int64, candidate presencedomain.ThoughtCandidate, timeout time.Duration) {
+// runCandidate 已废弃 - 决策现在由 group_actor 的决策引擎处理
+func (r *Runtime) runCandidate(groupID int64, candidate interface{}, timeout time.Duration) {
 	defer r.wg.Done()
-	groupLock := r.groupRunLock(groupID)
-	groupLock.Lock()
-	defer groupLock.Unlock()
-	if r.modelSlots != nil {
-		select {
-		case r.modelSlots <- struct{}{}:
-			defer func() { <-r.modelSlots }()
-		case <-r.ctx.Done():
-			return
-		}
-	}
-	ctx, cancel := context.WithTimeout(r.ctx, timeout)
-	defer cancel()
-	if _, err := r.processCandidate(ctx, groupID, candidate); err != nil {
-		slog.Warn("human runtime: candidate failed", "group_id", groupID, "candidate_id", candidate.CandidateID, "err", err)
-	}
+	// No-op: 候选处理已被决策引擎替代
 }
 
 func (r *Runtime) groupRunLock(groupID int64) *sync.Mutex {
@@ -360,6 +317,10 @@ func (r *Runtime) scanProactive(now time.Time) {
 		if r.lastProactiveAt(groupID).After(now.Add(-proactiveGroupCooldown)) {
 			continue
 		}
+		// 主动发言循环已废弃 - 现在由 group_actor 的决策引擎处理
+		_ = groupID
+		_ = now
+		/*
 		candidate, ok := r.proactiveCandidate(groupID, now)
 		if !ok {
 			continue
@@ -371,58 +332,16 @@ func (r *Runtime) scanProactive(now time.Time) {
 		r.markProactive(groupID, now)
 		slog.Info("human runtime: proactive candidate enqueued",
 			"group_id", groupID, "topic", candidate.TopicID, "score", candidate.Score)
+		*/
 	}
 }
 
 // proactiveCandidate 判断一群是否值得主动开口并生成候选。
 // 话题素材优先取未接话题（OpenLoops），其次从长期记忆挑一条高分旧事——
 // 「我记得你上次说过XX」的主动回忆。没到阈值就不开口。
-func (r *Runtime) proactiveCandidate(groupID int64, now time.Time) (presencedomain.ThoughtCandidate, bool) {
-	if rand.Float64() >= r.proactiveProbability {
-		return presencedomain.ThoughtCandidate{}, false
-	}
-	memory, err := r.working.Snapshot(r.ctx, groupID)
-	if err != nil {
-		return presencedomain.ThoughtCandidate{}, false
-	}
-	// 冷场判定：最近一条事件距今超过阈值才考虑开口，正在聊天的群不插嘴。
-	if memory.LastUpdatedAt.IsZero() || now.Sub(memory.LastUpdatedAt) < proactiveIdleThreshold {
-		return presencedomain.ThoughtCandidate{}, false
-	}
-
-	topic := memory.ActiveTopic
-	score := r.proactiveThreshold
-	switch {
-	case len(memory.OpenLoops) > 0:
-		// 有未接话题：优先接话，评分上调让候选能过 ClaimDue 阈值
-		if topic == "" {
-			topic = memory.OpenLoops[len(memory.OpenLoops)-1]
-		}
-		score = min(score+0.1, 1)
-	default:
-		// 没有未接话题：从长期记忆挑一条值得主动提起的旧事
-		if topic == "" {
-			topic = r.recallWorthyMemory(groupID)
-		}
-		if topic == "" {
-			return presencedomain.ThoughtCandidate{}, false
-		}
-	}
-
-	delay := time.Duration(rand.Int64N(int64(proactiveDelayMax-proactiveDelayMin))) + proactiveDelayMin
-	return presencedomain.ThoughtCandidate{
-		CandidateID:    fmt.Sprintf("proactive-%d-%d", groupID, now.Unix()),
-		Intent:         "continue_topic",
-		TopicID:        topic,
-		Urgency:        score,
-		Score:          score,
-		DueAt:          now.Add(delay),
-		ExpiresAt:      now.Add(proactiveTTL),
-		Uncertainty:    1 - score,
-		ReasonCode:     "proactive_idle_revive",
-		DeliveryTarget: "group",
-		Status:         presencedomain.CandidatePending,
-	}, true
+// proactiveCandidate 已废弃 - 主动发言现在由 group_actor 的决策引擎处理
+func (r *Runtime) proactiveCandidate(groupID int64, now time.Time) (interface{}, bool) {
+	return nil, false
 }
 
 // recallWorthyMemory 从长期记忆里挑一条适合冷场提起的旧事。
@@ -458,225 +377,21 @@ func (r *Runtime) markProactive(groupID int64, now time.Time) {
 	r.lastProactive[groupID] = now
 }
 
-func (r *Runtime) processCandidate(ctx context.Context, groupID int64, candidate presencedomain.ThoughtCandidate) (Outcome, error) {
-	defer func() {
-		// Completion is idempotent and must happen on stale, expired, and error
-		// paths so accepted work cannot remain leased forever.
-		_ = r.working.Complete(context.Background(), groupID, candidate.CandidateID)
-	}()
-	if ok, err := r.working.CanExecute(ctx, groupID, candidate.CandidateID, time.Now()); err != nil {
-		return Outcome{}, err
-	} else if !ok {
-		return Outcome{Candidate: candidate, Decision: silentDecision(candidate.CandidateID, "candidate_stale")}, nil
-	}
-	memory, err := r.working.Snapshot(ctx, groupID)
-	if err != nil {
-		return Outcome{}, err
-	}
-	var event conversationdomain.ConversationEvent
-	for _, record := range memory.RecentTail {
-		for _, eventID := range candidate.SourceEventIDs {
-			if record.EventID == eventID {
-				event = record.Event
-			}
-		}
-	}
-	if event.EventID == "" {
-		_ = r.working.Complete(ctx, groupID, candidate.CandidateID)
-		return Outcome{}, errors.New("candidate source event no longer in working memory")
-	}
-	envelope := conversationdomain.EventEnvelope{Source: "humanbot", SelfID: r.selfID, ReceivedAt: time.Now(), Event: event, TraceID: event.EventID, CorrelationID: event.MessageID}
-	outcome, err := r.processWithValidation(ctx, envelope, candidate, func(checkCtx context.Context) (bool, error) {
-		return r.working.CanExecute(checkCtx, groupID, candidate.CandidateID, time.Now())
-	})
-	return outcome, err
+// processCandidate 已废弃 - 决策现在由 group_actor 的决策引擎处理
+func (r *Runtime) processCandidate(ctx context.Context, groupID int64, candidate interface{}) (Outcome, error) {
+	return Outcome{Decision: silentDecision("", "delegated_to_decision_engine")}, nil
 }
 
-func (r *Runtime) process(ctx context.Context, envelope conversationdomain.EventEnvelope, candidate presencedomain.ThoughtCandidate) (Outcome, error) {
+func (r *Runtime) process(ctx context.Context, envelope conversationdomain.EventEnvelope, candidate interface{}) (Outcome, error) {
 	return r.processWithValidation(ctx, envelope, candidate, nil)
 }
 
-func (r *Runtime) processWithValidation(ctx context.Context, envelope conversationdomain.EventEnvelope, candidate presencedomain.ThoughtCandidate, validate func(context.Context) (bool, error)) (Outcome, error) {
-	if r.turns != nil {
-		allowed, err := r.turns.CanDeliberate(ctx, envelope.Event.GroupID, time.Now())
-		if err != nil {
-			return Outcome{}, fmt.Errorf("precheck output permission: %w", err)
-		}
-		if !allowed {
-			return r.silentBeforeModel(ctx, envelope, candidate, "output_rate_limited")
-		}
-	}
-
-	ctx, usageRecorder := modelusage.WithRecorder(ctx, modelusage.Metadata{
-		TraceID: envelope.TraceID,
-		EventID: envelope.Event.EventID,
-		GroupID: envelope.Event.GroupID,
-		UserID:  envelope.Event.UserID,
-		Trigger: candidate.Intent,
-		Phase:   "reply_planner",
-	})
-	if sink, ok := r.thoughts.(modelusage.Sink); ok {
-		usageRecorder.SetSink(sink)
-	}
-	usageFinal := modelusage.FinalState{}
-	defer func() { usageRecorder.Flush(usageFinal) }()
-
-	memory, err := r.working.Snapshot(ctx, envelope.Event.GroupID)
-	if err != nil {
-		return Outcome{}, fmt.Errorf("load working memory: %w", err)
-	}
-	result, err := r.deliberator.Deliberate(ctx, deliberation.Input{Envelope: envelope, Candidate: candidate, Memory: memory})
-	if err != nil {
-		return Outcome{}, fmt.Errorf("deliberate response: %w", err)
-	}
-	snapshot, decision, plan := result.Snapshot, result.Decision, result.Plan
-	usageFinal.Action = string(decision.Action)
-	if validate != nil {
-		valid, err := validate(ctx)
-		if err != nil {
-			return Outcome{}, fmt.Errorf("validate candidate before action: %w", err)
-		}
-		if !valid {
-			usageFinal.Action = string(policydomain.ActionSilent)
-			usageFinal.DropReason = "candidate_stale"
-			return Outcome{Envelope: envelope, Snapshot: snapshot, Candidate: candidate, Decision: silentDecision(envelope.TraceID, "candidate_stale"), Plan: plan}, nil
-		}
-	}
-	if decision.Action != policydomain.ActionSilent && r.turns != nil {
-		// Re-check after generation because another same-group turn may have sent
-		// while this model call was in flight. The precheck avoids already-known
-		// waste; this check preserves the concurrency safety boundary.
-		allowed, err := r.turns.CanDeliberate(ctx, envelope.Event.GroupID, time.Now())
-		if err != nil {
-			return Outcome{}, fmt.Errorf("check output permission: %w", err)
-		}
-		if !allowed {
-			decision.Action = policydomain.ActionSilent
-			decision.ReasonCodes = append(decision.ReasonCodes, "output_rate_limited")
-			usageFinal.RateLimited = true
-			usageFinal.Action = string(decision.Action)
-			usageFinal.DropReason = "output_rate_limited"
-		}
-	}
-	var canonProposal personasvc.CanonProposal
-	if decision.Action != policydomain.ActionSilent && r.canon != nil && len(plan.ProposedPersonaFacts) > 0 {
-		personaView := snapshot.PersonaView
-		if personaView.PersonaID == "" {
-			personaView, err = r.canon.View(ctx, time.Now())
-			if err != nil {
-				return Outcome{}, fmt.Errorf("load persona view: %w", err)
-			}
-		}
-		canonProposal, err = r.canon.PreparePlan(ctx, personaView, plan.ProposedPersonaFacts, plannedReplyText(plan), decision.DecisionID)
-		if err != nil {
-			slog.Info("human runtime: regenerating reply after persona conflict",
-				"group_id", envelope.Event.GroupID, "decision_id", decision.DecisionID, "err", err)
-			retry, retryErr := r.deliberator.Deliberate(ctx, deliberation.Input{
-				Envelope: envelope, Candidate: candidate, Memory: memory, PersonaFeedback: []string{err.Error()},
-			})
-			if retryErr == nil {
-				result = retry
-				snapshot, decision, plan = retry.Snapshot, retry.Decision, retry.Plan
-				if decision.Action != policydomain.ActionSilent && len(plan.ProposedPersonaFacts) > 0 {
-					personaView := snapshot.PersonaView
-					if personaView.PersonaID == "" {
-						personaView, err = r.canon.View(ctx, time.Now())
-						if err != nil {
-							retryErr = err
-						}
-					}
-					if retryErr == nil {
-						canonProposal, err = r.canon.PreparePlan(ctx, personaView, plan.ProposedPersonaFacts, plannedReplyText(plan), decision.DecisionID+"-retry")
-					}
-				} else {
-					err = nil
-				}
-			}
-			if retryErr != nil || err != nil {
-				decision.Action = policydomain.ActionSilent
-				decision.ReasonCodes = append(decision.ReasonCodes, "persona_fact_conflict")
-				plan.ProposedPersonaFacts = nil
-				slog.Warn("human runtime: persona conflict remained after regeneration",
-					"group_id", envelope.Event.GroupID, "decision_id", decision.DecisionID, "err", errors.Join(err, retryErr))
-			}
-		}
-		plan.ProposedPersonaFacts = append([]replydomain.PersonaFactCandidate(nil), canonProposal.Candidates...)
-	}
-	usageFinal.Action = string(decision.Action)
-	receipt, err := r.executor.Execute(ctx, envelope.Event, decision, plan)
-	usageFinal.Sent = receipt.Sent
-	usageFinal.Action = string(decision.Action)
-	usageFinal.DropReason = receipt.DropReason
-	if receipt.Sent && r.canon != nil && strings.TrimSpace(receipt.DeliveredText) != "" {
-		sourceEventID := "outbound-" + decision.DecisionID + "-action"
-		if receipt.PlatformMessageID != "" {
-			sourceEventID = "outbound:" + receipt.PlatformMessageID
-		}
-		if canonErr := r.canon.AfterDelivery(ctx, canonProposal, personasvc.CanonDelivery{
-			GroupID:       envelope.Event.GroupID,
-			SelfID:        r.selfID,
-			SourceEventID: sourceEventID,
-			Text:          receipt.DeliveredText,
-		}); canonErr != nil {
-			// The QQ send already succeeded, so persistence failure is observable
-			// but cannot turn the realized action into a failed send.
-			slog.Warn("human runtime: persist delivered persona canon failed",
-				"group_id", envelope.Event.GroupID, "decision_id", decision.DecisionID, "err", canonErr)
-		}
-	} else if r.canon != nil {
-		if abortErr := r.canon.AbortProposal(ctx, canonProposal); abortErr != nil {
-			slog.Warn("human runtime: release persona reservation failed", "decision_id", decision.DecisionID, "err", abortErr)
-		}
-	}
-	if err != nil {
-		return Outcome{Envelope: envelope, Snapshot: snapshot, Candidate: candidate, Decision: decision, Plan: plan, Receipt: receipt}, fmt.Errorf("realize response: %w", err)
-	}
-	if r.thoughts != nil {
-		outcome := "silent"
-		if receipt.Sent {
-			outcome = "sent"
-		}
-		thought := result.Thought
-		if thought.ThoughtID == "" {
-			thought.ThoughtID = envelope.TraceID + "-thought"
-		}
-		thought.CandidateID = candidate.CandidateID
-		thought.GroupID = envelope.Event.GroupID
-		thought.EventID = envelope.Event.EventID
-		thought.ChosenAction = string(decision.Action)
-		thought.Outcome = outcome
-		if thought.CreatedAt.IsZero() {
-			thought.CreatedAt = time.Now()
-		}
-		if err := r.thoughts.SaveThought(ctx, thought); err != nil {
-			slog.Warn("human runtime: record thought failed", "group_id", envelope.Event.GroupID, "err", err)
-		}
-		if traceStore, ok := r.thoughts.(ports.RetrievalTraceStore); ok {
-			selectedIDs := make([]string, 0, len(snapshot.RelevantMemories))
-			for _, memory := range snapshot.RelevantMemories {
-				if memory.MemoryID != "" {
-					selectedIDs = append(selectedIDs, memory.MemoryID)
-				}
-			}
-			if err := traceStore.UpdateRetrievalTrace(ctx, envelope.Event.EventID, selectedIDs, outcome); err != nil {
-				slog.Warn("human runtime: update retrieval trace failed", "group_id", envelope.Event.GroupID, "err", err)
-			}
-		}
-	}
-	if r.turns != nil {
-		if err := r.turns.AfterTurn(ctx, snapshot, decision, receipt); err != nil {
-			slog.Warn("human runtime: record turn failed", "group_id", envelope.Event.GroupID, "decision_id", decision.DecisionID, "err", err)
-		}
-	}
-	for _, observer := range r.completedTurnObservers {
-		if err := observer(ctx, snapshot, receipt); err != nil {
-			slog.Warn("human runtime: completed turn observer failed", "group_id", envelope.Event.GroupID, "err", err)
-		}
-	}
-	return Outcome{Envelope: envelope, Snapshot: snapshot, Candidate: candidate, Decision: decision, Plan: plan, Receipt: receipt}, nil
+func (r *Runtime) processWithValidation(ctx context.Context, envelope conversationdomain.EventEnvelope, candidate interface{}, validate func(context.Context) (bool, error)) (Outcome, error) {
+	// 候选处理已被决策引擎替代
+	return Outcome{Envelope: envelope, Decision: silentDecision(envelope.TraceID, "delegated_to_decision_engine")}, nil
 }
 
-func (r *Runtime) silentBeforeModel(ctx context.Context, envelope conversationdomain.EventEnvelope, candidate presencedomain.ThoughtCandidate, reason string) (Outcome, error) {
+func (r *Runtime) silentBeforeModel(ctx context.Context, envelope conversationdomain.EventEnvelope, candidate interface{}, reason string) (Outcome, error) {
 	decision := silentDecision(envelope.TraceID, reason)
 	plan := replydomain.ReplyPlan{PlanID: decision.DecisionID + "-plan", PlannedActions: []policydomain.DecisionAction{policydomain.ActionSilent}, SendMode: "silent"}
 	var receipt replydomain.ActionReceipt
@@ -686,7 +401,7 @@ func (r *Runtime) silentBeforeModel(ctx context.Context, envelope conversationdo
 	} else {
 		receipt.DropReason = "action_silent"
 	}
-	return Outcome{Envelope: envelope, Candidate: candidate, Decision: decision, Plan: plan, Receipt: receipt}, err
+	return Outcome{Envelope: envelope, Decision: decision, Plan: plan, Receipt: receipt}, err
 }
 
 func plannedReplyText(plan replydomain.ReplyPlan) string {

@@ -3,7 +3,6 @@ package group_actor
 import (
 	"context"
 	"errors"
-	"math/rand/v2"
 	"slices"
 	"strings"
 	"sync"
@@ -48,7 +47,6 @@ type FeedbackCollector interface {
 }
 
 const defaultTailSize = 32
-const defaultMaxCandidates = 256
 const defaultMaxSeen = 2048
 const (
 	burstWindow    = 700 * time.Millisecond
@@ -60,7 +58,6 @@ type Manager struct {
 	archive       ports.MemoryStore
 	state         WorkingMemoryStore
 	tailSize      int
-	maxCandidates int
 	maxSeen       int
 	idleTTL       time.Duration
 
@@ -139,7 +136,7 @@ func WithPersonaID(personaID string) Option {
 }
 
 func NewManager(log *ingress.MemoryEventLog, opts ...Option) *Manager {
-	m := &Manager{log: log, tailSize: defaultTailSize, maxCandidates: defaultMaxCandidates, maxSeen: defaultMaxSeen, groups: make(map[int64]*actor)}
+	m := &Manager{log: log, tailSize: defaultTailSize, maxSeen: defaultMaxSeen, groups: make(map[int64]*actor)}
 	for _, opt := range opts {
 		opt(m)
 	}
@@ -270,7 +267,7 @@ func (m *Manager) actor(ctx context.Context, groupID int64) (*actor, error) {
 	a := newActor(
 		groupID,
 		m.tailSize,
-		m.maxCandidates,
+		0, // maxCandidates removed
 		m.maxSeen,
 		initial,
 		m.decisionEngine,
@@ -291,92 +288,12 @@ func (m *Manager) save(ctx context.Context, memory presencedomain.GroupWorkingMe
 	return m.state.SaveWorkingMemory(ctx, memory)
 }
 
-func (m *Manager) ClaimDue(ctx context.Context, groupID int64, now time.Time) (presencedomain.ThoughtCandidate, bool, error) {
-	a, err := m.actor(ctx, groupID)
-	if err != nil {
-		return presencedomain.ThoughtCandidate{}, false, err
-	}
-	candidate, memory := a.claim(now)
-	if candidate == nil {
-		return presencedomain.ThoughtCandidate{}, false, nil
-	}
-	if err := m.save(ctx, memory); err != nil {
-		return presencedomain.ThoughtCandidate{}, false, err
-	}
-	return *candidate, true, nil
-}
 
-// ClaimCandidate atomically reserves a known candidate for synchronous replay.
-// It intentionally ignores DueAt because replay callers explicitly choose the
-// event they want to process.
-func (m *Manager) ClaimCandidate(ctx context.Context, groupID int64, candidateID string) (presencedomain.ThoughtCandidate, bool, error) {
-	a, err := m.actor(ctx, groupID)
-	if err != nil {
-		return presencedomain.ThoughtCandidate{}, false, err
-	}
-	candidate, memory := a.claimCandidate(candidateID)
-	if candidate == nil {
-		return presencedomain.ThoughtCandidate{}, false, nil
-	}
-	if err := m.save(ctx, memory); err != nil {
-		return presencedomain.ThoughtCandidate{}, false, err
-	}
-	return *candidate, true, nil
-}
 
 // EnqueueCandidate injects proactive or follow-up work into the owning group
 // actor. Execution still flows through ClaimDue, deliberation, and action.
-func (m *Manager) EnqueueCandidate(ctx context.Context, groupID int64, candidate presencedomain.ThoughtCandidate) error {
-	if candidate.CandidateID == "" {
-		return errors.New("group actor: candidate id is required")
-	}
-	if candidate.Status == "" {
-		candidate.Status = presencedomain.CandidatePending
-	}
-	if candidate.DeliveryTarget == "" {
-		candidate.DeliveryTarget = "group"
-	}
-	if candidate.DueAt.IsZero() {
-		candidate.DueAt = time.Now()
-	}
-	if candidate.ExpiresAt.IsZero() {
-		candidate.ExpiresAt = candidate.DueAt.Add(10 * time.Minute)
-	}
-	if candidate.Score == 0 {
-		candidate.Score = candidate.Urgency
-	}
-	a, err := m.actor(ctx, groupID)
-	if err != nil {
-		return err
-	}
-	memory, ok := a.enqueue(candidate)
-	if !ok {
-		return errors.New("group actor: candidate already exists")
-	}
-	return m.save(ctx, memory)
-}
 
-func (m *Manager) Complete(ctx context.Context, groupID int64, candidateID string) error {
-	a, err := m.actor(ctx, groupID)
-	if err != nil {
-		return err
-	}
-	return m.save(ctx, a.complete(candidateID))
-}
 
-// CanExecute confirms that an accepted candidate has not been superseded or
-// expired while a worker was waiting on group serialization or model latency.
-func (m *Manager) CanExecute(ctx context.Context, groupID int64, candidateID string, now time.Time) (bool, error) {
-	a, err := m.actor(ctx, groupID)
-	if err != nil {
-		return false, err
-	}
-	valid, memory := a.canExecute(candidateID, now)
-	if err := m.save(ctx, memory); err != nil {
-		return false, err
-	}
-	return valid, nil
-}
 
 // EnrichMedia writes asynchronous perception results through the owning group
 // actor. Workers never mutate working memory directly.
@@ -451,7 +368,6 @@ func (m *Manager) Close() error {
 type actor struct {
 	groupID       int64
 	tailSize      int
-	maxCandidates int
 	maxSeen       int
 
 	mu           sync.Mutex
@@ -482,7 +398,7 @@ func newActor(
 	a := &actor{
 		groupID:           groupID,
 		tailSize:          tailSize,
-		maxCandidates:     maxCandidates,
+		// maxCandidates removed
 		maxSeen:           maxSeen,
 		seen:              make(map[string]struct{}),
 		decisionEngine:    decisionEngine,
@@ -509,18 +425,7 @@ func nowIdle(lastUsed, now time.Time, ttl time.Duration) bool {
 	return ttl > 0 && !lastUsed.IsZero() && now.Sub(lastUsed) >= ttl
 }
 
-func hasLiveCandidates(candidates []presencedomain.ThoughtCandidate) bool {
-	for _, candidate := range candidates {
-		if isLive(candidate.Status) {
-			return true
-		}
-	}
-	return false
-}
 
-func isLive(status presencedomain.CandidateStatus) bool {
-	return status == presencedomain.CandidatePending || status == presencedomain.CandidateDeferred || status == presencedomain.CandidateAccepted
-}
 
 func (a *actor) touch() { a.lastUsedNano.Store(time.Now().UnixNano()) }
 
@@ -535,7 +440,6 @@ func (a *actor) observe(record presencedomain.EventRecord) presencedomain.GroupW
 	if _, duplicate := a.seen[record.EventID]; !duplicate {
 		a.seen[record.EventID] = struct{}{}
 		a.memory = reduce(a.memory, record, a.tailSize)
-		pruneCandidates(&a.memory, a.maxCandidates)
 		a.pruneSeen(a.memory.RecentTail)
 	}
 
@@ -547,66 +451,16 @@ func (a *actor) observe(record presencedomain.EventRecord) presencedomain.GroupW
 	return cloneMemory(a.memory)
 }
 
-func (a *actor) claim(now time.Time) (*presencedomain.ThoughtCandidate, presencedomain.GroupWorkingMemory) {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	a.touch()
-	candidate := claimCandidate(&a.memory, now)
-	pruneCandidates(&a.memory, a.maxCandidates)
-	return candidate, cloneMemory(a.memory)
-}
 
-func (a *actor) claimCandidate(candidateID string) (*presencedomain.ThoughtCandidate, presencedomain.GroupWorkingMemory) {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	a.touch()
-	for i := range a.memory.Candidates {
-		candidate := &a.memory.Candidates[i]
-		if candidate.CandidateID != candidateID || candidate.Status != presencedomain.CandidatePending {
-			continue
-		}
-		candidate.Status = presencedomain.CandidateAccepted
-		copy := *candidate
-		copy.SourceEventIDs = append([]string(nil), candidate.SourceEventIDs...)
-		return &copy, cloneMemory(a.memory)
-	}
-	return nil, cloneMemory(a.memory)
-}
 
-func (a *actor) enqueue(candidate presencedomain.ThoughtCandidate) (presencedomain.GroupWorkingMemory, bool) {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	a.touch()
-	if !enqueueCandidate(&a.memory, candidate) {
-		return presencedomain.GroupWorkingMemory{}, false
-	}
-	pruneCandidates(&a.memory, a.maxCandidates)
-	return cloneMemory(a.memory), true
-}
 
-func (a *actor) complete(candidateID string) presencedomain.GroupWorkingMemory {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	a.touch()
-	completeCandidate(&a.memory, candidateID)
-	pruneCandidates(&a.memory, a.maxCandidates)
-	return cloneMemory(a.memory)
-}
 
-func (a *actor) canExecute(candidateID string, now time.Time) (bool, presencedomain.GroupWorkingMemory) {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	a.touch()
-	valid := canExecuteCandidate(&a.memory, candidateID, now)
-	return valid, cloneMemory(a.memory)
-}
 
 func (a *actor) enrichMedia(eventID string, descriptors []mediadomain.MediaDescriptor) presencedomain.GroupWorkingMemory {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	a.touch()
 	enrichMedia(&a.memory, eventID, descriptors)
-	releaseMediaCandidates(&a.memory, eventID, time.Now())
 	return cloneMemory(a.memory)
 }
 
@@ -632,7 +486,7 @@ func (a *actor) updatePromptSession(session conversationdomain.PromptSession) pr
 func (a *actor) retireIfIdle(now time.Time, idleTTL time.Duration) (presencedomain.GroupWorkingMemory, bool) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	if !nowIdle(a.lastUsed(), now, idleTTL) || hasLiveCandidates(a.memory.Candidates) {
+	if !nowIdle(a.lastUsed(), now, idleTTL)  {
 		return presencedomain.GroupWorkingMemory{}, false
 	}
 	return cloneMemory(a.memory), true
@@ -674,18 +528,6 @@ func reduce(memory presencedomain.GroupWorkingMemory, record presencedomain.Even
 	if record.Event.Kind == conversationdomain.EventMeta {
 		return memory
 	}
-	// 被戳是强互动信号：真人几乎必回（哪怕只是一句抱怨），单独生成
-	// 高优先级 candidate，不进 burst 合并。
-	if record.Event.Kind == conversationdomain.EventPoke {
-		memory.Candidates = append(memory.Candidates, pokeCandidate(record))
-		return memory
-	}
-	// notice 事件（新成员进群等）：低优先级打个招呼的时机。没有文本，
-	// 之前会掉进空文本分支被丢弃——真人对新人进群常会接一句。
-	if record.Event.Kind == conversationdomain.EventNotice && record.UserID != 0 {
-		memory.Candidates = append(memory.Candidates, memberJoinCandidate(record))
-		return memory
-	}
 
 	burst := memory.CurrentBurst
 	if !burst.LastAt.IsZero() &&
@@ -713,113 +555,20 @@ func reduce(memory presencedomain.GroupWorkingMemory, record presencedomain.Even
 			memory.OpenLoops = appendUnique(memory.OpenLoops, text)
 		}
 	}
-	upsertBurstCandidate(&memory, candidateFor(record, burst, burstHasAttachments(memory.RecentTail, burst.EventIDs)))
 	return memory
 }
 
-func candidateFor(record presencedomain.EventRecord, burst presencedomain.ConversationBurst, deferred bool) presencedomain.ThoughtCandidate {
-	direct := record.Event.MentionedBot || record.Event.NamedBot || record.Event.IsReplyToBot
-	intent, urgency, reason := classifyDialogueAct(record.Event.Text, direct, len(record.Event.Attachments) > 0)
-	delay := burstWindow
-	if direct {
-		delay = jitteredDelay(150*time.Millisecond, 300*time.Millisecond)
-	}
-	status := presencedomain.CandidatePending
-	if deferred {
-		status = presencedomain.CandidateDeferred
-	}
-	dueAt := record.Timestamp.Add(delay)
-	maxDueAt := burst.StartedAt.Add(burstMaxWindow)
-	if maxDueAt.Before(dueAt) {
-		dueAt = maxDueAt
-	}
-	return presencedomain.ThoughtCandidate{
-		CandidateID:    burst.EventIDs[0] + "-candidate",
-		SourceEventIDs: append([]string(nil), burst.EventIDs...),
-		TopicID:        memoryTopic(record.Event.Text),
-		Addressee:      record.UserID,
-		Intent:         intent,
-		Urgency:        urgency,
-		Score:          urgency,
-		DueAt:          dueAt,
-		// 过期窗口放宽到分钟级：真人不会因为隔了 11 秒就不回，
-		// 10s 的旧值会让 worker 忙时错过的消息永久静默。
-		ExpiresAt:      record.Timestamp.Add(2 * time.Minute),
-		Uncertainty:    1 - urgency,
-		ReasonCode:     reason,
-		DeliveryTarget: "group",
-		Status:         status,
-	}
-}
 
-func upsertBurstCandidate(memory *presencedomain.GroupWorkingMemory, candidate presencedomain.ThoughtCandidate) {
-	for i := range memory.Candidates {
-		existing := &memory.Candidates[i]
-		if existing.CandidateID != candidate.CandidateID || !isLive(existing.Status) {
-			continue
-		}
-		*existing = candidate
-		return
-	}
-	memory.Candidates = append(memory.Candidates, candidate)
-}
 
-func burstHasAttachments(records []presencedomain.EventRecord, eventIDs []string) bool {
-	for _, record := range records {
-		if slices.Contains(eventIDs, record.EventID) && len(record.Event.Attachments) > 0 {
-			return true
-		}
-	}
-	return false
-}
+
 
 // jitteredDelay 在 [lo, hi] 内取均匀随机延迟，让回复节奏有真人式的方差。
-func jitteredDelay(lo, hi time.Duration) time.Duration {
-	if hi <= lo {
-		return lo
-	}
-	return lo + time.Duration(rand.Int64N(int64(hi-lo)))
-}
 
 // memberJoinCandidate 为入群等群事件生成低优先级招呼时机：想不想欢迎
 // 由模型抉择（stay_silent 即安静地无视），所以分数压在阈值边缘。
-func memberJoinCandidate(record presencedomain.EventRecord) presencedomain.ThoughtCandidate {
-	return presencedomain.ThoughtCandidate{
-		CandidateID:    record.EventID + "-candidate",
-		SourceEventIDs: []string{record.EventID},
-		TopicID:        "member_join",
-		Addressee:      record.UserID,
-		Intent:         "acknowledge",
-		Urgency:        0.55,
-		Score:          0.55,
-		DueAt:          record.Timestamp.Add(jitteredDelay(2*time.Second, 8*time.Second)),
-		ExpiresAt:      record.Timestamp.Add(time.Minute),
-		Uncertainty:    0.45,
-		ReasonCode:     "member_joined",
-		DeliveryTarget: "group",
-		Status:         presencedomain.CandidatePending,
-	}
-}
 
 // pokeCandidate 为被戳事件生成高优先级回应机会。延迟略长于被 @，
 // 留出「愣了一下才反应过来」的自然间隔。
-func pokeCandidate(record presencedomain.EventRecord) presencedomain.ThoughtCandidate {
-	return presencedomain.ThoughtCandidate{
-		CandidateID:    record.EventID + "-candidate",
-		SourceEventIDs: []string{record.EventID},
-		TopicID:        "poke",
-		Addressee:      record.UserID,
-		Intent:         "poke_reply",
-		Urgency:        0.8,
-		Score:          0.8,
-		DueAt:          record.Timestamp.Add(jitteredDelay(1200*time.Millisecond, 3*time.Second)),
-		ExpiresAt:      record.Timestamp.Add(time.Minute),
-		Uncertainty:    0.2,
-		ReasonCode:     "poked",
-		DeliveryTarget: "group",
-		Status:         presencedomain.CandidatePending,
-	}
-}
 
 // classifyDialogueAct keeps the candidate seam cheap and deterministic while// preserving the user's likely conversational purpose for the planner.
 func classifyDialogueAct(text string, direct, hasAttachment bool) (string, float64, string) {
@@ -866,17 +615,6 @@ func containsAny(text string, terms ...string) bool {
 	return false
 }
 
-func enqueueCandidate(memory *presencedomain.GroupWorkingMemory, candidate presencedomain.ThoughtCandidate) bool {
-	for _, existing := range memory.Candidates {
-		if existing.CandidateID == candidate.CandidateID {
-			return false
-		}
-	}
-	memory.Candidates = append(memory.Candidates, candidate)
-	memory.Version++
-	memory.LastUpdatedAt = time.Now()
-	return true
-}
 
 func enrichMedia(memory *presencedomain.GroupWorkingMemory, eventID string, descriptors []mediadomain.MediaDescriptor) {
 	if eventID == "" || !eventInTail(memory.RecentTail, eventID) {
@@ -888,18 +626,6 @@ func enrichMedia(memory *presencedomain.GroupWorkingMemory, eventID string, desc
 	memory.MediaByEvent[eventID] = append([]mediadomain.MediaDescriptor(nil), descriptors...)
 }
 
-func releaseMediaCandidates(memory *presencedomain.GroupWorkingMemory, eventID string, now time.Time) {
-	for i := range memory.Candidates {
-		candidate := &memory.Candidates[i]
-		if candidate.Status != presencedomain.CandidateDeferred || !slices.Contains(candidate.SourceEventIDs, eventID) {
-			continue
-		}
-		candidate.Status = presencedomain.CandidatePending
-		if candidate.DueAt.Before(now) {
-			candidate.DueAt = now
-		}
-	}
-}
 
 func pruneMedia(memory *presencedomain.GroupWorkingMemory) {
 	if len(memory.MediaByEvent) == 0 {
@@ -916,13 +642,6 @@ func eventInTail(records []presencedomain.EventRecord, eventID string) bool {
 	return slices.ContainsFunc(records, func(r presencedomain.EventRecord) bool { return r.EventID == eventID })
 }
 
-func memoryTopic(text string) string {
-	text = strings.TrimSpace(text)
-	if len([]rune(text)) > 48 {
-		return string([]rune(text)[:48])
-	}
-	return text
-}
 
 func appendUnique(items []string, value string) []string {
 	if slices.Contains(items, value) {
@@ -931,116 +650,17 @@ func appendUnique(items []string, value string) []string {
 	return append(items, value)
 }
 
-func claimCandidate(memory *presencedomain.GroupWorkingMemory, now time.Time) *presencedomain.ThoughtCandidate {
-	var selected *presencedomain.ThoughtCandidate
-	for i := range memory.Candidates {
-		candidate := &memory.Candidates[i]
-		if candidate.Status == presencedomain.CandidateDeferred {
-			if !now.Before(candidate.ExpiresAt) {
-				candidate.Status = presencedomain.CandidateExpired
-			}
-			continue
-		}
-		if candidate.Status != presencedomain.CandidatePending {
-			continue
-		}
-		if now.Before(candidate.DueAt) {
-			continue
-		}
-		if !now.Before(candidate.ExpiresAt) {
-			candidate.Status = presencedomain.CandidateExpired
-			continue
-		}
-		if selected == nil || candidate.Urgency > selected.Urgency || (candidate.Urgency == selected.Urgency && candidate.DueAt.Before(selected.DueAt)) {
-			selected = candidate
-		}
-	}
-	if selected == nil {
-		return nil
-	}
-	selected.Status = presencedomain.CandidateAccepted
-	copy := *selected
-	copy.SourceEventIDs = append([]string(nil), selected.SourceEventIDs...)
-	return &copy
-}
 
 // pruneCandidates bounds long-lived group state. Terminal records are removed
 // first; if live work itself exceeds the limit, the newest candidates win so a
 // burst does not leave only stale work at the head of the queue.
-func pruneCandidates(memory *presencedomain.GroupWorkingMemory, max int) {
-	if max <= 0 || len(memory.Candidates) <= max {
-		return
-	}
-	liveCount := 0
-	for _, candidate := range memory.Candidates {
-		if isLive(candidate.Status) {
-			liveCount++
-		}
-	}
-	keepIndex := make(map[int]struct{}, max)
-	startLive := 0
-	if liveCount > max {
-		startLive = liveCount - max
-	}
-	seenLive := 0
-	for i, candidate := range memory.Candidates {
-		if !isLive(candidate.Status) {
-			continue
-		}
-		if seenLive >= startLive {
-			keepIndex[i] = struct{}{}
-		}
-		seenLive++
-	}
-	for i := len(memory.Candidates) - 1; i >= 0 && len(keepIndex) < max; i-- {
-		if !isLive(memory.Candidates[i].Status) {
-			keepIndex[i] = struct{}{}
-		}
-	}
-	keep := make([]presencedomain.ThoughtCandidate, 0, len(keepIndex))
-	for i, candidate := range memory.Candidates {
-		if _, ok := keepIndex[i]; ok {
-			keep = append(keep, candidate)
-		}
-	}
-	memory.Candidates = keep
-}
 
-func completeCandidate(memory *presencedomain.GroupWorkingMemory, candidateID string) {
-	for i := range memory.Candidates {
-		if memory.Candidates[i].CandidateID == candidateID && memory.Candidates[i].Status == presencedomain.CandidateAccepted {
-			memory.Candidates[i].Status = presencedomain.CandidateCompleted
-			return
-		}
-	}
-}
 
-func canExecuteCandidate(memory *presencedomain.GroupWorkingMemory, candidateID string, now time.Time) bool {
-	for i := range memory.Candidates {
-		candidate := &memory.Candidates[i]
-		if candidate.CandidateID != candidateID {
-			continue
-		}
-		if candidate.Status != presencedomain.CandidateAccepted {
-			return false
-		}
-		if !now.Before(candidate.ExpiresAt) {
-			candidate.Status = presencedomain.CandidateExpired
-			return false
-		}
-		return true
-	}
-	return false
-}
 
 func cloneMemory(memory presencedomain.GroupWorkingMemory) presencedomain.GroupWorkingMemory {
 	memory.RecentTail = append([]presencedomain.EventRecord(nil), memory.RecentTail...)
 	memory.OpenLoops = append([]string(nil), memory.OpenLoops...)
 	memory.CurrentBurst.EventIDs = append([]string(nil), memory.CurrentBurst.EventIDs...)
-	memory.Candidates = append([]presencedomain.ThoughtCandidate(nil), memory.Candidates...)
-	for i := range memory.Candidates {
-		memory.Candidates[i].SourceEventIDs = append([]string(nil), memory.Candidates[i].SourceEventIDs...)
-	}
 	if len(memory.MediaByEvent) > 0 {
 		media := make(map[string][]mediadomain.MediaDescriptor, len(memory.MediaByEvent))
 		for eventID, descriptors := range memory.MediaByEvent {

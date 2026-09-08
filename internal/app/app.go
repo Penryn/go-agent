@@ -283,7 +283,7 @@ func New(ctx context.Context, cfg config.Config) (*App, error) {
 		}
 	}
 	fallbackPlanner := promptingsvc.NewDeterministicPlanner(cfg.Persona)
-	planner := promptingsvc.NewAgentPlanner(
+	_ = promptingsvc.NewAgentPlanner(
 		modelFactory,
 		toolRuntime,
 		promptingsvc.NewComposer(cfg.Persona),
@@ -320,8 +320,9 @@ func New(ctx context.Context, cfg config.Config) (*App, error) {
 
 	// Human Presence Runtime owns ingress, per-group working memory, candidate
 	// scheduling, deliberation, realization, and outbound self-observation.
-	// Context projection and planner compatibility remain behind this adapter.
-	deliberator := presencedeliberation.NewAdapter(contextService, planner)
+	// 注意：deliberation 现在由 group_actor 中的决策引擎处理
+	// 这里使用一个空的 deliberator 以保持接口兼容
+	deliberator := &noOpDeliberator{}
 	jobTimeout := 120 * time.Second
 	if cfg.Tools.Codex.Enabled {
 		jobTimeout = max(jobTimeout, textutil.ParseDurationOr(cfg.Tools.Codex.Timeout, jobTimeout))
@@ -503,4 +504,13 @@ func (a *textComposerAdapter) ComposeResponse(
 	// 简单起见，直接返回基于 intent 的模板文本
 	// TODO: 调用实际的 composer 方法
 	return "回复: " + intent, nil
+}
+
+// noOpDeliberator 是一个空的 deliberator 实现
+// 实际的决策逻辑现在在 group_actor 的决策引擎中处理
+type noOpDeliberator struct{}
+
+func (n *noOpDeliberator) Deliberate(ctx context.Context, input presencedeliberation.Input) (presencedeliberation.Result, error) {
+	// 返回空结果，因为决策现在由 decideAndRespond 处理
+	return presencedeliberation.Result{}, nil
 }

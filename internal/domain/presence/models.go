@@ -44,7 +44,6 @@ type GroupWorkingMemory struct {
 	CurrentBurst  ConversationBurst                        `json:"current_burst"`
 	ActiveTopic   string                                   `json:"active_topic"`
 	OpenLoops     []string                                 `json:"open_loops"`
-	Candidates    []ThoughtCandidate                       `json:"candidates"`
 	MediaByEvent  map[string][]mediadomain.MediaDescriptor `json:"media_by_event"`
 	LastUpdatedAt time.Time                                `json:"last_updated_at"`
 	PromptSession conversationdomain.PromptSession         `json:"prompt_session,omitempty"`
@@ -58,31 +57,4 @@ type ProjectionCheckpoint struct {
 	Version   uint64                           `json:"version"`
 	Cursor    conversationdomain.ContextCursor `json:"cursor"`
 	UpdatedAt time.Time                        `json:"updated_at"`
-}
-
-type CandidateStatus string
-
-const (
-	CandidatePending   CandidateStatus = "pending"
-	CandidateDeferred  CandidateStatus = "deferred"
-	CandidateAccepted  CandidateStatus = "accepted"
-	CandidateCompleted CandidateStatus = "completed"
-	CandidateCancelled CandidateStatus = "cancelled"
-	CandidateExpired   CandidateStatus = "expired"
-)
-
-type ThoughtCandidate struct {
-	CandidateID    string          `json:"candidate_id"`
-	SourceEventIDs []string        `json:"source_event_ids"`
-	TopicID        string          `json:"topic_id"`
-	Addressee      int64           `json:"addressee"`
-	Intent         string          `json:"intent"`
-	Urgency        float64         `json:"urgency"`
-	Score          float64         `json:"score"`
-	DueAt          time.Time       `json:"due_at"`
-	ExpiresAt      time.Time       `json:"expires_at"`
-	Uncertainty    float64         `json:"uncertainty"`
-	ReasonCode     string          `json:"reason_code,omitempty"`
-	DeliveryTarget string          `json:"delivery_target,omitempty"`
-	Status         CandidateStatus `json:"status"`
 }
