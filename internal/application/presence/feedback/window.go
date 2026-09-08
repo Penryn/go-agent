@@ -18,9 +18,15 @@ const (
 	MaxFeedbackWindows = 3
 )
 
+// SentimentAnalyzer 情绪分析接口
+type SentimentAnalyzer interface {
+	AnalyzeSentiment(ctx context.Context, messages []string) (float64, error)
+}
+
 // WindowManager 管理反馈窗口的生命周期
 type WindowManager struct {
 	relationshipRecorder RelationshipRecorder
+	sentimentAnalyzer    SentimentAnalyzer // 可选：使用 LLM 进行情绪分析
 }
 
 // RelationshipRecorder 用于记录关系事件
@@ -31,7 +37,14 @@ type RelationshipRecorder interface {
 func NewWindowManager(recorder RelationshipRecorder) *WindowManager {
 	return &WindowManager{
 		relationshipRecorder: recorder,
+		sentimentAnalyzer:    nil, // 默认使用基于规则的分类
 	}
+}
+
+// WithSentimentAnalyzer 设置情绪分析器（可选）
+func (m *WindowManager) WithSentimentAnalyzer(analyzer SentimentAnalyzer) *WindowManager {
+	m.sentimentAnalyzer = analyzer
+	return m
 }
 
 // OpenWindow 为刚发送的消息创建反馈窗口
@@ -122,7 +135,7 @@ func (m *WindowManager) closeWindow(ctx context.Context, memory *presencedomain.
 	}
 
 	// 分析反馈情绪
-	sentiment, firstUserID := m.analyzeSentiment(memory, window.ObservedEventIDs)
+	sentiment, firstUserID := m.analyzeSentiment(ctx, memory, window.ObservedEventIDs)
 
 	if sentiment > 0.3 {
 		// 正面反馈
@@ -143,34 +156,46 @@ func (m *WindowManager) closeWindow(ctx context.Context, memory *presencedomain.
 }
 
 // analyzeSentiment 分析回复的情绪倾向
-func (m *WindowManager) analyzeSentiment(memory *presencedomain.GroupWorkingMemory, responseIDs []string) (float64, int64) {
+func (m *WindowManager) analyzeSentiment(ctx context.Context, memory *presencedomain.GroupWorkingMemory, responseIDs []string) (float64, int64) {
 	if len(responseIDs) == 0 {
 		return 0, 0
 	}
 
-	totalSentiment := 0.0
-	count := 0
+	var messages []string
 	var firstUserID int64
 
-	// 从 RecentTail 中找到对应的事件
+	// 从 RecentTail 中找到对应的事件并提取消息
 	for _, eventID := range responseIDs {
 		for _, record := range memory.RecentTail {
 			if record.EventID == eventID {
 				if firstUserID == 0 {
 					firstUserID = record.UserID
 				}
-				sentiment := classifyMessageSentiment(record.Event.Text)
-				totalSentiment += sentiment
-				count++
+				messages = append(messages, record.Event.Text)
 				break
 			}
 		}
 	}
 
-	if count == 0 {
+	if len(messages) == 0 {
 		return 0, firstUserID
 	}
-	return totalSentiment / float64(count), firstUserID
+
+	// 如果配置了 LLM 情绪分析器，优先使用
+	if m.sentimentAnalyzer != nil {
+		sentiment, err := m.sentimentAnalyzer.AnalyzeSentiment(ctx, messages)
+		if err == nil {
+			return sentiment, firstUserID
+		}
+		// LLM 失败时降级到规则分类
+	}
+
+	// 降级：使用基于规则的情绪分类
+	totalSentiment := 0.0
+	for _, text := range messages {
+		totalSentiment += classifyMessageSentiment(text)
+	}
+	return totalSentiment / float64(len(messages)), firstUserID
 }
 
 // classifyMessageSentiment 简单的情绪分类
