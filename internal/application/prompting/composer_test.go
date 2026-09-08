@@ -10,6 +10,7 @@ import (
 	personadomain "github.com/phlin/go-agent/internal/domain/persona"
 	policydomain "github.com/phlin/go-agent/internal/domain/policy"
 	profiledomain "github.com/phlin/go-agent/internal/domain/profile"
+	relationshipdomain "github.com/phlin/go-agent/internal/domain/relationship"
 )
 
 func TestInstructionIncludesPersonaState(t *testing.T) {
@@ -20,7 +21,7 @@ func TestInstructionIncludesPersonaState(t *testing.T) {
 			Mood:   "excited",
 			Energy: "high",
 		},
-		RelationshipState: profiledomain.RelationshipState{
+		SocialRelationship: relationshipdomain.State{PersonaID: "main",
 			Familiarity: 0.75,
 			Affinity:    0.60,
 		},
@@ -53,8 +54,8 @@ func TestStaticInstructionDoesNotChangeWithTurnState(t *testing.T) {
 		t.Fatalf("turn state leaked into cacheable prefix:\n%s", first)
 	}
 	dynamic := c.DynamicInstruction(conversationdomain.ContextSnapshot{
-		PersonaState:      personadomain.PersonaState{Mood: "happy"},
-		RelationshipState: profiledomain.RelationshipState{Familiarity: 0.3},
+		PersonaState:       personadomain.PersonaState{Mood: "happy"},
+		SocialRelationship: relationshipdomain.State{PersonaID: "main", Familiarity: 0.3},
 	}, policydomain.AutonomyDecision{TriggerType: "question"})
 	for _, expected := range []string{"mood=happy", "familiarity=0.30"} {
 		if !strings.Contains(dynamic, expected) {

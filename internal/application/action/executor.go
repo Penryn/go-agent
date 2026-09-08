@@ -24,15 +24,16 @@ var errDropSend = errors.New("drop send: no text content")
 var errGuardSilenced = errors.New("drop send: guard silenced")
 
 type Service struct {
-	sender    ports.OutboundSender
-	memes     *memesvc.Service
-	guard     *outputguardsvc.Guard // 可为 nil，nil 时跳过清洗
-	outbox    ports.TaskSubmitter
-	presence  PresenceObserver
-	selfID    int64
-	rhythmMu  sync.Mutex
-	rhythm    map[int64]rhythmEntry
-	rhythmSeq uint64
+	sender        ports.OutboundSender
+	memes         *memesvc.Service
+	guard         *outputguardsvc.Guard // 可为 nil，nil 时跳过清洗
+	outbox        ports.TaskSubmitter
+	presence      PresenceObserver
+	eventObserver func(context.Context, conversationdomain.ConversationEvent) error
+	selfID        int64
+	rhythmMu      sync.Mutex
+	rhythm        map[int64]rhythmEntry
+	rhythmSeq     uint64
 }
 
 type rhythmEntry struct {
@@ -54,6 +55,10 @@ type MarkMemeSentTask struct {
 
 func WithPresenceObserver(observer PresenceObserver) Option {
 	return func(s *Service) { s.presence = observer }
+}
+
+func WithEventObserver(observer func(context.Context, conversationdomain.ConversationEvent) error) Option {
+	return func(s *Service) { s.eventObserver = observer }
 }
 
 func WithSelfID(selfID int64) Option {
@@ -196,6 +201,7 @@ func (s *Service) sendAndObserve(ctx context.Context, action replydomain.ActionE
 	}
 	selfEvent := conversationdomain.ConversationEvent{
 		EventID:          "outbound-" + action.ActionID,
+		Origin:           string(presencedomain.OriginOutbound),
 		GroupID:          action.GroupID,
 		UserID:           s.selfID,
 		MessageID:        receipt.PlatformMessageID,
@@ -214,6 +220,11 @@ func (s *Service) sendAndObserve(ctx context.Context, action replydomain.ActionE
 		Event:     selfEvent,
 	}); observeErr != nil {
 		slog.Warn("executor: observe outbound event failed", "action_id", action.ActionID, "err", observeErr)
+	}
+	if s.eventObserver != nil {
+		if err := s.eventObserver(ctx, selfEvent); err != nil {
+			slog.Warn("executor: observe outbound projection failed", "action_id", action.ActionID, "err", err)
+		}
 	}
 	return receipt, nil
 }
@@ -302,6 +313,7 @@ func (s *Service) observeRecall(ctx context.Context, action replydomain.ActionEx
 	now := time.Now()
 	event := conversationdomain.ConversationEvent{
 		EventID:          "outbound-" + action.ActionID,
+		Origin:           string(presencedomain.OriginOutbound),
 		GroupID:          action.GroupID,
 		UserID:           s.selfID,
 		ReplyToMessageID: action.TargetMessageID,
@@ -318,6 +330,11 @@ func (s *Service) observeRecall(ctx context.Context, action replydomain.ActionEx
 		Event:     event,
 	}); err != nil {
 		slog.Warn("executor: observe recall failed", "action_id", action.ActionID, "err", err)
+	}
+	if s.eventObserver != nil {
+		if err := s.eventObserver(ctx, event); err != nil {
+			slog.Warn("executor: observe outbound recall projection failed", "action_id", action.ActionID, "err", err)
+		}
 	}
 }
 

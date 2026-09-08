@@ -2,7 +2,6 @@ package profile
 
 import (
 	"context"
-	"log/slog"
 	"slices"
 	"strings"
 	"time"
@@ -12,16 +11,14 @@ import (
 )
 
 type Service struct {
-	store     ports.ProfileStore
-	personaID string
+	store ports.ProfileStore
 }
 
-func New(store ports.ProfileStore, personaID string) *Service {
-	return &Service{store: store, personaID: personaID}
+func New(store ports.ProfileStore) *Service {
+	return &Service{store: store}
 }
 
-// ObserveEvent 更新成员统计，并被动累积熟悉度（上限 0.5）及记录 LastInteractAt。
-// 用户首次发言时同步初始化关系（affinity 起点 0.25）。
+// ObserveEvent 只维护成员画像统计；关系变化由 relationship.Service 根据事件投影。
 func (s *Service) ObserveEvent(ctx context.Context, event conversationdomain.ConversationEvent) error {
 	profile, err := s.store.GetMemberProfile(ctx, event.GroupID, event.UserID)
 	if err != nil {
@@ -43,7 +40,6 @@ func (s *Service) ObserveEvent(ctx context.Context, event conversationdomain.Con
 	} else if profile.Stats.QQNickname != "" {
 		profile.Stats.Nickname = profile.Stats.QQNickname
 	}
-	firstMessage := profile.Stats.MessageCount == 0
 	profile.Stats.MessageCount++
 	profile.Stats.LastSpokeAt = time.Unix(event.TimestampUnix, 0)
 	if profile.Stats.LastSpokeAt.IsZero() {
@@ -56,49 +52,7 @@ func (s *Service) ObserveEvent(ctx context.Context, event conversationdomain.Con
 		return err
 	}
 
-	if s.personaID != "" {
-		rel, err := s.store.GetRelationship(ctx, s.personaID, event.GroupID, event.UserID)
-		if err != nil {
-			slog.Warn("profile: load relationship failed", "group_id", event.GroupID, "user_id", event.UserID, "err", err)
-			return nil
-		}
-		rel.PersonaID = s.personaID
-		rel.GroupID = event.GroupID
-		rel.UserID = event.UserID
-		rel.LastInteractAt = time.Now()
-		// 首条消息初始化好感度：此后 affinity 的增减只能来自
-		// update_affinity 工具的主观判断，被动观察不再碰它。
-		if firstMessage {
-			rel.Affinity = 0.25
-		}
-		// 熟悉度记录互动证据，而不是简单把每条消息当成同等质量的关系增长。
-		if increment := familiarityEvidence(event); increment > 0 && rel.Familiarity < 0.5 {
-			rel.Familiarity = min(rel.Familiarity+increment, 0.5)
-		}
-		if err := s.store.SaveRelationship(ctx, rel); err != nil {
-			slog.Warn("profile: save relationship failed", "group_id", event.GroupID, "user_id", event.UserID, "err", err)
-		}
-	}
-
 	return nil
-}
-
-func familiarityEvidence(event conversationdomain.ConversationEvent) float64 {
-	text := strings.TrimSpace(event.Text)
-	if text == "" && len(event.Attachments) == 0 {
-		return 0
-	}
-	increment := 0.004
-	if len([]rune(text)) >= 4 {
-		increment += 0.004
-	}
-	if event.MentionedBot || event.NamedBot || event.IsReplyToBot {
-		increment += 0.006
-	}
-	if len(event.Attachments) > 0 {
-		increment += 0.002
-	}
-	return increment
 }
 
 func appendIfMissing(items []string, value string, max int) []string {

@@ -145,7 +145,8 @@ export interface Relationship {
   affinity: number
   familiarity: number
   tease_tolerance: number
-  grudge_score: number
+  trust: number
+  friction: number
   message_count: number
   last_interact_at: string
 }

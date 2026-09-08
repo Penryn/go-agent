@@ -45,7 +45,6 @@ func (s *Service) RegisterJobs(sched *scheduler.Scheduler, groupIDs []int64) {
 	})
 }
 
-
 // globalMoodSlot 是全局人格状态的 GroupID（0）：mood/energy 不按群分片，
 // 「我这个人此刻的状态」在所有群一致——两群有共同好友时不会穿帮。
 const globalMoodSlot int64 = 0
@@ -143,7 +142,6 @@ func transitionState(current personadomain.PersonaState, snapshot conversationdo
 	return mood, energy, min(max(talkBias, -0.5), 0.5)
 }
 
-
 // decayGroup 将指定群的情绪状态向基线衰减一步。
 func (s *Service) decayGroup(ctx context.Context, groupID int64) error {
 	current, err := s.store.GetPersonaState(ctx, s.personaID, groupID)
@@ -191,7 +189,7 @@ func isDirectCue(snapshot conversationdomain.ContextSnapshot) bool {
 }
 
 func isHighAffinityUser(snapshot conversationdomain.ContextSnapshot) bool {
-	return snapshot.RelationshipState.Affinity >= 0.6
+	return snapshot.SocialRelationship.Affinity >= 0.6
 }
 
 func isFloodCue(snapshot conversationdomain.ContextSnapshot, decision policydomain.AutonomyDecision) bool {

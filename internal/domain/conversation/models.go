@@ -8,6 +8,8 @@ import (
 	personadomain "github.com/phlin/go-agent/internal/domain/persona"
 	policydomain "github.com/phlin/go-agent/internal/domain/policy"
 	profiledomain "github.com/phlin/go-agent/internal/domain/profile"
+	relationshipdomain "github.com/phlin/go-agent/internal/domain/relationship"
+	scenedomain "github.com/phlin/go-agent/internal/domain/scene"
 )
 
 type EventKind string
@@ -106,19 +108,20 @@ type ContextSnapshot struct {
 	RelevantMemories []memorydomain.MemoryRecord `json:"relevant_memories" yaml:"relevant_memories"`
 	// RecentThoughts 是该群最近几轮的思考摘要（新到旧），供模型回看自己
 	// 上次的判断——说错过的话别再说，收过的梗换着接。
-	RecentThoughts    []ThoughtDigest                 `json:"recent_thoughts,omitempty" yaml:"recent_thoughts,omitempty"`
-	MediaDescriptors  []mediadomain.MediaDescriptor   `json:"media_descriptors" yaml:"media_descriptors"`
-	ActiveTopic       string                          `json:"active_topic,omitempty" yaml:"active_topic,omitempty"`
-	OpenLoops         []string                        `json:"open_loops,omitempty" yaml:"open_loops,omitempty"`
-	MemberProfile     profiledomain.MemberProfile     `json:"member_profile" yaml:"member_profile"`
-	RelationshipState profiledomain.RelationshipState `json:"relationship_state" yaml:"relationship_state"`
-	PersonaState      personadomain.PersonaState      `json:"persona_state" yaml:"persona_state"`
-	PersonaView       personadomain.PersonaView       `json:"persona_view" yaml:"persona_view"`
-	PersonaFacts      []personadomain.PersonaFact     `json:"persona_facts,omitempty" yaml:"persona_facts,omitempty"`
-	GroupPolicy       policydomain.GroupPolicy        `json:"group_policy" yaml:"group_policy"`
-	RuntimeState      policydomain.RuntimeState       `json:"runtime_state" yaml:"runtime_state"`
-	DecisionHints     []string                        `json:"decision_hints" yaml:"decision_hints"`
-	PersonaFeedback   []string                        `json:"persona_feedback,omitempty" yaml:"persona_feedback,omitempty"`
+	RecentThoughts     []ThoughtDigest               `json:"recent_thoughts,omitempty" yaml:"recent_thoughts,omitempty"`
+	MediaDescriptors   []mediadomain.MediaDescriptor `json:"media_descriptors" yaml:"media_descriptors"`
+	ActiveTopic        string                        `json:"active_topic,omitempty" yaml:"active_topic,omitempty"`
+	OpenLoops          []string                      `json:"open_loops,omitempty" yaml:"open_loops,omitempty"`
+	MemberProfile      profiledomain.MemberProfile   `json:"member_profile" yaml:"member_profile"`
+	SocialRelationship relationshipdomain.State      `json:"social_relationship" yaml:"social_relationship"`
+	GroupScene         scenedomain.GroupScene        `json:"group_scene" yaml:"group_scene"`
+	PersonaState       personadomain.PersonaState    `json:"persona_state" yaml:"persona_state"`
+	PersonaView        personadomain.PersonaView     `json:"persona_view" yaml:"persona_view"`
+	PersonaFacts       []personadomain.PersonaFact   `json:"persona_facts,omitempty" yaml:"persona_facts,omitempty"`
+	GroupPolicy        policydomain.GroupPolicy      `json:"group_policy" yaml:"group_policy"`
+	RuntimeState       policydomain.RuntimeState     `json:"runtime_state" yaml:"runtime_state"`
+	DecisionHints      []string                      `json:"decision_hints" yaml:"decision_hints"`
+	PersonaFeedback    []string                      `json:"persona_feedback,omitempty" yaml:"persona_feedback,omitempty"`
 }
 
 // ContextCursor identifies the last archived fact included in a snapshot.

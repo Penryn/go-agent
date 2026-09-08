@@ -294,21 +294,6 @@ func TestProfiles(t *testing.T) {
 		t.Fatalf("unexpected profile: %+v", saved)
 	}
 
-	state := profiledomain.RelationshipState{
-		PersonaID: "main", GroupID: 1, UserID: 2,
-		Familiarity: 0.3, Affinity: 0.25, TeaseTolerance: 0.5, GrudgeScore: 0,
-		LastInteractAt: time.Now(),
-	}
-	if err := store.SaveRelationship(ctx, state); err != nil {
-		t.Fatalf("save relationship: %v", err)
-	}
-	got, err := store.GetRelationship(ctx, "main", 1, 2)
-	if err != nil {
-		t.Fatalf("get relationship: %v", err)
-	}
-	if got.Affinity != 0.25 {
-		t.Fatalf("unexpected affinity: %f", got.Affinity)
-	}
 }
 
 func TestMemes(t *testing.T) {

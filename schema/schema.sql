@@ -80,10 +80,38 @@ CREATE TABLE IF NOT EXISTS relationships (
   familiarity DOUBLE PRECISION NOT NULL,
   affinity DOUBLE PRECISION NOT NULL,
   tease_tolerance DOUBLE PRECISION NOT NULL,
-  grudge_score DOUBLE PRECISION NOT NULL,
   last_interact_at TIMESTAMPTZ NOT NULL,
   PRIMARY KEY (persona_id, group_id, user_id)
 );
+ALTER TABLE relationships ADD COLUMN IF NOT EXISTS trust DOUBLE PRECISION NOT NULL DEFAULT 0;
+ALTER TABLE relationships ADD COLUMN IF NOT EXISTS friction DOUBLE PRECISION NOT NULL DEFAULT 0;
+ALTER TABLE relationships ADD COLUMN IF NOT EXISTS revision BIGINT NOT NULL DEFAULT 0;
+ALTER TABLE relationships ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW();
+ALTER TABLE relationships DROP COLUMN IF EXISTS grudge_score;
+
+CREATE TABLE IF NOT EXISTS relationship_events (
+  event_id VARCHAR(128) PRIMARY KEY,
+  persona_id VARCHAR(128) NOT NULL,
+  group_id BIGINT NOT NULL,
+  user_id BIGINT NOT NULL,
+  kind VARCHAR(64) NOT NULL,
+  valence DOUBLE PRECISION NOT NULL DEFAULT 0,
+  intensity DOUBLE PRECISION NOT NULL DEFAULT 0,
+  reason TEXT NOT NULL DEFAULT '',
+  evidence_event_id VARCHAR(128) NOT NULL DEFAULT '',
+  decision_id VARCHAR(128) NOT NULL DEFAULT '',
+  created_at TIMESTAMPTZ NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_relationship_events_subject
+  ON relationship_events (persona_id, group_id, user_id, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS group_scenes (
+  group_id BIGINT PRIMARY KEY,
+  scene_json JSONB NOT NULL,
+  revision BIGINT NOT NULL DEFAULT 0,
+  updated_at TIMESTAMPTZ NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_group_scenes_updated ON group_scenes (updated_at);
 
 CREATE TABLE IF NOT EXISTS meme_assets (
   meme_id VARCHAR(128) PRIMARY KEY,
@@ -141,6 +169,23 @@ ALTER TABLE learning_candidates ADD COLUMN IF NOT EXISTS target_user_id BIGINT N
 ALTER TABLE learning_candidates ADD COLUMN IF NOT EXISTS promoted_memory_id VARCHAR(128) NOT NULL DEFAULT '';
 ALTER TABLE learning_candidates ADD COLUMN IF NOT EXISTS promoted_at TIMESTAMPTZ NULL;
 CREATE INDEX IF NOT EXISTS idx_learning_candidates_group_status ON learning_candidates (group_id, status, created_at);
+
+CREATE TABLE IF NOT EXISTS memory_claims (
+  claim_id VARCHAR(128) PRIMARY KEY,
+  scope VARCHAR(128) NOT NULL,
+  type VARCHAR(64) NOT NULL,
+  subject VARCHAR(255) NOT NULL,
+  content TEXT NOT NULL,
+  evidence_event_ids_json JSONB NOT NULL DEFAULT '[]'::jsonb,
+  confidence DOUBLE PRECISION NOT NULL DEFAULT 0,
+  suggested_ttl VARCHAR(64) NOT NULL DEFAULT '',
+  source VARCHAR(32) NOT NULL DEFAULT 'model',
+  status VARCHAR(32) NOT NULL DEFAULT 'staged',
+  supersedes_id VARCHAR(128) NOT NULL DEFAULT '',
+  created_at TIMESTAMPTZ NOT NULL,
+  updated_at TIMESTAMPTZ NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_memory_claims_scope_status ON memory_claims (scope, status, updated_at DESC);
 
 CREATE TABLE IF NOT EXISTS learning_candidate_evidence (
   candidate_id VARCHAR(128) NOT NULL REFERENCES learning_candidates(id) ON DELETE CASCADE,

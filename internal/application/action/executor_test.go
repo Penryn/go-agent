@@ -13,6 +13,7 @@ import (
 	conversationdomain "github.com/phlin/go-agent/internal/domain/conversation"
 	mediadomain "github.com/phlin/go-agent/internal/domain/media"
 	policydomain "github.com/phlin/go-agent/internal/domain/policy"
+	presencedomain "github.com/phlin/go-agent/internal/domain/presence"
 	replydomain "github.com/phlin/go-agent/internal/domain/reply"
 	"github.com/phlin/go-agent/internal/testsupport"
 )
@@ -107,6 +108,35 @@ func TestExecuteReact(t *testing.T) {
 	}
 	if actions[0].Meta["emoji_id"] != "128077" {
 		t.Fatalf("expected emoji_id 128077, got %v", actions[0].Meta["emoji_id"])
+	}
+}
+
+type recordingPresence struct{}
+
+func (recordingPresence) Observe(context.Context, presencedomain.EventRecord) (presencedomain.GroupWorkingMemory, error) {
+	return presencedomain.GroupWorkingMemory{}, nil
+}
+
+func TestExecuteNotifiesOutboundEventObserver(t *testing.T) {
+	sender := inmemory.NewSender()
+	var observed conversationdomain.ConversationEvent
+	executor := New(sender, nil, nil,
+		WithPresenceObserver(recordingPresence{}),
+		WithSelfID(99),
+		WithEventObserver(func(_ context.Context, event conversationdomain.ConversationEvent) error {
+			observed = event
+			return nil
+		}),
+	)
+	_, err := executor.Execute(context.Background(), conversationEvent(), policydomain.AutonomyDecision{
+		DecisionID: "d-outbound",
+		Action:     policydomain.ActionReply,
+	}, replydomain.ReplyPlan{Bubbles: []string{"收到"}, SendMode: "group"})
+	if err != nil {
+		t.Fatalf("execute reply: %v", err)
+	}
+	if observed.Origin != string(presencedomain.OriginOutbound) || observed.UserID != 99 || observed.Text != "收到" {
+		t.Fatalf("unexpected outbound projection event: %+v", observed)
 	}
 }
 

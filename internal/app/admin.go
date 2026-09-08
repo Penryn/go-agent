@@ -191,7 +191,8 @@ type adminRelationship struct {
 	Affinity       float64   `json:"affinity"`
 	Familiarity    float64   `json:"familiarity"`
 	TeaseTolerance float64   `json:"tease_tolerance"`
-	GrudgeScore    float64   `json:"grudge_score"`
+	Trust          float64   `json:"trust"`
+	Friction       float64   `json:"friction"`
 	MessageCount   int64     `json:"message_count"`
 	LastInteractAt time.Time `json:"last_interact_at"`
 }
@@ -361,6 +362,7 @@ type adminHandler struct {
 	memeStoragePath string
 }
 
+// Dist is produced by `make web` and is not committed.
 //go:embed adminui/dist
 var adminAssets embed.FS
 
@@ -1634,7 +1636,7 @@ func loadAdminRelationshipPage(ctx context.Context, db *sql.DB, personaID string
 	offset := (page - 1) * pageSize
 	querySQL := `SELECT r.group_id, r.user_id,
 		       COALESCE(NULLIF(p.group_card, ''), NULLIF(p.nickname, ''), NULLIF(p.qq_nickname, ''), r.user_id::text),
-		       r.affinity, r.familiarity, r.tease_tolerance, r.grudge_score,
+		       r.affinity, r.familiarity, r.tease_tolerance, r.trust, r.friction,
 		       COALESCE(p.message_count, 0), r.last_interact_at` + where + fmt.Sprintf(" ORDER BY r.affinity DESC, r.last_interact_at DESC LIMIT $%d OFFSET $%d", len(args)+1, len(args)+2)
 	args = append(args, pageSize, offset)
 	rows, err := db.QueryContext(ctx, querySQL, args...)
@@ -1647,7 +1649,7 @@ func loadAdminRelationshipPage(ctx context.Context, db *sql.DB, personaID string
 		var relationship adminRelationship
 		if err := rows.Scan(&relationship.GroupID, &relationship.UserID, &relationship.Name,
 			&relationship.Affinity, &relationship.Familiarity, &relationship.TeaseTolerance,
-			&relationship.GrudgeScore, &relationship.MessageCount, &relationship.LastInteractAt); err != nil {
+			&relationship.Trust, &relationship.Friction, &relationship.MessageCount, &relationship.LastInteractAt); err != nil {
 			return adminRelationshipPage{}, err
 		}
 		relationships = append(relationships, relationship)

@@ -16,16 +16,20 @@ import (
 	personadomain "github.com/phlin/go-agent/internal/domain/persona"
 	presencedomain "github.com/phlin/go-agent/internal/domain/presence"
 	profiledomain "github.com/phlin/go-agent/internal/domain/profile"
+	relationshipdomain "github.com/phlin/go-agent/internal/domain/relationship"
+	scenedomain "github.com/phlin/go-agent/internal/domain/scene"
 )
 
 type Service struct {
-	memoryStore  ports.MemoryStore
-	profileStore ports.ProfileStore
-	stateStore   ports.RuntimeStateStore
-	policy       *policysvc.Service
-	persona      personadomain.PersonaConfig
-	definition   personadomain.PersonaDefinition
-	memoryTopK   int
+	memoryStore       ports.MemoryStore
+	profileStore      ports.ProfileStore
+	stateStore        ports.RuntimeStateStore
+	relationshipStore ports.RelationshipStore
+	sceneStore        ports.GroupSceneStore
+	policy            *policysvc.Service
+	persona           personadomain.PersonaConfig
+	definition        personadomain.PersonaDefinition
+	memoryTopK        int
 	// workingMemory 供给快速群内会话状态;它已包含当前正处理的事件,
 	// 比持久 store 的 live tail 更适合做快照。
 	workingMemory *groupactor.Manager
@@ -47,6 +51,14 @@ func (s *Service) WithWorkingMemory(manager *groupactor.Manager) {
 
 func (s *Service) WithPersonaFactStore(store ports.PersonaFactStore) {
 	s.personaFacts = store
+}
+
+func (s *Service) WithRelationshipStore(store ports.RelationshipStore) {
+	s.relationshipStore = store
+}
+
+func (s *Service) WithSceneStore(store ports.GroupSceneStore) {
+	s.sceneStore = store
 }
 
 func New(
@@ -98,11 +110,6 @@ func (s *Service) BuildSnapshot(ctx context.Context, envelope conversationdomain
 		return conversationdomain.ContextSnapshot{}, fmt.Errorf("load member profile: %w", err)
 	}
 
-	relationship, err := s.profileStore.GetRelationship(ctx, s.persona.ID, envelope.Event.GroupID, envelope.Event.UserID)
-	if err != nil {
-		return conversationdomain.ContextSnapshot{}, fmt.Errorf("load relationship state: %w", err)
-	}
-
 	runtimeState, err := s.stateStore.GetRuntimeState(ctx, envelope.Event.GroupID)
 	if err != nil {
 		return conversationdomain.ContextSnapshot{}, fmt.Errorf("load runtime state: %w", err)
@@ -117,6 +124,20 @@ func (s *Service) BuildSnapshot(ctx context.Context, envelope conversationdomain
 	personaView, err := s.currentPersonaView(ctx, time.Now())
 	if err != nil {
 		return conversationdomain.ContextSnapshot{}, fmt.Errorf("load persona facts: %w", err)
+	}
+	var socialRelationship relationshipdomain.State
+	if s.relationshipStore != nil {
+		socialRelationship, err = s.relationshipStore.GetSocialRelationship(ctx, s.persona.ID, envelope.Event.GroupID, envelope.Event.UserID)
+		if err != nil {
+			return conversationdomain.ContextSnapshot{}, fmt.Errorf("load social relationship: %w", err)
+		}
+	}
+	var groupScene scenedomain.GroupScene
+	if s.sceneStore != nil {
+		groupScene, err = s.sceneStore.LoadGroupScene(ctx, envelope.Event.GroupID)
+		if err != nil {
+			return conversationdomain.ContextSnapshot{}, fmt.Errorf("load group scene: %w", err)
+		}
 	}
 
 	if len(mediaDescriptors) == 0 {
@@ -136,25 +157,26 @@ func (s *Service) BuildSnapshot(ctx context.Context, envelope conversationdomain
 		projection.Cursor = conversationdomain.ContextCursor{EventID: last.EventID, TimestampUnix: last.TimestampUnix}
 	}
 	return conversationdomain.ContextSnapshot{
-		SnapshotID:        fmt.Sprintf("snapshot-%d", time.Now().UnixNano()),
-		SelfID:            envelope.SelfID,
-		Projection:        projection,
-		Event:             envelope.Event,
-		RecentTurns:       recentTurns,
-		PromptSession:     working.PromptSession,
-		RelevantMemories:  relevantMemories,
-		RecentThoughts:    s.recentThoughts(ctx, envelope.Event.GroupID),
-		MediaDescriptors:  mediaDescriptors,
-		ActiveTopic:       working.ActiveTopic,
-		OpenLoops:         append([]string(nil), working.OpenLoops...),
-		MemberProfile:     ensureMemberProfile(memberProfile, envelope.Event),
-		RelationshipState: relationship,
-		PersonaState:      personaState,
-		PersonaView:       personaView,
-		PersonaFacts:      append(append([]personadomain.PersonaFact(nil), personaView.Facts...), personaView.ReportedFacts...),
-		GroupPolicy:       groupPolicy,
-		RuntimeState:      runtimeState,
-		DecisionHints:     buildDecisionHints(envelope.Event),
+		SnapshotID:         fmt.Sprintf("snapshot-%d", time.Now().UnixNano()),
+		SelfID:             envelope.SelfID,
+		Projection:         projection,
+		Event:              envelope.Event,
+		RecentTurns:        recentTurns,
+		PromptSession:      working.PromptSession,
+		RelevantMemories:   relevantMemories,
+		RecentThoughts:     s.recentThoughts(ctx, envelope.Event.GroupID),
+		MediaDescriptors:   mediaDescriptors,
+		ActiveTopic:        working.ActiveTopic,
+		OpenLoops:          append([]string(nil), working.OpenLoops...),
+		MemberProfile:      ensureMemberProfile(memberProfile, envelope.Event),
+		SocialRelationship: socialRelationship,
+		GroupScene:         groupScene,
+		PersonaState:       personaState,
+		PersonaView:        personaView,
+		PersonaFacts:       append(append([]personadomain.PersonaFact(nil), personaView.Facts...), personaView.ReportedFacts...),
+		GroupPolicy:        groupPolicy,
+		RuntimeState:       runtimeState,
+		DecisionHints:      buildDecisionHints(envelope.Event),
 	}, nil
 }
 

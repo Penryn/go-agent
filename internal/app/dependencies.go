@@ -14,14 +14,17 @@ import (
 )
 
 type storeBundle struct {
-	db           *sql.DB
-	memory       ports.MemoryStore
-	meme         ports.MemeStore
-	profile      ports.ProfileStore
-	state        ports.RuntimeStateStore
-	personaFacts ports.PersonaFactStore
-	learning     ports.LearningStateStore
-	outbox       ports.OutboxStore
+	db            *sql.DB
+	memory        ports.MemoryStore
+	meme          ports.MemeStore
+	profile       ports.ProfileStore
+	state         ports.RuntimeStateStore
+	personaFacts  ports.PersonaFactStore
+	relationships ports.RelationshipStore
+	scenes        ports.GroupSceneStore
+	claims        ports.MemoryClaimStore
+	learning      ports.LearningStateStore
+	outbox        ports.OutboxStore
 }
 
 func newStoreBundle(ctx context.Context, cfg config.Config) (*storeBundle, error) {
@@ -43,6 +46,9 @@ func newStoreBundle(ctx context.Context, cfg config.Config) (*storeBundle, error
 	bundle.meme = persistentStore
 	bundle.profile = persistentStore
 	bundle.personaFacts = persistentStore
+	bundle.relationships = persistentStore
+	bundle.scenes = persistentStore
+	bundle.claims = persistentStore
 	bundle.outbox = persistentStore
 
 	// 状态库与关系库共用同一 PG 连接池（阶段 A：替代 Redis StateStore）

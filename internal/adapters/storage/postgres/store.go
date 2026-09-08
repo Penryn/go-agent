@@ -652,50 +652,6 @@ func (s *Store) SaveMemberProfile(ctx context.Context, profile profiledomain.Mem
 	return err
 }
 
-func (s *Store) GetRelationship(ctx context.Context, personaID string, groupID, userID int64) (profiledomain.RelationshipState, error) {
-	var state profiledomain.RelationshipState
-	err := s.db.QueryRowContext(ctx, `
-		SELECT familiarity, affinity, tease_tolerance, grudge_score, last_interact_at
-		FROM relationships
-		WHERE persona_id = $1 AND group_id = $2 AND user_id = $3
-	`, personaID, groupID, userID).Scan(
-		&state.Familiarity,
-		&state.Affinity,
-		&state.TeaseTolerance,
-		&state.GrudgeScore,
-		&state.LastInteractAt,
-	)
-	if err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			return profiledomain.RelationshipState{
-				PersonaID: personaID,
-				GroupID:   groupID,
-				UserID:    userID,
-			}, nil
-		}
-		return profiledomain.RelationshipState{}, err
-	}
-	state.PersonaID = personaID
-	state.GroupID = groupID
-	state.UserID = userID
-	return state, nil
-}
-
-func (s *Store) SaveRelationship(ctx context.Context, state profiledomain.RelationshipState) error {
-	_, err := s.db.ExecContext(ctx, `
-		INSERT INTO relationships (
-			persona_id, group_id, user_id, familiarity, affinity, tease_tolerance, grudge_score, last_interact_at
-		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-		ON CONFLICT (persona_id, group_id, user_id) DO UPDATE SET
-			familiarity = EXCLUDED.familiarity,
-			affinity = EXCLUDED.affinity,
-			tease_tolerance = EXCLUDED.tease_tolerance,
-			grudge_score = EXCLUDED.grudge_score,
-			last_interact_at = EXCLUDED.last_interact_at
-	`, state.PersonaID, state.GroupID, state.UserID, state.Familiarity, state.Affinity, state.TeaseTolerance, state.GrudgeScore, coalesceTime(state.LastInteractAt))
-	return err
-}
-
 func (s *Store) UpsertMeme(ctx context.Context, asset mediadomain.MemeAsset, descriptor mediadomain.MemeDescriptor) error {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {

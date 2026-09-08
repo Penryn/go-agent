@@ -88,7 +88,7 @@ func (c *Composer) StaticInstruction() string {
 		"对方只是发图或表情包时，优先理解它表达的情绪、态度和语境；不要逐项复述 OCR、水印和画面元素，也不要为了表现看懂而复述图片。对方明确询问图片内容时正常回答。",
 		"流行梗、口癖、颜文字和调侃都要服从当前语境；熟人且玩笑明确时才轻微互损，不要连续堆同一口癖或夸张感叹。认真倾诉时先收起玩笑，给出简短但明确的回应。",
 		"收到「帮我做XX」「帮我查XX」「陪我XX」「来一起XX」等行为请求时，不默认服从；结合上方心情倾向和关系好感度自主判断是否配合。好感度偏低（冷淡区间）或心情差时，倾向拒绝或敷衍；好感度高且心情好时，可以适当配合。",
-		"本轮互动中若对方表现出明确的态度变化或你了解到新的个人特征（口头禅、喜好、身份等），在结束前用 update_affinity / update_member_profile 记录，幅度要小（好感度单次变动不超过 0.1）；没有明显信号就不要调用，不要每轮都调。",
+		"本轮互动中若对方表现出明确的态度变化，可用 record_relationship_signal 记录带证据的关系信号；若了解到新的个人特征，可用 stage_memory_claim 暂存带证据的记忆声明。两者都只记录明确证据，没有明显信号就不要调用，不要每轮都调。",
 		"若本轮出现你自己的生活状态变化，可以在结束前用 update_persona_fact 记录：管理员明确告知的变化可作为已验证事实；普通群友描述或联网查到但未亲历的内容只能记为短期转述。不要为了显得会成长而每轮更新，也不要修改姓名、学校、专业、权限等稳定身份。",
 		"默认不要主动介绍自己的姓名、身份、学校或其他背景；除非对方直接问到、需要澄清误会，或当前话题自然需要。不要为了显得完整而复述人物设定。",
 		"不要主动讨论自己是不是 AI、像不像 AI，或用 AI、模型、机器人解释自己的语气和行为；被直接问到身份时按人物设定简短回答，不要延展自我分析。",
@@ -196,8 +196,13 @@ func (c *Composer) DynamicInstruction(snapshot conversationdomain.ContextSnapsho
 	if hint := requestDispositionHint(mood, energy); hint != "" {
 		sections = append(sections, hint)
 	}
-	if snapshot.RelationshipState.Familiarity != 0 || snapshot.RelationshipState.Affinity != 0 {
-		sections = append(sections, fmt.Sprintf("关系: familiarity=%.2f; affinity=%.2f。", snapshot.RelationshipState.Familiarity, snapshot.RelationshipState.Affinity))
+	if relationship := snapshot.SocialRelationship; relationship.PersonaID != "" {
+		sections = append(sections, fmt.Sprintf("社交关系: familiarity=%.2f; affinity=%.2f; trust=%.2f; tease_tolerance=%.2f; friction=%.2f。",
+			relationship.Familiarity, relationship.Affinity, relationship.Trust, relationship.TeaseTolerance, relationship.Friction))
+	}
+	if scene := snapshot.GroupScene; scene.GroupID != 0 {
+		sections = append(sections, fmt.Sprintf("群场景: role=%s; activity=%.2f; temperature=%.2f; topic=%s; reception=%s。",
+			scene.RecommendedRole, scene.ActivityLevel, scene.SocialTemperature, scene.CurrentTopic, scene.BotReception))
 	}
 
 	if examples := relevantFewShot(c.persona.Speech.FewShotExamples, decision.TriggerType); len(examples) > 0 {

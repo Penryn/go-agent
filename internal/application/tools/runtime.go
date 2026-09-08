@@ -20,11 +20,11 @@ import (
 	memsvc "github.com/phlin/go-agent/internal/application/memory"
 	modelusagesvc "github.com/phlin/go-agent/internal/application/modelusage"
 	"github.com/phlin/go-agent/internal/application/ports"
+	relationshipsvc "github.com/phlin/go-agent/internal/application/relationship"
 	retrievalsvc "github.com/phlin/go-agent/internal/application/retrieval"
 	"github.com/phlin/go-agent/internal/application/textutil"
 	personadomain "github.com/phlin/go-agent/internal/domain/persona"
 	policydomain "github.com/phlin/go-agent/internal/domain/policy"
-	profiledomain "github.com/phlin/go-agent/internal/domain/profile"
 	replydomain "github.com/phlin/go-agent/internal/domain/reply"
 )
 
@@ -32,10 +32,11 @@ type Runtime struct {
 	memeStore         ports.MemeStore
 	profileStore      ports.ProfileStore
 	personaFacts      ports.PersonaFactStore
+	claims            *memsvc.ClaimService
+	relationships     *relationshipsvc.Service
 	personaID         string
 	personaDefinition personadomain.PersonaDefinition
 	personaFactAdmins []int64
-	memSvc            *memsvc.Service
 	memeSvc           *memesvc.Service
 	retriever         *retrievalsvc.Service
 	external          []registeredTool
@@ -74,12 +75,16 @@ func WithPersonaFactStore(store ports.PersonaFactStore) Option {
 	return func(rt *Runtime) { rt.personaFacts = store }
 }
 
-func WithPersonaFactAdmins(userIDs []int64) Option {
-	return func(rt *Runtime) { rt.personaFactAdmins = append([]int64(nil), userIDs...) }
+func WithMemoryClaimService(service *memsvc.ClaimService) Option {
+	return func(rt *Runtime) { rt.claims = service }
 }
 
-func WithMemoryService(svc *memsvc.Service) Option {
-	return func(rt *Runtime) { rt.memSvc = svc }
+func WithRelationshipService(service *relationshipsvc.Service) Option {
+	return func(rt *Runtime) { rt.relationships = service }
+}
+
+func WithPersonaFactAdmins(userIDs []int64) Option {
+	return func(rt *Runtime) { rt.personaFactAdmins = append([]int64(nil), userIDs...) }
 }
 
 func WithMemeService(svc *memesvc.Service) Option {
@@ -304,9 +309,8 @@ func (r *Runtime) knowledgeTools(session replydomain.ToolContext) []namedTool {
 func (r *Runtime) profileTools(session replydomain.ToolContext) []namedTool {
 	return []namedTool{
 		newQueryMemberProfileTool(r.profileStore, session),
-		newMarkMemoryIntentTool(r.memSvc, session),
-		newUpdateAffinityTool(r.profileStore, session, r.personaID),
-		newUpdateMemberProfileTool(r.profileStore, session, r.personaID),
+		newStageMemoryClaimTool(r.claims, session),
+		newRelationshipSignalTool(r.relationships, session),
 		newUpdatePersonaFactTool(r.personaFacts, session, r.personaDefinition, r.personaFactAdmins),
 	}
 }
@@ -929,72 +933,6 @@ func (t *pokeMemberTool) InvokableRun(_ context.Context, argumentsInJSON string,
 	return marshal(pokeMemberResult{Tool: t.Name(), UserID: args.UserID})
 }
 
-type markMemoryIntentTool struct {
-	memSvc  *memsvc.Service
-	session replydomain.ToolContext
-}
-
-type markMemoryIntentArgs struct {
-	MemoryType      string  `json:"memory_type"`
-	Subject         string  `json:"subject"`
-	Content         string  `json:"content"`
-	Importance      float64 `json:"importance"`
-	EvidenceEventID string  `json:"evidence_event_id"`
-}
-
-func newMarkMemoryIntentTool(memSvc *memsvc.Service, session replydomain.ToolContext) *markMemoryIntentTool {
-	return &markMemoryIntentTool{memSvc: memSvc, session: session}
-}
-
-func (t *markMemoryIntentTool) Name() string { return "mark_memory_intent" }
-
-func (t *markMemoryIntentTool) Info(_ context.Context) (*schema.ToolInfo, error) {
-	return &schema.ToolInfo{
-		Name: t.Name(),
-		Desc: "Submit a structured memory-write intent for later validation and persistence.",
-		ParamsOneOf: schema.NewParamsOneOfByParams(map[string]*schema.ParameterInfo{
-			"memory_type":       {Type: schema.String, Required: true, Desc: "Memory type."},
-			"subject":           {Type: schema.String, Required: true, Desc: "Memory subject."},
-			"content":           {Type: schema.String, Required: true, Desc: "Memory content."},
-			"importance":        {Type: schema.Number, Desc: "Importance score from 0 to 1."},
-			"evidence_event_id": {Type: schema.String, Desc: "Supporting event ID."},
-		}),
-	}, nil
-}
-
-func (t *markMemoryIntentTool) InvokableRun(_ context.Context, argumentsInJSON string, _ ...tool.Option) (string, error) {
-	var args markMemoryIntentArgs
-	if err := json.Unmarshal([]byte(argumentsInJSON), &args); err != nil {
-		return "", fmt.Errorf("decode mark_memory_intent args: %w", err)
-	}
-	intentID := fmt.Sprintf("memory-intent-%d", time.Now().UnixNano())
-	if t.memSvc != nil {
-		scope := fmt.Sprintf("group:%d", t.session.GroupID)
-		writeCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		record, err := t.memSvc.MarkIntent(writeCtx, memsvc.WriteIntent{
-			Scope:         scope,
-			MemoryType:    args.MemoryType,
-			Subject:       args.Subject,
-			Content:       args.Content,
-			SourceEventID: args.EvidenceEventID,
-			Importance:    args.Importance,
-			Confidence:    0.7,
-		})
-		if err != nil {
-			slog.Warn("mark_memory_intent: write failed", "scope", scope, "memory_type", args.MemoryType, "err", err)
-		} else {
-			intentID = record.MemoryID
-		}
-	}
-	return marshal(map[string]any{
-		"accepted":         true,
-		"memory_intent_id": intentID,
-		"memory_type":      args.MemoryType,
-		"subject":          args.Subject,
-	})
-}
-
 func marshal(value any) (string, error) {
 	data, err := json.Marshal(value)
 	if err != nil {
@@ -1021,213 +959,8 @@ func clamp(value, minValue, maxValue int) int {
 	return min(max(value, minValue), maxValue)
 }
 
-func appendUnique(items []string, value string, max int) []string {
-	value = strings.TrimSpace(value)
-	if value == "" || slices.Contains(items, value) {
-		return items
-	}
-	items = append(items, value)
-	if max > 0 && len(items) > max {
-		items = items[len(items)-max:]
-	}
-	return items
-}
-
 func clampF(v, lo, hi float64) float64 {
 	return min(max(v, lo), hi)
-}
-
-// update_affinity tool
-
-type updateAffinityTool struct {
-	store     ports.ProfileStore
-	session   replydomain.ToolContext
-	personaID string
-}
-
-type updateAffinityArgs struct {
-	UserID int64   `json:"user_id"`
-	Delta  float64 `json:"delta"`
-	Reason string  `json:"reason"`
-}
-
-func newUpdateAffinityTool(store ports.ProfileStore, session replydomain.ToolContext, personaID string) *updateAffinityTool {
-	return &updateAffinityTool{store: store, session: session, personaID: personaID}
-}
-
-func (t *updateAffinityTool) Name() string { return "update_affinity" }
-
-func (t *updateAffinityTool) Info(_ context.Context) (*schema.ToolInfo, error) {
-	return &schema.ToolInfo{
-		Name: t.Name(),
-		Desc: "Adjust your affinity toward a group member by a signed delta. Use positive for warmth, negative for discomfort. Call at most once per reply.",
-		ParamsOneOf: schema.NewParamsOneOfByParams(map[string]*schema.ParameterInfo{
-			"user_id": {Type: schema.Integer, Required: true, Desc: "Target member user ID."},
-			"delta":   {Type: schema.Number, Required: true, Desc: "Affinity delta in [-0.3, 0.3]. Positive = warmer, negative = cooler."},
-			"reason":  {Type: schema.String, Desc: "Short reason code for the change."},
-		}),
-	}, nil
-}
-
-func (t *updateAffinityTool) InvokableRun(ctx context.Context, argumentsInJSON string, _ ...tool.Option) (string, error) {
-	if t.store == nil {
-		return marshal(map[string]any{"accepted": false, "reason": "no_store"})
-	}
-	// Budget check: at most 1 call per plan
-	if t.session.Budget != nil {
-		if t.session.Budget["update_affinity"] >= 1 {
-			return marshal(map[string]any{"accepted": false, "reason": "budget_exceeded"})
-		}
-		t.session.Budget["update_affinity"]++
-	}
-	var args updateAffinityArgs
-	if err := json.Unmarshal([]byte(argumentsInJSON), &args); err != nil {
-		return "", fmt.Errorf("decode update_affinity args: %w", err)
-	}
-	delta := clampF(args.Delta, -0.3, 0.3)
-	rel, err := t.store.GetRelationship(ctx, t.personaID, t.session.GroupID, args.UserID)
-	if err != nil {
-		return "", err
-	}
-	rel.PersonaID = t.personaID
-	rel.GroupID = t.session.GroupID
-	rel.UserID = args.UserID
-	rel.Affinity = clampF(rel.Affinity+delta, 0, 1)
-	rel.LastInteractAt = time.Now()
-	if err := t.store.SaveRelationship(ctx, rel); err != nil {
-		return "", err
-	}
-	slog.Debug("tool: update_affinity", "user_id", args.UserID, "delta", delta, "new_affinity", rel.Affinity)
-	return marshal(map[string]any{
-		"accepted":     true,
-		"new_affinity": rel.Affinity,
-	})
-}
-
-// update_member_profile tool
-
-type updateMemberProfileTool struct {
-	store     ports.ProfileStore
-	session   replydomain.ToolContext
-	personaID string
-}
-
-type traitPatch struct {
-	TraitType  string  `json:"trait_type"`
-	Value      string  `json:"value"`
-	Confidence float64 `json:"confidence"`
-}
-
-type updateMemberProfileArgs struct {
-	UserID           int64        `json:"user_id"`
-	AddTraits        []traitPatch `json:"add_traits"`
-	AddTags          []string     `json:"add_tags"`
-	AddInterests     []string     `json:"add_interests"`
-	FamiliarityDelta float64      `json:"familiarity_delta"`
-	EvidenceEventID  string       `json:"evidence_event_id"`
-}
-
-func newUpdateMemberProfileTool(store ports.ProfileStore, session replydomain.ToolContext, personaID string) *updateMemberProfileTool {
-	return &updateMemberProfileTool{store: store, session: session, personaID: personaID}
-}
-
-func (t *updateMemberProfileTool) Name() string { return "update_member_profile" }
-
-func (t *updateMemberProfileTool) Info(_ context.Context) (*schema.ToolInfo, error) {
-	return &schema.ToolInfo{
-		Name: t.Name(),
-		Desc: "Update a member's traits, tags, or interests when you learn new information about them. Also optionally adjust familiarity. Call at most once per reply.",
-		ParamsOneOf: schema.NewParamsOneOfByParams(map[string]*schema.ParameterInfo{
-			"user_id":           {Type: schema.Integer, Required: true, Desc: "Target member user ID."},
-			"add_traits":        {Type: schema.Array, Desc: "List of {trait_type, value, confidence} to add or update."},
-			"add_tags":          {Type: schema.Array, Desc: "Tags to add (e.g. 'funny', 'gamer')."},
-			"add_interests":     {Type: schema.Array, Desc: "Interests to add (e.g. 'anime', 'coding')."},
-			"familiarity_delta": {Type: schema.Number, Desc: "Optional familiarity delta in [-0.2, 0.2]. Suggest <=0.1 per call."},
-			"evidence_event_id": {Type: schema.String, Desc: "Event ID that supports this update."},
-		}),
-	}, nil
-}
-
-func (t *updateMemberProfileTool) InvokableRun(ctx context.Context, argumentsInJSON string, _ ...tool.Option) (string, error) {
-	if t.store == nil {
-		return marshal(map[string]any{"accepted": false, "reason": "no_store"})
-	}
-	// Budget check: at most 1 call per plan
-	if t.session.Budget != nil {
-		if t.session.Budget["update_member_profile"] >= 1 {
-			return marshal(map[string]any{"accepted": false, "reason": "budget_exceeded"})
-		}
-		t.session.Budget["update_member_profile"]++
-	}
-	var args updateMemberProfileArgs
-	if err := json.Unmarshal([]byte(argumentsInJSON), &args); err != nil {
-		return "", fmt.Errorf("decode update_member_profile args: %w", err)
-	}
-
-	profile, err := t.store.GetMemberProfile(ctx, t.session.GroupID, args.UserID)
-	if err != nil {
-		return "", err
-	}
-
-	now := time.Now()
-	// Merge traits: deduplicate by (TraitType+Value), update confidence if exists
-	for _, p := range args.AddTraits {
-		merged := false
-		for i, existing := range profile.Traits {
-			if existing.TraitType == p.TraitType && existing.Value == p.Value {
-				profile.Traits[i].Confidence = clampF(p.Confidence, 0, 1)
-				profile.Traits[i].UpdatedAt = now
-				profile.Traits[i].EvidenceEventID = args.EvidenceEventID
-				merged = true
-				break
-			}
-		}
-		if !merged {
-			profile.Traits = append(profile.Traits, profiledomain.MemberTrait{
-				GroupID:         t.session.GroupID,
-				UserID:          args.UserID,
-				TraitType:       p.TraitType,
-				Value:           p.Value,
-				Confidence:      clampF(p.Confidence, 0, 1),
-				EvidenceEventID: args.EvidenceEventID,
-				UpdatedAt:       now,
-			})
-		}
-	}
-	// Cap at 30 traits (sliding window)
-	if len(profile.Traits) > 30 {
-		profile.Traits = profile.Traits[len(profile.Traits)-30:]
-	}
-	for _, tag := range args.AddTags {
-		profile.Tags = appendUnique(profile.Tags, tag, 20)
-	}
-	for _, interest := range args.AddInterests {
-		profile.Interests = appendUnique(profile.Interests, interest, 20)
-	}
-
-	if err := t.store.SaveMemberProfile(ctx, profile); err != nil {
-		return "", err
-	}
-
-	// Update familiarity if delta provided
-	if args.FamiliarityDelta != 0 {
-		rel, err := t.store.GetRelationship(ctx, t.personaID, t.session.GroupID, args.UserID)
-		if err != nil {
-			return "", err
-		}
-		rel.PersonaID = t.personaID
-		rel.GroupID = t.session.GroupID
-		rel.UserID = args.UserID
-		rel.Familiarity = clampF(rel.Familiarity+clampF(args.FamiliarityDelta, -0.2, 0.2), 0, 0.8)
-		rel.LastInteractAt = now
-		if err := t.store.SaveRelationship(ctx, rel); err != nil {
-			return "", err
-		}
-	}
-
-	slog.Debug("tool: update_member_profile", "user_id", args.UserID,
-		"traits_added", len(args.AddTraits), "tags_added", len(args.AddTags))
-	return marshal(map[string]any{"accepted": true})
 }
 
 // update_persona_fact tool

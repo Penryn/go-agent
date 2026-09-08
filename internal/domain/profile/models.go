@@ -34,14 +34,3 @@ type MemberProfile struct {
 	CommonPhrases []string      `json:"common_phrases" yaml:"common_phrases"`
 	Interests     []string      `json:"interests" yaml:"interests"`
 }
-
-type RelationshipState struct {
-	PersonaID      string    `json:"persona_id" yaml:"persona_id"`
-	GroupID        int64     `json:"group_id" yaml:"group_id"`
-	UserID         int64     `json:"user_id" yaml:"user_id"`
-	Familiarity    float64   `json:"familiarity" yaml:"familiarity"`
-	Affinity       float64   `json:"affinity" yaml:"affinity"`
-	TeaseTolerance float64   `json:"tease_tolerance" yaml:"tease_tolerance"`
-	GrudgeScore    float64   `json:"grudge_score" yaml:"grudge_score"`
-	LastInteractAt time.Time `json:"last_interact_at" yaml:"last_interact_at"`
-}

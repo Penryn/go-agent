@@ -108,13 +108,7 @@ curl http://127.0.0.1:8088/healthz
 
 启动 Bot 后打开 [http://127.0.0.1:8088/admin/](http://127.0.0.1:8088/admin/)，可查看当前身份、长期记忆、群友关系和运行记录。`server.admin_token` 留空时后台数据仅允许本机读取；需要远程访问时请配置令牌，并在反向代理层启用 HTTPS。
 
-前端源码位于 `web/`，使用 Vue、Vue Router、Pinia、Axios、Tailwind CSS 和 Element Plus。修改前端后重新构建嵌入资源：
-
-```bash
-cd web
-npm install
-npm run build
-```
+前端源码位于 `web/`，使用 Vue、Vue Router、Pinia、Axios、Tailwind CSS 和 Element Plus。修改前端后执行 `make web`（或 `make build` / `make test` / `make run`），会先 `npm run build` 再编译；产物输出到 `internal/app/adminui/dist/`，不入库，由 `go:embed` 编进二进制。
 
 ## 本地事件验证
 
@@ -134,7 +128,7 @@ go run ./cmd/qqbotd \
 |------|------|
 | 最终动作 | `speak_text`、`quote_reply`、`send_meme`、`react_emoji`、`repair_message`、`poke_member`、`stay_silent` |
 | 信息读取 | `query_memory`、`search_meme`、`query_member_profile` |
-| 状态更新 | `mark_memory_intent`、`update_affinity`、`update_member_profile` |
+| 状态更新 | `stage_memory_claim`、`record_relationship_signal`、`update_persona_fact` |
 
 可选扩展：
 

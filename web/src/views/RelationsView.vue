@@ -42,6 +42,8 @@ onMounted(load)
       <el-table-column label="好感度" min-width="190" sortable prop="affinity"><template #default="{ row }"><div class="table-progress"><el-progress :percentage="Math.round(row.affinity * 100)" :stroke-width="6" /><span>{{ row.affinity.toFixed(2) }}</span></div></template></el-table-column>
       <el-table-column label="熟悉度" width="110" sortable prop="familiarity"><template #default="{ row }">{{ row.familiarity.toFixed(2) }}</template></el-table-column>
       <el-table-column label="玩笑容忍" width="110" prop="tease_tolerance"><template #default="{ row }">{{ row.tease_tolerance.toFixed(2) }}</template></el-table-column>
+      <el-table-column label="信任" width="90" sortable prop="trust"><template #default="{ row }">{{ row.trust.toFixed(2) }}</template></el-table-column>
+      <el-table-column label="摩擦" width="90" sortable prop="friction"><template #default="{ row }">{{ row.friction.toFixed(2) }}</template></el-table-column>
       <el-table-column label="互动" width="100" sortable prop="message_count"><template #default="{ row }">{{ row.message_count }} 次</template></el-table-column>
       <el-table-column label="最近互动" width="130"><template #default="{ row }">{{ relativeTime(row.last_interact_at) }}</template></el-table-column>
     </el-table>

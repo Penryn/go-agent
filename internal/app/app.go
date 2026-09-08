@@ -35,9 +35,11 @@ import (
 	presencereflection "github.com/phlin/go-agent/internal/application/presence/reflection"
 	profilesvc "github.com/phlin/go-agent/internal/application/profile"
 	promptingsvc "github.com/phlin/go-agent/internal/application/prompting"
+	relationshipsvc "github.com/phlin/go-agent/internal/application/relationship"
 	retrievalsvc "github.com/phlin/go-agent/internal/application/retrieval"
 	outboxruntime "github.com/phlin/go-agent/internal/application/runtime/outbox"
 	"github.com/phlin/go-agent/internal/application/runtime/scheduler"
+	scenesvc "github.com/phlin/go-agent/internal/application/scene"
 	"github.com/phlin/go-agent/internal/application/textutil"
 	toolsvc "github.com/phlin/go-agent/internal/application/tools"
 	"github.com/phlin/go-agent/internal/config"
@@ -98,6 +100,10 @@ func New(ctx context.Context, cfg config.Config) (*App, error) {
 
 	contextService := contextsvc.New(stores.memory, stores.profile, stores.state, policyService, cfg.Persona, hybridRetrieval, cfg.Memory.TopK)
 	contextService.WithPersonaFactStore(stores.personaFacts)
+	contextService.WithRelationshipStore(stores.relationships)
+	contextService.WithSceneStore(stores.scenes)
+	relationshipService := relationshipsvc.New(stores.relationships, cfg.Persona.ID)
+	sceneService := scenesvc.New(stores.scenes)
 	eventLog := presenceingress.NewMemoryEventLog()
 	actorOptions := []presenceactor.Option{
 		presenceactor.WithArchive(stores.memory),
@@ -212,8 +218,9 @@ func New(ctx context.Context, cfg config.Config) (*App, error) {
 		toolsvc.WithProfileStore(stores.profile),
 		toolsvc.WithPersonaDefinition(personaDefinition),
 		toolsvc.WithPersonaFactStore(stores.personaFacts),
+		toolsvc.WithMemoryClaimService(memsvc.NewClaimService(stores.claims)),
+		toolsvc.WithRelationshipService(relationshipService),
 		toolsvc.WithPersonaFactAdmins(cfg.Persona.FactUpdateUserWhitelist),
-		toolsvc.WithMemoryService(memorySvc),
 		toolsvc.WithMemeService(memeService),
 		toolsvc.WithMemoryRetriever(hybridRetrieval),
 		toolsvc.WithWriteApprovalStore(writeApprovals),
@@ -247,6 +254,7 @@ func New(ctx context.Context, cfg config.Config) (*App, error) {
 	guard := outputguardsvc.New(cfg.Persona.ReplyMaxChars*2, cfg.Persona.ReplyMaxSentences+1)
 	actionOpts := []actionsvc.Option{
 		actionsvc.WithPresenceObserver(presenceManager),
+		actionsvc.WithEventObserver(sceneService.ObserveEvent),
 		actionsvc.WithSelfID(cfg.QQ.SelfID),
 		actionsvc.WithOutbox(durableOutbox),
 	}
@@ -266,6 +274,7 @@ func New(ctx context.Context, cfg config.Config) (*App, error) {
 	// F2 PersonaService：情绪状态动态驱动
 	moodSvc := personasvc.New(stores.state, cfg.Persona.ID)
 	turnObserver := presencereflection.New(stores.state, moodSvc, time.Duration(cfg.Autonomy.MinReplyIntervalSec)*time.Second, policyService)
+	turnObserver.SetRelationshipService(relationshipService)
 
 	// Human Presence Runtime owns ingress, per-group working memory, candidate
 	// scheduling, deliberation, realization, and outbound self-observation.
@@ -297,8 +306,10 @@ func New(ctx context.Context, cfg config.Config) (*App, error) {
 	moodSvc.RegisterJobs(sched, cfg.QQ.GroupWhitelist)
 
 	// learning service：接入运行时，每 6 小时对白名单群跑一次增量学习
-	profileService := profilesvc.New(stores.profile, cfg.Persona.ID)
+	profileService := profilesvc.New(stores.profile)
 	humanRuntime.AddEventObserver(profileService.ObserveEvent)
+	humanRuntime.AddEventObserver(sceneService.ObserveEvent)
+	humanRuntime.AddEventObserver(relationshipService.ObserveInbound)
 	learningSvc, learnErr := learningsvc.New(ctx, stores.memory, stores.learning, memorySvc, learningsvc.WithOutbox(durableOutbox))
 	if learnErr != nil {
 		_ = durableOutbox.Close()

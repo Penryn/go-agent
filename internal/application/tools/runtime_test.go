@@ -3,12 +3,15 @@ package tools
 import (
 	"context"
 	"encoding/json"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/cloudwego/eino/components/tool"
 	"github.com/cloudwego/eino/schema"
 
+	memsvc "github.com/phlin/go-agent/internal/application/memory"
+	relationshipsvc "github.com/phlin/go-agent/internal/application/relationship"
 	personadomain "github.com/phlin/go-agent/internal/domain/persona"
 	profiledomain "github.com/phlin/go-agent/internal/domain/profile"
 	replydomain "github.com/phlin/go-agent/internal/domain/reply"
@@ -26,7 +29,11 @@ func TestToolSchemas(t *testing.T) {
 	_ = store.SaveMemberProfile(context.Background(), profiledomain.MemberProfile{
 		Stats: profiledomain.MemberStats{GroupID: 1, UserID: 2, Nickname: "alice"},
 	})
-	runtime := NewRuntime(store, WithProfileStore(store))
+	runtime := NewRuntime(store,
+		WithProfileStore(store),
+		WithMemoryClaimService(memsvc.NewClaimService(store)),
+		WithRelationshipService(relationshipsvc.New(store, "main")),
+	)
 	tools := runtime.Tools(replydomain.ToolContext{
 		GroupID:              1,
 		UserID:               2,
@@ -44,10 +51,50 @@ func TestToolSchemas(t *testing.T) {
 		names[info.Name] = candidate
 	}
 
-	for _, name := range []string{"speak_text", "search_meme", "stay_silent", "send_meme", "quote_reply", "query_member_profile", "update_persona_fact", "repair_message", "poke_member"} {
+	for _, name := range []string{"speak_text", "search_meme", "stay_silent", "send_meme", "quote_reply", "query_member_profile", "stage_memory_claim", "record_relationship_signal", "update_persona_fact", "repair_message", "poke_member"} {
 		if _, ok := names[name]; !ok {
 			t.Fatalf("expected tool %s", name)
 		}
+	}
+}
+
+func TestSocialStateToolsRequireEvidenceAndUseProjections(t *testing.T) {
+	store := testsupport.NewStore(t)
+	ctx := context.Background()
+	runtime := NewRuntime(store,
+		WithMemoryClaimService(memsvc.NewClaimService(store)),
+		WithRelationshipService(relationshipsvc.New(store, "main")),
+	)
+	session := replydomain.ToolContext{GroupID: 1, UserID: 2, TraceID: "decision-1", TriggerEventID: "event-1"}
+	var claimTool, signalTool tool.InvokableTool
+	for _, candidate := range runtime.Tools(session) {
+		info, _ := candidate.Info(ctx)
+		invokable, _ := candidate.(tool.InvokableTool)
+		switch info.Name {
+		case "stage_memory_claim":
+			claimTool = invokable
+		case "record_relationship_signal":
+			signalTool = invokable
+		}
+	}
+	if claimTool == nil || signalTool == nil {
+		t.Fatal("social state tools were not registered")
+	}
+	claimRaw, err := claimTool.InvokableRun(ctx, `{"type":"semantic","subject":"喜欢游戏","content":"经常玩游戏","confidence":0.8}`)
+	if err != nil || !strings.Contains(claimRaw, `"accepted":true`) {
+		t.Fatalf("stage claim failed: raw=%s err=%v", claimRaw, err)
+	}
+	signalRaw, err := signalTool.InvokableRun(ctx, `{"user_id":2,"kind":"positive_feedback","intensity":1,"evidence_event_id":"event-1"}`)
+	if err != nil || !strings.Contains(signalRaw, `"accepted":true`) {
+		t.Fatalf("record signal failed: raw=%s err=%v", signalRaw, err)
+	}
+	invalidRaw, err := signalTool.InvokableRun(ctx, `{"user_id":2,"kind":"positive_feedback","evidence_event_id":"other-event"}`)
+	if err != nil || !strings.Contains(invalidRaw, `"evidence_out_of_context"`) {
+		t.Fatalf("out-of-context evidence was accepted: raw=%s err=%v", invalidRaw, err)
+	}
+	state, err := store.GetSocialRelationship(ctx, "main", 1, 2)
+	if err != nil || state.Trust <= 0 || state.Affinity <= 0.25 {
+		t.Fatalf("relationship projection not updated: state=%+v err=%v", state, err)
 	}
 }
 

@@ -10,7 +10,9 @@ import (
 	personadomain "github.com/phlin/go-agent/internal/domain/persona"
 	policydomain "github.com/phlin/go-agent/internal/domain/policy"
 	profiledomain "github.com/phlin/go-agent/internal/domain/profile"
+	relationshipdomain "github.com/phlin/go-agent/internal/domain/relationship"
 	replydomain "github.com/phlin/go-agent/internal/domain/reply"
+	scenedomain "github.com/phlin/go-agent/internal/domain/scene"
 )
 
 type OutboundSender interface {
@@ -76,6 +78,23 @@ type MemoryStore interface {
 	RecentEvents(ctx context.Context, groupID int64, limit int) ([]conversationdomain.ConversationEvent, error)
 	UpsertMemory(ctx context.Context, record memorydomain.MemoryRecord) error
 	QueryMemories(ctx context.Context, query MemoryQuery) ([]memorydomain.MemoryRecord, error)
+}
+
+// MemoryClaimStore persists model observations before they become durable
+// memories. Claims are evidence-bearing and may be rejected or superseded.
+type MemoryClaimStore interface {
+	UpsertMemoryClaim(context.Context, memorydomain.MemoryClaim) error
+	ListMemoryClaims(context.Context, string, int) ([]memorydomain.MemoryClaim, error)
+}
+
+type RelationshipStore interface {
+	GetSocialRelationship(context.Context, string, int64, int64) (relationshipdomain.State, error)
+	ApplyRelationshipEvent(context.Context, relationshipdomain.Event) (bool, error)
+}
+
+type GroupSceneStore interface {
+	LoadGroupScene(context.Context, int64) (scenedomain.GroupScene, error)
+	SaveGroupScene(context.Context, scenedomain.GroupScene) error
 }
 
 type MemoryRecallStore interface {
@@ -175,8 +194,6 @@ type AtomicMemeProjectionStore interface {
 type ProfileStore interface {
 	GetMemberProfile(ctx context.Context, groupID, userID int64) (profiledomain.MemberProfile, error)
 	SaveMemberProfile(ctx context.Context, profile profiledomain.MemberProfile) error
-	GetRelationship(ctx context.Context, personaID string, groupID, userID int64) (profiledomain.RelationshipState, error)
-	SaveRelationship(ctx context.Context, state profiledomain.RelationshipState) error
 }
 
 type RuntimeStateStore interface {

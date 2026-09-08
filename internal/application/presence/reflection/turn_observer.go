@@ -8,6 +8,7 @@ import (
 
 	personasvc "github.com/phlin/go-agent/internal/application/persona"
 	"github.com/phlin/go-agent/internal/application/ports"
+	relationshipsvc "github.com/phlin/go-agent/internal/application/relationship"
 	conversationdomain "github.com/phlin/go-agent/internal/domain/conversation"
 	policydomain "github.com/phlin/go-agent/internal/domain/policy"
 	replydomain "github.com/phlin/go-agent/internal/domain/reply"
@@ -18,7 +19,8 @@ type TurnObserver struct {
 	persona  *personasvc.Service
 	cooldown time.Duration
 	// policies 解析当前群的 GroupPolicy（连续发言上限）。
-	policies PolicyResolver
+	policies      PolicyResolver
+	relationships *relationshipsvc.Service
 }
 
 // PolicyResolver 是 CanDeliberate 输出规则闸门需要的群策略视图。
@@ -31,6 +33,12 @@ func New(states ports.RuntimeStateStore, persona *personasvc.Service, cooldown t
 		cooldown = 0
 	}
 	return &TurnObserver{states: states, persona: persona, cooldown: cooldown, policies: policies}
+}
+
+func (o *TurnObserver) SetRelationshipService(service *relationshipsvc.Service) {
+	if o != nil {
+		o.relationships = service
+	}
 }
 
 // ObserveInbound starts a new human interaction sequence. The consecutive bot
@@ -82,6 +90,11 @@ func (o *TurnObserver) AfterTurn(ctx context.Context, snapshot conversationdomai
 	}
 	if o.persona != nil {
 		if err := o.persona.UpdateAfterTurn(ctx, snapshot, decision, receipt.Sent); err != nil {
+			return err
+		}
+	}
+	if receipt.Sent && o.relationships != nil {
+		if err := o.relationships.RecordReply(ctx, snapshot, decision.DecisionID); err != nil {
 			return err
 		}
 	}

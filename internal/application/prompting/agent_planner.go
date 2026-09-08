@@ -64,10 +64,11 @@ func (p *AgentPlanner) Plan(ctx context.Context, snapshot conversationdomain.Con
 		TriggerMessageID:     snapshot.Event.MessageID,
 		TriggerEventID:       snapshot.Event.EventID,
 		TriggerTimestampUnix: snapshot.Event.TimestampUnix,
+		EvidenceEventIDs:     evidenceEventIDs(snapshot),
 		AllowedTools:         snapshot.GroupPolicy.ToolAllowlist,
 		RetrievedMemories:    snapshot.RelevantMemories,
 		MediaDescriptors:     snapshot.MediaDescriptors,
-		Budget:               map[string]int{"update_affinity": 0, "update_member_profile": 0, "update_persona_fact": 0},
+		Budget:               map[string]int{"stage_memory_claim": 0, "record_relationship_signal": 0, "update_persona_fact": 0},
 		TriggerType:          decision.TriggerType,
 		RecallableMessageIDs: recallableMessageIDs(snapshot),
 		Intent: replydomain.ReplyIntent{
@@ -207,6 +208,26 @@ func (p *AgentPlanner) Plan(ctx context.Context, snapshot conversationdomain.Con
 
 	slog.Warn("planner: no output from agent, fallback", "trace_id", snapshot.SnapshotID)
 	return p.fallback.Plan(ctx, snapshot, decision)
+}
+
+func evidenceEventIDs(snapshot conversationdomain.ContextSnapshot) []string {
+	seen := map[string]struct{}{}
+	ids := make([]string, 0, len(snapshot.RecentTurns)+1)
+	appendID := func(id string) {
+		if id == "" {
+			return
+		}
+		if _, ok := seen[id]; ok {
+			return
+		}
+		seen[id] = struct{}{}
+		ids = append(ids, id)
+	}
+	for _, event := range snapshot.RecentTurns {
+		appendID(event.EventID)
+	}
+	appendID(snapshot.Event.EventID)
+	return ids
 }
 
 func (p *AgentPlanner) savePromptSession(ctx context.Context, groupID int64, session conversationdomain.PromptSession) {

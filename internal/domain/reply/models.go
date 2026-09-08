@@ -63,6 +63,7 @@ type ToolContext struct {
 	TriggerMessageID     string                         `json:"trigger_message_id" yaml:"trigger_message_id"`
 	TriggerEventID       string                         `json:"trigger_event_id" yaml:"trigger_event_id"`
 	TriggerTimestampUnix int64                          `json:"trigger_timestamp_unix" yaml:"trigger_timestamp_unix"`
+	EvidenceEventIDs     []string                       `json:"evidence_event_ids" yaml:"evidence_event_ids"`
 	Intent               ReplyIntent                    `json:"intent" yaml:"intent"`
 	AllowedTools         []string                       `json:"allowed_tools" yaml:"allowed_tools"`
 	RetrievedMemories    []memorydomain.MemoryRecord    `json:"retrieved_memories" yaml:"retrieved_memories"`
