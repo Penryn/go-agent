@@ -11,6 +11,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/cloudwego/eino/schema"
+
 	inboundnapcat "github.com/phlin/go-agent/internal/adapters/inbound/napcat"
 	"github.com/phlin/go-agent/internal/adapters/inmemory"
 	modeladapter "github.com/phlin/go-agent/internal/adapters/model"
@@ -89,6 +91,9 @@ func New(ctx context.Context, cfg config.Config) (*App, error) {
 	// 创建 ResponsePlanner 和 ResponseExecutor（依赖 sender 和 composer）
 	composer := promptingsvc.NewComposer(cfg.Persona)
 
+	// 配置 LLM（稍后在获得 modelFactory 后设置）
+	// 配置在创建 hybridRetrieval 之后
+
 	// 创建 composer 适配器以匹配 planning.TextComposer 接口
 	composerAdapter := &textComposerAdapter{composer: composer}
 
@@ -111,6 +116,10 @@ func New(ctx context.Context, cfg config.Config) (*App, error) {
 		MemoryThreshold:  cfg.Memory.SemanticThreshold,
 		MemeThreshold:    cfg.Meme.SemanticThreshold,
 	})
+
+	// 配置 Composer 的 LLM 和 MemoryRetriever
+	composer.WithLLM(&llmAdapter{factory: modelFactory}).
+		WithMemoryRetriever(&memoryRetrieverAdapter{retrieval: hybridRetrieval})
 
 	contextService := contextsvc.New(stores.memory, stores.profile, stores.state, policyService, cfg.Persona, hybridRetrieval, cfg.Memory.TopK)
 	contextService.WithPersonaFactStore(stores.personaFacts)
@@ -505,14 +514,59 @@ func (a *textComposerAdapter) ComposeResponse(
 	evt *conversationdomain.ConversationEvent,
 	intent string,
 ) (string, error) {
-	// TODO: 实现完整的文本生成流程
-	// 当前简化实现：直接使用 intent 作为回复
-	// 完整实现应该：
-	// 1. 检索相关记忆
-	// 2. 构建完整的提示词（包括人格、记忆、上下文）
-	// 3. 调用 LLM 生成自然语言回复
-	// 4. 应用人格风格和语气调整
-	return intent, nil
+	// 调用 Composer 的 ComposeResponse 方法
+	return a.composer.ComposeResponse(ctx, personaCtx, evt, intent)
+}
+
+// llmAdapter 适配 modelFactory 到 prompting.LLMCaller 接口
+type llmAdapter struct {
+	factory *modeladapter.Factory
+}
+
+func (a *llmAdapter) Generate(ctx context.Context, prompt string) (string, error) {
+	if a.factory == nil {
+		return "", fmt.Errorf("model factory not available")
+	}
+
+	model, err := a.factory.MainChatModel(ctx)
+	if err != nil {
+		return "", fmt.Errorf("get main model: %w", err)
+	}
+
+	response, err := model.Generate(ctx, []*schema.Message{
+		{Role: schema.User, Content: prompt},
+	})
+	if err != nil {
+		return "", fmt.Errorf("generate: %w", err)
+	}
+
+	if response == nil || response.Content == "" {
+		return "", fmt.Errorf("empty response")
+	}
+
+	return response.Content, nil
+}
+
+// memoryRetrieverAdapter 适配 retrievalsvc.Service 到 prompting.MemoryRetriever 接口
+type memoryRetrieverAdapter struct {
+	retrieval *retrievalsvc.Service
+}
+
+func (a *memoryRetrieverAdapter) RetrieveRelevant(ctx context.Context, groupID int64, query string, limit int) ([]memorydomain.MemoryRecord, error) {
+	if a.retrieval == nil {
+		return nil, nil
+	}
+
+	memories, err := a.retrieval.SearchMemories(ctx, ports.MemoryQuery{
+		GroupID: groupID,
+		Query:   query,
+		TopK:    limit,
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	return memories, nil
 }
 
 // noOpDeliberator 是一个空的 deliberator 实现

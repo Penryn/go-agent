@@ -1,6 +1,7 @@
 package prompting
 
 import (
+	"context"
 	"fmt"
 	"strings"
 	"time"
@@ -14,14 +15,38 @@ import (
 	profiledomain "github.com/phlin/go-agent/internal/domain/profile"
 )
 
+// LLMCaller 调用大语言模型的接口
+type LLMCaller interface {
+	Generate(ctx context.Context, prompt string) (string, error)
+}
+
+// MemoryRetriever 检索记忆的接口
+type MemoryRetriever interface {
+	RetrieveRelevant(ctx context.Context, groupID int64, query string, limit int) ([]memorydomain.MemoryRecord, error)
+}
+
 type Composer struct {
-	persona       personadomain.PersonaConfig
-	recentMaxChar int
-	memoryMaxChar int
+	persona         personadomain.PersonaConfig
+	recentMaxChar   int
+	memoryMaxChar   int
+	llm             LLMCaller
+	memoryRetriever MemoryRetriever
 }
 
 func NewComposer(persona personadomain.PersonaConfig) *Composer {
 	return &Composer{persona: persona, recentMaxChar: 6000, memoryMaxChar: 3000}
+}
+
+// WithLLM 设置 LLM 调用器
+func (c *Composer) WithLLM(llm LLMCaller) *Composer {
+	c.llm = llm
+	return c
+}
+
+// WithMemoryRetriever 设置记忆检索器
+func (c *Composer) WithMemoryRetriever(retriever MemoryRetriever) *Composer {
+	c.memoryRetriever = retriever
+	return c
 }
 
 func (c *Composer) Instruction(snapshot conversationdomain.ContextSnapshot, decision policydomain.AutonomyDecision) string {
@@ -529,4 +554,104 @@ func retainNewestStrings(values []string, budget int) ([]string, bool) {
 		start = i
 	}
 	return values[start:], start > 0
+}
+
+// ComposeResponse 生成自然语言回复
+func (c *Composer) ComposeResponse(
+	ctx context.Context,
+	personaCtx *personadomain.PersonaContext,
+	evt *conversationdomain.ConversationEvent,
+	intent string,
+) (string, error) {
+	// 如果没有配置 LLM，降级到使用 intent
+	if c.llm == nil {
+		return intent, nil
+	}
+
+	// 1. 检索相关记忆
+	var memories []memorydomain.MemoryRecord
+	if c.memoryRetriever != nil && evt.GroupID > 0 {
+		retrieved, err := c.memoryRetriever.RetrieveRelevant(ctx, evt.GroupID, evt.Text, 5)
+		if err == nil {
+			memories = retrieved
+		}
+	}
+
+	// 2. 构建完整的提示词
+	prompt := c.buildResponsePrompt(personaCtx, evt, intent, memories)
+
+	// 3. 调用 LLM 生成回复
+	response, err := c.llm.Generate(ctx, prompt)
+	if err != nil {
+		// LLM 失败时降级到 intent
+		return intent, nil
+	}
+
+	// 4. 清理和验证回复
+	cleaned := strings.TrimSpace(response)
+	if cleaned == "" {
+		return intent, nil
+	}
+
+	return cleaned, nil
+}
+
+// buildResponsePrompt 构建回复生成的提示词
+func (c *Composer) buildResponsePrompt(
+	personaCtx *personadomain.PersonaContext,
+	evt *conversationdomain.ConversationEvent,
+	intent string,
+	memories []memorydomain.MemoryRecord,
+) string {
+	var sb strings.Builder
+
+	// 人格设定
+	sb.WriteString("# 角色设定\n")
+	sb.WriteString(fmt.Sprintf("你是 %s\n", c.persona.Name))
+	sb.WriteString(fmt.Sprintf("%s\n\n", c.persona.Description))
+
+	// 性格特点
+	if len(c.persona.Traits) > 0 {
+		sb.WriteString("## 性格特点\n")
+		for _, trait := range c.persona.Traits {
+			sb.WriteString(fmt.Sprintf("- %s\n", trait))
+		}
+		sb.WriteString("\n")
+	}
+
+	// 说话风格（如果有）
+	if c.persona.Description != "" {
+		sb.WriteString("## 行为风格\n")
+		sb.WriteString(fmt.Sprintf("%s\n\n", c.persona.Description))
+	}
+
+	// 相关记忆
+	if len(memories) > 0 {
+		sb.WriteString("# 相关记忆\n")
+		for i, mem := range memories {
+			sb.WriteString(fmt.Sprintf("%d. %s\n", i+1, mem.Content))
+		}
+		sb.WriteString("\n")
+	}
+
+	// 当前上下文
+	sb.WriteString("# 当前对话\n")
+	// ConversationEvent 没有 UserName 字段，直接显示文本
+	sb.WriteString(fmt.Sprintf("用户说: %s\n\n", evt.Text))
+
+	// 回复意图
+	sb.WriteString("# 回复意图\n")
+	sb.WriteString(fmt.Sprintf("%s\n\n", intent))
+
+	// 生成指令
+	sb.WriteString("# 任务\n")
+	sb.WriteString("请根据以上信息，生成一句符合角色人格和说话风格的自然回复。\n")
+	sb.WriteString("要求：\n")
+	sb.WriteString("1. 保持角色的性格特点和说话习惯\n")
+	sb.WriteString("2. 回复要自然、简洁，不超过100字\n")
+	sb.WriteString("3. 只输出回复内容本身，不要包含任何解释或元信息\n")
+	sb.WriteString("4. 如果有相关记忆，可以自然地体现出来\n\n")
+	sb.WriteString("回复：")
+
+	return sb.String()
 }
