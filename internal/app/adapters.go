@@ -78,12 +78,12 @@ func (a *eventStoreAdapter) ListEventsSince(
 		return nil, err
 	}
 
-	// 过滤出时间范围内的事件
+	// 过滤出时间范围内的事件（since 之后的 duration 时间内）
 	var filtered []conversationdomain.ConversationEvent
-	cutoff := since.Add(-duration)
+	endTime := since.Add(duration)
 	for _, evt := range events {
 		evtTime := time.Unix(evt.TimestampUnix, 0)
-		if evtTime.After(cutoff) && evtTime.Before(since) {
+		if evtTime.After(since) && evtTime.Before(endTime) {
 			filtered = append(filtered, evt)
 			if len(filtered) >= limit {
 				break

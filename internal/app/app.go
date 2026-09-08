@@ -505,10 +505,14 @@ func (a *textComposerAdapter) ComposeResponse(
 	evt *conversationdomain.ConversationEvent,
 	intent string,
 ) (string, error) {
-	// prompting.Composer 可能有不同的方法签名，这里需要适配
-	// 简单起见，直接返回基于 intent 的模板文本
-	// TODO: 调用实际的 composer 方法
-	return "回复: " + intent, nil
+	// TODO: 实现完整的文本生成流程
+	// 当前简化实现：直接使用 intent 作为回复
+	// 完整实现应该：
+	// 1. 检索相关记忆
+	// 2. 构建完整的提示词（包括人格、记忆、上下文）
+	// 3. 调用 LLM 生成自然语言回复
+	// 4. 应用人格风格和语气调整
+	return intent, nil
 }
 
 // noOpDeliberator 是一个空的 deliberator 实现
