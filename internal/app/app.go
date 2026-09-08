@@ -107,6 +107,9 @@ func New(ctx context.Context, cfg config.Config) (*App, error) {
 	relationshipService := relationshipsvc.New(stores.relationships, cfg.Persona.ID)
 	sceneService := scenesvc.New(stores.scenes)
 	eventLog := presenceingress.NewMemoryEventLog()
+
+	// 注意：这些服务在后面才创建，这里先占位
+	// 实际的依赖会在后面通过 setter 或其他方式注入
 	actorOptions := []presenceactor.Option{
 		presenceactor.WithArchive(stores.memory),
 		presenceactor.WithIdleTTL(textutil.ParseDurationOr(cfg.Runtime.ActorIdleTTL, 30*time.Minute)),
@@ -279,7 +282,7 @@ func New(ctx context.Context, cfg config.Config) (*App, error) {
 	turnObserver.SetRelationshipService(relationshipService)
 
 	// 社交决策引擎：五步决策流程（硬规则/场景/关系/人格/模型）
-	_ = socialdecisionsvc.NewDecisionEngine(
+	decisionEngine := socialdecisionsvc.NewDecisionEngine(
 		&sceneStoreAdapter{stores.scenes},
 		&relationshipStoreAdapter{stores.relationships},
 		stores.posture,
@@ -288,7 +291,7 @@ func New(ctx context.Context, cfg config.Config) (*App, error) {
 	)
 
 	// PersonaContext 组装器：组装三层人格模型
-	_ = personasvc.NewContextAssembler(
+	personaAssembler := personasvc.NewContextAssembler(
 		stores.posture,
 		stores.ephemeral,
 		&factStoreAdapter{stores.personaFacts},
@@ -296,11 +299,18 @@ func New(ctx context.Context, cfg config.Config) (*App, error) {
 
 	// 反馈收集器：发送后观察和分类反馈
 	eventStoreAdapted := &eventStoreAdapter{stores.memory}
-	_ = reflectionsvc.NewFeedbackClassifier(eventStoreAdapted)
-	_ = reflectionsvc.NewFeedbackCollector(
+	feedbackClassifier := reflectionsvc.NewFeedbackClassifier(eventStoreAdapted)
+	feedbackCollector := reflectionsvc.NewFeedbackCollector(
 		eventStoreAdapted,
-		reflectionsvc.NewFeedbackClassifier(eventStoreAdapted),
+		feedbackClassifier,
 	)
+
+	// ResponsePlanner 和 ResponseExecutor
+	responsePlanner := planning.NewResponsePlanner(
+		cfg.Persona,
+		promptingsvc.NewComposer(cfg.Persona), // 使用现有的 Composer
+	)
+	responseExecutor := planning.NewResponseExecutor(sender)
 
 	// Human Presence Runtime owns ingress, per-group working memory, candidate
 	// scheduling, deliberation, realization, and outbound self-observation.
