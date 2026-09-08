@@ -12,4 +12,6 @@ memes/
 .idea/
 web/node_modules/
 web/*.tsbuildinfo
+# Vue 管理后台构建产物；由 make web 生成，编译时 go:embed，不要提交。
+internal/app/adminui/dist/
 space
