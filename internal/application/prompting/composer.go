@@ -586,9 +586,20 @@ func (c *Composer) ComposeResponse(
 	evt *conversationdomain.ConversationEvent,
 	intent string,
 ) (string, error) {
-	// 如果没有配置 LLM，降级到使用 intent
+	return c.ComposeResponseWithHistory(ctx, personaCtx, evt, nil, intent)
+}
+
+// ComposeResponseWithHistory 生成自然语言回复（带历史上下文）
+func (c *Composer) ComposeResponseWithHistory(
+	ctx context.Context,
+	personaCtx *personadomain.PersonaContext,
+	evt *conversationdomain.ConversationEvent,
+	history []conversationdomain.ConversationEvent,
+	intent string,
+) (string, error) {
+	// 如果没有配置 LLM，返回友好的错误提示而非 intent
 	if c.llm == nil {
-		return intent, nil
+		return "抱歉，我现在有点困，稍后再聊吧", nil
 	}
 
 	// 1. 检索相关记忆
@@ -600,20 +611,20 @@ func (c *Composer) ComposeResponse(
 		}
 	}
 
-	// 2. 构建完整的提示词
-	prompt := c.buildResponsePrompt(personaCtx, evt, intent, memories)
+	// 2. 构建完整的提示词（使用 PersonaContext 和历史）
+	prompt := c.buildEnhancedResponsePrompt(personaCtx, evt, history, intent, memories)
 
 	// 3. 调用 LLM 生成回复
 	response, err := c.llm.Generate(ctx, prompt)
 	if err != nil {
-		// LLM 失败时降级到 intent
-		return intent, nil
+		// LLM 失败时返回友好提示
+		return "嗯...我需要想想再回答", fmt.Errorf("LLM generate: %w", err)
 	}
 
 	// 4. 清理和验证回复
 	cleaned := strings.TrimSpace(response)
 	if cleaned == "" {
-		return intent, nil
+		return "...", nil // 空回复时的友好提示
 	}
 
 	return cleaned, nil
@@ -677,4 +688,137 @@ func (c *Composer) buildResponsePrompt(
 	sb.WriteString("回复：")
 
 	return sb.String()
+}
+
+// buildEnhancedResponsePrompt 构建增强的回复提示词（包含 PersonaContext 和历史）
+func (c *Composer) buildEnhancedResponsePrompt(
+	personaCtx *personadomain.PersonaContext,
+	evt *conversationdomain.ConversationEvent,
+	history []conversationdomain.ConversationEvent,
+	intent string,
+	memories []memorydomain.MemoryRecord,
+) string {
+	var sb strings.Builder
+
+	// 人格设定
+	sb.WriteString("# 角色设定\n")
+	sb.WriteString(fmt.Sprintf("你是 %s\n", c.persona.Name))
+	sb.WriteString(fmt.Sprintf("%s\n\n", c.persona.Description))
+
+	// 性格特点
+	if len(c.persona.Traits) > 0 {
+		sb.WriteString("## 性格特点\n")
+		for _, trait := range c.persona.Traits {
+			sb.WriteString(fmt.Sprintf("- %s\n", trait))
+		}
+		sb.WriteString("\n")
+	}
+
+	// 当前状态（使用 PersonaContext）
+	if personaCtx != nil {
+		sb.WriteString("# 当前状态\n")
+
+		// 群姿态
+		if personaCtx.Posture.ParticipationBias > 0.5 {
+			sb.WriteString("状态: 比较活跃，愿意参与\n")
+		} else if personaCtx.Posture.ParticipationBias < -0.3 {
+			sb.WriteString("状态: 比较被动，话不多\n")
+		}
+
+		// 即时状态：情绪和精力
+		mood := personaCtx.EphemeralState.Mood
+		energy := personaCtx.EphemeralState.Energy
+
+		// 情绪状态
+		switch mood {
+		case personadomain.MoodHappy:
+			sb.WriteString("心情: 比较愉快\n")
+		case personadomain.MoodWithdrawn:
+			sb.WriteString("心情: 有些低落\n")
+		case personadomain.MoodAggro:
+			sb.WriteString("心情: 有点烦躁\n")
+		}
+
+		// 精力状态
+		switch energy {
+		case personadomain.EnergyTired, personadomain.EnergyLow:
+			sb.WriteString("精力: 有点累，回复简洁一些\n")
+		case personadomain.EnergyHigh:
+			sb.WriteString("精力: 充沛，可以多聊聊\n")
+		}
+
+		// 熟悉度
+		if personaCtx.Posture.Familiarity > 0.7 {
+			sb.WriteString("与这个群: 很熟悉，可以放松\n")
+		} else if personaCtx.Posture.Familiarity < 0.3 {
+			sb.WriteString("与这个群: 还不太熟，稍微拘谨\n")
+		}
+
+		sb.WriteString("\n")
+	}
+
+	// 相关记忆
+	if len(memories) > 0 {
+		sb.WriteString("# 相关记忆\n")
+		for i, mem := range memories {
+			sb.WriteString(fmt.Sprintf("%d. %s\n", i+1, mem.Content))
+		}
+		sb.WriteString("\n")
+	}
+
+	// 对话历史
+	if len(history) > 0 {
+		sb.WriteString("# 最近对话\n")
+		// 简单判断：如果事件没有 UserID 或为 0，认为是机器人
+		botName := c.persona.Name
+		for _, h := range history {
+			if h.UserID == 0 {
+				// 机器人消息
+				sb.WriteString(fmt.Sprintf("%s: %s\n", botName, h.Text))
+			} else {
+				// 用户消息
+				sb.WriteString(fmt.Sprintf("用户: %s\n", h.Text))
+			}
+		}
+		sb.WriteString("\n")
+	}
+
+	// 当前消息
+	sb.WriteString("# 当前消息\n")
+	sb.WriteString(fmt.Sprintf("用户说: %s\n\n", evt.Text))
+
+	// 回复意图
+	sb.WriteString("# 回复意图\n")
+	sb.WriteString(fmt.Sprintf("%s\n\n", c.translateIntent(intent)))
+
+	// 生成指令
+	sb.WriteString("# 任务\n")
+	sb.WriteString("请根据以上信息，生成一句符合角色人格和当前状态的自然回复。\n")
+	sb.WriteString("要求：\n")
+	sb.WriteString("1. 保持角色的性格特点和说话习惯\n")
+	sb.WriteString("2. 考虑当前的心情和精力状态\n")
+	sb.WriteString("3. 回复要自然、简洁，不超过100字\n")
+	sb.WriteString("4. 只输出回复内容本身，不要包含任何解释或元信息\n")
+	sb.WriteString("5. 如果有相关记忆或对话历史，可以自然地体现出来\n\n")
+	sb.WriteString("回复：")
+
+	return sb.String()
+}
+
+// translateIntent 翻译意图为自然语言
+func (c *Composer) translateIntent(intent string) string {
+	switch intent {
+	case "direct_answer":
+		return "直接回答用户的问题"
+	case "continue_topic":
+		return "延续当前话题"
+	case "moderate":
+		return "缓和气氛"
+	case "inform":
+		return "告知信息"
+	case "casual_chat":
+		return "轻松闲聊"
+	default:
+		return intent
+	}
 }
