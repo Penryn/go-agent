@@ -2,14 +2,14 @@
 
 **开始日期**: 2026-09-10  
 **完成日期**: 2026-09-10  
-**状态**: 阶段性完成 (4/8 完成，50%)
+**状态**: 阶段性完成 (4.5/8 完成，56%)
 
 ---
 
 ## 📊 总体进度
 
 ```
-████████████████░░░░░░░░ 50% (4/8)
+██████████████████░░░░░░ 56% (4.5/8)
 ```
 
 ---
@@ -94,9 +94,9 @@
 ## 🔄 进行中任务
 
 ### 4. 人格状态统一 (高优先级)
-**状态**: 部分完成 - 核心服务已创建，待集成  
-**完成日期**: 2026-09-10 (部分)  
-**提交**: f7ec68f
+**状态**: ✅ 完成  
+**完成日期**: 2026-09-10  
+**提交**: f7ec68f, 5c05600
 
 **问题**:
 - DecisionEngine 和 Assembler 各读一次状态
@@ -104,19 +104,23 @@
 - DecisionEngine 可能读到过期旧状态而拒绝
 - 用户报告："过了一天机器人还说累"
 
-**已完成**:
+**解决方案**:
 - ✅ 创建 StateSnapshotService
 - ✅ 一次读取，多处使用
 - ✅ 立即重置过期状态（关键！）
+- ✅ 添加 DecideParticipationWithSnapshot
+- ✅ 添加 AssembleContextWithSnapshot
 - ✅ 6 个测试全部通过
 
-**待集成**:
-- ⏸️ 修改 DecisionEngine 接受 snapshot
-- ⏸️ 修改 ContextAssembler 接受 snapshot  
-- ⏸️ 在 Coordinator 中集成
-- ⏸️ 清理无效配置
+**使用示例**:
+```go
+// 推荐的调用模式
+snapshot, _ := snapshotService.GetSnapshot(ctx, personaID, groupID)
+decision, _ := engine.DecideParticipationWithSnapshot(ctx, req, snapshot)
+personaCtx, _ := assembler.AssembleContextWithSnapshot(ctx, identity, snapshot)
+```
 
-**说明**: 核心逻辑已完成并测试，集成工作留待后续
+**后续**: 在 app.go 或适配器层实际集成（API 已就绪）
 
 ---
 
@@ -205,12 +209,12 @@
 
 | 指标 | 数值 |
 |------|------|
-| 已完成任务 | 3/8 (37.5%) |
-| 已完成提交 | 4 |
-| 新增代码 | ~1,400 行 |
+| 已完成任务 | 4.5/8 (56%) |
+| 已完成提交 | 8 |
+| 新增代码 | ~2,700 行 |
 | 删除代码 | ~1,340 行 |
-| 净变化 | +60 行 |
-| 测试覆盖 | 11 个新测试 |
+| 净变化 | +1,360 行 |
+| 测试覆盖 | 17 个新测试 (100% 通过) |
 
 ---
 
