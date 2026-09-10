@@ -1,375 +1,308 @@
-# 社交决策引擎架构重构 - 工作总结
+# 记忆学习重构 - 实施总结
 
-## 项目概述
+## 已完成的核心组件
 
-本次重构实现了一个基于三层人格模型和五步决策流程的社交决策引擎，替代原有的简单 ThoughtCandidate 机制，使 AI 角色能够更智能、更拟人化地参与群聊。
+### 1. 数据库 Schema 设计 ✅
+**文件**: `schema/migrations/001_memory_refactor.sql`
 
-## 已完成工作（共 7 个 commits）
+核心改进：
+- **memories 表重构**：支持主体隔离（subject_kind/subject_id）、状态管理、时间契约
+- **memory_evidence 表**：独立的证据追踪，支持多证据来源
+- **memory_changes 表**：完整的变更历史记录
+- **learning_event_progress 表**：替代旧的 watermarks，支持可靠追赶
+- **索引优化**：主体查询、事实键唯一约束、参与者 GIN 索引
 
-### Commit 1: feat(social): 实现社交决策引擎和三层人格模型
-**核心内容**：
-- **Domain 层模型**
-  - 三层人格模型：PersonaConfig (身份层) + GroupPosture (群姿态层) + EphemeralState (即时状态层)
-  - 参与决策模型：ParticipationDecision, DecisionRequest
-  - 回复计划模型：ResponsePlan, ActionPlan, FeedbackWindow
-  
-- **Application 层服务**
-  - DecisionEngine：五步决策流程（硬规则/场景/关系/人格/模型）
-  - PersonaContextAssembler：组装三层人格上下文
-  
-- **基础设施**
-  - PostgreSQL Schema（posture/ephemeral_state/decisions/feedbacks 表）
-  - Repository 实现（PostureRepository, EphemeralStateRepository 等）
+### 2. Domain 层模型 ✅
+**文件**: `internal/domain/memory/types.go`, `interfaces.go`
 
-**代码量**：约 1500 行
-**测试覆盖**：完整
+定义了完整的类型系统：
+- `Memory`: 权威记忆模型（包含主体、内容、状态、时间、来源）
+- `Evidence`: 证据关联
+- `Change`: 变更记录
+- `MemoryCandidate`: 待校验的候选
+- `MemoryConstraint`: 行动约束
+- `MemoryContext`: 本轮上下文
+- `Store` 和 `Service` 接口定义
 
----
+### 3. Memory Service 实现 ✅
+**文件**: `internal/application/memory/service_new.go`
 
-### Commit 2: feat(reflection): 完善反馈分类器实现
-**核心内容**：
-- FeedbackClassifier：智能分类反馈（正面/负面/中性/无反馈）
-- 分类规则：
-  - 正面：赞同/感谢/继续互动
-  - 负面：质疑/纠正/无视
-  - 中性：承认但不评价
-  - 无反馈：未观察到相关互动
+核心功能：
+- **ApplyCandidates**: 校验并应用记忆候选
+  - `new`: 创建新记忆（含事实键冲突检查）
+  - `update`: 补充证据
+  - `correct`: 创建新版本并替代旧版本
+  - `revoke`: 明确遗忘
+- **GetConstraints**: 精确读取称呼和互动边界
+- **ForgetMemory**: 遗忘机制（标记 revoked + 提升 revision）
+- **GetMemoryWithEvidence**: 查询记忆及其证据
 
-**代码量**：约 200 行
-**测试覆盖**：6 个单元测试
+### 4. PostgreSQL Store 实现 ✅
+**文件**: `internal/adapters/storage/postgres/memory_store.go`
 
----
+数据访问层：
+- **事务性 Save**: 同时保存 memory + evidence + change
+- **查询方法**: 
+  - `ListBySubject`: 按主体查询
+  - `ListByFactKey`: 精确查询结构化事实
+  - `ListByParticipant`: 按参与者查询情景记忆
+- **证据和历史**: `GetEvidence`, `GetChanges`
+- **学习进度**: `MarkProgress`, `GetProgress`, `ListUnprocessedEvents`
+- **并发控制**: `LockFactKey`（使用 FOR UPDATE NOWAIT）
 
-### Commit 3: test(socialdecision): 添加决策引擎集成测试
-**核心内容**：
-- 5 个集成测试覆盖五步决策流程
-- Mock stores 验证各层决策逻辑
-- 测试场景：
-  - 直接 @ bot
-  - 连续发言冷却
-  - 场景分析
-  - 关系检查
-  - 人格状态影响
+## 架构亮点
 
-**代码量**：约 400 行测试代码
-**通过率**：100%
-
----
-
-### Commit 4: test(persona): 添加 PersonaContext 组装器测试并修复 bug
-**核心内容**：
-- 7 个单元测试覆盖所有组装场景
-- 修复的 bug：
-  - 空指针检查
-  - 默认值处理
-  - 过期状态清理
-
-**代码量**：约 300 行测试代码
-**通过率**：100%
-
----
-
-### Commit 5: docs: 添加社交决策引擎集成指南
-**核心内容**：
-- 详细的集成步骤文档
-- 代码示例和最佳实践
-- 四阶段迁移计划
-
-**文档页数**：约 15 页
-**完整性**：完善
-
----
-
-### Commit 6: feat(integration): 在 Dependencies 中注册社交决策服务
-**核心内容**：
-- 在 storeBundle 中添加新 Repository（posture/ephemeral/decisions/feedbacks）
-- 定义 ports 接口（PostureStore/EphemeralStateStore/DecisionStore/FeedbackStore）
-- 创建适配器桥接现有接口：
-  - sceneStoreAdapter: GroupSceneStore → socialdecision.SceneStore
-  - relationshipStoreAdapter: RelationshipStore → socialdecision.RelationshipStore
-  - factStoreAdapter: PersonaFactStore → persona.FactStore
-  - eventStoreAdapter: MemoryStore → reflection.EventStore
-- 在 app.go 中初始化所有服务
-
-**代码量**：约 300 行
-**编译状态**：✅ 成功
-
----
-
-### Commit 7: feat(planning): 实现 ResponsePlanner 和 ResponseExecutor
-**核心内容**：
-- **ResponsePlanner**
-  - 根据决策意图创建结构化回复计划
-  - 支持 4 种意图：respond/continue/moderate/inform
-  - 自动映射风险等级（low/medium/high）
-  
-- **ResponseExecutor**
-  - 执行回复计划
-  - 支持 3 种动作类型：speak/react/meme
-  - 适配 ActionExecution 和 ActionReceipt
-  - 正确构建消息段（Segments）
-
-**代码量**：约 545 行
-**测试覆盖**：4 个单元测试
-**通过率**：100%
-
----
-
-## 技术架构
-
-### 分层设计
-
-```
-┌─────────────────────────────────────────┐
-│         Application Layer               │
-│  ┌─────────────────────────────────┐   │
-│  │ DecisionEngine                  │   │
-│  │ PersonaContextAssembler         │   │
-│  │ ResponsePlanner                 │   │
-│  │ ResponseExecutor                │   │
-│  │ FeedbackCollector               │   │
-│  └─────────────────────────────────┘   │
-└─────────────────────────────────────────┘
-                 ↓ ↑
-┌─────────────────────────────────────────┐
-│          Domain Layer                   │
-│  ┌─────────────────────────────────┐   │
-│  │ PersonaContext                  │   │
-│  │ ParticipationDecision           │   │
-│  │ ResponsePlan                    │   │
-│  │ FeedbackWindow                  │   │
-│  └─────────────────────────────────┘   │
-└─────────────────────────────────────────┘
-                 ↓ ↑
-┌─────────────────────────────────────────┐
-│       Infrastructure Layer              │
-│  ┌─────────────────────────────────┐   │
-│  │ PostgreSQL Repositories         │   │
-│  │ - PostureRepository             │   │
-│  │ - EphemeralStateRepository      │   │
-│  │ - DecisionRepository            │   │
-│  │ - FeedbackRepository            │   │
-│  └─────────────────────────────────┘   │
-└─────────────────────────────────────────┘
+### 主体隔离
+```go
+// 不同用户的偏好不会混淆
+scope: "group_123456"
+subject_kind: "user"
+subject_id: "user_789"
 ```
 
-### 决策流程
-
-```
-用户消息
-   ↓
-[1. 硬规则检查]
-   ├─ 自己的消息？→ 跳过
-   ├─ 冷却中？→ 跳过
-   └─ 连续发言？→ 跳过
-   ↓
-[2. 场景分析]
-   ├─ 直接 @？→ 高优先级
-   ├─ 问题？→ 高优先级
-   └─ 快速对话？→ 参与
-   ↓
-[3. 关系检查]
-   ├─ 亲密度 > 0.7？→ 倾向参与
-   └─ 信任度 < 0.3？→ 谨慎
-   ↓
-[4. 人格状态]
-   ├─ 精力充沛？→ 积极
-   ├─ 社交耐心？→ 参与
-   └─ 情绪低落？→ 谨慎
-   ↓
-[5. 模型决策]
-   └─ 综合评分 → 最终决定
-   ↓
-ResponsePlanner
-   ↓
-ResponseExecutor
-   ↓
-FeedbackWindow
+### 证据追踪
+```go
+// 每条记忆都有可验证的证据
+memory_evidence:
+  - event_id: "msg_001"
+    source_role: "primary"
+  - event_id: "msg_002"
+    source_role: "context"
 ```
 
-## 数据库 Schema
+### 版本管理
+```go
+// 防止并发冲突
+memory.Revision++
+// 更正时创建新版本
+newMemory.SupersedesID = oldMemory.MemoryID
+oldMemory.Status = "superseded"
+```
 
-### 新增表
+### 事务一致性
+```go
+// 一次事务完成所有操作
+tx.Begin()
+  INSERT INTO memories ...
+  INSERT INTO memory_evidence ...
+  INSERT INTO memory_changes ...
+tx.Commit()
+```
 
-1. **persona_postures** - 群姿态（按群隔离的人格状态）
-2. **ephemeral_states** - 即时状态（短期情绪和精力）
-3. **participation_decisions** - 参与决策记录
-4. **action_feedbacks** - 反馈记录
-5. **feedback_windows** - 反馈观察窗口
+## 待完成的关键组件
 
-### 索引优化
+### 高优先级（阻塞首版）
 
-- 所有查询关键字段添加索引
-- 复合索引覆盖常见查询模式
-- 过期数据自动清理机制
+1. **学习服务改造** 🔴
+   - 窗口提炼逻辑（替代 n-gram）
+   - 结构化候选生成
+   - 批量任务处理
+   - Outbox 集成
 
-## 测试覆盖
+2. **检索服务适配** 🔴
+   - 适配新 Memory 结构
+   - 主体过滤支持
+   - 有效性检查（status + valid_until）
+   - Trace 扩展（included_ids + revisions）
 
-### 单元测试
+3. **Composer 集成** 🔴
+   - 读取约束并注入上下文
+   - 完整 PersonaContext 组装
+   - 发送前校验（版本 + 有效性）
 
-| 模块 | 测试数量 | 通过率 |
-|------|----------|--------|
-| DecisionEngine | 5 | 100% |
-| PersonaAssembler | 7 | 100% |
-| FeedbackClassifier | 6 | 100% |
-| ResponsePlanner | 4 | 100% |
-| **总计** | **22** | **100%** |
+4. **证据校验器** 🔴
+   - 验证 event_id 在 messages 表中存在
+   - 验证发言人和群归属
+   - 验证引用关系
 
-### 集成测试
+### 中优先级（完善功能）
 
-| 场景 | 状态 |
-|------|------|
-| 五步决策流程 | ✅ |
-| PersonaContext 组装 | ✅ |
-| 反馈分类 | ✅ |
-| 回复计划创建 | ✅ |
+5. **向量索引适配** 🟡
+   - 从 memories 表生成索引任务
+   - revision 检查
+   - 遗忘后清理
 
-## 性能指标
+6. **工具接口调整** 🟡
+   - 删除 `stage_memory_claim`
+   - 可选：添加 `query_memory` 工具
 
-| 操作 | 目标延迟 | 实际延迟 |
-|------|----------|----------|
-| 决策引擎 | < 50ms | 待测试 |
-| Context 组装 | < 20ms | 待测试 |
-| 反馈分类 | < 10ms | 待测试 |
-| 计划执行 | < 100ms | 待测试 |
+7. **Store 批量操作** 🟡
+   - `SaveBatch`: 支持 correct 操作的原子性
+   - 事务优化
 
-## 待完成工作
+### 低优先级（后续优化）
 
-### 第二阶段：Group Actor 改造（预计 2-3 小时）
+8. **测试覆盖** 🟢
+   - 单元测试（domain/application）
+   - 集成测试
+   - 回放测试
 
-**状态**：⏳ 待开始
+9. **数据迁移** 🟢
+   - 旧 memories 表备份
+   - 选择性迁移（如需要）
 
-**任务清单**：
-- [ ] 在 actor 结构中添加新依赖
-- [ ] 修改 observe 方法调用决策引擎
-- [ ] 实现 decideAndRespond 方法
-- [ ] 实现辅助方法（getSecondsSinceLastBot 等）
-- [ ] 实现反馈窗口启动和收集
-- [ ] 在 app.go 中传入依赖
-- [ ] 编写单元测试
-- [ ] 编写集成测试
+10. **旧代码清理** 🟢
+    - 删除 memory_claims 相关
+    - 删除 learning_candidates 相关
+    - 删除旧学习逻辑
 
-**详细指南**：见 `docs/GROUP_ACTOR_REFACTOR.md`
+## 如何继续实施
 
-### 第三阶段：反馈闭环（预计 1-2 小时）
+### 立即可做（不依赖其他组件）
 
-**状态**：⏳ 待开始
+1. **执行 Schema 迁移**
+```bash
+# 备份现有数据
+pg_dump -t memories -t learning_candidates > backup.sql
 
-**任务清单**：
-- [ ] 实现根据反馈更新人格状态
-- [ ] 实现精力和社交耐心的动态调整
-- [ ] 实现情绪状态转换
-- [ ] 添加监控和日志
-- [ ] 性能测试和优化
+# 执行迁移
+psql -d qqbot < schema/migrations/001_memory_refactor.sql
+```
 
-### 第四阶段：清理旧代码（预计 1 小时）
+2. **单元测试**
+```bash
+# 测试 domain 层
+go test ./internal/domain/memory/...
 
-**状态**：⏳ 待开始
+# 测试 service 层
+go test ./internal/application/memory/...
+```
 
-**任务清单**：
-- [ ] 移除 ThoughtCandidate 逻辑
-- [ ] 移除候选队列相关代码
-- [ ] 简化 GroupWorkingMemory 结构
-- [ ] 更新文档
-- [ ] 迁移历史数据（如需要）
+3. **Store 集成测试**
+```bash
+# 需要 PostgreSQL 运行
+go test ./internal/adapters/storage/postgres/... -tags=integration
+```
 
-## 代码统计
+### 按顺序实施（有依赖）
 
-### 新增代码
+**阶段 1: 学习服务** （1-2天）
+- 实现窗口提炼逻辑
+- 集成 MemoryService.ApplyCandidates
+- Outbox 任务投递
 
-| 类型 | 行数 |
-|------|------|
-| Domain 模型 | ~800 |
-| Application 服务 | ~1200 |
-| Repository 实现 | ~600 |
-| 适配器 | ~300 |
-| Planning 服务 | ~545 |
-| 测试代码 | ~900 |
-| **总计** | **~4345** |
+**阶段 2: 检索适配** （1天）
+- 修改检索查询以支持新结构
+- 添加主体过滤
+- Trace 字段扩展
 
-### 新增文件
+**阶段 3: 上下文集成** （1-2天）
+- Composer 读取约束
+- 完整上下文组装
+- 发送前校验
 
-| 类型 | 数量 |
-|------|------|
-| Domain 模型 | 4 |
-| Application 服务 | 6 |
-| Repository | 4 |
-| 测试文件 | 7 |
-| 文档 | 4 |
-| **总计** | **25** |
+**阶段 4: 测试验证** （2-3天）
+- 回放脱敏数据
+- 验收测试用例
+- 性能测试
 
-## 质量保障
+**阶段 5: 清理上线** （1天）
+- 删除旧代码
+- 更新配置
+- 部署
 
-### 代码审查检查点
+## 设计决策记录
 
-- [x] 命名规范（符合 Go 风格）
-- [x] 错误处理（所有错误都正确传播）
-- [x] 并发安全（使用 mutex 保护共享状态）
-- [x] 接口设计（符合依赖倒置原则）
-- [x] 测试覆盖（所有公共方法有测试）
-- [x] 文档完整（所有公共 API 有注释）
+### 为什么不使用独立的 Claim 表？
+- 简化生命周期：候选直接变为 active 或 pending
+- 减少状态同步：不需要 ClaimID → MemoryID 映射
+- 性能优化：减少表连接
 
-### 架构审查检查点
+### 为什么 revision 检查很重要？
+- 防止并发覆盖（A 和 B 同时更新同一记忆）
+- 遗忘后防止旧任务恢复内容
+- 发送前检查记忆是否仍然有效
 
-- [x] 分层清晰（Domain/Application/Infrastructure）
-- [x] 依赖方向正确（向内依赖）
-- [x] 接口隔离（每个接口职责单一）
-- [x] 可测试性（所有依赖可 Mock）
-- [x] 可扩展性（新增决策规则易于添加）
+### 为什么分离 evidence 表？
+- 避免 JSONB 数组膨胀
+- 支持高效的证据去重
+- 方便按事件查询相关记忆
 
-## 部署建议
+### 为什么需要 changes 表？
+- 审计：谁在何时为何修改
+- 调试：追溯记忆演变过程
+- 更正：展示被更正的内容
 
-### 灰度发布策略
+## 验收标准（阶段 A）
 
-1. **阶段 1**：并行运行（保留旧逻辑）
-   - 新决策引擎输出到日志，不实际执行
-   - 对比新旧决策结果
-   - 收集性能数据
+根据设计文档第 10 节，首版需要通过：
 
-2. **阶段 2**：部分流量切换
-   - 10% 流量使用新引擎
-   - 监控错误率和响应延迟
-   - 调整决策参数
+✅ **已实现的基础**
+- [x] 主体隔离（不同用户不共用记忆）
+- [x] 证据追踪（所有记忆有证据）
+- [x] 版本管理（revision + supersedes）
+- [x] 事务一致性（atomic save）
+- [x] 遗忘机制（revoke + revision++)
 
-3. **阶段 3**：完全切换
-   - 100% 流量使用新引擎
-   - 移除旧代码
-   - 优化性能
+⏳ **待验证的行为**
+- [ ] 本人偏好能被正确记住和使用
+- [ ] 沉默期间也能学习
+- [ ] 更正和遗忘及时生效
+- [ ] 称呼和边界在发送前检查
+- [ ] 重复证据不累计
+- [ ] Bot 参与身份需要成功发送支持
 
-### 监控指标
+## 风险与缓解
 
-| 指标 | 告警阈值 |
-|------|----------|
-| 决策引擎错误率 | > 1% |
-| 决策延迟 P99 | > 100ms |
-| 回复执行成功率 | < 99% |
-| 反馈收集成功率 | < 95% |
+### 风险 1: 批量操作事务性不足
+**问题**: 当前 Store.Save 只能处理单个记忆，`correct` 操作需要原子更新两条记忆
+**缓解**: 
+- 短期：先更新旧记忆，再创建新记忆（两次调用）
+- 长期：实现 `SaveBatch` 方法
 
-## 参考文档
+### 风险 2: 证据校验未实现
+**问题**: 目前不验证 event_id 是否真实存在
+**缓解**:
+- 在 Service 层添加证据验证器
+- 查询 messages 表确认事件存在
 
-1. [ARCHITECTURE_REFACTOR.md](./ARCHITECTURE_REFACTOR.md) - 架构设计文档
-2. [MEMORY_LEARNING_REFACTOR.md](./MEMORY_LEARNING_REFACTOR.md) - 记忆学习改进
-3. [INTEGRATION_GUIDE.md](./INTEGRATION_GUIDE.md) - 集成指南
-4. [GROUP_ACTOR_REFACTOR.md](./GROUP_ACTOR_REFACTOR.md) - Group Actor 改造指南
+### 风险 3: 向量索引未适配
+**问题**: 遗忘后向量索引不会自动清理
+**缓解**:
+- Outbox 任务投递清理任务
+- revision 检查避免陈旧索引
 
-## 贡献者
+## 参考资源
 
-- Claude Fable 5 (AI Assistant)
-- 人类开发者
+- **设计文档**: `docs/MEMORY_LEARNING_REFACTOR.md`
+- **实施状态**: `docs/IMPLEMENTATION_STATUS.md`
+- **Schema**: `schema/migrations/001_memory_refactor.sql`
+- **Domain**: `internal/domain/memory/`
+- **Service**: `internal/application/memory/service_new.go`
+- **Store**: `internal/adapters/storage/postgres/memory_store.go`
 
-## 版本历史
+## 下一步行动
 
-| 版本 | 日期 | 说明 |
-|------|------|------|
-| v0.1 | 2026-09-08 | 初始架构设计 |
-| v0.7 | 2026-09-08 | 完成 70% 核心功能（7 个 commits） |
-| v1.0 | 待定 | 完整功能发布（预计完成所有改造） |
+**推荐优先级**：
+
+1. ⚡ **执行 Schema 迁移**（15分钟）
+   - 备份 + 执行 SQL
+   - 验证表结构
+
+2. ⚡ **实现学习服务窗口提炼**（4-8小时）
+   - 这是激活整个系统的关键
+   - 阻塞其他功能测试
+
+3. ⚡ **适配检索服务**（2-4小时）
+   - Composer 依赖检索
+   - 相对独立，可并行
+
+4. ⚡ **集成到 Composer**（2-4小时）
+   - 完整上下文组装
+   - 发送前约束检查
+
+5. ⚡ **端到端测试**（4-8小时）
+   - 回放测试用例
+   - 验证完整流程
+
+**预计总时间**: 2-3天全职开发
 
 ---
 
-**当前完成度**：70%  
-**下一里程碑**：Group Actor 改造  
-**预计发布时间**：完成 Group Actor 后进入测试阶段
+**实施者注意**：这是一个**不兼容的破坏性重构**。上线时需要：
+1. 停止旧 learning worker
+2. 清空或转换旧数据
+3. 启动新系统
+4. 不支持运行时回退
 
-文档生成时间：2026-09-08  
-最后更新：2026-09-08
+请在测试环境充分验证后再部署生产环境。
