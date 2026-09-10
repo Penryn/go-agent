@@ -14,4 +14,9 @@ web/node_modules/
 web/*.tsbuildinfo
 # Vue 管理后台构建产物；由 make web 生成，编译时 go:embed，不要提交。
 internal/app/adminui/dist/
+
+# Vue 源码中的编译产物（不应提交）
+web/src/**/*.js
+web/src/**/*.jsx
+!web/src/**/*.config.js
 space
