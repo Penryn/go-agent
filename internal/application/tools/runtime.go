@@ -421,20 +421,7 @@ func ParseTerminalPlan(decisionID string, toolName string, raw string, session r
 
 type speakTextTool struct{}
 
-type speakTextArgs struct {
-	Text             string                             `json:"text"`
-	Bubbles          []string                           `json:"bubbles"`
-	ReplyToMessageID string                             `json:"reply_to_message_id"`
-	SelfFacts        []replydomain.PersonaFactCandidate `json:"self_facts"`
-}
 
-type speakTextResult struct {
-	Tool             string                             `json:"tool"`
-	Text             string                             `json:"text"`
-	Bubbles          []string                           `json:"bubbles"`
-	ReplyToMessageID string                             `json:"reply_to_message_id"`
-	SelfFacts        []replydomain.PersonaFactCandidate `json:"self_facts"`
-}
 
 func newSpeakTextTool() *speakTextTool { return &speakTextTool{} }
 
@@ -478,10 +465,6 @@ func (t *speakTextTool) InvokableRun(_ context.Context, argumentsInJSON string, 
 
 type staySilentTool struct{}
 
-type staySilentArgs struct {
-	ReasonCode string `json:"reason_code"`
-	TTLMS      int    `json:"ttl_ms"`
-}
 
 func newStaySilentTool() *staySilentTool { return &staySilentTool{} }
 
@@ -513,17 +496,7 @@ func (t *staySilentTool) InvokableRun(_ context.Context, argumentsInJSON string,
 
 type reactEmojiTool struct{}
 
-type reactEmojiArgs struct {
-	EmojiID    string `json:"emoji_id"`
-	MessageID  string `json:"message_id"`
-	ReasonCode string `json:"reason_code"`
-}
 
-type reactEmojiResult struct {
-	Tool      string `json:"tool"`
-	EmojiID   string `json:"emoji_id"`
-	MessageID string `json:"message_id"`
-}
 
 func newReactEmojiTool() *reactEmojiTool { return &reactEmojiTool{} }
 func (t *reactEmojiTool) Name() string   { return "react_emoji" }
@@ -555,12 +528,6 @@ type queryMemoryTool struct {
 	session   replydomain.ToolContext
 }
 
-type queryMemoryArgs struct {
-	Query       string   `json:"query"`
-	Scope       string   `json:"scope"`
-	TopK        int      `json:"top_k"`
-	MemoryTypes []string `json:"memory_types"`
-}
 
 func newQueryMemoryTool(retriever *retrievalsvc.Service, session replydomain.ToolContext) *queryMemoryTool {
 	return &queryMemoryTool{retriever: retriever, session: session}
@@ -613,13 +580,6 @@ type searchMemeTool struct {
 	session replydomain.ToolContext
 }
 
-type searchMemeArgs struct {
-	Query         string `json:"query"`
-	Emotion       string `json:"emotion"`
-	Scene         string `json:"scene"`
-	TopK          int    `json:"top_k"`
-	ExcludeRecent bool   `json:"exclude_recent"`
-}
 
 func newSearchMemeTool(svc *memesvc.Service, session replydomain.ToolContext) *searchMemeTool {
 	return &searchMemeTool{memeSvc: svc, session: session}
@@ -671,18 +631,7 @@ type sendMemeTool struct {
 	store ports.MemeStore
 }
 
-type sendMemeArgs struct {
-	MemeID           string `json:"meme_id"`
-	ReplyToMessageID string `json:"reply_to_message_id"`
-	Caption          string `json:"caption"`
-}
 
-type sendMemeResult struct {
-	Tool             string `json:"tool"`
-	MemeID           string `json:"meme_id"`
-	ReplyToMessageID string `json:"reply_to_message_id"`
-	Caption          string `json:"caption"`
-}
 
 func newSendMemeTool(store ports.MemeStore) *sendMemeTool { return &sendMemeTool{store: store} }
 func (t *sendMemeTool) Name() string                      { return "send_meme" }
@@ -715,19 +664,6 @@ func (t *sendMemeTool) InvokableRun(ctx context.Context, argumentsInJSON string,
 }
 
 type quoteReplyTool struct{}
-type quoteReplyArgs struct {
-	ReplyToMessageID string                             `json:"reply_to_message_id"`
-	Text             string                             `json:"text"`
-	Bubbles          []string                           `json:"bubbles"`
-	SelfFacts        []replydomain.PersonaFactCandidate `json:"self_facts"`
-}
-type quoteReplyResult struct {
-	Tool             string                             `json:"tool"`
-	ReplyToMessageID string                             `json:"reply_to_message_id"`
-	Text             string                             `json:"text"`
-	Bubbles          []string                           `json:"bubbles"`
-	SelfFacts        []replydomain.PersonaFactCandidate `json:"self_facts"`
-}
 
 func newQuoteReplyTool() *quoteReplyTool { return &quoteReplyTool{} }
 func (t *quoteReplyTool) Name() string   { return "quote_reply" }
@@ -772,10 +708,6 @@ type queryMemberProfileTool struct {
 	session replydomain.ToolContext
 }
 
-type queryMemberProfileArgs struct {
-	UserID int64    `json:"user_id"`
-	Fields []string `json:"fields"`
-}
 
 func newQueryMemberProfileTool(store ports.ProfileStore, session replydomain.ToolContext) *queryMemberProfileTool {
 	return &queryMemberProfileTool{store: store, session: session}
@@ -808,18 +740,6 @@ func (t *queryMemberProfileTool) InvokableRun(ctx context.Context, argumentsInJS
 
 type repairMessageTool struct {
 	session replydomain.ToolContext
-}
-type repairMessageArgs struct {
-	MessageID        string `json:"message_id"`
-	CorrectedText    string `json:"corrected_text"`
-	ReplyToMessageID string `json:"reply_to_message_id"`
-	ReasonCode       string `json:"reason_code"`
-}
-type repairMessageResult struct {
-	Tool             string `json:"tool"`
-	MessageID        string `json:"message_id"`
-	CorrectedText    string `json:"corrected_text"`
-	ReplyToMessageID string `json:"reply_to_message_id"`
 }
 
 func newRepairMessageTool(session replydomain.ToolContext) *repairMessageTool {
@@ -855,14 +775,6 @@ func (t *repairMessageTool) InvokableRun(_ context.Context, argumentsInJSON stri
 }
 
 type pokeMemberTool struct{}
-type pokeMemberArgs struct {
-	UserID     int64  `json:"user_id"`
-	ReasonCode string `json:"reason_code"`
-}
-type pokeMemberResult struct {
-	Tool   string `json:"tool"`
-	UserID int64  `json:"user_id"`
-}
 
 func newPokeMemberTool() *pokeMemberTool { return &pokeMemberTool{} }
 func (t *pokeMemberTool) Name() string   { return "poke_member" }
@@ -923,14 +835,6 @@ type updatePersonaFactTool struct {
 	admins     []int64
 }
 
-type updatePersonaFactArgs struct {
-	Key             string  `json:"key"`
-	Value           string  `json:"value"`
-	SourceKind      string  `json:"source_kind"`
-	EvidenceEventID string  `json:"evidence_event_id"`
-	Confidence      float64 `json:"confidence"`
-	TTLHours        int     `json:"ttl_hours"`
-}
 
 func newUpdatePersonaFactTool(store ports.PersonaFactStore, session replydomain.ToolContext, definition personadomain.PersonaDefinition, admins []int64) *updatePersonaFactTool {
 	return &updatePersonaFactTool{store: store, session: session, definition: definition, admins: append([]int64(nil), admins...)}
