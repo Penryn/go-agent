@@ -270,109 +270,11 @@ func (r *Runtime) profileTools(session replydomain.ToolContext) []namedTool {
 
 // namedTool 定义已移至 types.go
 
-type speakTextTool struct{}
 
 
 
-func newSpeakTextTool() *speakTextTool { return &speakTextTool{} }
-
-func (t *speakTextTool) Name() string { return "speak_text" }
-
-func (t *speakTextTool) Info(_ context.Context) (*schema.ToolInfo, error) {
-	return &schema.ToolInfo{
-		Name: t.Name(),
-		Desc: "Send a natural conversational reply in the current group. Use bubbles only when a genuine pause or change of thought makes separate messages feel natural.",
-		ParamsOneOf: schema.NewParamsOneOfByParams(map[string]*schema.ParameterInfo{
-			"text":                {Type: schema.String, Required: true, Desc: "Primary reply text."},
-			"bubbles":             {Type: schema.Array, Desc: "Optional separate message bubbles when the reply naturally pauses or changes thought."},
-			"reply_to_message_id": {Type: schema.String, Desc: "Optional message ID to quote-reply."},
-			"self_facts":          selfFactsParameter(),
-		}),
-	}, nil
-}
-
-func (t *speakTextTool) InvokableRun(_ context.Context, argumentsInJSON string, _ ...tool.Option) (string, error) {
-	var args speakTextArgs
-	if err := json.Unmarshal([]byte(argumentsInJSON), &args); err != nil {
-		return "", fmt.Errorf("decode speak_text args: %w", err)
-	}
-	if strings.TrimSpace(args.Text) == "" && len(args.Bubbles) == 0 {
-		return "", errors.New("text or bubbles is required")
-	}
-	preview := args.Text
-	if len(preview) > 80 {
-		preview = preview[:80] + "..."
-	}
-	slog.Debug("tool: speak_text", "bubbles", len(args.Bubbles), "reply_to", args.ReplyToMessageID, "text", preview)
-	result := speakTextResult{
-		Tool:             "speak_text",
-		Text:             strings.TrimSpace(args.Text),
-		Bubbles:          compactStrings(args.Bubbles, 2),
-		ReplyToMessageID: args.ReplyToMessageID,
-		SelfFacts:        append([]replydomain.PersonaFactCandidate(nil), args.SelfFacts...),
-	}
-	return marshal(result)
-}
-
-type staySilentTool struct{}
 
 
-func newStaySilentTool() *staySilentTool { return &staySilentTool{} }
-
-func (t *staySilentTool) Name() string { return "stay_silent" }
-
-func (t *staySilentTool) Info(_ context.Context) (*schema.ToolInfo, error) {
-	return &schema.ToolInfo{
-		Name: t.Name(),
-		Desc: "Choose silence as the final action when replying would be socially unnatural or risky. Do NOT use this merely because the topic is unfamiliar — search first, then decide.",
-		ParamsOneOf: schema.NewParamsOneOfByParams(map[string]*schema.ParameterInfo{
-			"reason_code": {Type: schema.String, Required: true, Desc: "Short reason code for staying silent."},
-			"ttl_ms":      {Type: schema.Integer, Desc: "Optional suppression ttl in milliseconds."},
-		}),
-	}, nil
-}
-
-func (t *staySilentTool) InvokableRun(_ context.Context, argumentsInJSON string, _ ...tool.Option) (string, error) {
-	var args staySilentArgs
-	if err := json.Unmarshal([]byte(argumentsInJSON), &args); err != nil {
-		return "", fmt.Errorf("decode stay_silent args: %w", err)
-	}
-	slog.Debug("tool: stay_silent", "reason", args.ReasonCode, "ttl_ms", args.TTLMS)
-	return marshal(map[string]any{
-		"tool":        "stay_silent",
-		"reason_code": strings.TrimSpace(args.ReasonCode),
-		"ttl_ms":      args.TTLMS,
-	})
-}
-
-type reactEmojiTool struct{}
-
-
-
-func newReactEmojiTool() *reactEmojiTool { return &reactEmojiTool{} }
-func (t *reactEmojiTool) Name() string   { return "react_emoji" }
-func (t *reactEmojiTool) Info(_ context.Context) (*schema.ToolInfo, error) {
-	return &schema.ToolInfo{
-		Name: t.Name(),
-		Desc: "对某条消息点一个表情回应就结束本轮（不说话）。适合「看了但不必回复」的场景：接梗点赞、认可对方说法、图片好看。常用 emoji_id：76（赞）4468（笑哭）78089（敬礼）28487（doge）。msg_id 不填则默认回应触发本轮的那条消息。",
-		ParamsOneOf: schema.NewParamsOneOfByParams(map[string]*schema.ParameterInfo{
-			"emoji_id":    {Type: schema.String, Required: true, Desc: "QQ 表情回应 ID，如 76=赞。"},
-			"message_id":  {Type: schema.String, Desc: "要回应的消息 msg_id，缺省回应当前触发消息。"},
-			"reason_code": {Type: schema.String, Desc: "Short reason code."},
-		}),
-	}, nil
-}
-
-func (t *reactEmojiTool) InvokableRun(_ context.Context, argumentsInJSON string, _ ...tool.Option) (string, error) {
-	var args reactEmojiArgs
-	if err := json.Unmarshal([]byte(argumentsInJSON), &args); err != nil {
-		return "", fmt.Errorf("decode react_emoji args: %w", err)
-	}
-	if strings.TrimSpace(args.EmojiID) == "" {
-		args.EmojiID = "76"
-	}
-	return marshal(reactEmojiResult{Tool: t.Name(), EmojiID: args.EmojiID, MessageID: args.MessageID})
-}
 
 type queryMemoryTool struct {
 	retriever *retrievalsvc.Service
@@ -514,29 +416,6 @@ func (t *sendMemeTool) InvokableRun(ctx context.Context, argumentsInJSON string,
 	return marshal(sendMemeResult{Tool: t.Name(), MemeID: args.MemeID, ReplyToMessageID: args.ReplyToMessageID, Caption: args.Caption})
 }
 
-type quoteReplyTool struct{}
-
-func newQuoteReplyTool() *quoteReplyTool { return &quoteReplyTool{} }
-func (t *quoteReplyTool) Name() string   { return "quote_reply" }
-func (t *quoteReplyTool) Info(_ context.Context) (*schema.ToolInfo, error) {
-	return &schema.ToolInfo{
-		Name: t.Name(),
-		Desc: "Send a text reply while quoting a specific message.",
-		ParamsOneOf: schema.NewParamsOneOfByParams(map[string]*schema.ParameterInfo{
-			"reply_to_message_id": {Type: schema.String, Desc: "Message ID to quote; if omitted the reply is sent without quoting."},
-			"text":                {Type: schema.String, Required: true, Desc: "Reply text."},
-			"bubbles":             {Type: schema.Array, Desc: "Optional split bubbles."},
-			"self_facts":          selfFactsParameter(),
-		}),
-	}, nil
-}
-func (t *quoteReplyTool) InvokableRun(_ context.Context, argumentsInJSON string, _ ...tool.Option) (string, error) {
-	var args quoteReplyArgs
-	if err := json.Unmarshal([]byte(argumentsInJSON), &args); err != nil {
-		return "", err
-	}
-	return marshal(quoteReplyResult{Tool: t.Name(), ReplyToMessageID: args.ReplyToMessageID, Text: strings.TrimSpace(args.Text), Bubbles: compactStrings(args.Bubbles, 2), SelfFacts: append([]replydomain.PersonaFactCandidate(nil), args.SelfFacts...)})
-}
 
 func selfFactsParameter() *schema.ParameterInfo {
 	return &schema.ParameterInfo{
@@ -625,49 +504,7 @@ func (t *repairMessageTool) InvokableRun(_ context.Context, argumentsInJSON stri
 	})
 }
 
-type pokeMemberTool struct{}
 
-func newPokeMemberTool() *pokeMemberTool { return &pokeMemberTool{} }
-func (t *pokeMemberTool) Name() string   { return "poke_member" }
-func (t *pokeMemberTool) Info(_ context.Context) (*schema.ToolInfo, error) {
-	return &schema.ToolInfo{
-		Name: t.Name(),
-		Desc: "Poke a group member when the platform policy allows it.",
-		ParamsOneOf: schema.NewParamsOneOfByParams(map[string]*schema.ParameterInfo{
-			"user_id":     {Type: schema.Integer, Required: true, Desc: "Target member user ID."},
-			"reason_code": {Type: schema.String, Desc: "Optional reason."},
-		}),
-	}, nil
-}
-func (t *pokeMemberTool) InvokableRun(_ context.Context, argumentsInJSON string, _ ...tool.Option) (string, error) {
-	var args pokeMemberArgs
-	if err := json.Unmarshal([]byte(argumentsInJSON), &args); err != nil {
-		return "", err
-	}
-	return marshal(pokeMemberResult{Tool: t.Name(), UserID: args.UserID})
-}
-
-func marshal(value any) (string, error) {
-	data, err := json.Marshal(value)
-	if err != nil {
-		return "", err
-	}
-	return string(data), nil
-}
-
-func compactStrings(values []string, max int) []string {
-	result := make([]string, 0, len(values))
-	for _, value := range values {
-		value = strings.TrimSpace(value)
-		if value != "" {
-			result = append(result, value)
-		}
-		if max > 0 && len(result) == max {
-			break
-		}
-	}
-	return result
-}
 
 func clamp(value, minValue, maxValue int) int {
 	return min(max(value, minValue), maxValue)
