@@ -131,34 +131,8 @@ func (r *Runtime) availableTools(session replydomain.ToolContext) []registeredTo
 	return all
 }
 
-type gatedTool struct {
-	tool tool.InvokableTool
-}
-
-func gateTool(candidate tool.BaseTool, allowed bool) tool.BaseTool {
-	if allowed {
-		return candidate
-	}
-	invokable, ok := candidate.(tool.InvokableTool)
-	if !ok {
-		return candidate
-	}
-	return &gatedTool{tool: invokable}
-}
-
-func (t *gatedTool) Info(ctx context.Context) (*schema.ToolInfo, error) { return t.tool.Info(ctx) }
-
-func (t *gatedTool) InvokableRun(_ context.Context, _ string, _ ...tool.Option) (string, error) {
-	return "", fmt.Errorf("tool %q is not allowed in this group", t.toolName())
-}
-
-func (t *gatedTool) toolName() string {
-	info, err := t.tool.Info(context.Background())
-	if err == nil && info != nil {
-		return info.Name
-	}
-	return "unknown"
-}
+// 类型定义已移至 types.go
+// 辅助函数已移至 helpers.go
 
 func (r *Runtime) Tools(session replydomain.ToolContext) []tool.BaseTool {
 	available := r.availableTools(session)
@@ -180,26 +154,6 @@ func (r *Runtime) TerminalTools(session replydomain.ToolContext) map[string]bool
 		}
 	}
 	return result
-}
-
-func internalToolAllowed(allowlist []string, name string) bool {
-	return len(allowlist) == 0 || slices.Contains(allowlist, name)
-}
-
-type registeredTool struct {
-	name     string
-	tool     tool.BaseTool
-	external bool
-	// terminal 工具终结 agent 循环,产出本轮对外的 ReplyPlan。
-	terminal bool
-}
-
-func isTerminalTool(name string) bool {
-	switch name {
-	case "speak_text", "stay_silent", "react_emoji", "send_meme", "quote_reply", "repair_message", "poke_member":
-		return true
-	}
-	return false
 }
 
 // RegisterTools adds tools discovered at startup (for example MCP and Codex)
@@ -463,10 +417,7 @@ func ParseTerminalPlan(decisionID string, toolName string, raw string, session r
 	}
 }
 
-type namedTool interface {
-	tool.InvokableTool
-	Name() string
-}
+// namedTool 定义已移至 types.go
 
 type speakTextTool struct{}
 
