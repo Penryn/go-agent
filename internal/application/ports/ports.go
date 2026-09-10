@@ -15,6 +15,10 @@ import (
 	scenedomain "github.com/phlin/go-agent/internal/domain/scene"
 )
 
+// ========================================
+// 消息和通信接口
+// ========================================
+
 type OutboundSender interface {
 	Send(ctx context.Context, action replydomain.ActionExecution) (replydomain.ActionReceipt, error)
 }
@@ -24,6 +28,10 @@ type OutboundSender interface {
 type ReadAckingSender interface {
 	MarkRead(ctx context.Context, groupID int64, messageID string) error
 }
+
+// ========================================
+// 查询结构和跟踪接口
+// ========================================
 
 type MemoryQuery struct {
 	GroupID int64
@@ -86,6 +94,10 @@ type MemoryClaimStore interface {
 	UpsertMemoryClaim(context.Context, memorydomain.MemoryClaim) error
 	ListMemoryClaims(context.Context, string, int) ([]memorydomain.MemoryClaim, error)
 }
+
+// ========================================
+// 存储接口 - 社交关系和场景
+// ========================================
 
 type RelationshipStore interface {
 	GetSocialRelationship(context.Context, string, int64, int64) (relationshipdomain.State, error)
@@ -263,3 +275,28 @@ type FeedbackStore interface {
 	SaveFeedbackWindow(ctx context.Context, window interface{}) error
 }
 
+
+// ========================================
+// 组合接口 - 简化依赖注入
+// ========================================
+
+// MemoryRepository 组合所有内存相关存储接口
+type MemoryRepository interface {
+	MemoryStore
+	MemoryRecallStore
+	AtomicMemoryProjectionStore
+	MemoryClaimStore
+}
+
+// PersonaRepository 组合人格相关存储接口
+type PersonaRepository interface {
+	PersonaFactStore
+	PersonaFactReservationStore
+	ProfileStore
+}
+
+// SocialRepository 组合社交相关存储接口
+type SocialRepository interface {
+	RelationshipStore
+	GroupSceneStore
+}
