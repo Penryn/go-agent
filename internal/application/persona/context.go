@@ -100,6 +100,38 @@ func (a *ContextAssembler) UpdateEphemeralState(
 	return a.ephemeralStore.UpdateEphemeralState(ctx, state)
 }
 
+// AssembleContextWithSnapshot 使用状态快照组装人格上下文
+// 这是推荐的调用方式，避免重复读取状态
+func (a *ContextAssembler) AssembleContextWithSnapshot(
+	ctx context.Context,
+	identity personadomain.PersonaConfig,
+	snapshot *PersonaStateSnapshot,
+) (*personadomain.PersonaContext, error) {
+	personaID := identity.ID
+
+	// 从快照中获取状态（已经是新鲜的）
+	posture := snapshot.Posture
+	ephemeral := snapshot.EphemeralState
+
+	// 获取当前生效的 canonical facts
+	facts, err := a.factStore.GetCanonicalFacts(ctx, personaID)
+	if err != nil {
+		return nil, err
+	}
+
+	canonicalFacts := make(map[string]string)
+	for _, fact := range facts {
+		canonicalFacts[fact.Key] = fact.Value
+	}
+
+	return &personadomain.PersonaContext{
+		Identity:       identity,
+		Posture:        posture,
+		EphemeralState: ephemeral,
+		CanonicalFacts: canonicalFacts,
+	}, nil
+}
+
 // PostureStore 群姿态存储接口
 type PostureStore interface {
 	GetGroupPosture(ctx context.Context, personaID string, groupID int64) (*personadomain.GroupPosture, error)

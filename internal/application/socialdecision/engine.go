@@ -5,6 +5,7 @@ import (
 	"context"
 	"time"
 
+	personaapp "github.com/phlin/go-agent/internal/application/persona"
 	personadomain "github.com/phlin/go-agent/internal/domain/persona"
 	presencedomain "github.com/phlin/go-agent/internal/domain/presence"
 	relationshipdomain "github.com/phlin/go-agent/internal/domain/relationship"
@@ -368,4 +369,80 @@ func randomString(n int) string {
 		b[i] = letters[time.Now().UnixNano()%int64(len(letters))]
 	}
 	return string(b)
+}
+
+// DecideParticipationWithSnapshot 使用状态快照做出参与决策
+// 这是推荐的调用方式，避免重复读取状态
+func (e *DecisionEngine) DecideParticipationWithSnapshot(
+	ctx context.Context,
+	req DecisionRequest,
+	snapshot *personaapp.PersonaStateSnapshot,
+) (*presencedomain.ParticipationDecision, error) {
+	now := time.Now()
+
+	decision := &presencedomain.ParticipationDecision{
+		DecisionID:     generateDecisionID(),
+		GroupID:        req.GroupID,
+		TriggerEventID: req.TriggerEventID,
+		DecidedAt:      now,
+		Participate:    false,
+		RuleHits:       []string{},
+		ExpiresAt:      now.Add(time.Duration(e.config.EventExpirySeconds) * time.Second),
+	}
+
+	// 步骤 1: 硬规则过滤
+	if blocked, reason := e.checkHardRules(ctx, req); blocked {
+		decision.ReasonCode = reason
+		decision.RuleHits = append(decision.RuleHits, reason)
+		return decision, nil
+	}
+
+	// 步骤 2: 场景判断
+	scene, err := e.sceneStore.GetGroupScene(ctx, req.GroupID)
+	if err != nil {
+		return nil, err
+	}
+	decision.SceneSnapshot = scene
+
+	if blocked, reason := e.checkSceneContext(scene, req); blocked {
+		decision.ReasonCode = reason
+		decision.RuleHits = append(decision.RuleHits, reason)
+		return decision, nil
+	}
+
+	// 步骤 3: 关系判断
+	relationship, err := e.relationshipStore.GetRelationship(ctx, req.PersonaID, req.GroupID, req.TargetUserID)
+	if err != nil {
+		return nil, err
+	}
+	decision.RelationshipSnapshot = relationship
+
+	if blocked, reason := e.checkRelationship(relationship); blocked {
+		decision.ReasonCode = reason
+		decision.RuleHits = append(decision.RuleHits, reason)
+		return decision, nil
+	}
+
+	// 步骤 4: 人格状态判断 - 使用快照（关键改进！）
+	postureCopy := snapshot.Posture
+	ephemeralCopy := snapshot.EphemeralState
+	posture := &postureCopy
+	ephemeral := &ephemeralCopy
+
+	if blocked, reason := e.checkPersonaState(posture, ephemeral); blocked {
+		decision.ReasonCode = reason
+		decision.RuleHits = append(decision.RuleHits, reason)
+		return decision, nil
+	}
+
+	// 步骤 5: 模型判断
+	decision.Participate = true
+	decision.ReasonCode = e.inferReasonCode(req, scene, relationship)
+	decision.Intent = e.inferIntent(req, scene, relationship)
+	decision.Audience = e.inferAudience(req, relationship)
+	decision.SocialValue = e.estimateSocialValue(scene, relationship, posture)
+	decision.InterruptionRisk = e.estimateInterruptionRisk(scene)
+	decision.ConfidenceScore = 0.8
+
+	return decision, nil
 }
