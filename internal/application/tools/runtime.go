@@ -276,57 +276,10 @@ func (r *Runtime) profileTools(session replydomain.ToolContext) []namedTool {
 
 
 
-type queryMemoryTool struct {
-	retriever *retrievalsvc.Service
-	session   replydomain.ToolContext
-}
 
 
-func newQueryMemoryTool(retriever *retrievalsvc.Service, session replydomain.ToolContext) *queryMemoryTool {
-	return &queryMemoryTool{retriever: retriever, session: session}
-}
 
-func (t *queryMemoryTool) Name() string { return "query_memory" }
 
-func (t *queryMemoryTool) Info(_ context.Context) (*schema.ToolInfo, error) {
-	return &schema.ToolInfo{
-		Name: t.Name(),
-		Desc: "Retrieve relevant approved long-term memories for the current group conversation.",
-		ParamsOneOf: schema.NewParamsOneOfByParams(map[string]*schema.ParameterInfo{
-			"query":        {Type: schema.String, Required: true, Desc: "Memory lookup query."},
-			"scope":        {Type: schema.String, Desc: "Optional memory scope."},
-			"top_k":        {Type: schema.Integer, Desc: "Maximum number of records."},
-			"memory_types": {Type: schema.Array, Desc: "Optional memory type filters."},
-		}),
-	}, nil
-}
-
-func (t *queryMemoryTool) InvokableRun(ctx context.Context, argumentsInJSON string, _ ...tool.Option) (string, error) {
-	var args queryMemoryArgs
-	if err := json.Unmarshal([]byte(argumentsInJSON), &args); err != nil {
-		return "", fmt.Errorf("decode query_memory args: %w", err)
-	}
-	slog.Debug("tool: query_memory", "query", args.Query, "scope", args.Scope, "top_k", args.TopK)
-	query := ports.MemoryQuery{
-		GroupID: t.session.GroupID,
-		UserID:  t.session.UserID,
-		Query:   args.Query,
-		TopK:    clamp(args.TopK, 1, 5),
-		Scope:   args.Scope,
-		Types:   args.MemoryTypes,
-		TraceID: t.session.TraceID,
-		EventID: t.session.TriggerEventID,
-	}
-	if t.retriever == nil {
-		return "", errors.New("query_memory: retriever is not configured")
-	}
-	records, err := t.retriever.SearchMemories(ctx, query)
-	if err != nil {
-		return "", err
-	}
-	slog.Debug("tool: query_memory result", "count", len(records))
-	return marshal(map[string]any{"records": records})
-}
 
 type searchMemeTool struct {
 	memeSvc *memesvc.Service
@@ -433,40 +386,8 @@ func selfFactsParameter() *schema.ParameterInfo {
 	}
 }
 
-type queryMemberProfileTool struct {
-	store   ports.ProfileStore
-	session replydomain.ToolContext
-}
 
 
-func newQueryMemberProfileTool(store ports.ProfileStore, session replydomain.ToolContext) *queryMemberProfileTool {
-	return &queryMemberProfileTool{store: store, session: session}
-}
-func (t *queryMemberProfileTool) Name() string { return "query_member_profile" }
-func (t *queryMemberProfileTool) Info(_ context.Context) (*schema.ToolInfo, error) {
-	return &schema.ToolInfo{
-		Name: t.Name(),
-		Desc: "Read the current group member profile and relationship state.",
-		ParamsOneOf: schema.NewParamsOneOfByParams(map[string]*schema.ParameterInfo{
-			"user_id": {Type: schema.Integer, Required: true, Desc: "Target member user ID."},
-			"fields":  {Type: schema.Array, Desc: "Optional requested fields."},
-		}),
-	}, nil
-}
-func (t *queryMemberProfileTool) InvokableRun(ctx context.Context, argumentsInJSON string, _ ...tool.Option) (string, error) {
-	if t.store == nil {
-		return marshal(map[string]any{"profile": nil})
-	}
-	var args queryMemberProfileArgs
-	if err := json.Unmarshal([]byte(argumentsInJSON), &args); err != nil {
-		return "", err
-	}
-	profile, err := t.store.GetMemberProfile(ctx, t.session.GroupID, args.UserID)
-	if err != nil {
-		return "", err
-	}
-	return marshal(map[string]any{"profile": profile})
-}
 
 type repairMessageTool struct {
 	session replydomain.ToolContext
@@ -506,9 +427,6 @@ func (t *repairMessageTool) InvokableRun(_ context.Context, argumentsInJSON stri
 
 
 
-func clamp(value, minValue, maxValue int) int {
-	return min(max(value, minValue), maxValue)
-}
 
 func clampF(v, lo, hi float64) float64 {
 	return min(max(v, lo), hi)
