@@ -1,4 +1,4 @@
-package postgres
+package postgresstore
 
 import (
 	"context"
@@ -72,14 +72,14 @@ func (r *memoryRow) toMemory() (*memorydomain.Memory, error) {
 		NormalizedValue:  r.NormalizedValue,
 		Qualifier:        r.Qualifier,
 		ParticipantIDs:   participantIDs,
-		BotRole:          memory.BotRole(r.BotRole),
+		BotRole:          memorydomain.BotRole(r.BotRole),
 		AnchorEventID:    r.AnchorEventID,
 		Status:           memorydomain.MemoryStatus(r.Status),
 		Revision:         r.Revision,
 		SupersedesID:     r.SupersedesID,
 		FirstObservedAt:  r.FirstObservedAt,
 		LastObservedAt:   r.LastObservedAt,
-		SourceKind:       memory.SourceKind(r.SourceKind),
+		SourceKind:       memorydomain.SourceKind(r.SourceKind),
 		ExtractorVersion: r.ExtractorVersion,
 		CreatedAt:        r.CreatedAt,
 		UpdatedAt:        r.UpdatedAt,

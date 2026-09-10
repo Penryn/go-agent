@@ -2,21 +2,27 @@ package learning
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"time"
 
-	"github.com/phlin/go-agent/internal/application/memory"
 	"github.com/phlin/go-agent/internal/application/ports"
 	"github.com/phlin/go-agent/internal/domain/conversation"
 	memorydomain "github.com/phlin/go-agent/internal/domain/memory"
 )
 
+// LLMProvider LLM 调用接口
+type LLMProvider interface {
+	Generate(ctx context.Context, prompt string) (string, error)
+}
+
 // NewService 创建新的学习服务（窗口提炼）
 type NewService struct {
 	store         ports.MemoryStore
-	memoryService memory.Service
+	memoryService memorydomain.Service
 	outbox        ports.TaskSubmitter
-	llm           ports.LLMProvider // 用于提炼
+	llm           LLMProvider
+	promptBuilder *ExtractionPromptBuilder
 
 	// 窗口配置
 	maxWindowSize      int           // 最多 60 条消息
@@ -36,9 +42,9 @@ type NewServiceConfig struct {
 // NewLearningService 创建学习服务实例
 func NewLearningService(
 	store ports.MemoryStore,
-	memService memory.Service,
+	memService memorydomain.Service,
 	outbox ports.TaskSubmitter,
-	llm ports.LLMProvider,
+	llm LLMProvider,
 	config NewServiceConfig,
 ) *NewService {
 	if config.MaxWindowSize == 0 {
@@ -59,6 +65,7 @@ func NewLearningService(
 		memoryService:      memService,
 		outbox:             outbox,
 		llm:                llm,
+		promptBuilder:      NewExtractionPromptBuilder(config.ExtractorVersion),
 		maxWindowSize:      config.MaxWindowSize,
 		maxWindowDuration:  config.MaxWindowDuration,
 		idleWindowDuration: config.IdleWindowDuration,
@@ -87,6 +94,11 @@ func (s *NewService) ProcessBatch(ctx context.Context, groupID int64, eventIDs [
 		return fmt.Errorf("failed to load events: %w", err)
 	}
 
+	if len(events) == 0 {
+		// 标记为已处理但无内容
+		return s.markEventsProcessed(ctx, groupID, eventIDs, "skipped", "no_events", 0)
+	}
+
 	// 2. 构建窗口
 	window := s.buildWindow(groupID, events)
 
@@ -97,53 +109,55 @@ func (s *NewService) ProcessBatch(ctx context.Context, groupID int64, eventIDs [
 	}
 
 	// 4. 应用候选
-	results, err := s.memoryService.ApplyCandidates(ctx, candidates)
-	if err != nil {
-		return fmt.Errorf("failed to apply candidates: %w", err)
-	}
-
-	// 5. 记录处理进度
 	successCount := 0
-	for _, r := range results {
-		if r.Success {
-			successCount++
+	if len(candidates) > 0 {
+		results, err := s.memoryService.ApplyCandidates(ctx, candidates)
+		if err != nil {
+			return fmt.Errorf("failed to apply candidates: %w", err)
+		}
+
+		for _, r := range results {
+			if r.Success {
+				successCount++
+			}
 		}
 	}
 
-	// 6. 标记每个事件为已处理
+	// 5. 标记每个事件为已处理
+	return s.markEventsProcessed(ctx, groupID, eventIDs, "completed", "", successCount)
+}
+
+// markEventsProcessed 标记事件为已处理
+func (s *NewService) markEventsProcessed(ctx context.Context, groupID int64, eventIDs []string, outcome, skipReason string, memoryCount int) error {
+	memStore, ok := s.store.(memorydomain.Store)
+	if !ok {
+		return fmt.Errorf("store does not support memory interface")
+	}
+
 	for _, eventID := range eventIDs {
 		progress := &memorydomain.LearningEventProgress{
 			EventID:          eventID,
 			ExtractorVersion: s.extractorVersion,
 			GroupID:          groupID,
 			ProcessedAt:      time.Now(),
-			Outcome:          "completed",
-			MemoryCount:      successCount,
+			Outcome:          outcome,
+			SkipReason:       skipReason,
+			MemoryCount:      memoryCount,
 			CreatedAt:        time.Now(),
 		}
 
-		// 使用 memory store 标记进度
-		if memStore, ok := s.store.(memorydomain.Store); ok {
-			if err := memStore.MarkProgress(ctx, progress); err != nil {
-				return fmt.Errorf("failed to mark progress: %w", err)
-			}
+		if err := memStore.MarkProgress(ctx, progress); err != nil {
+			return fmt.Errorf("failed to mark progress for %s: %w", eventID, err)
 		}
 	}
-
-	// 7. 投递向量索引任务（TODO）
-	// for _, r := range results {
-	//     if r.Success {
-	//         s.submitVectorIndexTask(ctx, r.MemoryID)
-	//     }
-	// }
 
 	return nil
 }
 
 // loadEvents 从数据库加载事件
 func (s *NewService) loadEvents(ctx context.Context, eventIDs []string) ([]conversation.ConversationEvent, error) {
-	// TODO: 实现从 messages 表加载
-	// 暂时返回空切片
+	// TODO: 实际实现需要从 messages 表加载
+	// 当前返回空切片
 	return []conversation.ConversationEvent{}, nil
 }
 
@@ -167,32 +181,22 @@ func (s *NewService) extractFromWindow(ctx context.Context, window *Window) ([]*
 		return nil, nil
 	}
 
-	// TODO: 实现 LLM 提炼逻辑
-	// 当前返回空列表
-	candidates := []*memorydomain.MemoryCandidate{}
+	// 1. 构建提炼 Prompt
+	prompt := s.promptBuilder.BuildPrompt(window)
 
-	// 示例：提炼用户偏好
-	// prompt := s.buildExtractionPrompt(window)
-	// response := s.llm.Generate(ctx, prompt)
-	// candidates = s.parseExtractionResponse(response)
+	// 2. 调用 LLM
+	response, err := s.llm.Generate(ctx, prompt)
+	if err != nil {
+		return nil, fmt.Errorf("LLM generation failed: %w", err)
+	}
+
+	// 3. 解析响应
+	candidates, err := s.promptBuilder.ParseExtractionResponse(response, window)
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse extraction response: %w", err)
+	}
 
 	return candidates, nil
-}
-
-// buildExtractionPrompt 构建提炼 Prompt（TODO）
-func (s *NewService) buildExtractionPrompt(window *Window) string {
-	// TODO: 实现完整的 Prompt 构建
-	return `分析以下对话，提取值得长期记住的信息：
-- 用户的偏好和习惯
-- 明确的互动边界（称呼、是否允许 @/戳）
-- 有意义的共同经历
-- 群文化和梗的来源
-
-不要为刷屏、热词或每条消息生成记忆。
-
-对话内容：
-...
-`
 }
 
 // ScanAndSchedule 扫描未处理事件并投递任务
@@ -223,9 +227,14 @@ func (s *NewService) ScanAndSchedule(ctx context.Context, groupID int64) error {
 		"version":   s.extractorVersion,
 	}
 
+	payloadBytes, err := json.Marshal(taskPayload)
+	if err != nil {
+		return fmt.Errorf("failed to marshal task payload: %w", err)
+	}
+
 	idempotencyKey := fmt.Sprintf("learning-batch-%d-%s", groupID, eventIDs[0])
 
-	if err := s.outbox.Enqueue(ctx, "learning_extract", idempotencyKey, taskPayload); err != nil {
+	if err := s.outbox.Enqueue(ctx, "learning_extract", idempotencyKey, payloadBytes); err != nil {
 		return fmt.Errorf("failed to enqueue task: %w", err)
 	}
 
@@ -241,3 +250,4 @@ func (s *NewService) ListUnprocessedEvents(ctx context.Context, groupID int64, l
 
 	return memStore.ListUnprocessedEvents(ctx, groupID, s.extractorVersion, limit)
 }
+
