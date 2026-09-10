@@ -26,11 +26,12 @@ type MemoryRetriever interface {
 }
 
 type Composer struct {
-	persona         personadomain.PersonaConfig
-	recentMaxChar   int
-	memoryMaxChar   int
-	llm             LLMCaller
-	memoryRetriever MemoryRetriever
+	persona              personadomain.PersonaConfig
+	recentMaxChar        int
+	memoryMaxChar        int
+	llm                  LLMCaller
+	memoryRetriever      MemoryRetriever
+	constraintIntegration *MemoryConstraintIntegration
 }
 
 func NewComposer(persona personadomain.PersonaConfig) *Composer {
@@ -46,6 +47,12 @@ func (c *Composer) WithLLM(llm LLMCaller) *Composer {
 // WithMemoryRetriever 设置记忆检索器
 func (c *Composer) WithMemoryRetriever(retriever MemoryRetriever) *Composer {
 	c.memoryRetriever = retriever
+	return c
+}
+
+// WithConstraintIntegration 设置约束集成
+func (c *Composer) WithConstraintIntegration(integration *MemoryConstraintIntegration) *Composer {
+	c.constraintIntegration = integration
 	return c
 }
 
@@ -207,6 +214,22 @@ func (c *Composer) DynamicInstruction(snapshot conversationdomain.ContextSnapsho
 				reported = append(reported, fmt.Sprintf("%s=%q（来源=%s）", fact.Key, fact.Value, fact.SourceKind))
 			}
 			sections = append(sections, "近期听说但未核实: "+strings.Join(reported, "；")+"。")
+		}
+	}
+
+	// 注入记忆约束
+	if c.constraintIntegration != nil && snapshot.Event.GroupID != 0 {
+		// 提取所有相关用户 ID
+		targetUserIDs := []int64{snapshot.Event.UserID}
+		// TODO: 可以从上下文中提取更多潜在目标用户
+
+		constraintSection, err := c.constraintIntegration.BuildConstraintSection(
+			context.Background(), // TODO: 传递正确的 context
+			snapshot.Event.GroupID,
+			targetUserIDs,
+		)
+		if err == nil && constraintSection != "" {
+			sections = append(sections, constraintSection)
 		}
 	}
 
