@@ -130,10 +130,13 @@ func New(ctx context.Context, cfg config.Config) (*App, error) {
 	sceneService := scenesvc.New(stores.scenes)
 	eventLog := presenceingress.NewMemoryEventLog()
 
-	// 社交决策服务（需要在 presenceManager 之前创建）
+	// 创建统一的 store 适配器
+	storeAdapters := NewStoreAdapters(stores.scenes, stores.relationships, stores.personaFacts, stores.memory)
+
+	// 社交决策服务（使用统一适配器）
 	decisionEngine := socialdecisionsvc.NewDecisionEngine(
-		&sceneStoreAdapter{stores.scenes},
-		&relationshipStoreAdapter{stores.relationships},
+		storeAdapters,
+		storeAdapters,
 		stores.posture,
 		stores.ephemeral,
 		socialdecisionsvc.DefaultDecisionConfig(),
@@ -142,13 +145,12 @@ func New(ctx context.Context, cfg config.Config) (*App, error) {
 	personaAssembler := personasvc.NewContextAssembler(
 		stores.posture,
 		stores.ephemeral,
-		&factStoreAdapter{stores.personaFacts},
+		storeAdapters,
 	)
 
-	eventStoreAdapted := &eventStoreAdapter{stores.memory}
 	feedbackCollector := reflectionsvc.NewFeedbackCollector(
-		eventStoreAdapted,
-		reflectionsvc.NewFeedbackClassifier(eventStoreAdapted),
+		storeAdapters,
+		reflectionsvc.NewFeedbackClassifier(storeAdapters),
 	)
 
 	// 创建反馈窗口管理器
