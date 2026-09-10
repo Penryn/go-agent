@@ -1,4 +1,10 @@
 // Package reflection 实现发送后的反馈收集、分类和状态更新。
+//
+// Deprecated: 该包中的 FeedbackCollector 和 FeedbackClassifierImpl 已废弃。
+// 使用 internal/application/presence/feedback/llm_sentiment.go 中的
+// LLMSentimentAnalyzer 代替，它提供更准确的反馈分析。
+//
+// 计划移除时间: v0.4.0
 package reflection
 
 import (
