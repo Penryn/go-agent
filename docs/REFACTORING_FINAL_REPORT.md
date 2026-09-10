@@ -69,11 +69,16 @@
 - 可能影响工具调用逻辑，需要充分测试
 
 #### 任务6: Postgres Store 继续拆分
-**原因**: 已部分完成，优先级降低  
+**原因**: 已基本完成，达到"足够好"状态  
 **状态**: 
-- store.go: 1012 行, 22 个方法
-- 已独立: memory_store.go, social_repository.go 等 15 个文件
-**建议**: 当前结构已较好，不急于进一步拆分
+- store.go: 1012 行（从原始 3000+ 行减少 66%）
+- 已独立拆分: 13 个领域文件（memory_store.go, persona_repository.go, social_repository.go 等）
+- 已覆盖领域: 记忆、人格、社交、运行时、检索、向量、迁移
+**评估**: ✅ 实际上已完成
+- 当前结构清晰，各领域职责分明
+- store.go 的 1012 行在可接受范围内
+- 进一步拆分边际收益递减
+**详情**: 见 `docs/TASK_6_POSTGRES_STORE_STATUS.md`
 
 #### 任务7: Prompting Composer 职责分离
 **原因**: 低优先级，时间不足  
