@@ -48,6 +48,7 @@ import (
 	socialdecisionsvc "github.com/phlin/go-agent/internal/application/socialdecision"
 	"github.com/phlin/go-agent/internal/application/textutil"
 	toolsvc "github.com/phlin/go-agent/internal/application/tools"
+	"github.com/phlin/go-agent/internal/app/admin"
 	"github.com/phlin/go-agent/internal/config"
 	conversationdomain "github.com/phlin/go-agent/internal/domain/conversation"
 	memorydomain "github.com/phlin/go-agent/internal/domain/memory"
@@ -129,10 +130,13 @@ func New(ctx context.Context, cfg config.Config) (*App, error) {
 	sceneService := scenesvc.New(stores.scenes)
 	eventLog := presenceingress.NewMemoryEventLog()
 
-	// 社交决策服务（需要在 presenceManager 之前创建）
+	// 创建统一的 store 适配器
+	storeAdapters := NewStoreAdapters(stores.scenes, stores.relationships, stores.personaFacts, stores.memory)
+
+	// 社交决策服务（使用统一适配器）
 	decisionEngine := socialdecisionsvc.NewDecisionEngine(
-		&sceneStoreAdapter{stores.scenes},
-		&relationshipStoreAdapter{stores.relationships},
+		storeAdapters,
+		storeAdapters,
 		stores.posture,
 		stores.ephemeral,
 		socialdecisionsvc.DefaultDecisionConfig(),
@@ -141,13 +145,12 @@ func New(ctx context.Context, cfg config.Config) (*App, error) {
 	personaAssembler := personasvc.NewContextAssembler(
 		stores.posture,
 		stores.ephemeral,
-		&factStoreAdapter{stores.personaFacts},
+		storeAdapters,
 	)
 
-	eventStoreAdapted := &eventStoreAdapter{stores.memory}
 	feedbackCollector := reflectionsvc.NewFeedbackCollector(
-		eventStoreAdapted,
-		reflectionsvc.NewFeedbackClassifier(eventStoreAdapted),
+		storeAdapters,
+		reflectionsvc.NewFeedbackClassifier(storeAdapters),
 	)
 
 	// 创建反馈窗口管理器
@@ -414,8 +417,8 @@ func New(ctx context.Context, cfg config.Config) (*App, error) {
 	mux.HandleFunc("/healthz", app.handleHealth)
 	mainModelReady := strings.TrimSpace(cfg.Models.Main.APIKey) != "" && strings.TrimSpace(cfg.Models.Main.Model) != ""
 	vectorSearchReady := vectorGraph.memory != nil
-	health := newCapabilityHealth(mainModelReady, vectorSearchReady)
-	adminHandler := newAdminHandler(stores.db, stores.state, stores.personaFacts, personaDefinition, cfg, app.qqConnected, mcpManager, mainModelReady, vectorSearchReady, health)
+	health := admin.NewCapabilityHealth(mainModelReady, vectorSearchReady)
+	adminHandler := admin.NewHandler(stores.db, stores.state, stores.personaFacts, personaDefinition, cfg, app.qqConnected, mcpManager, mainModelReady, vectorSearchReady, health, adminAssets)
 	probeInterval := textutil.ParseDurationOr(cfg.Models.HealthProbeInterval, 0)
 	if probeInterval > 0 && (mainModelReady || vectorSearchReady) {
 		sched.Register("provider-health-probe", probeInterval, func(jobCtx context.Context) error {
