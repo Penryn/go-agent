@@ -68,7 +68,7 @@ func (p *AgentPlanner) Plan(ctx context.Context, snapshot conversationdomain.Con
 		AllowedTools:         snapshot.GroupPolicy.ToolAllowlist,
 		RetrievedMemories:    snapshot.RelevantMemories,
 		MediaDescriptors:     snapshot.MediaDescriptors,
-		Budget:               map[string]int{"stage_memory_claim": 0, "record_relationship_signal": 0, "update_persona_fact": 0},
+		Budget:               map[string]int{"remember_memory": 0, "record_relationship_signal": 0, "update_persona_fact": 0},
 		TriggerType:          decision.TriggerType,
 		RecallableMessageIDs: recallableMessageIDs(snapshot),
 		Intent: replydomain.ReplyIntent{

@@ -10,7 +10,7 @@
 | --- | --- | --- |
 | 群场景投影 | [已完成] | `GroupScene` 持久化到 `group_scenes`，入站和成功出站事件都会更新场景。 |
 | 关系事件与投影 | [已完成] | `relationship_events` 是证据来源，`relationships` 是事务内更新的当前投影。 |
-| 记忆声明 | [已完成] | `MemoryClaim` 暂存到 `memory_claims`；工具只接受当前上下文中的证据事件。 |
+| 用户记忆 | [已完成] | `remember_memory` 将用户明确要求保存的信息直接写入 `memories`；来源事件由运行时绑定。 |
 | 社交上下文 | [已完成] | `ContextSnapshot` 和 Prompt 已消费关系投影与群场景。 |
 | 角色三层模型 | [部分完成] | 稳定身份和 Persona Canon 已有；群姿态、按群即时状态和 `PersonaContext` 尚未拆出。 |
 | 社交决策引擎 | [已完成] | `DecisionEngine` 基于社交上下文评估是否响应；候选系统已移除。 |
@@ -24,10 +24,10 @@
 
 | 状态 | 已修改位置 | 已落地内容 |
 | --- | --- | --- |
-| [已完成] | `schema/schema.sql`、`internal/adapters/storage/postgres/social_repository.go` | 新增 `group_scenes`、`relationship_events`、`relationships`、`memory_claims` 的持久化与读取。 |
+| [已完成] | `schema/schema.sql`、`internal/adapters/storage/postgres/social_repository.go` | 新增 `group_scenes`、`relationship_events`、`relationships` 的持久化与读取。 |
 | [已完成] | `internal/application/scene` | 增加 `GroupScene` 投影；入站事件和成功出站事件都会推进群场景。 |
 | [已完成] | `internal/application/relationship` | 以关系事件作为证据，在同一 PostgreSQL 事务内更新关系投影，并处理幂等和事务锁。 |
-| [已完成] | `internal/application/memory`、`internal/application/tools` | 增加带证据的 `stage_memory_claim`；增加 `record_relationship_signal`；删除旧的直接记忆意图、好感度和成员画像写入工具。 |
+| [已完成] | `internal/application/memory`、`internal/application/tools` | 增加 `remember_memory` 直写权威记忆；增加 `record_relationship_signal`；删除旧的 claim 暂存链路。 |
 | [已完成] | `internal/application/context`、`internal/application/prompting` | `ContextSnapshot` 和 Prompt 已消费群场景、关系投影及 `trust`/`friction` 等社交上下文。 |
 | [部分完成] | `internal/app/admin.go`、`web/src/views/RelationsView.vue` | 关系后台已切换到 `trust`、`friction` 等新投影字段；关系事件和投影原因页面尚未完成。 |
 | [已验证] | Go 与前端构建链路 | `go test ./...`、`go vet ./...`、`git diff --check`、`npm run build` 已通过。 |
@@ -94,7 +94,7 @@ internal/domain/
   conversation/   不可变消息事实
   scene/           群场景和话题状态
   relationship/    关系事件和关系投影
-  memory/          记忆声明、确认和检索对象
+  memory/          权威记忆写入和检索对象
   persona/         稳定人格、群姿态和即时状态
   presence/        参与候选和社交决策
   action/          回复动作和发送结果
@@ -106,7 +106,7 @@ internal/application/
   socialdecision/  是否参与、目标和社交目的
   response/        回复内容和动作规划
   reflection/      反馈收集、状态更新
-  memory/          记忆声明审核和检索
+  memory/          明确记忆写入和检索
   relationship/    关系事件写入和投影
   persona/         人格装配和状态转换
   projection/      Outbox projector runtime
@@ -118,7 +118,7 @@ internal/adapters/
   model/            模型供应商
 ```
 
-`scene`、`relationship`、`memory claim` 已按此边界落地；现有 `tools` 仍是过渡层，模型提交的记忆声明和关系信号已由应用层校验，完整的结构化决策将在 `ResponsePlan` 阶段替换终结工具编排。
+`scene`、`relationship` 和 `memory` 已按此边界落地；现有 `tools` 仍是过渡层，明确记忆请求和关系信号已由应用层校验，完整的结构化决策将在 `ResponsePlan` 阶段替换终结工具编排。
 
 ## 4. 运行时链路 [部分完成]
 
@@ -342,36 +342,36 @@ social        群文化、关系模式和互动边界
 persona       Bot 自己的连续性事实
 ```
 
-### 8.1 记忆声明
+### 8.1 用户明确记忆
 
-模型产生 `MemoryClaim`：
+用户明确要求保存信息时，模型调用 `remember_memory`：
 
 ```text
-claim_id
-scope
 type
-subject
 content
-evidence_event_ids
-confidence
-suggested_ttl
-source
 ```
 
-声明已进入 `memory_claims`，当前默认以 `staged` 暂存；自动确认、冲突合并和人工审核仍待实现。
+服务端根据当前群、当前用户和触发事件补齐：
 
 ```text
-confirmed / staged / rejected / expired / superseded
+memory_id
+scope = group:<group_id>:user:<user_id>
+subject = <user_id>
+source_event_id = 当前触发事件
+origin = user_explicit
+confidence = 1
+importance = 1
 ```
+
+信息直接进入 `memories`，并通过已有 outbox 同步向量索引；稳定哈希保证重复请求幂等。
 
 低风险且重复出现的群文化可以自动确认；涉及个人身份、隐私、敏感属性的内容必须提高阈值或只保留短期观察。
 
 ### 8.2 记忆写入规则
 
-- 没有证据事件，不进入长期记忆。
-- 单次模型推断默认只进入 `staged`。
-- 同一事实重复出现时合并证据，而不是追加重复记录。
-- 事实冲突时产生新版本并保留旧版本。
+- 没有当前触发事件，不写入记忆。
+- 普通聊天中的新信息不主动保存，只有明确记忆请求才调用工具。
+- 同一用户重复请求相同内容时幂等覆盖，不生成重复记忆。
 - 所有记忆都有 scope、confidence 和有效期。
 - 向量索引和 BM25 只是 projection，不是事实来源。
 
@@ -401,7 +401,7 @@ action_sent
   -> classify feedback
   -> append relationship events
   -> update group scene
-  -> stage memory claims
+  -> update authoritative memories when explicitly requested
 ```
 
 反馈信号包括：
@@ -433,7 +433,6 @@ group_persona_states
 member_profiles
 relationship_events
 relationships
-memory_claims
 memories
 memory_vectors
 actions
@@ -449,7 +448,7 @@ model_usage_records
 ```text
 runtime_states             拆为 group_scenes 和 group_persona_states
 group_working_memory       只保留为 Actor projection
-learning_candidates        合并进 memory_claims
+learning_candidates        仅作为后台提炼候选
 thought_records            改为 decision_records
 ```
 
@@ -458,7 +457,7 @@ thought_records            改为 decision_records
 ```text
 conversation_events
 relationship_events
-memory_claims
+memories
 persona_fact_events
 action_feedback
         |
@@ -471,8 +470,8 @@ action_feedback
 
 允许破坏旧接口时，按以下顺序重写：
 
-1. [部分完成] 重写 domain 类型：`scene`、`relationship`、`memory claim` 已完成，`persona context`、`feedback` 待完成。
-2. [已完成] 重写 schema 和 PostgreSQL repository：新增群场景、关系事件和记忆声明表，旧关系状态接口已删除。
+1. [部分完成] 重写 domain 类型：`scene`、`relationship`、`memory` 已完成，`persona context`、`feedback` 待完成。
+2. [已完成] 重写 schema 和 PostgreSQL repository：新增群场景、关系事件，记忆直接使用权威 `memories` 表。
 3. [部分完成] 重写 `Group Actor`，当前仍保留候选调度和话题状态。
 4. [未开始] 重写 `socialdecision`，移出 Runtime 中的主动开口和回复判断。
 5. [未开始] 重写 `response`，让模型输出结构化 `ResponsePlan`。

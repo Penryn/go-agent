@@ -165,7 +165,7 @@ PostgreSQL 同时承担权威事实、运行状态、异步任务和观测数据
 | 长期知识 | `memories`、`meme_assets`、descriptor 表 | 记忆和表情包权威数据 |
 | 群状态 | `group_working_memory`、`runtime_states` | 工作记忆、冷却、情绪等运行状态 |
 | 用户关系 | `member_profiles`、`relationship_events`、`relationships` | 群友画像、关系证据和当前投影 |
-| 记忆声明 | `memory_claims` | 带证据的候选记忆，确认后才进入长期记忆 |
+| 用户记忆 | `memories` | 用户明确要求保存的信息，带来源事件并直接进入权威记忆 |
 | 人格一致性 | `persona_fact_events`、reservations | 追加式人物事实和并发预留 |
 | 异步任务 | `async_outbox` | 可重放的慢任务 |
 | AI 观测 | `thought_records`、`retrieval_traces`、`model_usage_records` | 决策、检索和模型成本追踪 |

@@ -30,7 +30,7 @@ type Runtime struct {
 	memeStore         ports.MemeStore
 	profileStore      ports.ProfileStore
 	personaFacts      ports.PersonaFactStore
-	claims            *memsvc.ClaimService
+	memory            *memsvc.Service
 	relationships     *relationshipsvc.Service
 	personaID         string
 	personaDefinition personadomain.PersonaDefinition
@@ -73,8 +73,8 @@ func WithPersonaFactStore(store ports.PersonaFactStore) Option {
 	return func(rt *Runtime) { rt.personaFacts = store }
 }
 
-func WithMemoryClaimService(service *memsvc.ClaimService) Option {
-	return func(rt *Runtime) { rt.claims = service }
+func WithMemoryService(service *memsvc.Service) Option {
+	return func(rt *Runtime) { rt.memory = service }
 }
 
 func WithRelationshipService(service *relationshipsvc.Service) Option {
@@ -261,31 +261,18 @@ func (r *Runtime) knowledgeTools(session replydomain.ToolContext) []namedTool {
 func (r *Runtime) profileTools(session replydomain.ToolContext) []namedTool {
 	return []namedTool{
 		newQueryMemberProfileTool(r.profileStore, session),
-		newStageMemoryClaimTool(r.claims, session),
+		newRememberMemoryTool(r.memory, session),
 		newRelationshipSignalTool(r.relationships, session),
 		newUpdatePersonaFactTool(r.personaFacts, session, r.personaDefinition, r.personaFactAdmins),
 	}
 }
 
-
 // namedTool 定义已移至 types.go
-
-
-
-
-
-
-
-
-
-
-
 
 type searchMemeTool struct {
 	memeSvc *memesvc.Service
 	session replydomain.ToolContext
 }
-
 
 func newSearchMemeTool(svc *memesvc.Service, session replydomain.ToolContext) *searchMemeTool {
 	return &searchMemeTool{memeSvc: svc, session: session}
@@ -337,8 +324,6 @@ type sendMemeTool struct {
 	store ports.MemeStore
 }
 
-
-
 func newSendMemeTool(store ports.MemeStore) *sendMemeTool { return &sendMemeTool{store: store} }
 func (t *sendMemeTool) Name() string                      { return "send_meme" }
 func (t *sendMemeTool) Info(_ context.Context) (*schema.ToolInfo, error) {
@@ -369,7 +354,6 @@ func (t *sendMemeTool) InvokableRun(ctx context.Context, argumentsInJSON string,
 	return marshal(sendMemeResult{Tool: t.Name(), MemeID: args.MemeID, ReplyToMessageID: args.ReplyToMessageID, Caption: args.Caption})
 }
 
-
 func selfFactsParameter() *schema.ParameterInfo {
 	return &schema.ParameterInfo{
 		Type: schema.Array,
@@ -385,9 +369,6 @@ func selfFactsParameter() *schema.ParameterInfo {
 		},
 	}
 }
-
-
-
 
 type repairMessageTool struct {
 	session replydomain.ToolContext
@@ -425,9 +406,6 @@ func (t *repairMessageTool) InvokableRun(_ context.Context, argumentsInJSON stri
 	})
 }
 
-
-
-
 func clampF(v, lo, hi float64) float64 {
 	return min(max(v, lo), hi)
 }
@@ -440,7 +418,6 @@ type updatePersonaFactTool struct {
 	definition personadomain.PersonaDefinition
 	admins     []int64
 }
-
 
 func newUpdatePersonaFactTool(store ports.PersonaFactStore, session replydomain.ToolContext, definition personadomain.PersonaDefinition, admins []int64) *updatePersonaFactTool {
 	return &updatePersonaFactTool{store: store, session: session, definition: definition, admins: append([]int64(nil), admins...)}

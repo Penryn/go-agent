@@ -1,6 +1,6 @@
 # 记忆与学习系统重构方案
 
-状态：`[修订方案，未实施]`。2026-09-10 根据项目定位、当前调用链和同类项目调研收敛首版范围；本次只修改文档，不修改运行代码或数据库。
+状态：`[已实施，持续完善]`。2026-09-10 根据项目定位、当前调用链和同类项目调研收敛首版范围。
 
 核对基线：2026-09-10 当前工作区。以下代码结论来自静态检查，不代表线上效果验证；未重新运行应用测试，也不沿用上一版“4 个包 22 项通过”作为当前验收依据。
 
@@ -39,7 +39,7 @@ App → Group Actor.decideAndRespond → DecisionEngine
 
 [app.go](/Users/admin/Desktop/go-agent/internal/app/app.go:120) 已注入 LLM 和 MemoryRetriever；[composer.go](/Users/admin/Desktop/go-agent/internal/application/prompting/composer.go:560) 已执行检索和模型调用。当前任务是补齐上下文与读写契约，不是重新创建模型入口。
 
-后台仍是“每 6 小时读取 200 条 → n-gram/行为词/ThoughtRecord → learning_candidates → confidence >= 0.7 → MarkIntent”。在线 `stage_memory_claim` 已注册，但 App 创建 AgentPlanner 后未使用，当前生成入口没有调用该工具的模型循环；ClaimService 也没有形成确认与消费闭环。
+后台学习继续负责从沉默期间的原始事件提炼候选；在线记忆请求通过 `remember_memory` 直接写入 `memories`。claim 暂存、确认和消费闭环已从运行链路移除。
 
 | 当前证据 | 影响与修复方向 |
 | --- | --- |
@@ -47,7 +47,7 @@ App → Group Actor.decideAndRespond → DecisionEngine
 | 同一学习器用行为词推导群级候选，并从 ThoughtRecord 抽取可晋升的 behavior_feedback。 | 个人原话可能被放大为全群规则，技术结果可能被当作学习证据。替换为窗口结构化提炼和原始证据校验。 |
 | [app.go](/Users/admin/Desktop/go-agent/internal/app/app.go:555) 的检索适配器不传 UserID；[scope.go](/Users/admin/Desktop/go-agent/internal/search/scope.go:6) 要求非零 UserID 才能读用户级 scope。 | 当前生成路径无法召回用户级 scope 记忆。目标契约分开主体集合与群内可见范围，不能只补一个当前发言人 ID。 |
 | [composer.go](/Users/admin/Desktop/go-agent/internal/application/prompting/composer.go:600) 只写入 mem.Content 和最新消息，不使用传入的 personaCtx。 | 主体、来源、时间、完整对话和解析后人格视图没有交给模型。扩展当前真实生成入口。 |
-| [social_repository.go](/Users/admin/Desktop/go-agent/internal/adapters/storage/postgres/social_repository.go:171) 重复 Stage 会覆盖证据数组和状态。 | 新证据只追加去重，不得复活已替代或撤销的记录。旧 memory_claims 退出运行。 |
+| 在线记忆工具必须限制主体和证据来源。 | `remember_memory` 固定当前用户、当前群和触发事件，重复请求通过稳定 ID 幂等。 |
 | 学习固定读取 200 条且不续跑，水位按发生时间推进；[store.go](/Users/admin/Desktop/go-agent/internal/adapters/storage/postgres/store.go) 的替代字段未构成统一召回排除条件。 | 需要可靠追赶、晚到补偿和所有入口一致的有效性过滤。 |
 | [actor.go](/Users/admin/Desktop/go-agent/internal/application/presence/group_actor/actor.go:450) 对入站事件独立启动后台决策，不能仅凭 Actor 名称认为整个模型和发送阶段已串行。 | 收敛同群动作提交顺序，发送前检查新到的停止请求和记忆版本。 |
 | [response_executor.go](/Users/admin/Desktop/go-agent/internal/application/presence/planning/response_executor.go:71) 返回平台消息 ID，未检查 receipt.Sent，也未完成成功出站归档。 | 补完整回执、出站事实、输出检查和 Canon 发送后提交；部分成功只记录实际成功动作。 |
@@ -232,14 +232,14 @@ MemoryContext 是本轮读取结果，可包含 constraints 与 relevant_memorie
 | 目标表/设施 | 职责与调整 |
 | --- | --- |
 | messages | 原始证据，保留发生时间及引用关系；明确证据修订契约，不要求新增 archive_seq 或改表名。 |
-| memories | 唯一记忆权威数据，包含主体、经历参与者、状态、revision 和时间；不再是 memory_claims 的读取投影。 |
+| memories | 唯一记忆权威数据，包含主体、经历参与者、状态、revision 和时间。 |
 | memory_evidence | 按 memory_id/event_id 去重的证据关系及来源角色；不另存 JSON 证据数组或独立证据计数。 |
 | memory_changes | 追加修改原因、操作 ID、版本和必要差异，供查看更正来源；不建立独立审核生命周期。 |
 | learning_event_progress | 按 event_id/extractor_version 记录提炼完成，替换旧 learning_watermarks。 |
 | memory_vectors、async_outbox | 复用版本检查、事务投递与重试，改用新记忆与批任务契约。 |
 | retrieval_traces | 扩展本轮 included ID/revision；首版不为使用统计另建表。 |
 
-删除旧 memory_claims、LearningCandidate/learning_candidates、learning_candidate_evidence、WriteIntent/MarkIntent 和直接业务 Upsert 入口；新表结构与调用方统一切换。候选只是提炼输出或 memories 中的 pending 状态，不保留 ClaimID 与 MemoryID 两套生命周期。旧 stage_memory_claim 工具及参数退出，目标工具调用同一 MemoryService；工具注册不代替真实调用和行为验收。
+删除旧的记忆声明表、声明服务和暂存工具。候选只作为后台提炼输出，在线明确记忆请求调用同一 `MemoryService` 写入 `memories`；不保留两套记忆生命周期。
 
 ## 10. 实施顺序、切换与验收
 

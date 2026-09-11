@@ -238,7 +238,7 @@ Bot 提供三类工具：
    - `query_memory`, `search_meme`, `query_member_profile`
 
 3. **状态更新**（提交候选，不直接修改）：
-   - `stage_memory_claim`, `record_relationship_signal`, `update_persona_fact`
+   - `remember_memory`, `record_relationship_signal`, `update_persona_fact`
 
 ### 可选扩展
 

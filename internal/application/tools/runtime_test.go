@@ -11,6 +11,7 @@ import (
 	"github.com/cloudwego/eino/schema"
 
 	memsvc "github.com/phlin/go-agent/internal/application/memory"
+	"github.com/phlin/go-agent/internal/application/ports"
 	relationshipsvc "github.com/phlin/go-agent/internal/application/relationship"
 	personadomain "github.com/phlin/go-agent/internal/domain/persona"
 	profiledomain "github.com/phlin/go-agent/internal/domain/profile"
@@ -31,7 +32,7 @@ func TestToolSchemas(t *testing.T) {
 	})
 	runtime := NewRuntime(store,
 		WithProfileStore(store),
-		WithMemoryClaimService(memsvc.NewClaimService(store)),
+		WithMemoryService(memsvc.New(store)),
 		WithRelationshipService(relationshipsvc.New(store, "main")),
 	)
 	tools := runtime.Tools(replydomain.ToolContext{
@@ -51,7 +52,7 @@ func TestToolSchemas(t *testing.T) {
 		names[info.Name] = candidate
 	}
 
-	for _, name := range []string{"speak_text", "search_meme", "stay_silent", "send_meme", "quote_reply", "query_member_profile", "stage_memory_claim", "record_relationship_signal", "update_persona_fact", "repair_message", "poke_member"} {
+	for _, name := range []string{"speak_text", "search_meme", "stay_silent", "send_meme", "quote_reply", "query_member_profile", "remember_memory", "record_relationship_signal", "update_persona_fact", "repair_message", "poke_member"} {
 		if _, ok := names[name]; !ok {
 			t.Fatalf("expected tool %s", name)
 		}
@@ -62,27 +63,35 @@ func TestSocialStateToolsRequireEvidenceAndUseProjections(t *testing.T) {
 	store := testsupport.NewStore(t)
 	ctx := context.Background()
 	runtime := NewRuntime(store,
-		WithMemoryClaimService(memsvc.NewClaimService(store)),
+		WithMemoryService(memsvc.New(store)),
 		WithRelationshipService(relationshipsvc.New(store, "main")),
 	)
 	session := replydomain.ToolContext{GroupID: 1, UserID: 2, TraceID: "decision-1", TriggerEventID: "event-1"}
-	var claimTool, signalTool tool.InvokableTool
+	var rememberTool, signalTool tool.InvokableTool
 	for _, candidate := range runtime.Tools(session) {
 		info, _ := candidate.Info(ctx)
 		invokable, _ := candidate.(tool.InvokableTool)
 		switch info.Name {
-		case "stage_memory_claim":
-			claimTool = invokable
+		case "remember_memory":
+			rememberTool = invokable
 		case "record_relationship_signal":
 			signalTool = invokable
 		}
 	}
-	if claimTool == nil || signalTool == nil {
+	if rememberTool == nil || signalTool == nil {
 		t.Fatal("social state tools were not registered")
 	}
-	claimRaw, err := claimTool.InvokableRun(ctx, `{"type":"semantic","subject":"喜欢游戏","content":"经常玩游戏","confidence":0.8}`)
-	if err != nil || !strings.Contains(claimRaw, `"accepted":true`) {
-		t.Fatalf("stage claim failed: raw=%s err=%v", claimRaw, err)
+	rememberRaw, err := rememberTool.InvokableRun(ctx, `{"type":"semantic","content":"经常玩游戏"}`)
+	if err != nil || !strings.Contains(rememberRaw, `"accepted":true`) {
+		t.Fatalf("remember memory failed: raw=%s err=%v", rememberRaw, err)
+	}
+	repeatedRaw, err := rememberTool.InvokableRun(ctx, `{"type":"semantic","content":"经常玩游戏"}`)
+	if err != nil || repeatedRaw != rememberRaw {
+		t.Fatalf("remember memory was not idempotent: first=%s repeated=%s err=%v", rememberRaw, repeatedRaw, err)
+	}
+	records, err := store.QueryMemories(ctx, ports.MemoryQuery{GroupID: 1, UserID: 2, Scope: "group:1:user:2", TopK: 5})
+	if err != nil || len(records) != 1 || records[0].SourceEventID != "event-1" || records[0].Origin != "user_explicit" {
+		t.Fatalf("explicit memory was not persisted with runtime context: records=%+v err=%v", records, err)
 	}
 	signalRaw, err := signalTool.InvokableRun(ctx, `{"user_id":2,"kind":"positive_feedback","intensity":1,"evidence_event_id":"event-1"}`)
 	if err != nil || !strings.Contains(signalRaw, `"accepted":true`) {

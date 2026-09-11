@@ -91,13 +91,6 @@ type MemoryStore interface {
 	QueryMemories(ctx context.Context, query MemoryQuery) ([]memorydomain.MemoryRecord, error)
 }
 
-// MemoryClaimStore persists model observations before they become durable
-// memories. Claims are evidence-bearing and may be rejected or superseded.
-type MemoryClaimStore interface {
-	UpsertMemoryClaim(context.Context, memorydomain.MemoryClaim) error
-	ListMemoryClaims(context.Context, string, int) ([]memorydomain.MemoryClaim, error)
-}
-
 // ========================================
 // 存储接口 - 社交关系和场景
 // ========================================
@@ -276,7 +269,6 @@ type MemoryRepository interface {
 	MemoryStore
 	MemoryRecallStore
 	AtomicMemoryProjectionStore
-	MemoryClaimStore
 }
 
 // PersonaRepository 组合人格相关存储接口

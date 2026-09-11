@@ -15,74 +15,57 @@ import (
 	"github.com/phlin/go-agent/internal/domain/reply"
 )
 
-type stageMemoryClaimTool struct {
-	service *memsvc.ClaimService
+type rememberMemoryTool struct {
+	service *memsvc.Service
 	session reply.ToolContext
 }
 
-type stageMemoryClaimArgs struct {
-	Type             string   `json:"type"`
-	Subject          string   `json:"subject"`
-	Content          string   `json:"content"`
-	EvidenceEventIDs []string `json:"evidence_event_ids"`
-	Confidence       float64  `json:"confidence"`
-	SuggestedTTL     string   `json:"suggested_ttl"`
+type rememberMemoryArgs struct {
+	Type    string `json:"type"`
+	Content string `json:"content"`
 }
 
-func newStageMemoryClaimTool(service *memsvc.ClaimService, session reply.ToolContext) namedTool {
-	return &stageMemoryClaimTool{service: service, session: session}
+func newRememberMemoryTool(service *memsvc.Service, session reply.ToolContext) namedTool {
+	return &rememberMemoryTool{service: service, session: session}
 }
 
-func (t *stageMemoryClaimTool) Name() string { return "stage_memory_claim" }
+func (t *rememberMemoryTool) Name() string { return "remember_memory" }
 
-func (t *stageMemoryClaimTool) Info(context.Context) (*schema.ToolInfo, error) {
+func (t *rememberMemoryTool) Info(context.Context) (*schema.ToolInfo, error) {
 	return &schema.ToolInfo{
 		Name: t.Name(),
-		Desc: "Stage an evidence-backed memory observation for review. This does not create a durable memory.",
+		Desc: "Save information the user explicitly asked you to remember as a durable memory.",
 		ParamsOneOf: schema.NewParamsOneOfByParams(map[string]*schema.ParameterInfo{
-			"type":               {Type: schema.String, Required: true, Desc: "episodic, semantic, social, or persona."},
-			"subject":            {Type: schema.String, Required: true, Desc: "Short subject."},
-			"content":            {Type: schema.String, Required: true, Desc: "Observed fact, without speculation."},
-			"evidence_event_ids": {Type: schema.Array, Required: true, Desc: "Supporting event IDs."},
-			"confidence":         {Type: schema.Number, Desc: "Confidence from 0 to 1."},
-			"suggested_ttl":      {Type: schema.String, Desc: "Optional duration such as 720h."},
+			"type":    {Type: schema.String, Desc: "Optional type: semantic, episodic, or social. Defaults to semantic."},
+			"content": {Type: schema.String, Required: true, Desc: "The concise information to remember."},
 		}),
 	}, nil
 }
 
-func (t *stageMemoryClaimTool) InvokableRun(ctx context.Context, input string, _ ...tool.Option) (string, error) {
-	var args stageMemoryClaimArgs
+func (t *rememberMemoryTool) InvokableRun(ctx context.Context, input string, _ ...tool.Option) (string, error) {
+	var args rememberMemoryArgs
 	if err := json.Unmarshal([]byte(input), &args); err != nil {
-		return "", fmt.Errorf("decode stage_memory_claim args: %w", err)
+		return "", fmt.Errorf("decode remember_memory args: %w", err)
 	}
 	if t.service == nil {
-		return marshal(map[string]any{"accepted": false, "reason": "claim_store_unavailable"})
+		return marshal(map[string]any{"accepted": false, "reason": "memory_store_unavailable"})
 	}
 	args.Type = strings.TrimSpace(args.Type)
-	args.Subject = strings.TrimSpace(args.Subject)
 	args.Content = strings.TrimSpace(args.Content)
-	if args.Type == "" || args.Subject == "" || args.Content == "" {
-		return marshal(map[string]any{"accepted": false, "reason": "type_subject_content_required"})
+	if args.Content == "" {
+		return marshal(map[string]any{"accepted": false, "reason": "content_required"})
 	}
-	evidence := uniqueStrings(args.EvidenceEventIDs)
-	if len(evidence) == 0 && t.session.TriggerEventID != "" {
-		evidence = []string{t.session.TriggerEventID}
-	}
-	if len(evidence) == 0 {
+	if t.session.TriggerEventID == "" {
 		return marshal(map[string]any{"accepted": false, "reason": "evidence_required"})
 	}
-	if !evidenceInContext(evidence, t.session) {
-		return marshal(map[string]any{"accepted": false, "reason": "evidence_out_of_context"})
-	}
-	confidence := clampF(args.Confidence, 0, 1)
-	claim, err := t.service.Stage(ctx, memsvc.ClaimInput{
-		GroupID: t.session.GroupID, Type: args.Type, Subject: args.Subject, Content: args.Content,
-		EvidenceEventIDs: evidence, Confidence: confidence, SuggestedTTL: args.SuggestedTTL,
+	record, err := t.service.RememberExplicit(ctx, memsvc.ExplicitMemoryInput{
+		GroupID: t.session.GroupID, UserID: t.session.UserID, Type: args.Type, Content: args.Content,
+		SourceEventID: t.session.TriggerEventID, SourceSessionID: t.session.TraceID,
 	})
 	if err != nil {
 		return "", err
 	}
-	return marshal(map[string]any{"accepted": true, "claim_id": claim.ClaimID, "status": claim.Status})
+	return marshal(map[string]any{"accepted": true, "memory_id": record.MemoryID, "status": "active"})
 }
 
 type relationshipSignalTool struct {

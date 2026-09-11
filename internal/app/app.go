@@ -231,7 +231,7 @@ func New(ctx context.Context, cfg config.Config) (*App, error) {
 		toolsvc.WithProfileStore(stores.profile),
 		toolsvc.WithPersonaDefinition(personaDefinition),
 		toolsvc.WithPersonaFactStore(stores.personaFacts),
-		toolsvc.WithMemoryClaimService(memsvc.NewClaimService(stores.claims)),
+		toolsvc.WithMemoryService(memorySvc),
 		toolsvc.WithRelationshipService(relationshipService),
 		toolsvc.WithPersonaFactAdmins(cfg.Persona.FactUpdateUserWhitelist),
 		toolsvc.WithMemeService(memeService),

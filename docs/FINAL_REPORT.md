@@ -217,7 +217,7 @@ _ = memService.ForgetMemory(ctx, memoryID, "user requested", "user_456")
 - 性能测试
 
 ### 优先级 4：清理和部署（预计 2-3 小时）
-- 删除旧代码（memory_claims 等）
+- 删除旧代码（记忆声明 claim 链路等）
 - 更新配置文件
 - 部署到测试环境
 

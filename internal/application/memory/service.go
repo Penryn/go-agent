@@ -2,9 +2,12 @@ package memory
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"strings"
 	"time"
 
 	"github.com/phlin/go-agent/internal/application/ports"
@@ -26,6 +29,18 @@ type WriteIntent struct {
 	SupersedesMemoryID string
 	Importance         float64
 	Confidence         float64
+}
+
+// ExplicitMemoryInput is the user-directed memory request accepted by the
+// remember_memory tool. Scope, subject, evidence, and authority are derived by
+// the service so the model cannot write a memory for another user or event.
+type ExplicitMemoryInput struct {
+	GroupID         int64
+	UserID          int64
+	Type            string
+	Content         string
+	SourceEventID   string
+	SourceSessionID string
 }
 
 // Option 是 Service 的函数式配置项。
@@ -69,6 +84,49 @@ func New(store ports.MemoryStore, opts ...Option) *Service {
 		o(svc)
 	}
 	return svc
+}
+
+// RememberExplicit writes a memory requested by the current user directly to
+// the authoritative memories store.
+func (s *Service) RememberExplicit(ctx context.Context, input ExplicitMemoryInput) (memorydomain.MemoryRecord, error) {
+	if s == nil || s.store == nil {
+		return memorydomain.MemoryRecord{}, fmt.Errorf("memory: store is not configured")
+	}
+	if input.GroupID <= 0 || input.UserID <= 0 {
+		return memorydomain.MemoryRecord{}, fmt.Errorf("memory: group and user are required")
+	}
+	content := strings.TrimSpace(input.Content)
+	if content == "" {
+		return memorydomain.MemoryRecord{}, fmt.Errorf("memory: content is required")
+	}
+	memoryType := strings.TrimSpace(input.Type)
+	if memoryType == "" {
+		memoryType = "semantic"
+	}
+	switch memoryType {
+	case "episodic", "semantic", "social":
+	default:
+		return memorydomain.MemoryRecord{}, fmt.Errorf("memory: unsupported explicit type %q", memoryType)
+	}
+	if strings.TrimSpace(input.SourceEventID) == "" {
+		return memorydomain.MemoryRecord{}, fmt.Errorf("memory: source event is required")
+	}
+
+	scope := fmt.Sprintf("group:%d:user:%d", input.GroupID, input.UserID)
+	subject := fmt.Sprintf("%d", input.UserID)
+	digest := sha256.Sum256([]byte(scope + "\x00" + memoryType + "\x00" + subject + "\x00" + content))
+	return s.MarkIntent(ctx, WriteIntent{
+		MemoryID:        "memory-explicit-" + hex.EncodeToString(digest[:12]),
+		Scope:           scope,
+		MemoryType:      memoryType,
+		Subject:         subject,
+		Content:         content,
+		SourceEventID:   strings.TrimSpace(input.SourceEventID),
+		SourceSessionID: strings.TrimSpace(input.SourceSessionID),
+		Origin:          "user_explicit",
+		Importance:      1,
+		Confidence:      1,
+	})
 }
 
 func (s *Service) MarkIntent(ctx context.Context, intent WriteIntent) (memorydomain.MemoryRecord, error) {

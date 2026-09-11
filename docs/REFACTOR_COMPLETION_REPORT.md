@@ -146,7 +146,7 @@ memory.Revision++
 - [ ] 回放测试
 
 **8. 旧代码清理** (预计 2-3 小时)
-- [ ] 删除 memory_claims 相关
+- [x] 删除旧记忆声明表相关代码
 - [ ] 删除 learning_candidates 相关
 
 ## 验收标准进度

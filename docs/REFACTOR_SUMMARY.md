@@ -123,7 +123,7 @@ tx.Commit()
    - 遗忘后清理
 
 6. **工具接口调整** 🟡
-   - 删除 `stage_memory_claim`
+   - 删除旧记忆声明暂存工具，改为 `remember_memory` 直写
    - 可选：添加 `query_memory` 工具
 
 7. **Store 批量操作** 🟡
@@ -142,7 +142,7 @@ tx.Commit()
    - 选择性迁移（如需要）
 
 10. **旧代码清理** 🟢
-    - 删除 memory_claims 相关
+    - 删除旧记忆声明表相关
     - 删除 learning_candidates 相关
     - 删除旧学习逻辑
 

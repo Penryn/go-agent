@@ -9,7 +9,6 @@ import (
 	"time"
 
 	"github.com/phlin/go-agent/internal/application/ports"
-	memorydomain "github.com/phlin/go-agent/internal/domain/memory"
 	relationshipdomain "github.com/phlin/go-agent/internal/domain/relationship"
 	scenedomain "github.com/phlin/go-agent/internal/domain/scene"
 )
@@ -17,7 +16,6 @@ import (
 var (
 	_ ports.RelationshipStore = (*Store)(nil)
 	_ ports.GroupSceneStore   = (*Store)(nil)
-	_ ports.MemoryClaimStore  = (*Store)(nil)
 )
 
 func (s *Store) GetSocialRelationship(ctx context.Context, personaID string, groupID, userID int64) (relationshipdomain.State, error) {
@@ -166,68 +164,4 @@ func (s *Store) SaveGroupScene(ctx context.Context, scene scenedomain.GroupScene
 			updated_at = EXCLUDED.updated_at
 	`, scene.GroupID, raw, scene.Revision, scene.UpdatedAt)
 	return err
-}
-
-func (s *Store) UpsertMemoryClaim(ctx context.Context, claim memorydomain.MemoryClaim) error {
-	if claim.CreatedAt.IsZero() {
-		claim.CreatedAt = time.Now()
-	}
-	if claim.UpdatedAt.IsZero() {
-		claim.UpdatedAt = claim.CreatedAt
-	}
-	if claim.Status == "" {
-		claim.Status = memorydomain.ClaimStaged
-	}
-	evidence, err := json.Marshal(claim.EvidenceEventIDs)
-	if err != nil {
-		return err
-	}
-	_, err = s.db.ExecContext(ctx, `
-		INSERT INTO memory_claims (
-			claim_id, scope, type, subject, content, evidence_event_ids_json,
-			confidence, suggested_ttl, source, status, supersedes_id, created_at, updated_at
-		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
-		ON CONFLICT (claim_id) DO UPDATE SET
-			content = EXCLUDED.content,
-			evidence_event_ids_json = EXCLUDED.evidence_event_ids_json,
-			confidence = EXCLUDED.confidence,
-			suggested_ttl = EXCLUDED.suggested_ttl,
-			status = EXCLUDED.status,
-			updated_at = EXCLUDED.updated_at
-	`, claim.ClaimID, claim.Scope, claim.Type, claim.Subject, claim.Content, evidence,
-		claim.Confidence, claim.SuggestedTTL, claim.Source, claim.Status, claim.SupersedesID,
-		claim.CreatedAt, claim.UpdatedAt)
-	return err
-}
-
-func (s *Store) ListMemoryClaims(ctx context.Context, scope string, limit int) ([]memorydomain.MemoryClaim, error) {
-	if limit <= 0 {
-		limit = 50
-	}
-	rows, err := s.db.QueryContext(ctx, `
-		SELECT claim_id, scope, type, subject, content, evidence_event_ids_json,
-		       confidence, suggested_ttl, source, status, supersedes_id, created_at, updated_at
-		FROM memory_claims
-		WHERE ($1 = '' OR scope = $1) AND status IN ('staged', 'confirmed')
-		ORDER BY updated_at DESC, claim_id ASC LIMIT $2
-	`, scope, limit)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	claims := make([]memorydomain.MemoryClaim, 0, limit)
-	for rows.Next() {
-		var claim memorydomain.MemoryClaim
-		var evidence []byte
-		if err := rows.Scan(&claim.ClaimID, &claim.Scope, &claim.Type, &claim.Subject, &claim.Content,
-			&evidence, &claim.Confidence, &claim.SuggestedTTL, &claim.Source, &claim.Status,
-			&claim.SupersedesID, &claim.CreatedAt, &claim.UpdatedAt); err != nil {
-			return nil, err
-		}
-		if err := json.Unmarshal(evidence, &claim.EvidenceEventIDs); err != nil {
-			return nil, err
-		}
-		claims = append(claims, claim)
-	}
-	return claims, rows.Err()
 }

@@ -22,7 +22,6 @@ type storeBundle struct {
 	personaFacts  ports.PersonaFactStore
 	relationships ports.RelationshipStore
 	scenes        ports.GroupSceneStore
-	claims        ports.MemoryClaimStore
 	learning      ports.LearningEventStore
 	outbox        ports.OutboxStore
 
@@ -54,7 +53,6 @@ func newStoreBundle(ctx context.Context, cfg config.Config) (*storeBundle, error
 	bundle.personaFacts = persistentStore
 	bundle.relationships = persistentStore
 	bundle.scenes = persistentStore
-	bundle.claims = persistentStore
 	bundle.outbox = persistentStore
 
 	// 状态库与关系库共用同一 PG 连接池（阶段 A：替代 Redis StateStore）

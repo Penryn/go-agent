@@ -184,22 +184,7 @@ CREATE TABLE IF NOT EXISTS meme_descriptors (
   CONSTRAINT fk_meme_descriptor_asset FOREIGN KEY (meme_id) REFERENCES meme_assets(meme_id) ON DELETE CASCADE
 );
 
-CREATE TABLE IF NOT EXISTS memory_claims (
-  claim_id VARCHAR(128) PRIMARY KEY,
-  scope VARCHAR(128) NOT NULL,
-  type VARCHAR(64) NOT NULL,
-  subject VARCHAR(255) NOT NULL,
-  content TEXT NOT NULL,
-  evidence_event_ids_json JSONB NOT NULL DEFAULT '[]'::jsonb,
-  confidence DOUBLE PRECISION NOT NULL DEFAULT 0,
-  suggested_ttl VARCHAR(64) NOT NULL DEFAULT '',
-  source VARCHAR(32) NOT NULL DEFAULT 'model',
-  status VARCHAR(32) NOT NULL DEFAULT 'staged',
-  supersedes_id VARCHAR(128) NOT NULL DEFAULT '',
-  created_at TIMESTAMPTZ NOT NULL,
-  updated_at TIMESTAMPTZ NOT NULL
-);
-CREATE INDEX IF NOT EXISTS idx_memory_claims_scope_status ON memory_claims (scope, status, updated_at DESC);
+DROP TABLE IF EXISTS memory_claims;
 
 CREATE TABLE IF NOT EXISTS group_working_memory (
   group_id BIGINT PRIMARY KEY,

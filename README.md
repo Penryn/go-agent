@@ -128,7 +128,7 @@ go run ./cmd/qqbotd \
 |------|------|
 | 最终动作 | `speak_text`、`quote_reply`、`send_meme`、`react_emoji`、`repair_message`、`poke_member`、`stay_silent` |
 | 信息读取 | `query_memory`、`search_meme`、`query_member_profile` |
-| 状态更新 | `stage_memory_claim`、`record_relationship_signal`、`update_persona_fact` |
+| 状态更新 | `remember_memory`、`record_relationship_signal`、`update_persona_fact` |
 
 可选扩展：
 
