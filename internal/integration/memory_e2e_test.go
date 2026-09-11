@@ -17,10 +17,10 @@ import (
 
 // mockMemoryStore 模拟内存存储
 type mockMemoryStore struct {
-	memories  map[string]*memorydomain.Memory
-	evidence  map[string][]memorydomain.Evidence
-	changes   map[string][]memorydomain.Change
-	progress  map[string]*memorydomain.LearningEventProgress
+	memories map[string]*memorydomain.Memory
+	evidence map[string][]memorydomain.Evidence
+	changes  map[string][]memorydomain.Change
+	progress map[string]*memorydomain.LearningEventProgress
 }
 
 func newMockMemoryStore() *mockMemoryStore {
@@ -252,7 +252,7 @@ func TestEndToEndConstraintEnforcement(t *testing.T) {
 	require.True(t, results[0].Success)
 
 	// 3. 获取约束
-	constraints, err := memService.GetConstraints(ctx, "group_123456", []string{"456"})
+	constraints, err := memService.GetConstraints(ctx, "group:123456", []string{"456"})
 	require.NoError(t, err)
 	require.Len(t, constraints, 1)
 	assert.Equal(t, "allow_mention", constraints[0].Type)
@@ -287,7 +287,7 @@ func TestEndToEndMemoryCorrection(t *testing.T) {
 
 	// 2. 创建初始记忆
 	initialCandidate := &memorydomain.MemoryCandidate{
-		Scope:            "group_123",
+		Scope:            "group:123",
 		SubjectKind:      memorydomain.SubjectKindUser,
 		SubjectID:        "789",
 		Type:             memorydomain.MemoryTypeSemantic,
@@ -308,7 +308,7 @@ func TestEndToEndMemoryCorrection(t *testing.T) {
 
 	// 3. 更正记忆
 	correctionCandidate := &memorydomain.MemoryCandidate{
-		Scope:            "group_123",
+		Scope:            "group:123",
 		SubjectKind:      memorydomain.SubjectKindUser,
 		SubjectID:        "789",
 		Type:             memorydomain.MemoryTypeSemantic,

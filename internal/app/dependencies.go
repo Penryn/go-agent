@@ -23,14 +23,14 @@ type storeBundle struct {
 	relationships ports.RelationshipStore
 	scenes        ports.GroupSceneStore
 	claims        ports.MemoryClaimStore
-	learning      ports.LearningStateStore
+	learning      ports.LearningEventStore
 	outbox        ports.OutboxStore
 
 	// 新增的社交决策相关存储
-	posture       ports.PostureStore
-	ephemeral     ports.EphemeralStateStore
-	decisions     ports.DecisionStore
-	feedbacks     ports.FeedbackStore
+	posture   ports.PostureStore
+	ephemeral ports.EphemeralStateStore
+	decisions ports.DecisionStore
+	feedbacks ports.FeedbackStore
 }
 
 func newStoreBundle(ctx context.Context, cfg config.Config) (*storeBundle, error) {

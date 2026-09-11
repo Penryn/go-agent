@@ -32,7 +32,7 @@ func (m *MemoryConstraintIntegration) BuildConstraintSection(ctx context.Context
 	}
 
 	// 转换为字符串 ID
-	scope := fmt.Sprintf("group_%d", groupID)
+	scope := fmt.Sprintf("group:%d", groupID)
 	targetIDs := make([]string, len(targetUserIDs))
 	for i, id := range targetUserIDs {
 		targetIDs[i] = fmt.Sprintf("%d", id)
@@ -138,7 +138,7 @@ func (m *MemoryConstraintIntegration) ValidateConstraints(
 		return nil
 	}
 
-	scope := fmt.Sprintf("group_%d", groupID)
+	scope := fmt.Sprintf("group:%d", groupID)
 	targetIDs := make([]string, len(targetUserIDs))
 	for i, id := range targetUserIDs {
 		targetIDs[i] = fmt.Sprintf("%d", id)

@@ -106,7 +106,7 @@ func TestParseExtractionResponse(t *testing.T) {
 		require.Len(t, candidates, 1)
 
 		c := candidates[0]
-		assert.Equal(t, "group_123456", c.Scope)
+		assert.Equal(t, "group:123456", c.Scope)
 		assert.Equal(t, "user", string(c.SubjectKind))
 		assert.Equal(t, "789", c.SubjectID)
 		assert.Equal(t, "semantic", string(c.Type))
@@ -160,57 +160,6 @@ func TestParseExtractionResponse(t *testing.T) {
 		require.NoError(t, err)
 		assert.Empty(t, candidates) // 0.5 < 0.7，应该被过滤
 	})
-}
-
-// TestExtractFromWindow 测试完整的提炼流程
-func TestExtractFromWindow(t *testing.T) {
-	// 准备 mock LLM
-	llmResponse := `[
-  {
-    "subject_kind": "user",
-    "subject_id": "789",
-    "type": "social",
-    "subtype": "boundary",
-    "content": "李四要求不要 @ 他",
-    "predicate": "allow_mention",
-    "normalized_value": "false",
-    "qualifier": "default",
-    "participant_ids": ["789"],
-    "bot_role": "observer",
-    "anchor_event_id": "1",
-    "evidence_event_ids": ["1"],
-    "confidence": 0.98,
-    "reasoning": "用户明确表达了互动边界"
-  }
-]`
-
-	mockLLM := &mockLLM{response: llmResponse}
-
-	// 创建学习服务
-	service := &NewService{
-		llm:              mockLLM,
-		promptBuilder:    NewExtractionPromptBuilder("v1"),
-		extractorVersion: "v1",
-	}
-
-	window := &Window{
-		GroupID: 123456,
-		Events: []conversation.ConversationEvent{
-			{EventID: "event_001", TimestampUnix: time.Now().Unix()},
-			{EventID: "event_002", TimestampUnix: time.Now().Unix()},
-		},
-	}
-
-	candidates, err := service.extractFromWindow(context.Background(), window)
-
-	require.NoError(t, err)
-	require.Len(t, candidates, 1)
-
-	c := candidates[0]
-	assert.Equal(t, "social", string(c.Type))
-	assert.Equal(t, "boundary", c.Subtype)
-	assert.Equal(t, "allow_mention", string(c.Predicate))
-	assert.Equal(t, "false", c.NormalizedValue)
 }
 
 // TestMapEventIDs 测试事件 ID 映射

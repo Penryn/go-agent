@@ -229,21 +229,21 @@ func (b *ExtractionPromptBuilder) ParseExtractionResponse(response string, windo
 
 	// 解析 JSON
 	var rawCandidates []struct {
-		SubjectKind      string    `json:"subject_kind"`
-		SubjectID        string    `json:"subject_id"`
-		Type             string    `json:"type"`
-		Subtype          string    `json:"subtype"`
-		Content          string    `json:"content"`
-		Predicate        string    `json:"predicate"`
-		NormalizedValue  string    `json:"normalized_value"`
-		Qualifier        string    `json:"qualifier"`
-		ValidUntil       *string   `json:"valid_until"`
-		ParticipantIDs   []string  `json:"participant_ids"`
-		BotRole          string    `json:"bot_role"`
-		AnchorEventID    string    `json:"anchor_event_id"`
-		EvidenceEventIDs []string  `json:"evidence_event_ids"`
-		Confidence       float64   `json:"confidence"`
-		Reasoning        string    `json:"reasoning"`
+		SubjectKind      string   `json:"subject_kind"`
+		SubjectID        string   `json:"subject_id"`
+		Type             string   `json:"type"`
+		Subtype          string   `json:"subtype"`
+		Content          string   `json:"content"`
+		Predicate        string   `json:"predicate"`
+		NormalizedValue  string   `json:"normalized_value"`
+		Qualifier        string   `json:"qualifier"`
+		ValidUntil       *string  `json:"valid_until"`
+		ParticipantIDs   []string `json:"participant_ids"`
+		BotRole          string   `json:"bot_role"`
+		AnchorEventID    string   `json:"anchor_event_id"`
+		EvidenceEventIDs []string `json:"evidence_event_ids"`
+		Confidence       float64  `json:"confidence"`
+		Reasoning        string   `json:"reasoning"`
 	}
 
 	if err := json.Unmarshal([]byte(response), &rawCandidates); err != nil {
@@ -252,7 +252,7 @@ func (b *ExtractionPromptBuilder) ParseExtractionResponse(response string, windo
 
 	// 转换为 MemoryCandidate
 	candidates := make([]*memorydomain.MemoryCandidate, 0, len(rawCandidates))
-	scope := fmt.Sprintf("group_%d", window.GroupID)
+	scope := fmt.Sprintf("group:%d", window.GroupID)
 
 	for _, raw := range rawCandidates {
 		// 跳过低置信度

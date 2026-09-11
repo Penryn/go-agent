@@ -101,6 +101,29 @@ func TestSearchMemoriesFailsClosedForForeignScope(t *testing.T) {
 	}
 }
 
+func TestSearchMemoriesIncludesExplicitlyAddressedUsers(t *testing.T) {
+	store := testsupport.NewStore(t)
+	ctx := context.Background()
+	for _, record := range []memorydomain.MemoryRecord{
+		{MemoryID: "speaker", Scope: "group:1:user:7", Subject: "用户7", Content: "喜欢咖啡"},
+		{MemoryID: "mentioned", Scope: "group:1:user:8", Subject: "用户8", Content: "喜欢茶"},
+	} {
+		if err := store.UpsertMemory(ctx, record); err != nil {
+			t.Fatal(err)
+		}
+	}
+	retriever := New(store, store, nil, nil, Config{})
+	results, err := retriever.SearchMemories(ctx, ports.MemoryQuery{
+		GroupID: 1, UserID: 7, UserIDs: []int64{8}, Query: "喜欢", TopK: 5,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(results) != 2 {
+		t.Fatalf("explicitly addressed user memory was not visible: %+v", results)
+	}
+}
+
 func TestSearchMemoriesDegradesWhenVectorFails(t *testing.T) {
 	store := testsupport.NewStore(t)
 	if err := store.UpsertMemory(context.Background(), memorydomain.MemoryRecord{MemoryID: "lexical", Scope: "group:1", Content: "旧梗"}); err != nil {

@@ -36,6 +36,9 @@ type ReadAckingSender interface {
 type MemoryQuery struct {
 	GroupID int64
 	UserID  int64
+	// UserIDs adds explicitly addressed members whose group-scoped memories are
+	// visible in this query. UserID remains the primary current speaker.
+	UserIDs []int64
 	Query   string
 	TopK    int
 	Scope   string
@@ -168,22 +171,11 @@ type OutboxStore interface {
 	FailOutbox(ctx context.Context, id string, taskErr error, retryAt time.Time) error
 }
 
-// LearningStateStore owns the durable cursor for background projectors. It
-// is intentionally separate from MemoryStore because a projector needs a
-// stable ordered read, not just a rolling conversation window.
-type LearningStateStore interface {
-	EventsAfter(ctx context.Context, groupID int64, after time.Time, afterEventID string, limit int) ([]conversationdomain.ConversationEvent, error)
-	GetLearningWatermark(ctx context.Context, groupID int64, kind string) (memorydomain.LearningWatermark, error)
-	SaveLearningWatermark(ctx context.Context, watermark memorydomain.LearningWatermark) error
-}
-
-// LearningCandidateStore persists extracted facts before they are promoted to
-// long-term memory, so retries and operator review do not lose the evidence.
-type LearningCandidateStore interface {
-	UpsertLearningCandidate(ctx context.Context, candidate memorydomain.LearningCandidate) error
-	ListLearningCandidates(ctx context.Context, groupID int64, limit int) ([]memorydomain.LearningCandidate, error)
-	UpdateLearningCandidateStatus(ctx context.Context, id, status string) error
-	MarkLearningCandidatePromoted(ctx context.Context, id, memoryID string, promotedAt time.Time) error
+// LearningEventStore owns exact event reads and per-extractor progress.
+type LearningEventStore interface {
+	EventsByIDs(ctx context.Context, groupID int64, eventIDs []string) ([]conversationdomain.ConversationEvent, error)
+	ListUnprocessedEvents(ctx context.Context, groupID int64, extractorVersion string, limit int) ([]string, error)
+	MarkLearningProgress(ctx context.Context, progress memorydomain.LearningEventProgress) error
 }
 
 type MemeStore interface {
@@ -274,7 +266,6 @@ type FeedbackStore interface {
 	SaveFeedback(ctx context.Context, feedback interface{}) error
 	SaveFeedbackWindow(ctx context.Context, window interface{}) error
 }
-
 
 // ========================================
 // 组合接口 - 简化依赖注入

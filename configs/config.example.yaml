@@ -245,10 +245,6 @@ autonomy:
   observe_window_size: 20
   # 最小回复间隔，避免刷屏。
   min_reply_interval_sec: 3
-  # 主动插话的基础概率。
-  proactive_base_probability: 0.05
-  # 主动插话需要达到的评分阈值。
-  proactive_score_threshold: 0.85
 
 memory:
   # 检索上下文时取回的长期记忆条数。

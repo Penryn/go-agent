@@ -7,6 +7,7 @@ import (
 
 	"github.com/cloudwego/eino/schema"
 
+	"github.com/phlin/go-agent/internal/application/ports"
 	conversationdomain "github.com/phlin/go-agent/internal/domain/conversation"
 	memorydomain "github.com/phlin/go-agent/internal/domain/memory"
 	personadomain "github.com/phlin/go-agent/internal/domain/persona"
@@ -20,15 +21,15 @@ type LLMCaller interface {
 
 // MemoryRetriever 检索记忆的接口
 type MemoryRetriever interface {
-	RetrieveRelevant(ctx context.Context, groupID int64, query string, limit int) ([]memorydomain.MemoryRecord, error)
+	RetrieveRelevant(ctx context.Context, query ports.MemoryQuery) ([]memorydomain.MemoryRecord, error)
 }
 
 type Composer struct {
-	persona              personadomain.PersonaConfig
-	recentMaxChar        int
-	memoryMaxChar        int
-	llm                  LLMCaller
-	memoryRetriever      MemoryRetriever
+	persona               personadomain.PersonaConfig
+	recentMaxChar         int
+	memoryMaxChar         int
+	llm                   LLMCaller
+	memoryRetriever       MemoryRetriever
 	constraintIntegration *MemoryConstraintIntegration
 }
 
@@ -456,7 +457,23 @@ func (c *Composer) ComposeResponseWithHistory(
 	// 1. 检索相关记忆
 	var memories []memorydomain.MemoryRecord
 	if c.memoryRetriever != nil && evt.GroupID > 0 {
-		retrieved, err := c.memoryRetriever.RetrieveRelevant(ctx, evt.GroupID, evt.Text, 5)
+		queryParts := make([]string, 0, len(history)+1)
+		for _, item := range history {
+			if text := strings.TrimSpace(item.Text); text != "" {
+				queryParts = append(queryParts, text)
+			}
+		}
+		if text := strings.TrimSpace(evt.Text); text != "" {
+			queryParts = append(queryParts, text)
+		}
+		query := ports.MemoryQuery{
+			GroupID: evt.GroupID,
+			UserID:  evt.UserID,
+			UserIDs: addressedUserIDs(evt, history),
+			Query:   strings.Join(queryParts, "\n"),
+			TopK:    5,
+		}
+		retrieved, err := c.memoryRetriever.RetrieveRelevant(ctx, query)
 		if err == nil {
 			memories = retrieved
 		}
@@ -514,7 +531,7 @@ func (c *Composer) buildResponsePrompt(
 	if len(memories) > 0 {
 		sb.WriteString("# 相关记忆\n")
 		for i, mem := range memories {
-			sb.WriteString(fmt.Sprintf("%d. %s\n", i+1, mem.Content))
+			sb.WriteString(fmt.Sprintf("%d. %s\n", i+1, formatMemorySnippet(mem)))
 		}
 		sb.WriteString("\n")
 	}
@@ -612,7 +629,7 @@ func (c *Composer) buildEnhancedResponsePrompt(
 	if len(memories) > 0 {
 		sb.WriteString("# 相关记忆\n")
 		for i, mem := range memories {
-			sb.WriteString(fmt.Sprintf("%d. %s\n", i+1, mem.Content))
+			sb.WriteString(fmt.Sprintf("%d. %s\n", i+1, formatMemorySnippet(mem)))
 		}
 		sb.WriteString("\n")
 	}

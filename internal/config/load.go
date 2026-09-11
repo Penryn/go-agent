@@ -94,10 +94,8 @@ func Default() Config {
 			MaxConsecutiveBot: 1,
 		},
 		Autonomy: policydomain.AutonomyPolicy{
-			ObserveWindowSize:        20,
-			MinReplyIntervalSec:      30,
-			ProactiveBaseProbability: 0.05,
-			ProactiveScoreThreshold:  0.65,
+			ObserveWindowSize:   20,
+			MinReplyIntervalSec: 30,
 		},
 		Memory: MemoryConfig{
 			TopK:       6,

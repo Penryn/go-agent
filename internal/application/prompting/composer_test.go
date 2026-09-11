@@ -8,7 +8,9 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/phlin/go-agent/internal/application/ports"
 	conversationdomain "github.com/phlin/go-agent/internal/domain/conversation"
+	memorydomain "github.com/phlin/go-agent/internal/domain/memory"
 	personadomain "github.com/phlin/go-agent/internal/domain/persona"
 )
 
@@ -16,13 +18,25 @@ import (
 type mockLLM struct {
 	response string
 	err      error
+	prompt   string
 }
 
 func (m *mockLLM) Generate(ctx context.Context, prompt string) (string, error) {
+	m.prompt = prompt
 	if m.err != nil {
 		return "", m.err
 	}
 	return m.response, nil
+}
+
+type recordingMemoryRetriever struct {
+	query   ports.MemoryQuery
+	records []memorydomain.MemoryRecord
+}
+
+func (r *recordingMemoryRetriever) RetrieveRelevant(_ context.Context, query ports.MemoryQuery) ([]memorydomain.MemoryRecord, error) {
+	r.query = query
+	return r.records, nil
 }
 
 // TestComposeResponse_WithoutLLM 测试没有 LLM 时的降级行为
@@ -78,6 +92,31 @@ func TestComposeResponseWithHistory(t *testing.T) {
 
 	// 验证 Prompt 包含历史（通过检查是否调用了 LLM）
 	assert.NotEmpty(t, response)
+}
+
+func TestComposeResponseReadsAddressedUsersHistoryAndMemorySource(t *testing.T) {
+	llm := &mockLLM{response: "记得"}
+	retriever := &recordingMemoryRetriever{records: []memorydomain.MemoryRecord{{
+		Type: "social", Subject: "用户200", Content: "喜欢露营", Origin: "inbound", SourceEventID: "evt-memory",
+	}}}
+	composer := NewComposer(personadomain.PersonaConfig{Name: "小助手"}).WithLLM(llm).WithMemoryRetriever(retriever)
+	history := []conversationdomain.ConversationEvent{
+		{EventID: "evt-old", MessageID: "msg-old", UserID: 300, Text: "上次我们聊过露营"},
+	}
+	event := &conversationdomain.ConversationEvent{
+		GroupID: 1, UserID: 200, Text: "那下次一起去？", ReplyToMessageID: "msg-old",
+		Segments: []conversationdomain.MessageSegment{{Type: "at", Data: map[string]any{"qq": "400"}}},
+	}
+	_, err := composer.ComposeResponseWithHistory(context.Background(), nil, event, history, "direct_answer")
+	require.NoError(t, err)
+	assert.Equal(t, int64(200), retriever.query.UserID)
+	assert.ElementsMatch(t, []int64{300, 400}, retriever.query.UserIDs)
+	assert.Contains(t, retriever.query.Query, "上次我们聊过露营")
+	assert.Contains(t, retriever.query.Query, "那下次一起去？")
+	assert.Contains(t, llm.prompt, "喜欢露营")
+	assert.Contains(t, llm.prompt, "来源=inbound")
+	assert.Contains(t, llm.prompt, "证据=evt-memory")
+	assert.Contains(t, llm.prompt, "上次我们聊过露营")
 }
 
 // TestComposeResponse_WithPersonaContext 测试使用 PersonaContext

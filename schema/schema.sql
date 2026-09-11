@@ -54,6 +54,19 @@ ALTER TABLE memories ADD COLUMN IF NOT EXISTS supersedes_memory_id VARCHAR(128) 
 ALTER TABLE memories ADD COLUMN IF NOT EXISTS recall_count INT NOT NULL DEFAULT 0;
 ALTER TABLE memories ADD COLUMN IF NOT EXISTS last_recalled_at TIMESTAMPTZ NULL;
 
+CREATE TABLE IF NOT EXISTS learning_event_progress (
+  event_id VARCHAR(128) NOT NULL,
+  extractor_version VARCHAR(32) NOT NULL,
+  group_id BIGINT NOT NULL,
+  processed_at TIMESTAMPTZ NOT NULL,
+  outcome VARCHAR(32) NOT NULL,
+  skip_reason VARCHAR(64) NOT NULL DEFAULT '',
+  memory_count INT NOT NULL DEFAULT 0,
+  created_at TIMESTAMPTZ NOT NULL,
+  PRIMARY KEY (event_id, extractor_version)
+);
+CREATE INDEX IF NOT EXISTS idx_learning_progress_group ON learning_event_progress (group_id, created_at DESC);
+
 CREATE TABLE IF NOT EXISTS member_profiles (
   group_id BIGINT NOT NULL,
   user_id BIGINT NOT NULL,
@@ -171,26 +184,6 @@ CREATE TABLE IF NOT EXISTS meme_descriptors (
   CONSTRAINT fk_meme_descriptor_asset FOREIGN KEY (meme_id) REFERENCES meme_assets(meme_id) ON DELETE CASCADE
 );
 
-CREATE TABLE IF NOT EXISTS learning_candidates (
-  id VARCHAR(128) PRIMARY KEY,
-  group_id BIGINT NOT NULL,
-  target_user_id BIGINT NOT NULL DEFAULT 0,
-  kind VARCHAR(64) NOT NULL,
-  value TEXT NOT NULL,
-  meaning TEXT NOT NULL,
-  evidence_count INT NOT NULL,
-  example_event_ids_json JSONB NOT NULL,
-  confidence DOUBLE PRECISION NOT NULL,
-  status VARCHAR(32) NOT NULL,
-  promoted_memory_id VARCHAR(128) NOT NULL DEFAULT '',
-  promoted_at TIMESTAMPTZ NULL,
-  created_at TIMESTAMPTZ NOT NULL
-);
-ALTER TABLE learning_candidates ADD COLUMN IF NOT EXISTS target_user_id BIGINT NOT NULL DEFAULT 0;
-ALTER TABLE learning_candidates ADD COLUMN IF NOT EXISTS promoted_memory_id VARCHAR(128) NOT NULL DEFAULT '';
-ALTER TABLE learning_candidates ADD COLUMN IF NOT EXISTS promoted_at TIMESTAMPTZ NULL;
-CREATE INDEX IF NOT EXISTS idx_learning_candidates_group_status ON learning_candidates (group_id, status, created_at);
-
 CREATE TABLE IF NOT EXISTS memory_claims (
   claim_id VARCHAR(128) PRIMARY KEY,
   scope VARCHAR(128) NOT NULL,
@@ -207,23 +200,6 @@ CREATE TABLE IF NOT EXISTS memory_claims (
   updated_at TIMESTAMPTZ NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_memory_claims_scope_status ON memory_claims (scope, status, updated_at DESC);
-
-CREATE TABLE IF NOT EXISTS learning_candidate_evidence (
-  candidate_id VARCHAR(128) NOT NULL REFERENCES learning_candidates(id) ON DELETE CASCADE,
-  event_id VARCHAR(128) NOT NULL,
-  observed_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-  PRIMARY KEY (candidate_id, event_id)
-);
-CREATE INDEX IF NOT EXISTS idx_learning_candidate_evidence_event ON learning_candidate_evidence (event_id);
-
-CREATE TABLE IF NOT EXISTS learning_watermarks (
-  group_id BIGINT NOT NULL,
-  kind VARCHAR(64) NOT NULL,
-  occurred_at TIMESTAMPTZ NOT NULL,
-  event_id VARCHAR(128) NOT NULL,
-  updated_at TIMESTAMPTZ NOT NULL,
-  PRIMARY KEY (group_id, kind)
-);
 
 CREATE TABLE IF NOT EXISTS group_working_memory (
   group_id BIGINT PRIMARY KEY,

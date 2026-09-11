@@ -12,6 +12,7 @@ import (
 	"time"
 
 	_ "github.com/jackc/pgx/v5/stdlib"
+	"github.com/lib/pq"
 
 	"github.com/phlin/go-agent/internal/application/ports"
 	conversationdomain "github.com/phlin/go-agent/internal/domain/conversation"
@@ -25,8 +26,7 @@ import (
 var (
 	_ ports.MemoryStore                 = (*Store)(nil)
 	_ ports.MemoryRecallStore           = (*Store)(nil)
-	_ ports.LearningStateStore          = (*Store)(nil)
-	_ ports.LearningCandidateStore      = (*Store)(nil)
+	_ ports.LearningEventStore          = (*Store)(nil)
 	_ ports.ThoughtStore                = (*Store)(nil)
 	_ ports.RetrievalTraceStore         = (*Store)(nil)
 	_ ports.MemeStore                   = (*Store)(nil)
@@ -316,6 +316,82 @@ func (s *Store) EventsAfter(ctx context.Context, groupID int64, after time.Time,
 	return events, rows.Err()
 }
 
+// EventsByIDs loads the exact archive events named by a learning task. The
+// task carries IDs instead of copied message bodies so retries re-read the
+// authoritative archive.
+func (s *Store) EventsByIDs(ctx context.Context, groupID int64, eventIDs []string) ([]conversationdomain.ConversationEvent, error) {
+	if len(eventIDs) == 0 {
+		return nil, nil
+	}
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT event_id, origin, group_id, user_id, sender_qq_nickname, sender_group_card,
+		       message_id, reply_to_message_id, kind, text_content,
+		       segments_json, attachments_json, mentioned_bot, named_bot, is_reply_to_bot, occurred_at
+		FROM messages
+		WHERE group_id = $1 AND event_id = ANY($2)
+	`, groupID, pq.Array(eventIDs))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	byID := make(map[string]conversationdomain.ConversationEvent, len(eventIDs))
+	for rows.Next() {
+		event, err := scanEvent(rows)
+		if err != nil {
+			return nil, err
+		}
+		byID[event.EventID] = event
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	result := make([]conversationdomain.ConversationEvent, 0, len(byID))
+	for _, eventID := range eventIDs {
+		if event, ok := byID[eventID]; ok {
+			result = append(result, event)
+		}
+	}
+	return result, nil
+}
+
+func (s *Store) MarkLearningProgress(ctx context.Context, progress memorydomain.LearningEventProgress) error {
+	_, err := s.db.ExecContext(ctx, `
+		INSERT INTO learning_event_progress (
+			event_id, extractor_version, group_id, processed_at,
+			outcome, skip_reason, memory_count, created_at
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+		ON CONFLICT (event_id, extractor_version) DO UPDATE SET
+			processed_at = EXCLUDED.processed_at,
+			outcome = EXCLUDED.outcome,
+			skip_reason = EXCLUDED.skip_reason,
+			memory_count = EXCLUDED.memory_count
+	`, progress.EventID, progress.ExtractorVersion, progress.GroupID, progress.ProcessedAt,
+		progress.Outcome, progress.SkipReason, progress.MemoryCount, progress.CreatedAt)
+	return err
+}
+
+func (s *Store) ListUnprocessedEvents(ctx context.Context, groupID int64, extractorVersion string, limit int) ([]string, error) {
+	if limit <= 0 {
+		limit = 60
+	}
+	var eventIDs []string
+	err := s.db.QueryRowContext(ctx, `
+		SELECT COALESCE(array_agg(event_id ORDER BY occurred_at ASC, event_id ASC), '{}')
+		FROM (
+			SELECT m.event_id, m.occurred_at
+			FROM messages m
+			WHERE m.group_id = $1
+			  AND NOT EXISTS (
+				SELECT 1 FROM learning_event_progress p
+				WHERE p.event_id = m.event_id AND p.extractor_version = $2
+			  )
+			ORDER BY m.occurred_at ASC, m.event_id ASC
+			LIMIT $3
+		) pending
+	`, groupID, extractorVersion, limit).Scan(pq.Array(&eventIDs))
+	return eventIDs, err
+}
+
 // scanEvent 从单行扫描 ConversationEvent,RecentEvents/EventsAfter 共用。
 func scanEvent(rows *sql.Rows) (conversationdomain.ConversationEvent, error) {
 	var (
@@ -493,9 +569,20 @@ func (s *Store) QueryMemories(ctx context.Context, query ports.MemoryQuery) ([]m
 		}
 		base += " AND scope = " + args.add(query.Scope)
 	} else if query.GroupID != 0 {
-		groupScope := args.add(fmt.Sprintf("group:%d", query.GroupID))
-		userScope := args.add(fmt.Sprintf("group:%d:user:%d", query.GroupID, query.UserID))
-		base += " AND (scope = 'global' OR scope = " + groupScope + " OR scope = " + userScope + ")"
+		scopes := []string{"'global'", args.add(fmt.Sprintf("group:%d", query.GroupID))}
+		userIDs := append([]int64{query.UserID}, query.UserIDs...)
+		seenUsers := make(map[int64]struct{}, len(userIDs))
+		for _, userID := range userIDs {
+			if userID == 0 {
+				continue
+			}
+			if _, seen := seenUsers[userID]; seen {
+				continue
+			}
+			seenUsers[userID] = struct{}{}
+			scopes = append(scopes, args.add(fmt.Sprintf("group:%d:user:%d", query.GroupID, userID)))
+		}
+		base += " AND scope IN (" + strings.Join(scopes, ",") + ")"
 	} else {
 		base += " AND scope = 'global'"
 	}

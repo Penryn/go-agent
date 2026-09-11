@@ -12,12 +12,14 @@ import (
 	"time"
 
 	"github.com/cloudwego/eino/schema"
+	"github.com/jmoiron/sqlx"
 
 	inboundnapcat "github.com/phlin/go-agent/internal/adapters/inbound/napcat"
 	"github.com/phlin/go-agent/internal/adapters/inmemory"
 	modeladapter "github.com/phlin/go-agent/internal/adapters/model"
 	outboundnapcat "github.com/phlin/go-agent/internal/adapters/outbound/napcat"
 	postgresstore "github.com/phlin/go-agent/internal/adapters/storage/postgres"
+	"github.com/phlin/go-agent/internal/app/admin"
 	actionsvc "github.com/phlin/go-agent/internal/application/action"
 	contextsvc "github.com/phlin/go-agent/internal/application/context"
 	learningsvc "github.com/phlin/go-agent/internal/application/learning"
@@ -31,26 +33,20 @@ import (
 	"github.com/phlin/go-agent/internal/application/ports"
 	presenceruntime "github.com/phlin/go-agent/internal/application/presence"
 	presencedeliberation "github.com/phlin/go-agent/internal/application/presence/deliberation"
-	presencefeedback "github.com/phlin/go-agent/internal/application/presence/feedback"
 	presenceactor "github.com/phlin/go-agent/internal/application/presence/group_actor"
 	presenceingress "github.com/phlin/go-agent/internal/application/presence/ingress"
 	presenceperception "github.com/phlin/go-agent/internal/application/presence/perception"
-	planning "github.com/phlin/go-agent/internal/application/presence/planning"
 	presencereflection "github.com/phlin/go-agent/internal/application/presence/reflection"
 	profilesvc "github.com/phlin/go-agent/internal/application/profile"
 	promptingsvc "github.com/phlin/go-agent/internal/application/prompting"
-	reflectionsvc "github.com/phlin/go-agent/internal/application/reflection"
 	relationshipsvc "github.com/phlin/go-agent/internal/application/relationship"
 	retrievalsvc "github.com/phlin/go-agent/internal/application/retrieval"
 	outboxruntime "github.com/phlin/go-agent/internal/application/runtime/outbox"
 	"github.com/phlin/go-agent/internal/application/runtime/scheduler"
 	scenesvc "github.com/phlin/go-agent/internal/application/scene"
-	socialdecisionsvc "github.com/phlin/go-agent/internal/application/socialdecision"
 	"github.com/phlin/go-agent/internal/application/textutil"
 	toolsvc "github.com/phlin/go-agent/internal/application/tools"
-	"github.com/phlin/go-agent/internal/app/admin"
 	"github.com/phlin/go-agent/internal/config"
-	conversationdomain "github.com/phlin/go-agent/internal/domain/conversation"
 	memorydomain "github.com/phlin/go-agent/internal/domain/memory"
 	personadomain "github.com/phlin/go-agent/internal/domain/persona"
 	presencedomain "github.com/phlin/go-agent/internal/domain/presence"
@@ -89,17 +85,7 @@ func New(ctx context.Context, cfg config.Config) (*App, error) {
 		sender = outboundnapcat.NewSender(cfg.QQ.OutboundURL, cfg.QQ.OutboundToken, nil)
 	}
 
-	// 创建 ResponsePlanner 和 ResponseExecutor（依赖 sender 和 composer）
 	composer := promptingsvc.NewComposer(cfg.Persona)
-
-	// 配置 LLM（稍后在获得 modelFactory 后设置）
-	// 配置在创建 hybridRetrieval 之后
-
-	// 创建 composer 适配器以匹配 planning.TextComposer 接口
-	composerAdapter := &textComposerAdapter{composer: composer}
-
-	responsePlanner := planning.NewResponsePlanner(cfg.Persona, composerAdapter)
-	responseExecutor := planning.NewResponseExecutor(sender)
 
 	policyService := policysvc.New(cfg)
 	modelFactory := modeladapter.NewFactory(cfg.Models)
@@ -130,43 +116,9 @@ func New(ctx context.Context, cfg config.Config) (*App, error) {
 	sceneService := scenesvc.New(stores.scenes)
 	eventLog := presenceingress.NewMemoryEventLog()
 
-	// 创建统一的 store 适配器
-	storeAdapters := NewStoreAdapters(stores.scenes, stores.relationships, stores.personaFacts, stores.memory)
-
-	// 社交决策服务（使用统一适配器）
-	decisionEngine := socialdecisionsvc.NewDecisionEngine(
-		storeAdapters,
-		storeAdapters,
-		stores.posture,
-		stores.ephemeral,
-		socialdecisionsvc.DefaultDecisionConfig(),
-	)
-
-	personaAssembler := personasvc.NewContextAssembler(
-		stores.posture,
-		stores.ephemeral,
-		storeAdapters,
-	)
-
-	feedbackCollector := reflectionsvc.NewFeedbackCollector(
-		storeAdapters,
-		reflectionsvc.NewFeedbackClassifier(storeAdapters),
-	)
-
-	// 创建反馈窗口管理器
-	feedbackWindowManager := presencefeedback.NewWindowManager(relationshipService)
-
-	// presenceManager 配置选项（包含决策引擎依赖）
 	actorOptions := []presenceactor.Option{
 		presenceactor.WithArchive(stores.memory),
 		presenceactor.WithIdleTTL(textutil.ParseDurationOr(cfg.Runtime.ActorIdleTTL, 30*time.Minute)),
-		presenceactor.WithDecisionEngine(decisionEngine),
-		presenceactor.WithPersonaAssembler(personaAssembler),
-		presenceactor.WithFeedbackCollector(feedbackCollector),
-		presenceactor.WithFeedbackWindowManager(feedbackWindowManager),
-		presenceactor.WithResponsePlanner(responsePlanner),
-		presenceactor.WithResponseExecutor(responseExecutor),
-		presenceactor.WithPersonaID(cfg.Persona.ID),
 	}
 	if stateStore, ok := stores.memory.(presenceactor.WorkingMemoryStore); ok {
 		actorOptions = append(actorOptions, presenceactor.WithStateStore(stateStore))
@@ -218,6 +170,8 @@ func New(ctx context.Context, cfg config.Config) (*App, error) {
 		memOpts = append(memOpts, memsvc.WithAtomicProjectionStore(atomicStore))
 	}
 	memorySvc := memsvc.New(stores.memory, memOpts...)
+	constraintMemorySvc := memsvc.NewService(postgresstore.NewMemoryStore(sqlx.NewDb(stores.db, "pgx")))
+	composer.WithConstraintIntegration(promptingsvc.NewMemoryConstraintIntegration(constraintMemorySvc))
 	if err := durableOutbox.Register("memory_vector_index", func(jobCtx context.Context, payload []byte) error {
 		var record memorydomain.MemoryRecord
 		if err := json.Unmarshal(payload, &record); err != nil {
@@ -300,13 +254,14 @@ func New(ctx context.Context, cfg config.Config) (*App, error) {
 		}
 	}
 	fallbackPlanner := promptingsvc.NewDeterministicPlanner(cfg.Persona)
-	_ = promptingsvc.NewAgentPlanner(
+	agentPlanner := promptingsvc.NewAgentPlanner(
 		modelFactory,
 		toolRuntime,
-		promptingsvc.NewComposer(cfg.Persona),
+		composer,
 		fallbackPlanner,
 		presenceManager,
 	)
+	deliberator := presencedeliberation.NewAdapter(contextService, agentPlanner)
 	normalizer := normalizersvc.New("onebot", cfg.QQ.SelfID, cfg.Persona.Aliases)
 
 	// F1 OutputGuard：从 persona 配置读取截断阈值
@@ -335,31 +290,15 @@ func New(ctx context.Context, cfg config.Config) (*App, error) {
 	turnObserver := presencereflection.New(stores.state, moodSvc, time.Duration(cfg.Autonomy.MinReplyIntervalSec)*time.Second, policyService)
 	turnObserver.SetRelationshipService(relationshipService)
 
-	// Human Presence Runtime owns ingress, per-group working memory, candidate
-	// scheduling, deliberation, realization, and outbound self-observation.
-	// 注意：deliberation 现在由 group_actor 中的决策引擎处理
-	// 这里使用一个空的 deliberator 以保持接口兼容
-	deliberator := &noOpDeliberator{}
-	jobTimeout := 120 * time.Second
-	if cfg.Tools.Codex.Enabled {
-		jobTimeout = max(jobTimeout, textutil.ParseDurationOr(cfg.Tools.Codex.Timeout, jobTimeout))
-	}
 	humanRuntime := presenceruntime.New(ctx, normalizer, presenceManager, deliberator, perceptionPipeline, turnObserver, executor, presenceruntime.Config{
-		GroupWhitelist:    cfg.QQ.GroupWhitelist,
-		SelfID:            cfg.QQ.SelfID,
-		JobTimeout:        jobTimeout,
-		ProactiveInterval: time.Minute,
-		// 冷场主动开口：消费 autonomy 配置里的基础概率与评分阈值。
-		ProactiveBaseProbability: cfg.Autonomy.ProactiveBaseProbability,
-		ProactiveScoreThreshold:  cfg.Autonomy.ProactiveScoreThreshold,
+		GroupWhitelist: cfg.QQ.GroupWhitelist,
+		SelfID:         cfg.QQ.SelfID,
 	})
 	humanRuntime.SetConfirmationObserver(writeApprovals)
 	humanRuntime.SetCanonService(canonService)
 	if thoughtStore, ok := stores.memory.(ports.ThoughtStore); ok {
-		humanRuntime.SetThoughtStore(thoughtStore)
 		contextService.WithThoughtStore(thoughtStore)
 	}
-	humanRuntime.SetMemoryRetriever(hybridRetrieval)
 
 	// Scheduler：注册所有定时任务
 	sched := scheduler.New()
@@ -370,20 +309,15 @@ func New(ctx context.Context, cfg config.Config) (*App, error) {
 	humanRuntime.AddEventObserver(profileService.ObserveEvent)
 	humanRuntime.AddEventObserver(sceneService.ObserveEvent)
 	humanRuntime.AddEventObserver(relationshipService.ObserveInbound)
-	learningSvc, learnErr := learningsvc.New(ctx, stores.memory, stores.learning, memorySvc, learningsvc.WithOutbox(durableOutbox))
+	learningSvc, learnErr := learningsvc.New(ctx, stores.memory, stores.learning, memorySvc,
+		learningsvc.WithOutbox(durableOutbox), learningsvc.WithLLM(&llmAdapter{factory: modelFactory}))
 	if learnErr != nil {
 		_ = durableOutbox.Close()
 		_ = stores.Close()
 		return nil, fmt.Errorf("learning service init: %w", learnErr)
 	}
 	if err := durableOutbox.Register("learning_extract", func(jobCtx context.Context, payload []byte) error {
-		var task struct {
-			GroupID int64 `json:"group_id"`
-		}
-		if err := json.Unmarshal(payload, &task); err != nil {
-			return fmt.Errorf("decode learning task: %w", err)
-		}
-		return learningSvc.ProcessGroup(jobCtx, task.GroupID)
+		return learningSvc.ProcessTask(jobCtx, payload)
 	}); err != nil {
 		_ = durableOutbox.Close()
 		_ = stores.Close()
@@ -506,21 +440,6 @@ func (a *App) handleHealth(w http.ResponseWriter, r *http.Request) {
 	_, _ = w.Write([]byte(`{"ok":true}`))
 }
 
-// textComposerAdapter 适配 prompting.Composer 到 planning.TextComposer 接口
-type textComposerAdapter struct {
-	composer *promptingsvc.Composer
-}
-
-func (a *textComposerAdapter) ComposeResponse(
-	ctx context.Context,
-	personaCtx *personadomain.PersonaContext,
-	evt *conversationdomain.ConversationEvent,
-	intent string,
-) (string, error) {
-	// 调用 Composer 的 ComposeResponse 方法
-	return a.composer.ComposeResponse(ctx, personaCtx, evt, intent)
-}
-
 // llmAdapter 适配 modelFactory 到 prompting.LLMCaller 接口
 type llmAdapter struct {
 	factory *modeladapter.Factory
@@ -555,28 +474,15 @@ type memoryRetrieverAdapter struct {
 	retrieval *retrievalsvc.Service
 }
 
-func (a *memoryRetrieverAdapter) RetrieveRelevant(ctx context.Context, groupID int64, query string, limit int) ([]memorydomain.MemoryRecord, error) {
+func (a *memoryRetrieverAdapter) RetrieveRelevant(ctx context.Context, query ports.MemoryQuery) ([]memorydomain.MemoryRecord, error) {
 	if a.retrieval == nil {
 		return nil, nil
 	}
 
-	memories, err := a.retrieval.SearchMemories(ctx, ports.MemoryQuery{
-		GroupID: groupID,
-		Query:   query,
-		TopK:    limit,
-	})
+	memories, err := a.retrieval.SearchMemories(ctx, query)
 	if err != nil {
 		return nil, err
 	}
 
 	return memories, nil
-}
-
-// noOpDeliberator 是一个空的 deliberator 实现
-// 实际的决策逻辑现在在 group_actor 的决策引擎中处理
-type noOpDeliberator struct{}
-
-func (n *noOpDeliberator) Deliberate(ctx context.Context, input presencedeliberation.Input) (presencedeliberation.Result, error) {
-	// 返回空结果，因为决策现在由 decideAndRespond 处理
-	return presencedeliberation.Result{}, nil
 }

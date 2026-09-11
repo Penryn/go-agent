@@ -2,6 +2,7 @@ package prompting
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
@@ -98,7 +99,59 @@ func formatMemorySnippet(record memorydomain.MemoryRecord) string {
 	if !record.CreatedAt.IsZero() {
 		created = record.CreatedAt.In(shanghaiLocation).Format("2006-01-02")
 	}
-	return fmt.Sprintf("[%s][%s] %s:%s", typeName, created, record.Subject, record.Content)
+	source := strings.TrimSpace(record.Origin)
+	if source == "" {
+		source = "来源未知"
+	}
+	evidence := record.SourceEventID
+	if len(record.SourceEventIDs) > 0 {
+		evidence = strings.Join(record.SourceEventIDs, ",")
+	}
+	if evidence == "" {
+		evidence = "证据未知"
+	}
+	return fmt.Sprintf("[%s][观察=%s][来源=%s][证据=%s] %s:%s", typeName, created, source, evidence, record.Subject, record.Content)
+}
+
+func addressedUserIDs(event *conversationdomain.ConversationEvent, history []conversationdomain.ConversationEvent) []int64 {
+	seen := make(map[int64]struct{})
+	ids := make([]int64, 0)
+	add := func(id int64) {
+		if id != 0 {
+			if _, ok := seen[id]; !ok {
+				seen[id] = struct{}{}
+				ids = append(ids, id)
+			}
+		}
+	}
+	for _, segment := range event.Segments {
+		if segment.Type != "at" {
+			continue
+		}
+		if value, ok := segment.Data["qq"]; ok {
+			switch typed := value.(type) {
+			case string:
+				if id, err := strconv.ParseInt(typed, 10, 64); err == nil {
+					add(id)
+				}
+			case float64:
+				add(int64(typed))
+			case int64:
+				add(typed)
+			case int:
+				add(int64(typed))
+			}
+		}
+	}
+	if event.ReplyToMessageID != "" {
+		for _, item := range history {
+			if item.MessageID == event.ReplyToMessageID {
+				add(item.UserID)
+				break
+			}
+		}
+	}
+	return ids
 }
 
 // addressSignal 返回寻址信号

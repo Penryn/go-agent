@@ -23,16 +23,14 @@ const (
 )
 
 type GroupPolicy struct {
-	GroupID           int64          `json:"group_id" yaml:"group_id"`
-	ToolAllowlist     []string       `json:"tool_allowlist" yaml:"tool_allowlist"`
-	MaxConsecutiveBot int            `json:"max_consecutive_bot" yaml:"max_consecutive_bot"`
+	GroupID           int64    `json:"group_id" yaml:"group_id"`
+	ToolAllowlist     []string `json:"tool_allowlist" yaml:"tool_allowlist"`
+	MaxConsecutiveBot int      `json:"max_consecutive_bot" yaml:"max_consecutive_bot"`
 }
 
 type AutonomyPolicy struct {
-	ObserveWindowSize        int     `json:"observe_window_size" yaml:"observe_window_size"`
-	MinReplyIntervalSec      int     `json:"min_reply_interval_sec" yaml:"min_reply_interval_sec"`
-	ProactiveBaseProbability float64 `json:"proactive_base_probability" yaml:"proactive_base_probability"`
-	ProactiveScoreThreshold  float64 `json:"proactive_score_threshold" yaml:"proactive_score_threshold"`
+	ObserveWindowSize   int `json:"observe_window_size" yaml:"observe_window_size"`
+	MinReplyIntervalSec int `json:"min_reply_interval_sec" yaml:"min_reply_interval_sec"`
 }
 
 type RuntimeState struct {

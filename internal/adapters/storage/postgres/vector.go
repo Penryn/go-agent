@@ -104,9 +104,20 @@ func (s *VectorStore) SearchMemories(ctx context.Context, query ports.MemoryQuer
 	if query.Scope != "" {
 		statement += " AND m.scope = " + addArg(query.Scope)
 	} else if query.GroupID != 0 {
-		groupScope := addArg(fmt.Sprintf("group:%d", query.GroupID))
-		userScope := addArg(fmt.Sprintf("group:%d:user:%d", query.GroupID, query.UserID))
-		statement += " AND (m.scope = 'global' OR m.scope = " + groupScope + " OR m.scope = " + userScope + ")"
+		scopes := []string{"'global'", addArg(fmt.Sprintf("group:%d", query.GroupID))}
+		userIDs := append([]int64{query.UserID}, query.UserIDs...)
+		seenUsers := make(map[int64]struct{}, len(userIDs))
+		for _, userID := range userIDs {
+			if userID == 0 {
+				continue
+			}
+			if _, seen := seenUsers[userID]; seen {
+				continue
+			}
+			seenUsers[userID] = struct{}{}
+			scopes = append(scopes, addArg(fmt.Sprintf("group:%d:user:%d", query.GroupID, userID)))
+		}
+		statement += " AND m.scope IN (" + strings.Join(scopes, ",") + ")"
 	} else {
 		statement += " AND m.scope = 'global'"
 	}

@@ -202,40 +202,6 @@ func TestArchiveEventRejectsInvalidGroup(t *testing.T) {
 	}
 }
 
-func TestLearningCandidateLifecycle(t *testing.T) {
-	ctx := context.Background()
-	store := NewStore(setupPostgres(t))
-	candidate := memorydomain.LearningCandidate{
-		ID: "candidate-lifecycle", GroupID: 1, Kind: "group_slang", Value: "离谱",
-		Meaning: "群内高频表达", EvidenceCount: 3, ExampleEventIDs: []string{"event-1"},
-		Confidence: 0.8, Status: "staged", CreatedAt: time.Now(),
-	}
-	if err := store.UpsertLearningCandidate(ctx, candidate); err != nil {
-		t.Fatalf("upsert candidate: %v", err)
-	}
-	if err := store.UpsertLearningCandidate(ctx, candidate); err != nil {
-		t.Fatalf("idempotent candidate upsert: %v", err)
-	}
-	var evidenceCount int
-	if err := store.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM learning_candidate_evidence WHERE candidate_id = $1`, candidate.ID).Scan(&evidenceCount); err != nil || evidenceCount != 1 {
-		t.Fatalf("candidate evidence ledger = %d, err=%v", evidenceCount, err)
-	}
-	staged, err := store.ListLearningCandidates(ctx, 1, 10)
-	if err != nil || len(staged) != 1 || staged[0].Status != "staged" {
-		t.Fatalf("staged candidates = %#v, err=%v", staged, err)
-	}
-	if err := store.UpdateLearningCandidateStatus(ctx, candidate.ID, "promoted"); err != nil {
-		t.Fatalf("promote candidate: %v", err)
-	}
-	if err := store.MarkLearningCandidatePromoted(ctx, candidate.ID, "memory-promoted", time.Now()); err != nil {
-		t.Fatalf("record promoted memory: %v", err)
-	}
-	remaining, err := store.ListLearningCandidates(ctx, 1, 10)
-	if err != nil || len(remaining) != 0 {
-		t.Fatalf("promoted candidate still listed: %#v, err=%v", remaining, err)
-	}
-}
-
 func TestRetrievalTraceExtendedFieldsRoundtrip(t *testing.T) {
 	ctx := context.Background()
 	store := NewStore(setupPostgres(t))
@@ -384,25 +350,10 @@ func TestAtomicMemeProjection(t *testing.T) {
 	}
 }
 
-func TestWatermarksAndThoughts(t *testing.T) {
+func TestThoughtsAndWorkingMemory(t *testing.T) {
 	ctx := context.Background()
 	db := setupPostgres(t)
 	store := NewStore(db)
-
-	wm := memorydomain.LearningWatermark{
-		GroupID: 1, Kind: "learning_extract",
-		OccurredAt: time.Now(), EventID: "event-1", UpdatedAt: time.Now(),
-	}
-	if err := store.SaveLearningWatermark(ctx, wm); err != nil {
-		t.Fatalf("save watermark: %v", err)
-	}
-	got, err := store.GetLearningWatermark(ctx, 1, "learning_extract")
-	if err != nil {
-		t.Fatalf("get watermark: %v", err)
-	}
-	if got.EventID != "event-1" {
-		t.Fatalf("unexpected watermark: %+v", got)
-	}
 
 	thought := replydomain.ThoughtRecord{
 		ThoughtID: "thought-1", CandidateID: "cand-1", GroupID: 1, EventID: "event-1",

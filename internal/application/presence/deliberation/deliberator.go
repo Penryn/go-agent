@@ -6,6 +6,7 @@ package deliberation
 import (
 	"context"
 	"slices"
+	"strings"
 	"time"
 
 	contextsvc "github.com/phlin/go-agent/internal/application/context"
@@ -138,12 +139,16 @@ func resolveAction(intent string, proposed []policydomain.DecisionAction) policy
 }
 
 func decisionFor(envelope conversationdomain.EventEnvelope) policydomain.AutonomyDecision {
+	triggerType := "answer"
+	if envelope.Event.MentionedBot || envelope.Event.NamedBot || envelope.Event.IsReplyToBot || strings.ContainsAny(envelope.Event.Text, "?？") {
+		triggerType = "question"
+	}
 	return policydomain.AutonomyDecision{
 		DecisionID:  envelope.TraceID + "-decision",
-		Action:      policydomain.ActionSilent,
-		TriggerType: "unknown",
-		Score:       0.0,
-		Confidence:  0.0,
-		ReasonCodes: []string{"delegated_to_decision_engine"},
+		Action:      policydomain.ActionReply,
+		TriggerType: triggerType,
+		Score:       1.0,
+		Confidence:  1.0,
+		ReasonCodes: []string{"synchronous_replay"},
 	}
 }
