@@ -91,8 +91,30 @@ func relevantFewShot(examples []personadomain.FewShotExample, trigger string) []
 	return selected
 }
 
-func relevantScenarios(scenarios []personadomain.ResponseScenario) []personadomain.ResponseScenario {
-	return selectLimit(scenarios, 4)
+func relevantScenarios(scenarios []personadomain.ResponseScenario, trigger string) []personadomain.ResponseScenario {
+	keywords := map[string][]string{
+		"question":     {"问", "不了解", "信息", "学习", "技术", "查"},
+		"request_help": {"学习", "技术", "信息", "查", "帮助"},
+		"support":      {"生活", "状态", "变化"},
+	}
+	terms := keywords[trigger]
+	if len(terms) == 0 {
+		return nil
+	}
+	selected := make([]personadomain.ResponseScenario, 0, 2)
+	for _, scenario := range scenarios {
+		if strings.TrimSpace(scenario.Situation) == "" || len(scenario.Rules) == 0 {
+			continue
+		}
+		if !containsAnyText(scenario.Situation+" "+strings.Join(scenario.Rules, " "), terms...) {
+			continue
+		}
+		selected = append(selected, scenario)
+		if len(selected) == 2 {
+			break
+		}
+	}
+	return selected
 }
 
 func selectByKeywords(values, keywords []string, limit int) []string {

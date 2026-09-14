@@ -94,17 +94,6 @@ func (c *Composer) StaticInstruction() string {
 			sections = append(sections, "文字 emoji 和颜文字频率: "+sp.EmojiFrequency+"。")
 		}
 	}
-	if scenarios := relevantScenarios(c.persona.ResponseScenarios); len(scenarios) > 0 {
-		sections = append(sections, "", "稳定回应场景层:")
-		for _, scenario := range scenarios {
-			if strings.TrimSpace(scenario.Situation) == "" || len(scenario.Rules) == 0 {
-				continue
-			}
-			sections = append(sections, "场景="+scenario.Situation+"；处理原则="+strings.Join(scenario.Rules, "；")+"。")
-		}
-		sections = append(sections, "这些规则只约束处理方式，具体措辞必须结合当前人物事实和本轮上下文现场生成。")
-	}
-
 	sections = append(sections, []string{
 		"",
 		"稳定任务规则层:",
@@ -186,6 +175,12 @@ func (c *Composer) DynamicInstructionWithContext(ctx context.Context, snapshot c
 	}
 	for _, hint := range relevantHints(c.persona.Background.BehaviorHints, decision.TriggerType) {
 		sections = append(sections, hint)
+	}
+	if scenarios := relevantScenarios(c.persona.ResponseScenarios, decision.TriggerType); len(scenarios) > 0 {
+		sections = append(sections, "", "本轮相关场景:")
+		for _, scenario := range scenarios {
+			sections = append(sections, "场景="+scenario.Situation+"；原则="+strings.Join(scenario.Rules, "；")+"。")
+		}
 	}
 
 	view := snapshot.PersonaView

@@ -110,8 +110,8 @@ func TestSocialStateToolsRequireEvidenceAndUseProjections(t *testing.T) {
 func TestContextualTerminalTools(t *testing.T) {
 	runtime := NewRuntime(testsupport.NewStore(t))
 	base := runtime.TerminalTools(replydomain.ToolContext{})
-	if !base["poke_member"] || !base["repair_message"] {
-		t.Fatalf("stable terminal tools missing from a normal turn: %#v", base)
+	if base["poke_member"] || base["repair_message"] {
+		t.Fatalf("irrelevant terminal tools leaked into a normal turn: %#v", base)
 	}
 	contextual := runtime.TerminalTools(replydomain.ToolContext{
 		TriggerType:          "poke_reply",
@@ -122,24 +122,17 @@ func TestContextualTerminalTools(t *testing.T) {
 	}
 }
 
-func TestDisallowedInternalToolKeepsStableSchemaButRejectsExecution(t *testing.T) {
+func TestDisallowedInternalToolIsNotExposed(t *testing.T) {
 	runtime := NewRuntime(testsupport.NewStore(t))
-	var speak tool.BaseTool
-	for _, candidate := range runtime.Tools(replydomain.ToolContext{AllowedTools: []string{"stay_silent"}}) {
+	exposed := runtime.Tools(replydomain.ToolContext{AllowedTools: []string{"stay_silent"}})
+	for _, candidate := range exposed {
 		info, _ := candidate.Info(context.Background())
 		if info.Name == "speak_text" {
-			speak = candidate
+			t.Fatal("disallowed tool schema was exposed")
 		}
 	}
-	if speak == nil {
-		t.Fatal("disallowed tool schema was removed")
-	}
-	invokable, ok := speak.(tool.InvokableTool)
-	if !ok {
-		t.Fatal("stable tool is not invokable")
-	}
-	if _, err := invokable.InvokableRun(context.Background(), `{"text":"nope"}`); err == nil {
-		t.Fatal("disallowed tool execution was not rejected")
+	if len(exposed) != 1 {
+		t.Fatalf("narrow allowlist exposed %d schemas, want 1", len(exposed))
 	}
 }
 

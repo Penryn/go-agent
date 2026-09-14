@@ -31,3 +31,19 @@ func TestMessagesIncludeCurrentEvent(t *testing.T) {
 	}
 	assert.Contains(t, messages[len(messages)-2].Content, "你在吗？")
 }
+
+func TestResponseScenariosAreSelectedPerTurn(t *testing.T) {
+	persona := personadomain.PersonaConfig{
+		Name: "芙芙",
+		ResponseScenarios: []personadomain.ResponseScenario{
+			{Situation: "被问到技术问题", Rules: []string{"不确定时先查证"}},
+			{Situation: "自己的生活状态变化", Rules: []string{"只记录可靠变化"}},
+		},
+	}
+	composer := NewComposer(persona)
+	if assert.NotContains(t, composer.StaticInstruction(), "被问到技术问题") {
+		question := composer.DynamicInstruction(conversationdomain.ContextSnapshot{}, policydomain.AutonomyDecision{TriggerType: "question"})
+		assert.Contains(t, question, "被问到技术问题")
+		assert.NotContains(t, question, "自己的生活状态变化")
+	}
+}

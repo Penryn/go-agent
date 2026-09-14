@@ -108,10 +108,12 @@ func (r *Runtime) availableTools(session replydomain.ToolContext) []registeredTo
 	internal = append(internal, r.profileTools(session)...)
 	all := make([]registeredTool, 0, len(internal)+len(r.external))
 	for _, candidate := range internal {
-		allowed := internalToolAllowed(session.AllowedTools, candidate.Name())
+		if !internalToolAllowed(session.AllowedTools, candidate.Name()) {
+			continue
+		}
 		all = append(all, registeredTool{
 			name:     candidate.Name(),
-			tool:     gateTool(candidate, allowed),
+			tool:     candidate,
 			terminal: isTerminalTool(candidate.Name()),
 		})
 	}
@@ -238,8 +240,12 @@ func (r *Runtime) replyTools(session replydomain.ToolContext) []namedTool {
 		newReactEmojiTool(),
 		newSendMemeTool(r.memeStore),
 		newQuoteReplyTool(),
-		newRepairMessageTool(session),
-		newPokeMemberTool(),
+	}
+	if len(session.RecallableMessageIDs) > 0 {
+		result = append(result, newRepairMessageTool(session))
+	}
+	if session.TriggerType == "poke_reply" {
+		result = append(result, newPokeMemberTool())
 	}
 	return result
 }
