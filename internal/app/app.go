@@ -328,6 +328,11 @@ func New(ctx context.Context, cfg config.Config) (*App, error) {
 		_ = stores.Close()
 		return nil, fmt.Errorf("register learning outbox handler: %w", err)
 	}
+	if err := durableOutbox.Start(); err != nil {
+		_ = durableOutbox.Close()
+		_ = stores.Close()
+		return nil, fmt.Errorf("start durable outbox: %w", err)
+	}
 	learningSvc.RegisterJobs(sched, cfg.QQ.GroupWhitelist)
 	if retentionDays := cfg.Storage.Postgres.ObservabilityRetentionDays; retentionDays > 0 {
 		prune := func(jobCtx context.Context) error {

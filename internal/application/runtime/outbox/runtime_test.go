@@ -26,6 +26,9 @@ func TestRuntimeExecutesIdempotentTask(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("register: %v", err)
 	}
+	if err := runtime.Start(); err != nil {
+		t.Fatalf("start: %v", err)
+	}
 	if err := runtime.Enqueue(context.Background(), "profile", "event-1", []byte(`{"event":"event-1"}`)); err != nil {
 		t.Fatalf("enqueue: %v", err)
 	}
@@ -51,6 +54,9 @@ func TestRuntimeMovesPermanentFailureToDeadLetter(t *testing.T) {
 		return errors.New("broken")
 	}); err != nil {
 		t.Fatalf("register: %v", err)
+	}
+	if err := runtime.Start(); err != nil {
+		t.Fatalf("start: %v", err)
 	}
 	if err := runtime.Enqueue(context.Background(), "broken", "event-2", []byte(`{}`)); err != nil {
 		t.Fatalf("enqueue: %v", err)
@@ -79,4 +85,37 @@ func TestRuntimeMovesPermanentFailureToDeadLetter(t *testing.T) {
 		time.Sleep(time.Millisecond)
 	}
 	t.Fatal("failed task remained claimable")
+}
+
+func TestRuntimeDoesNotClaimTasksBeforeStart(t *testing.T) {
+	store := testsupport.NewStore(t)
+	runtime := New(context.Background(), store, Config{WorkerCount: 1, PollInterval: time.Millisecond, TaskTimeout: time.Second})
+	defer runtime.Close()
+	var calls atomic.Int32
+	if err := runtime.Enqueue(context.Background(), "late", "event-3", []byte(`{}`)); err != nil {
+		t.Fatalf("enqueue: %v", err)
+	}
+	time.Sleep(10 * time.Millisecond)
+	if calls.Load() != 0 {
+		t.Fatalf("handler called before start: %d", calls.Load())
+	}
+	if err := runtime.Register("late", func(context.Context, []byte) error {
+		calls.Add(1)
+		return nil
+	}); err != nil {
+		t.Fatalf("register: %v", err)
+	}
+	if err := runtime.Start(); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	if err := runtime.Register("too-late", func(context.Context, []byte) error { return nil }); err == nil {
+		t.Fatal("expected registration after start to fail")
+	}
+	deadline := time.Now().Add(time.Second)
+	for calls.Load() == 0 && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	if calls.Load() != 1 {
+		t.Fatalf("expected one handler call after start, got %d", calls.Load())
+	}
 }

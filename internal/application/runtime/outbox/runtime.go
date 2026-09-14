@@ -43,6 +43,8 @@ type Runtime struct {
 	wg       sync.WaitGroup
 	mu       sync.RWMutex
 	handlers map[string]Handler
+	started  bool
+	closed   bool
 }
 
 func New(parent context.Context, store ports.OutboxStore, cfg Config) *Runtime {
@@ -61,12 +63,7 @@ func New(parent context.Context, store ports.OutboxStore, cfg Config) *Runtime {
 	}
 	workerID := fmt.Sprintf("worker-%d", time.Now().UnixNano())
 	ctx, cancel := context.WithCancel(parent)
-	r := &Runtime{store: store, cfg: cfg, workerID: workerID, ctx: ctx, cancel: cancel, handlers: make(map[string]Handler)}
-	for i := 0; i < cfg.WorkerCount; i++ {
-		r.wg.Add(1)
-		go r.worker(i)
-	}
-	return r
+	return &Runtime{store: store, cfg: cfg, workerID: workerID, ctx: ctx, cancel: cancel, handlers: make(map[string]Handler)}
 }
 
 func (r *Runtime) Register(kind string, handler Handler) error {
@@ -78,10 +75,39 @@ func (r *Runtime) Register(kind string, handler Handler) error {
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	if r.closed {
+		return errors.New("outbox: runtime is closed")
+	}
+	if r.started {
+		return errors.New("outbox: handlers must be registered before start")
+	}
 	if _, exists := r.handlers[kind]; exists {
 		return fmt.Errorf("outbox: handler already registered for %q", kind)
 	}
 	r.handlers[kind] = handler
+	return nil
+}
+
+// Start seals the handler registry and starts task consumption. Keeping
+// construction separate from startup prevents persisted tasks from being
+// claimed before App has registered every handler.
+func (r *Runtime) Start() error {
+	if r == nil || r.store == nil {
+		return errors.New("outbox: runtime is not configured")
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.closed {
+		return errors.New("outbox: runtime is closed")
+	}
+	if r.started {
+		return nil
+	}
+	r.started = true
+	for i := 0; i < r.cfg.WorkerCount; i++ {
+		r.wg.Add(1)
+		go r.worker(i)
+	}
 	return nil
 }
 
@@ -137,29 +163,49 @@ func (r *Runtime) processBatch(workerID string, now time.Time) {
 		handler := r.handlers[task.Kind]
 		r.mu.RUnlock()
 		if handler == nil {
-			_ = r.store.FailOutbox(context.Background(), task.ID, fmt.Errorf("no handler registered for %q", task.Kind), time.Time{})
+			retryAt := time.Now().Add(textutil.Backoff(task.Attempts, 2*time.Second, 256*time.Second))
+			ctx, cancel := r.finalizeContext()
+			_ = r.store.FailOutbox(ctx, task.ID, fmt.Errorf("no handler registered for %q", task.Kind), retryAt)
+			cancel()
 			continue
 		}
 		ctx, cancel := context.WithTimeout(r.ctx, r.cfg.TaskTimeout)
 		err := handler(ctx, append([]byte(nil), task.Payload...))
 		cancel()
 		if err == nil {
-			if completeErr := r.store.CompleteOutbox(context.Background(), task.ID); completeErr != nil {
+			finalizeCtx, finalizeCancel := r.finalizeContext()
+			completeErr := r.store.CompleteOutbox(finalizeCtx, task.ID)
+			finalizeCancel()
+			if completeErr != nil {
 				slog.Warn("outbox: complete failed", "task_id", task.ID, "error", completeErr)
 			}
 			continue
 		}
 		retryAt := time.Now().Add(textutil.Backoff(task.Attempts, 2*time.Second, 256*time.Second))
-		if failErr := r.store.FailOutbox(context.Background(), task.ID, err, retryAt); failErr != nil {
+		finalizeCtx, finalizeCancel := r.finalizeContext()
+		failErr := r.store.FailOutbox(finalizeCtx, task.ID, err, retryAt)
+		finalizeCancel()
+		if failErr != nil {
 			slog.Warn("outbox: fail update failed", "task_id", task.ID, "error", failErr)
 		}
 	}
+}
+
+func (r *Runtime) finalizeContext() (context.Context, context.CancelFunc) {
+	return context.WithTimeout(context.WithoutCancel(r.ctx), 5*time.Second)
 }
 
 func (r *Runtime) Close() error {
 	if r == nil {
 		return nil
 	}
+	r.mu.Lock()
+	if r.closed {
+		r.mu.Unlock()
+		return nil
+	}
+	r.closed = true
+	r.mu.Unlock()
 	r.cancel()
 	r.wg.Wait()
 	return nil
