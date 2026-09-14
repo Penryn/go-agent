@@ -76,6 +76,48 @@ func TestUpdateRollsBackWhenPersistenceFails(t *testing.T) {
 	}
 }
 
+func TestReduceBoundsAndResolvesOpenLoops(t *testing.T) {
+	memory := presencedomain.GroupWorkingMemory{GroupID: 1}
+	base := time.Unix(100, 0)
+	for i, text := range []string{"第一个？", "第二个？", "第三个？", "第四个？"} {
+		record := testEventRecord(text)
+		record.Event.Text = text
+		record.Timestamp = base.Add(time.Duration(i) * time.Second)
+		memory = reduce(memory, record, 32)
+	}
+	if len(memory.OpenLoops) != maxOpenLoops || memory.OpenLoops[0] != "第二个？" {
+		t.Fatalf("open loops were not bounded to newest entries: %#v", memory.OpenLoops)
+	}
+
+	outbound := testEventRecord("out")
+	outbound.Origin = presencedomain.OriginOutbound
+	outbound.Event.Text = "答完了"
+	outbound.Timestamp = base.Add(5 * time.Second)
+	memory = reduce(memory, outbound, 32)
+	if len(memory.OpenLoops) != 0 {
+		t.Fatalf("successful outbound did not resolve open loops: %#v", memory.OpenLoops)
+	}
+	if memory.ActiveTopic != "第四个？" {
+		t.Fatalf("outbound text replaced the human topic: %q", memory.ActiveTopic)
+	}
+}
+
+func TestReduceExpiresStaleOpenLoops(t *testing.T) {
+	memory := presencedomain.GroupWorkingMemory{
+		GroupID:       1,
+		OpenLoops:     []string{"很久以前的问题？"},
+		LastUpdatedAt: time.Unix(100, 0),
+	}
+	record := testEventRecord("new")
+	record.Event.Text = "换话题了"
+	record.Timestamp = memory.LastUpdatedAt.Add(openLoopTTL + time.Second)
+
+	memory = reduce(memory, record, 32)
+	if len(memory.OpenLoops) != 0 {
+		t.Fatalf("stale open loops survived TTL: %#v", memory.OpenLoops)
+	}
+}
+
 func testEventRecord(eventID string) presencedomain.EventRecord {
 	now := time.Now()
 	return presencedomain.EventRecord{

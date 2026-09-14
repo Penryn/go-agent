@@ -14,6 +14,13 @@ import (
 
 var shanghaiLocation = time.FixedZone("Asia/Shanghai", 8*60*60)
 
+const (
+	promptRecentTail       = 8
+	promptCurrentUserTurns = 2
+	promptBurstGapSeconds  = int64(1)
+	promptBurstMaxSeconds  = int64(3)
+)
+
 // defaultMood 返回默认心情
 func defaultMood(mood string) string {
 	if mood == "" {
@@ -68,6 +75,75 @@ func sameEvent(left, right conversationdomain.ConversationEvent) bool {
 		return true
 	}
 	return right.EventID == "" && right.MessageID != "" && left.MessageID == right.MessageID
+}
+
+// prepareDialogueTurns keeps the prompt focused without mutating the archived
+// facts. It merges a rapid same-user split message into the current turn, then
+// retains the conversational tail plus the current user's recent context and
+// an explicitly replied-to message.
+func prepareDialogueTurns(turns []conversationdomain.ConversationEvent, current conversationdomain.ConversationEvent, selfID int64) ([]conversationdomain.ConversationEvent, conversationdomain.ConversationEvent) {
+	history := make([]conversationdomain.ConversationEvent, 0, len(turns))
+	for _, turn := range turns {
+		if sameEvent(turn, current) || strings.TrimSpace(turn.Text) == "" {
+			continue
+		}
+		history = append(history, turn)
+	}
+
+	burstStart := len(history)
+	if current.EventID != "" && current.TimestampUnix > 0 && current.UserID != 0 && current.UserID != selfID {
+		lastTimestamp := current.TimestampUnix
+		for i := len(history) - 1; i >= 0; i-- {
+			turn := history[i]
+			if turn.UserID != current.UserID || turn.UserID == selfID || turn.TimestampUnix <= 0 {
+				break
+			}
+			if lastTimestamp-turn.TimestampUnix < 0 || lastTimestamp-turn.TimestampUnix > promptBurstGapSeconds || current.TimestampUnix-turn.TimestampUnix > promptBurstMaxSeconds {
+				break
+			}
+			burstStart = i
+			lastTimestamp = turn.TimestampUnix
+		}
+	}
+	if burstStart < len(history) {
+		parts := make([]string, 0, len(history)-burstStart+1)
+		for _, turn := range history[burstStart:] {
+			parts = append(parts, strings.TrimSpace(turn.Text))
+		}
+		parts = append(parts, strings.TrimSpace(current.Text))
+		current.Text = strings.Join(parts, " ")
+		history = history[:burstStart]
+	}
+
+	if len(history) <= promptRecentTail {
+		return history, current
+	}
+	selected := make(map[int]struct{}, promptRecentTail+promptCurrentUserTurns+1)
+	for i := len(history) - promptRecentTail; i < len(history); i++ {
+		selected[i] = struct{}{}
+	}
+	currentUserTurns := 0
+	for i := len(history) - 1; i >= 0 && currentUserTurns < promptCurrentUserTurns; i-- {
+		if history[i].UserID == current.UserID {
+			selected[i] = struct{}{}
+			currentUserTurns++
+		}
+	}
+	if current.ReplyToMessageID != "" {
+		for i := len(history) - 1; i >= 0; i-- {
+			if history[i].MessageID == current.ReplyToMessageID {
+				selected[i] = struct{}{}
+				break
+			}
+		}
+	}
+	result := make([]conversationdomain.ConversationEvent, 0, len(selected))
+	for i, turn := range history {
+		if _, ok := selected[i]; ok {
+			result = append(result, turn)
+		}
+	}
+	return result, current
 }
 
 // stableHistoryTurn 格式化历史对话轮次

@@ -1,6 +1,7 @@
 package prompting
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/cloudwego/eino/schema"
@@ -37,6 +38,43 @@ func TestMessagesRebuildDialogueFromArchivedEvents(t *testing.T) {
 		if message.Role == schema.Tool || len(message.ToolCalls) > 0 {
 			t.Fatalf("model scratch leaked into rebuilt dialogue: %#v", message)
 		}
+	}
+}
+
+func TestPrepareDialogueTurnsMergesRapidSplitMessage(t *testing.T) {
+	current := conversationdomain.ConversationEvent{EventID: "e3", UserID: 2, Text: "说完", TimestampUnix: 102}
+	history, merged := prepareDialogueTurns([]conversationdomain.ConversationEvent{
+		{EventID: "e1", UserID: 2, Text: "我还没", TimestampUnix: 100},
+		{EventID: "e2", UserID: 2, Text: "说", TimestampUnix: 101},
+	}, current, 99)
+
+	if len(history) != 0 || merged.Text != "我还没 说 说完" {
+		t.Fatalf("split message was not merged: history=%#v current=%q", history, merged.Text)
+	}
+}
+
+func TestPrepareDialogueTurnsPinsReplyTargetAndCurrentSpeaker(t *testing.T) {
+	turns := make([]conversationdomain.ConversationEvent, 0, 12)
+	turns = append(turns,
+		conversationdomain.ConversationEvent{EventID: "reply-target", MessageID: "m-target", UserID: 7, Text: "被引用的旧消息"},
+		conversationdomain.ConversationEvent{EventID: "speaker-old", UserID: 2, Text: "当前说话人的旧消息"},
+	)
+	for i := 0; i < 10; i++ {
+		turns = append(turns, conversationdomain.ConversationEvent{EventID: "tail-" + string(rune('a'+i)), UserID: int64(10 + i), Text: "尾部消息"})
+	}
+	current := conversationdomain.ConversationEvent{EventID: "current", UserID: 2, ReplyToMessageID: "m-target", Text: "接着说"}
+
+	history, _ := prepareDialogueTurns(turns, current, 99)
+	var joined strings.Builder
+	for _, turn := range history {
+		joined.WriteString(turn.Text)
+		joined.WriteByte('\n')
+	}
+	if !strings.Contains(joined.String(), "被引用的旧消息") || !strings.Contains(joined.String(), "当前说话人的旧消息") {
+		t.Fatalf("relevant older turns were not pinned: %s", joined.String())
+	}
+	if len(history) != 10 {
+		t.Fatalf("unexpected focused history size: %d", len(history))
 	}
 }
 

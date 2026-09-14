@@ -331,21 +331,14 @@ func (c *Composer) MessagesWithContext(ctx context.Context, snapshot conversatio
 		decision = decisions[0]
 	}
 	currentEvent := eventWithProfileIdentity(snapshot.Event, snapshot.MemberProfile)
+	historyEvents, currentEvent := prepareDialogueTurns(snapshot.RecentTurns, currentEvent, snapshot.SelfID)
 
 	type historyTurn struct {
 		event   conversationdomain.ConversationEvent
 		content string
 	}
-	history := make([]historyTurn, 0, len(snapshot.RecentTurns))
-	for _, turn := range snapshot.RecentTurns {
-		// The current event is represented once below. Older events remain separate
-		// messages so the next turn can reuse them as an unchanged cache prefix.
-		if sameEvent(turn, currentEvent) {
-			continue
-		}
-		if strings.TrimSpace(turn.Text) == "" {
-			continue
-		}
+	history := make([]historyTurn, 0, len(historyEvents))
+	for _, turn := range historyEvents {
 		history = append(history, historyTurn{event: turn, content: stableHistoryTurn(turn, snapshot.SelfID)})
 	}
 	used := 0
@@ -368,6 +361,7 @@ func (c *Composer) MessagesWithContext(ctx context.Context, snapshot conversatio
 		}
 		messages = append(messages, schema.UserMessage(turn.content))
 	}
+	snapshot.Event = currentEvent
 	messages = append(messages, c.turnMessagesWithContext(ctx, snapshot, decision, recentTruncated)...)
 	return messages
 }

@@ -21,6 +21,8 @@ const defaultMaxSeen = 2048
 const (
 	burstWindow    = 700 * time.Millisecond
 	burstMaxWindow = 3 * time.Second
+	openLoopTTL    = 10 * time.Minute
+	maxOpenLoops   = 3
 )
 
 type Manager struct {
@@ -426,6 +428,7 @@ func (a *actor) pruneSeen(tail []presencedomain.EventRecord) {
 }
 
 func reduce(memory presencedomain.GroupWorkingMemory, record presencedomain.EventRecord, tailSize int) presencedomain.GroupWorkingMemory {
+	previousUpdate := memory.LastUpdatedAt
 	memory.Version++
 	memory.LastUpdatedAt = record.Timestamp
 	memory.Checkpoint = presencedomain.ProjectionCheckpoint{
@@ -439,9 +442,15 @@ func reduce(memory presencedomain.GroupWorkingMemory, record presencedomain.Even
 		memory.RecentTail = memory.RecentTail[len(memory.RecentTail)-tailSize:]
 	}
 	pruneMedia(&memory)
+	if !previousUpdate.IsZero() && record.Timestamp.Sub(previousUpdate) > openLoopTTL {
+		memory.OpenLoops = nil
+	}
 
 	if record.Origin == presencedomain.OriginOutbound {
-		memory.ActiveTopic = strings.TrimSpace(record.Event.Text)
+		// A successfully archived outbound event resolves the questions that led
+		// to this response. Keep the human topic instead of replacing it with the
+		// bot's own wording.
+		memory.OpenLoops = nil
 		memory.CurrentBurst = presencedomain.ConversationBurst{}
 		return memory
 	}
@@ -473,6 +482,9 @@ func reduce(memory presencedomain.GroupWorkingMemory, record presencedomain.Even
 		memory.ActiveTopic = text
 		if strings.ContainsAny(text, "?？") {
 			memory.OpenLoops = appendUnique(memory.OpenLoops, text)
+			if len(memory.OpenLoops) > maxOpenLoops {
+				memory.OpenLoops = memory.OpenLoops[len(memory.OpenLoops)-maxOpenLoops:]
+			}
 		}
 	}
 	return memory
