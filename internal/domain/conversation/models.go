@@ -95,6 +95,7 @@ type PromptToolCall struct {
 // Version changes intentionally invalidate old provider prefixes.
 type PromptSession struct {
 	Version  string          `json:"version,omitempty" yaml:"version,omitempty"`
+	Revision uint64          `json:"revision,omitempty" yaml:"revision,omitempty"`
 	Messages []PromptMessage `json:"messages,omitempty" yaml:"messages,omitempty"`
 }
 

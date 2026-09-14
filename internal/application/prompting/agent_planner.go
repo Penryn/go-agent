@@ -186,7 +186,9 @@ func (p *AgentPlanner) Plan(ctx context.Context, snapshot conversationdomain.Con
 			slog.Debug("planner: assistant output", "trace_id", snapshot.SnapshotID, "text", preview)
 		}
 	}
-	p.savePromptSession(ctx, snapshot.Event.GroupID, promptSession)
+	if ctx.Err() == nil {
+		p.savePromptSession(ctx, snapshot.Event.GroupID, snapshot.Projection.Version, snapshot.PromptSession.Revision, promptSession)
+	}
 
 	if plan, ok, err := toolsvc.ParseTerminalPlan(decision.DecisionID, terminalName, terminalContent, toolContext); err == nil && ok {
 		slog.Info("planner: terminal tool", "tool", terminalName, "trace_id", snapshot.SnapshotID, "bubbles", len(plan.Bubbles))
@@ -230,12 +232,12 @@ func evidenceEventIDs(snapshot conversationdomain.ContextSnapshot) []string {
 	return ids
 }
 
-func (p *AgentPlanner) savePromptSession(ctx context.Context, groupID int64, session conversationdomain.PromptSession) {
+func (p *AgentPlanner) savePromptSession(ctx context.Context, groupID int64, projectionVersion, sessionRevision uint64, session conversationdomain.PromptSession) {
 	for _, store := range p.sessions {
 		if store == nil {
 			continue
 		}
-		if err := store.UpdatePromptSession(ctx, groupID, session); err != nil {
+		if err := store.UpdatePromptSession(ctx, groupID, projectionVersion, sessionRevision, session); err != nil {
 			slog.Warn("planner: save prompt session failed", "group_id", groupID, "error", err)
 		}
 	}

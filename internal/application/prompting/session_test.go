@@ -36,10 +36,11 @@ func TestSessionVersionChangesWithToolSchema(t *testing.T) {
 	decision := policydomain.AutonomyDecision{TriggerType: "answer"}
 	snapshot := conversationdomain.ContextSnapshot{Event: conversationdomain.ConversationEvent{Text: "第一句"}}
 	_, session := composer.sessionMessages(snapshot, decision, "tools-v1")
+	session.Revision = 7
 	snapshot.PromptSession = session
 	_, reset := composer.sessionMessages(snapshot, decision, "tools-v2")
-	if len(reset.Messages) != 2 || reset.Version == session.Version {
-		t.Fatalf("tool schema change did not reset session: old=%q new=%q messages=%d", session.Version, reset.Version, len(reset.Messages))
+	if len(reset.Messages) != 2 || reset.Version == session.Version || reset.Revision != session.Revision {
+		t.Fatalf("tool schema change did not reset session safely: old=%q new=%q revision=%d messages=%d", session.Version, reset.Version, reset.Revision, len(reset.Messages))
 	}
 }
 

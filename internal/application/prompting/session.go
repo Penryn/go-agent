@@ -23,7 +23,7 @@ const (
 // PromptSessionStore persists the model-visible conversation without coupling
 // the prompting package to a storage adapter.
 type PromptSessionStore interface {
-	UpdatePromptSession(context.Context, int64, conversationdomain.PromptSession) error
+	UpdatePromptSession(context.Context, int64, uint64, uint64, conversationdomain.PromptSession) error
 }
 
 func (c *Composer) sessionMessages(snapshot conversationdomain.ContextSnapshot, decision policydomain.AutonomyDecision, toolHash string) ([]*schema.Message, conversationdomain.PromptSession) {
@@ -34,7 +34,7 @@ func (c *Composer) sessionMessagesWithContext(ctx context.Context, snapshot conv
 	session := snapshot.PromptSession
 	version := promptSessionVersionFor(c.StaticInstruction(), toolHash)
 	if session.Version != version {
-		session = conversationdomain.PromptSession{Version: version}
+		session = conversationdomain.PromptSession{Version: version, Revision: session.Revision}
 	}
 	if len(session.Messages) == 0 {
 		messages := c.MessagesWithContext(ctx, snapshot, decision)

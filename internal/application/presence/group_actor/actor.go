@@ -3,6 +3,7 @@ package group_actor
 import (
 	"context"
 	"errors"
+	"fmt"
 	"slices"
 	"strings"
 	"sync"
@@ -22,6 +23,8 @@ const (
 	burstWindow    = 700 * time.Millisecond
 	burstMaxWindow = 3 * time.Second
 )
+
+var ErrStalePromptSession = errors.New("group actor: stale prompt session")
 
 type Manager struct {
 	log      *ingress.MemoryEventLog
@@ -122,10 +125,24 @@ func (m *Manager) observe(ctx context.Context, record presencedomain.EventRecord
 	if err != nil {
 		return presencedomain.GroupWorkingMemory{}, err
 	}
-	memory := a.observe(record)
-	if err := m.save(ctx, memory); err != nil {
-		return memory, err
+	a.mu.Lock()
+	a.touch()
+	if _, duplicate := a.seen[record.EventID]; duplicate {
+		memory := cloneMemory(a.memory)
+		a.mu.Unlock()
+		return memory, nil
 	}
+	next := cloneMemory(a.memory)
+	next = reduce(next, record, a.tailSize)
+	if err := m.save(ctx, next); err != nil {
+		a.mu.Unlock()
+		return next, err
+	}
+	a.memory = next
+	a.seen[record.EventID] = struct{}{}
+	a.pruneSeen(a.memory.RecentTail)
+	memory := cloneMemory(a.memory)
+	a.mu.Unlock()
 	return memory, nil
 }
 
@@ -150,14 +167,18 @@ func (m *Manager) Update(ctx context.Context, groupID int64, update func(*presen
 	}
 	a.mu.Lock()
 	a.touch()
-	if err := update(&a.memory); err != nil {
+	next := cloneMemory(a.memory)
+	if err := update(&next); err != nil {
 		a.mu.Unlock()
 		return err
 	}
-	memory := cloneMemory(a.memory)
-	err = m.save(ctx, memory)
+	if err := m.save(ctx, next); err != nil {
+		a.mu.Unlock()
+		return err
+	}
+	a.memory = next
 	a.mu.Unlock()
-	return err
+	return nil
 }
 
 // Replay rebuilds the group projection from durable events after a cursor.
@@ -177,11 +198,18 @@ func (m *Manager) Replay(ctx context.Context, groupID int64, after time.Time, af
 		return presencedomain.GroupWorkingMemory{}, err
 	}
 	a.mu.Lock()
+	a.touch()
+	next := cloneMemory(a.memory)
+	addedEventIDs := make([]string, 0, len(events))
+	pendingEventIDs := make(map[string]struct{}, len(events))
 	for _, event := range events {
 		if event.EventID == "" {
 			continue
 		}
 		if _, seen := a.seen[event.EventID]; seen {
+			continue
+		}
+		if _, pending := pendingEventIDs[event.EventID]; pending {
 			continue
 		}
 		timestamp := time.Unix(event.TimestampUnix, 0)
@@ -193,26 +221,50 @@ func (m *Manager) Replay(ctx context.Context, groupID int64, after time.Time, af
 			origin = presencedomain.OriginOutbound
 		}
 		record := presencedomain.EventRecord{EventID: event.EventID, GroupID: groupID, UserID: event.UserID, Origin: origin, Timestamp: timestamp, Event: event}
-		a.memory = reduce(a.memory, record, a.tailSize)
-		a.seen[event.EventID] = struct{}{}
+		next = reduce(next, record, a.tailSize)
+		addedEventIDs = append(addedEventIDs, event.EventID)
+		pendingEventIDs[event.EventID] = struct{}{}
 	}
-	memory := cloneMemory(a.memory)
-	a.mu.Unlock()
-	if err := m.save(ctx, memory); err != nil {
+	if err := m.save(ctx, next); err != nil {
+		a.mu.Unlock()
 		return presencedomain.GroupWorkingMemory{}, err
 	}
+	a.memory = next
+	for _, eventID := range addedEventIDs {
+		a.seen[eventID] = struct{}{}
+	}
+	a.pruneSeen(a.memory.RecentTail)
+	memory := cloneMemory(a.memory)
+	a.mu.Unlock()
 	return memory, nil
 }
 
 // UpdatePromptSession persists the model-visible conversation for one group.
 // It is kept behind the same actor lock as event state so prompt history does
 // not race with working-memory updates.
-func (m *Manager) UpdatePromptSession(ctx context.Context, groupID int64, session conversationdomain.PromptSession) error {
+func (m *Manager) UpdatePromptSession(ctx context.Context, groupID int64, expectedProjectionVersion, expectedSessionRevision uint64, session conversationdomain.PromptSession) error {
 	a, err := m.actor(ctx, groupID)
 	if err != nil {
 		return err
 	}
-	return m.save(ctx, a.updatePromptSession(session))
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.touch()
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if a.memory.Version != expectedProjectionVersion || a.memory.PromptSession.Revision != expectedSessionRevision {
+		return fmt.Errorf("%w: projection=%d/%d session=%d/%d", ErrStalePromptSession,
+			expectedProjectionVersion, a.memory.Version, expectedSessionRevision, a.memory.PromptSession.Revision)
+	}
+	next := cloneMemory(a.memory)
+	session.Revision = expectedSessionRevision + 1
+	next.PromptSession = session
+	if err := m.save(ctx, next); err != nil {
+		return err
+	}
+	a.memory = next
+	return nil
 }
 
 func (m *Manager) actor(ctx context.Context, groupID int64) (*actor, error) {
@@ -258,7 +310,16 @@ func (m *Manager) EnrichMedia(ctx context.Context, groupID int64, eventID string
 	if err != nil {
 		return err
 	}
-	return m.save(ctx, a.enrichMedia(eventID, descriptors))
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.touch()
+	next := cloneMemory(a.memory)
+	enrichMedia(&next, eventID, descriptors)
+	if err := m.save(ctx, next); err != nil {
+		return err
+	}
+	a.memory = next
+	return nil
 }
 
 func (m *Manager) GroupIDs() []int64 {
@@ -362,41 +423,12 @@ func (a *actor) lastUsed() time.Time {
 	return time.Unix(0, a.lastUsedNano.Load())
 }
 
-func (a *actor) observe(record presencedomain.EventRecord) presencedomain.GroupWorkingMemory {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	a.touch()
-	if _, duplicate := a.seen[record.EventID]; !duplicate {
-		a.seen[record.EventID] = struct{}{}
-		a.memory = reduce(a.memory, record, a.tailSize)
-		a.pruneSeen(a.memory.RecentTail)
-	}
-
-	return cloneMemory(a.memory)
-}
-
-func (a *actor) enrichMedia(eventID string, descriptors []mediadomain.MediaDescriptor) presencedomain.GroupWorkingMemory {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	a.touch()
-	enrichMedia(&a.memory, eventID, descriptors)
-	return cloneMemory(a.memory)
-}
-
 // snapshot must touch the idle clock: deliberation reads it before thinking,
 // and a group mid-deliberation must not be reclaimed by PruneIdle.
 func (a *actor) snapshot() presencedomain.GroupWorkingMemory {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	a.touch()
-	return cloneMemory(a.memory)
-}
-
-func (a *actor) updatePromptSession(session conversationdomain.PromptSession) presencedomain.GroupWorkingMemory {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	a.touch()
-	a.memory.PromptSession = session
 	return cloneMemory(a.memory)
 }
 
@@ -523,6 +555,10 @@ func cloneMemory(memory presencedomain.GroupWorkingMemory) presencedomain.GroupW
 	memory.PromptSession.Messages = append([]conversationdomain.PromptMessage(nil), memory.PromptSession.Messages...)
 	for i := range memory.PromptSession.Messages {
 		memory.PromptSession.Messages[i].ToolCalls = append([]conversationdomain.PromptToolCall(nil), memory.PromptSession.Messages[i].ToolCalls...)
+	}
+	memory.FeedbackWindows = append([]presencedomain.FeedbackWindow(nil), memory.FeedbackWindows...)
+	for i := range memory.FeedbackWindows {
+		memory.FeedbackWindows[i].ObservedEventIDs = append([]string(nil), memory.FeedbackWindows[i].ObservedEventIDs...)
 	}
 	return memory
 }
