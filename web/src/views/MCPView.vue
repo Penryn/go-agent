@@ -123,10 +123,15 @@ onBeforeRouteLeave(async () => {
           <label v-if="server.transport === 'stdio'">命令<el-input v-model="server.command" placeholder="npx" /></label>
           <label v-else>URL<el-input v-model="server.url" placeholder="https://..." /></label>
           <label>超时<el-input v-model="server.timeout" placeholder="15s" /></label>
-          <label class="mcp-wide">参数（每行一个）<el-input :model-value="server.args.join('\n')" type="textarea" :rows="2" placeholder="-y&#10;@modelcontextprotocol/server" @update:model-value="server.args = $event.split(/\r?\n/).map((item) => item.trim()).filter(Boolean)" /></label>
-          <label class="mcp-wide">工具筛选（每行一个，留空表示全部）<el-input :model-value="server.tools.join('\n')" type="textarea" :rows="2" placeholder="search&#10;fetch" @update:model-value="server.tools = $event.split(/\r?\n/).map((item) => item.trim()).filter(Boolean)" /></label>
         </div>
-        <div class="mcp-card-foot"><el-checkbox v-model="server.required">连接失败时阻止启动/应用</el-checkbox><span>工具会以 mcp_{{ server.name || 'server' }}_* 暴露</span></div>
+        <details class="mcp-advanced">
+          <summary>高级连接选项 <small>参数、工具筛选和启动策略</small></summary>
+          <div class="mcp-fields mcp-advanced-fields">
+            <label class="mcp-wide">参数（每行一个）<el-input :model-value="server.args.join('\n')" type="textarea" :rows="2" placeholder="-y&#10;@modelcontextprotocol/server" @update:model-value="server.args = $event.split(/\r?\n/).map((item) => item.trim()).filter(Boolean)" /></label>
+            <label class="mcp-wide">工具筛选（每行一个，留空表示全部）<el-input :model-value="server.tools.join('\n')" type="textarea" :rows="2" placeholder="search&#10;fetch" @update:model-value="server.tools = $event.split(/\r?\n/).map((item) => item.trim()).filter(Boolean)" /></label>
+          </div>
+          <div class="mcp-card-foot"><el-checkbox v-model="server.required">连接失败时阻止启动/应用</el-checkbox><span>工具会以 mcp_{{ server.name || 'server' }}_* 暴露</span></div>
+        </details>
       </article>
     </div>
   </section>

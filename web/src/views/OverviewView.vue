@@ -56,7 +56,14 @@ const stats = computed(() => [
           <div><span>近 10 分钟发言</span><strong>{{ persona?.runtime.replies_last_10min ?? 0 }}</strong></div>
           <div><span>兴趣标签</span><strong>{{ (persona?.interests || []).length }}</strong></div>
         </div>
-        <div class="runtime-note">QQ {{ snapshot?.status.qq_connected ? '正常' : '异常' }} · 数据库 {{ snapshot?.status.database_ok ? '正常' : '异常' }} · 主模型 {{ snapshot?.status.main_model_status === 'ready' ? '已就绪' : snapshot?.status.main_model_status === 'degraded' ? '最近调用异常' : '未配置' }} · 向量检索 {{ snapshot?.status.vector_search_status === 'ready' ? '正常' : snapshot?.status.vector_search_status === 'degraded' ? '最近检索降级' : snapshot?.status.vector_search_status === 'idle' ? '等待检索' : '未启用' }} · 队列积压 {{ snapshot?.status.queue_backlog ?? 0 }} · 最近错误 {{ relativeTime(snapshot?.status.last_error_at) }} · 模型检查 {{ relativeTime(snapshot?.status.main_model_checked_at) }} · 向量检查 {{ relativeTime(snapshot?.status.vector_checked_at) }}。</div>
+        <div class="health-grid" aria-label="基础设施健康状态">
+          <div class="health-cell" :data-state="snapshot?.status.qq_connected ? 'ok' : 'error'"><span>QQ</span><strong>{{ snapshot?.status.qq_connected ? '正常' : '中断' }}</strong><small>{{ snapshot?.status.mode || '—' }}</small></div>
+          <div class="health-cell" :data-state="snapshot?.status.database_ok ? 'ok' : 'error'"><span>数据库</span><strong>{{ snapshot?.status.database_ok ? '正常' : '异常' }}</strong><small>连接检查</small></div>
+          <div class="health-cell" :data-state="snapshot?.status.main_model_status === 'ready' ? 'ok' : snapshot?.status.main_model_status === 'degraded' ? 'warn' : 'error'"><span>主模型</span><strong>{{ snapshot?.status.main_model_status === 'ready' ? '已就绪' : snapshot?.status.main_model_status === 'degraded' ? '降级' : '未配置' }}</strong><small>{{ relativeTime(snapshot?.status.main_model_checked_at) }}</small></div>
+          <div class="health-cell" :data-state="snapshot?.status.vector_search_status === 'ready' ? 'ok' : snapshot?.status.vector_search_status === 'degraded' ? 'warn' : 'idle'"><span>向量检索</span><strong>{{ snapshot?.status.vector_search_status === 'ready' ? '正常' : snapshot?.status.vector_search_status === 'degraded' ? '降级' : snapshot?.status.vector_search_status === 'idle' ? '等待' : '未启用' }}</strong><small>{{ relativeTime(snapshot?.status.vector_checked_at) }}</small></div>
+          <div class="health-cell" :data-state="(snapshot?.status.queue_backlog ?? 0) > 0 ? 'warn' : 'ok'"><span>队列积压</span><strong>{{ snapshot?.status.queue_backlog ?? 0 }}</strong><small>待处理任务</small></div>
+          <div class="health-cell" :data-state="snapshot?.status.last_error_at ? 'warn' : 'ok'"><span>最近错误</span><strong>{{ snapshot?.status.last_error_at ? '有记录' : '无记录' }}</strong><small>{{ relativeTime(snapshot?.status.last_error_at) }}</small></div>
+        </div>
       </article>
 
       <article class="glass-panel groups-panel">

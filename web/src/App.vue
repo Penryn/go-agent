@@ -14,9 +14,8 @@ const detailedSnapshotRoutes = new Set(['overview', 'monitoring'])
 
 const navSections = [
   { label: '运营', items: [{ to: '/', label: '实时概览', icon: DataAnalysis }, { to: '/activity', label: '运行记录', icon: ChatDotRound }, { to: '/tasks', label: '任务队列', icon: List }] },
-  { label: '知识', items: [{ to: '/memory', label: '长期记忆', icon: Memo }, { to: '/relations', label: '群友关系', icon: User }, { to: '/memes', label: '表情包库', icon: Picture }] },
-  { label: '观测', items: [{ to: '/monitoring', label: '监控指标', icon: TrendCharts }] },
-  { label: '配置', items: [{ to: '/mcp', label: 'MCP 工具', icon: Setting }] },
+  { label: '知识库', items: [{ to: '/memory', label: '长期记忆', icon: Memo }, { to: '/relations', label: '群友关系', icon: User }, { to: '/memes', label: '表情包库', icon: Picture }] },
+  { label: '系统', items: [{ to: '/monitoring', label: '监控指标', icon: TrendCharts }, { to: '/mcp', label: 'MCP 工具', icon: Setting }] },
 ]
 
 function saveToken() {
@@ -42,7 +41,7 @@ watch(() => route.name, (name) => store.setSnapshotMode(detailedSnapshotRoutes.h
       <nav class="nav-list" aria-label="后台导航">
         <section v-for="section in navSections" :key="section.label" class="nav-section">
           <span class="nav-section-label">{{ section.label }}</span>
-          <RouterLink v-for="item in section.items" :key="item.to" :to="item.to" class="nav-item">
+          <RouterLink v-for="item in section.items" :key="item.to" :to="item.to" class="nav-item" :title="item.label" :aria-label="item.label">
             <el-icon><component :is="item.icon" /></el-icon>
             <span>{{ item.label }}</span>
           </RouterLink>

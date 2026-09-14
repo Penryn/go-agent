@@ -117,11 +117,13 @@ watch(query, () => {
 </script>
 
 <template>
-  <section class="view-wrapper">
-    <h2>关系管理</h2>
-    <el-input v-model="query" placeholder="搜索成员名称..." :prefix-icon="Search" clearable @clear="load(1)" />
-    <el-alert v-if="loadError" type="error" :title="loadError" :closable="false" style="margin-top: 1em;" />
-    <el-table :data="rows" stripe style="width: 100%; margin-top: 1em;" v-loading="loading" @row-click="handleRowClick" :row-class-name="({ row }: { row: Relationship }) => expandedRow?.user_id === row.user_id && expandedRow?.group_id === row.group_id ? 'expanded-row' : ''">
+  <section class="glass-panel page-panel relation-page">
+    <div class="page-panel-head">
+      <div><span>RELATIONSHIP GRAPH</span><h2>群友关系</h2><p>查看群友互动关系、情绪事件与投影版本历史 · 共 {{ total }} 位成员</p></div>
+      <el-input v-model="query" class="relation-search" placeholder="搜索成员名称" :prefix-icon="Search" clearable @clear="load(1)" />
+    </div>
+    <el-alert v-if="loadError" type="error" :title="`读取关系失败：${loadError}`" :closable="false" show-icon />
+    <el-table :data="rows" class="relation-table" v-loading="loading" @row-click="handleRowClick" :row-class-name="({ row }: { row: Relationship }) => expandedRow?.user_id === row.user_id && expandedRow?.group_id === row.group_id ? 'expanded-row' : ''">
       <el-table-column label="成员" width="180" prop="name" />
       <el-table-column label="亲密度" width="100" sortable prop="affinity"><template #default="{ row }">{{ row.affinity.toFixed(2) }}</template></el-table-column>
       <el-table-column label="熟悉度" width="100" sortable prop="familiarity"><template #default="{ row }">{{ row.familiarity.toFixed(2) }}</template></el-table-column>
@@ -132,8 +134,7 @@ watch(query, () => {
       <el-table-column label="最近互动" width="130"><template #default="{ row }">{{ relativeTime(row.last_interact_at) }}</template></el-table-column>
     </el-table>
 
-    <!-- 展开的详情面板 -->
-    <el-card v-if="expandedRow" class="detail-card" shadow="hover">
+    <el-card v-if="expandedRow" class="detail-card" shadow="never">
       <template #header>
         <div class="card-header">
           <span>{{ expandedRow.name }} 的关系详情</span>
@@ -154,10 +155,10 @@ watch(query, () => {
               <el-tag :type="event.valence > 0.3 ? 'success' : event.valence < -0.3 ? 'danger' : 'info'" size="small">
                 {{ getEventLabel(event.kind) }}
               </el-tag>
-              <span style="margin-left: 8px; color: var(--el-text-color-secondary);">
+              <span class="event-valence">
                 情绪值: <span :style="{ color: getValenceColor(event.valence), fontWeight: 'bold' }">{{ event.valence.toFixed(2) }}</span>
               </span>
-              <div v-if="event.evidence_event_id" style="font-size: 12px; color: var(--el-text-color-secondary); margin-top: 4px;">
+              <div v-if="event.evidence_event_id" class="event-evidence">
                 证据事件: {{ event.evidence_event_id }}
               </div>
             </el-timeline-item>
@@ -176,7 +177,7 @@ watch(query, () => {
                 <span>🔗</span>
                 触发: {{ getEventLabel(snapshot.trigger_kind) }}
               </div>
-              <el-descriptions :column="2" border size="small" style="margin-top: 8px;">
+              <el-descriptions :column="2" border size="small" class="projection-descriptions">
                 <el-descriptions-item label="熟悉度">
                   <span>{{ snapshot.familiarity.toFixed(2) }}</span>
                   <span v-if="getFieldChange(index, 'familiarity')" :style="{ marginLeft: '8px', fontSize: '12px', color: getFieldChange(index, 'familiarity').startsWith('↑') ? '#67c23a' : '#f56c6c' }">
@@ -219,17 +220,19 @@ watch(query, () => {
 </template>
 
 <style scoped>
-.view-wrapper {
-  padding: 1em;
+.relation-search {
+  width: min(280px, 42vw);
 }
 
 .relation-pagination {
-  margin-top: 1em;
+  margin-top: 18px;
   justify-content: center;
 }
 
 .detail-card {
-  margin-top: 1em;
+  margin-top: 18px;
+  border-color: var(--line);
+  background: rgba(8, 11, 16, 0.42);
 }
 
 .card-header {
@@ -267,7 +270,7 @@ watch(query, () => {
 
 .history-time {
   font-size: 12px;
-  color: var(--el-text-color-secondary);
+  color: var(--muted);
 }
 
 .trigger-info {
@@ -275,12 +278,27 @@ watch(query, () => {
   align-items: center;
   gap: 4px;
   font-size: 13px;
-  color: var(--el-text-color-regular);
+  color: var(--muted);
   margin-bottom: 8px;
 }
 
+.event-valence {
+  margin-left: 8px;
+  color: var(--muted);
+}
+
+.event-evidence {
+  margin-top: 4px;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.projection-descriptions {
+  margin-top: 8px;
+}
+
 :deep(.expanded-row) {
-  background-color: var(--el-fill-color-light);
+  background-color: rgba(168, 242, 208, 0.06) !important;
 }
 
 :deep(.el-table__row) {
@@ -288,6 +306,12 @@ watch(query, () => {
 }
 
 :deep(.el-table__row:hover) {
-  background-color: var(--el-fill-color-light);
+  background-color: rgba(255, 255, 255, 0.035);
+}
+
+@media (max-width: 760px) {
+  .relation-search {
+    width: 100%;
+  }
 }
 </style>

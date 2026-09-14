@@ -20,7 +20,7 @@ const decisionReplyRate = computed(() => decisions.value ? (snapshot.value?.wind
 const retrieval = computed(() => snapshot.value?.retrieval || { queries: 0, queries_with_hits: 0, hit_rate: 0, avg_candidate_count: 0, result_recorded_queries: 0, selected_queries: 0, selection_rate: 0 })
 const modelUsage = computed(() => snapshot.value?.model_usage || { calls: 0, input_tokens: 0, cached_tokens: 0, cache_miss_tokens: 0, uncached_tokens: 0, output_tokens: 0, avg_duration_ms: 0, error_calls: 0 })
 const windowMinutesLabel = computed(() => windowMinutes.value === 1440 ? '近 24 小时' : windowMinutes.value === 60 ? '近 1 小时' : '近 10 分钟')
-const trendMaxQueries = computed(() => Math.max(1, ...trendPoints.value.map((point) => point.queries)))
+const trendMaxValue = computed(() => Math.max(1, ...trendPoints.value.flatMap((point) => [point.queries, point.replies, point.model_calls])))
 async function loadTrend() {
   trendLoading.value = true
   trendError.value = ''
@@ -43,13 +43,19 @@ onMounted(loadTrend)
     <section class="monitor-grid">
       <article class="monitor-card" data-tone="mint"><span>窗口内实际发言</span><strong>{{ snapshot?.window_metrics.replies ?? 0 }}</strong><small>{{ windowMinutesLabel }} · outcome=sent</small></article>
       <article class="monitor-card" data-tone="violet"><span>决策中有动作</span><strong>{{ Math.round(decisionReplyRate * 100) }}%</strong><small>{{ decisions }} 条决策记录</small></article>
-      <article class="monitor-card" data-tone="amber"><span>记忆平均置信度</span><strong>{{ avgConfidence.toFixed(2) }}</strong><small>{{ memories.length }} 条有效记忆</small></article>
       <article class="monitor-card" data-tone="blue"><span>任务失败占比</span><strong>{{ Math.round(taskFailureRate * 100) }}%</strong><small>{{ tasks }} 条任务记录</small></article>
-      <article class="monitor-card" data-tone="violet"><span>检索命中率</span><strong>{{ Math.round(retrieval.hit_rate * 100) }}%</strong><small>{{ retrieval.queries_with_hits }} / {{ retrieval.queries }} 次有结果</small></article>
-      <article class="monitor-card" data-tone="blue"><span>平均候选数</span><strong>{{ retrieval.avg_candidate_count.toFixed(1) }}</strong><small>{{ retrieval.queries }} 次检索</small></article>
-      <article class="monitor-card" data-tone="mint"><span>召回采用率</span><strong>{{ Math.round(retrieval.selection_rate * 100) }}%</strong><small>{{ retrieval.selected_queries }} / {{ retrieval.queries_with_hits }} 次进入决策</small></article>
       <article class="monitor-card" data-tone="amber"><span>模型平均耗时</span><strong>{{ Math.round(modelUsage.avg_duration_ms) }}ms</strong><small>当前窗口 · {{ modelUsage.calls }} 次调用</small></article>
     </section>
+
+    <details class="monitor-secondary">
+      <summary><span>检索与记忆指标</span><small>展开查看 4 项辅助指标</small></summary>
+      <section class="monitor-grid">
+        <article class="monitor-card" data-tone="amber"><span>记忆平均置信度</span><strong>{{ avgConfidence.toFixed(2) }}</strong><small>{{ memories.length }} 条有效记忆</small></article>
+        <article class="monitor-card" data-tone="violet"><span>检索命中率</span><strong>{{ Math.round(retrieval.hit_rate * 100) }}%</strong><small>{{ retrieval.queries_with_hits }} / {{ retrieval.queries }} 次有结果</small></article>
+        <article class="monitor-card" data-tone="blue"><span>平均候选数</span><strong>{{ retrieval.avg_candidate_count.toFixed(1) }}</strong><small>{{ retrieval.queries }} 次检索</small></article>
+        <article class="monitor-card" data-tone="mint"><span>召回采用率</span><strong>{{ Math.round(retrieval.selection_rate * 100) }}%</strong><small>{{ retrieval.selected_queries }} / {{ retrieval.queries_with_hits }} 次进入决策</small></article>
+      </section>
+    </details>
 
     <section class="monitor-detail monitor-trend">
       <div class="panel-title"><div><span>WINDOW TREND</span><h3>运行趋势</h3></div><span class="panel-hint">检索量与实际发言</span></div>
@@ -57,8 +63,11 @@ onMounted(loadTrend)
       <div v-loading="trendLoading" class="trend-list">
         <div v-for="point in trendPoints" :key="point.at" class="trend-row">
           <time>{{ new Date(point.at).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' }) }}</time>
-          <div class="trend-track"><i :style="{ width: `${point.queries / trendMaxQueries * 100}%` }" /></div>
-          <span>{{ point.queries }} 次检索 · {{ point.replies }} 次发言 · {{ point.model_calls }} 次模型调用</span>
+          <div class="trend-series">
+            <div class="trend-line"><span>检索</span><div class="trend-track"><i :style="{ width: `${point.queries / trendMaxValue * 100}%` }" /></div><b>{{ point.queries }}</b></div>
+            <div class="trend-line replies"><span>发言</span><div class="trend-track"><i :style="{ width: `${point.replies / trendMaxValue * 100}%` }" /></div><b>{{ point.replies }}</b></div>
+            <div class="trend-line model"><span>模型</span><div class="trend-track"><i :style="{ width: `${point.model_calls / trendMaxValue * 100}%` }" /></div><b>{{ point.model_calls }}</b></div>
+          </div>
         </div>
       </div>
       <el-empty v-if="!trendLoading && !trendPoints.length" description="暂无趋势数据" :image-size="48" />
