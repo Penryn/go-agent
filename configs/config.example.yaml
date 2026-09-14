@@ -310,8 +310,8 @@ tools:
     write_user_whitelist: []
 
 storage:
-  # 当前默认启动仍使用 in-memory store。
-  # 这里的配置已经用于适配器与集成测试，后续可切到主运行时。
+  # PostgreSQL 是当前主运行时的必需依赖；启动时会连接数据库并自动应用 schema/schema.sql。
+  # in-memory 实现只保留为测试或 QQ 关闭时的出站 Sender，不承担生产数据存储。
   postgres:
     host: 127.0.0.1
     port: 5432

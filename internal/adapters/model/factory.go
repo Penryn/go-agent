@@ -193,8 +193,7 @@ func (f *Factory) newEmbeddingModel(ctx context.Context, cfg config.ModelProvide
 
 func modelConfigured(cfg config.ModelProviderConfig) bool {
 	return strings.TrimSpace(cfg.Model) != "" ||
-		strings.TrimSpace(cfg.APIKey) != "" ||
-		strings.TrimSpace(cfg.BaseURL) != ""
+		strings.TrimSpace(cfg.APIKey) != ""
 }
 
 func normalizeProvider(provider string) string {

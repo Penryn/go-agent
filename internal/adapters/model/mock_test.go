@@ -232,6 +232,18 @@ func TestFactoryWarmupSkipsUnconfiguredEmbedding(t *testing.T) {
 	}
 }
 
+func TestFactoryWarmupIgnoresBaseURLWithoutCredentialsOrModel(t *testing.T) {
+	factory := NewFactory(config.ModelsConfig{
+		Main:      config.ModelProviderConfig{BaseURL: "https://example.invalid/v1"},
+		Vision:    config.ModelProviderConfig{BaseURL: "https://example.invalid/v1"},
+		Embedding: config.ModelProviderConfig{BaseURL: "https://example.invalid/v1"},
+	})
+
+	if err := factory.Warmup(context.Background()); err != nil {
+		t.Fatalf("base URL alone must not enable a model: %v", err)
+	}
+}
+
 func TestFactoryWarmupFailsOnUnsupportedEmbeddingProvider(t *testing.T) {
 	factory := NewFactory(config.ModelsConfig{
 		Embedding: config.ModelProviderConfig{

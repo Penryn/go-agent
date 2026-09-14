@@ -240,7 +240,7 @@ func (r *Runtime) deliberate(ctx context.Context, envelope conversationdomain.Ev
 		}
 	}
 	if r.deliberator == nil {
-		return Outcome{Envelope: envelope, Decision: silentDecision(envelope.TraceID, "delegated_to_decision_engine")}, nil
+		return Outcome{Envelope: envelope, Decision: silentDecision(envelope.TraceID, "deliberator_unavailable")}, nil
 	}
 	working, err := r.working.Snapshot(ctx, envelope.Event.GroupID)
 	if err != nil {

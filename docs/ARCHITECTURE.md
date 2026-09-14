@@ -8,7 +8,7 @@
 
 - 部署形态：单个 Go 进程 `qqbotd`，外接 NapCat 和 PostgreSQL/pgvector。
 - 代码形态：六边形架构加模块化单体。
-- 运行模型：事件驱动，每个群一个 Group Actor，同群串行、跨群并发。
+- 运行模型：事件驱动，每个群一个 Group Actor 串行维护状态；模型回合同群采用“新消息取消旧回合”，跨群并发。
 - AI 调度模型：事件进入工作记忆，构建统一 `ContextSnapshot`，经过 Admission Gate 后由 `AgentPlanner` 组织动作。
 - 异步模型：视觉理解、向量索引、学习和清理等可重放副作用通过 PostgreSQL Outbox 执行。
 
@@ -22,6 +22,7 @@ NapCat / OneBot
   -> ContextService.BuildSnapshot
   -> Admission Gate
   -> Composer / PromptSession / AgentPlanner
+  -> resolve ReplyPlan.PlannedActions into Decision.Action
   -> Action Service / OutputGuard
   -> Canon prepare
   -> outbound sender
@@ -29,7 +30,7 @@ NapCat / OneBot
   -> TurnObserver.AfterTurn
 ```
 
-`GroupActor` 负责群内事件归档、工作记忆、消息 burst 和 PromptSession；`ContextService` 负责一次性组装记忆、画像、场景、关系、策略和 PersonaView；`Action Service` 是发送、撤回、表情、表情包和戳一戳的最终边界。
+`GroupActor` 负责群内事件归档、工作记忆、消息 burst 和 PromptSession；`ContextService` 负责一次性组装记忆、画像、场景、关系、策略和 PersonaView；`Deliberation Adapter` 将 Planner 的单一计划动作解析为 `Decision.Action`，`Action Service` 只按该决策执行发送、撤回、表情、表情包或戳一戳。
 
 ## 分层和依赖
 
@@ -92,9 +93,9 @@ Outbox handler 必须可重入，外部副作用使用稳定业务幂等键。�
 
 ## 当前演进边界
 
-- 角色模式仍需从 `GroupScene.RecommendedRole` 提升为可执行 `PresenceMode`。
+- `GroupScene.RecommendedRole` 当前只作为模型上下文，不额外维护固定 `PresenceMode` 状态机。
 - 发送后的反馈窗口需要补齐基于 `action_id`、平台消息 ID 和源事件的可靠归因。
-- 同群并发 deliberation 需要 turn token、过期检查和发送幂等。
+- 同群新回合已能取消旧回合并在发送前检查 context；发送幂等目前仍是进程内 `action_id` 去重，尚未做到重启后 exactly-once。
 - BM25、Outbox 和向量 projection 需要继续补充健康检查、回放和死信运维能力。
 
 详细改造顺序、验收标准和身份角色边界见 [`AI_GROUP_FRIEND_ARCHITECTURE_PLAN.md`](./AI_GROUP_FRIEND_ARCHITECTURE_PLAN.md)。

@@ -19,11 +19,12 @@ NapCat / OneBot
           -> PersonaState（全局 mood / energy / talk_bias）
           -> PersonaView（当前有效人物事实）
       -> Deliberation Adapter
-          -> admission gate（重复、冷却、权限和安全边界）
+          -> admission gate（非定向重复消息）
           -> AgentPlanner
               -> Composer 稳定人设指令
               -> PromptSession
               -> LLM + tools
+          -> 将 ReplyPlan.PlannedActions 解析为 Decision.Action
       -> Action Service
           -> OutputGuard
           -> 发送 / 撤回 / 表情 / 表情包
@@ -62,12 +63,13 @@ NapCat / OneBot
 `Deliberation Adapter` 在上下文快照建立后执行轻量 admission gate：
 
 - 非直接指向机器人的重复消息不再次消耗模型回合；
-- 退缩或低精力状态下不主动加入无关对话；
-- 直接 @、点名或回复机器人仍保留回应机会。
+- 直接 @、点名或回复机器人不受该重复消息规则拦截；
+- mood、energy、关系和群场景只作为模型上下文，不在 Admission Gate 中硬编码参与意愿。
 
 通过闸门后，`AgentPlanner` 才创建工具循环。模型可以选择发文字、引用、表情、
-表情包、工具调用或 `stay_silent`。最终动作仍由 `Action Service`、OutputGuard 和
-发送适配器控制。
+表情包、工具调用或 `stay_silent`。`Deliberation Adapter` 会校验计划动作是否适合
+当前触发类型，并把它解析为唯一的 `Decision.Action`；最终动作仍由 `Action Service`、
+OutputGuard 和发送适配器控制。
 
 ## 事件与画像边界
 

@@ -9,8 +9,8 @@ import (
 	"strings"
 	"time"
 
-	contextsvc "github.com/phlin/go-agent/internal/application/context"
 	conversationdomain "github.com/phlin/go-agent/internal/domain/conversation"
+	mediadomain "github.com/phlin/go-agent/internal/domain/media"
 	policydomain "github.com/phlin/go-agent/internal/domain/policy"
 	presencedomain "github.com/phlin/go-agent/internal/domain/presence"
 	replydomain "github.com/phlin/go-agent/internal/domain/reply"
@@ -39,12 +39,18 @@ type Planner interface {
 	Plan(context.Context, conversationdomain.ContextSnapshot, policydomain.AutonomyDecision) (replydomain.ReplyPlan, error)
 }
 
+// SnapshotBuilder keeps deliberation dependent on the context use-case
+// contract rather than its concrete implementation.
+type SnapshotBuilder interface {
+	BuildSnapshot(context.Context, conversationdomain.EventEnvelope, []mediadomain.MediaDescriptor) (conversationdomain.ContextSnapshot, error)
+}
+
 type Adapter struct {
-	context *contextsvc.Service
+	context SnapshotBuilder
 	planner Planner
 }
 
-func NewAdapter(contextService *contextsvc.Service, planner Planner) *Adapter {
+func NewAdapter(contextService SnapshotBuilder, planner Planner) *Adapter {
 	return &Adapter{context: contextService, planner: planner}
 }
 
@@ -86,8 +92,11 @@ func (a *Adapter) Deliberate(ctx context.Context, input Input) (Result, error) {
 	if err != nil {
 		return Result{}, err
 	}
-	// 决策现在由 group_actor 的决策引擎处理
-	// 这里仅返回基本结果以保持接口兼容
+	// ReplyPlan is the planner's proposal; resolve it once into Decision.Action
+	// before crossing the executor boundary. The executor deliberately trusts
+	// only Decision.Action, so leaving the two values disconnected would turn
+	// terminal tools such as react/send_meme/repair into plain text replies.
+	decision.Action = resolveAction(decision.TriggerType, plan.PlannedActions)
 	return Result{
 		Snapshot: snapshot,
 		Decision: decision,
@@ -97,9 +106,9 @@ func (a *Adapter) Deliberate(ctx context.Context, input Input) (Result, error) {
 			CandidateID:    "",
 			GroupID:        input.Envelope.Event.GroupID,
 			EventID:        input.Envelope.Event.EventID,
-			Interpretation: "delegated_to_decision_engine",
+			Interpretation: "planner_action_resolved",
 			Evidence:       append([]string(nil), decision.ReasonCodes...),
-			Uncertainty:    1.0,
+			Uncertainty:    0,
 			ChosenAction:   string(decision.Action),
 			Outcome:        string(plan.SendMode),
 			CreatedAt:      time.Now(),
@@ -107,8 +116,9 @@ func (a *Adapter) Deliberate(ctx context.Context, input Input) (Result, error) {
 	}, nil
 }
 
-// intentBaseline 是各 intent 在 planner 未提议时的默认动作。
-var intentBaseline = map[string]policydomain.DecisionAction{
+// triggerBaseline is the safe default when the planner does not propose an
+// outward action for the current trigger type.
+var triggerBaseline = map[string]policydomain.DecisionAction{
 	"react":          policydomain.ActionReact,
 	"send_meme":      policydomain.ActionMemeOnly,
 	"poke_reply":     policydomain.ActionPokeReply,
@@ -124,28 +134,28 @@ var intentBaseline = map[string]policydomain.DecisionAction{
 	"observe_only":   policydomain.ActionSilent,
 }
 
-// intentAllowed 限定 planner 可在该 intent 下选择的表达模式；
+// triggerAllowed 限定 planner 可在该 trigger type 下选择的表达模式；
 // 越权提议一律退回 baseline，保证动作权始终在运行时规则手里。
-var intentAllowed = map[string][]policydomain.DecisionAction{
+var triggerAllowed = map[string][]policydomain.DecisionAction{
 	"react":        {policydomain.ActionReact, policydomain.ActionReply, policydomain.ActionMemeOnly, policydomain.ActionSilent},
 	"send_meme":    {policydomain.ActionMemeOnly, policydomain.ActionSilent},
-	"poke_reply":   {policydomain.ActionPokeReply, policydomain.ActionPokeBack, policydomain.ActionReply, policydomain.ActionMemeOnly, policydomain.ActionSilent},
+	"poke_reply":   {policydomain.ActionPokeReply, policydomain.ActionPokeBack, policydomain.ActionReply, policydomain.ActionReact, policydomain.ActionMemeOnly, policydomain.ActionRepair, policydomain.ActionSilent},
 	"observe_only": {policydomain.ActionSilent},
 }
 
-// allowedFor reply 类 intent 共用一条白名单。
-func allowedFor(intent string) []policydomain.DecisionAction {
-	if allowed, ok := intentAllowed[intent]; ok {
+// allowedFor returns the outward actions admitted for one trigger type.
+func allowedFor(triggerType string) []policydomain.DecisionAction {
+	if allowed, ok := triggerAllowed[triggerType]; ok {
 		return allowed
 	}
-	if _, ok := intentBaseline[intent]; ok {
-		return []policydomain.DecisionAction{policydomain.ActionReply, policydomain.ActionMemeOnly, policydomain.ActionRepair, policydomain.ActionSilent}
+	if _, ok := triggerBaseline[triggerType]; ok {
+		return []policydomain.DecisionAction{policydomain.ActionReply, policydomain.ActionReact, policydomain.ActionMemeOnly, policydomain.ActionRepair, policydomain.ActionSilent}
 	}
 	return nil
 }
 
-func baselineAction(intent string) policydomain.DecisionAction {
-	if action, ok := intentBaseline[intent]; ok {
+func baselineAction(triggerType string) policydomain.DecisionAction {
+	if action, ok := triggerBaseline[triggerType]; ok {
 		return action
 	}
 	return policydomain.ActionSilent
@@ -154,12 +164,12 @@ func baselineAction(intent string) policydomain.DecisionAction {
 // resolveAction keeps policy ownership in the runtime while allowing the
 // planner to choose among the expression modes that a candidate permits.
 // The executor receives this resolved decision as its sole action authority.
-func resolveAction(intent string, proposed []policydomain.DecisionAction) policydomain.DecisionAction {
-	baseline := baselineAction(intent)
+func resolveAction(triggerType string, proposed []policydomain.DecisionAction) policydomain.DecisionAction {
+	baseline := baselineAction(triggerType)
 	if len(proposed) == 0 {
 		return baseline
 	}
-	if slices.Contains(allowedFor(intent), proposed[0]) {
+	if slices.Contains(allowedFor(triggerType), proposed[0]) {
 		return proposed[0]
 	}
 	return baseline
@@ -167,15 +177,20 @@ func resolveAction(intent string, proposed []policydomain.DecisionAction) policy
 
 func decisionFor(envelope conversationdomain.EventEnvelope) policydomain.AutonomyDecision {
 	triggerType := "answer"
-	if envelope.Event.MentionedBot || envelope.Event.NamedBot || envelope.Event.IsReplyToBot || strings.ContainsAny(envelope.Event.Text, "?？") {
+	switch {
+	case envelope.Event.Kind == conversationdomain.EventPoke:
+		triggerType = "poke_reply"
+	case envelope.Event.Kind == conversationdomain.EventNotice:
+		triggerType = "acknowledge"
+	case envelope.Event.MentionedBot || envelope.Event.NamedBot || envelope.Event.IsReplyToBot || strings.ContainsAny(envelope.Event.Text, "?？"):
 		triggerType = "question"
 	}
 	return policydomain.AutonomyDecision{
 		DecisionID:  envelope.TraceID + "-decision",
-		Action:      policydomain.ActionReply,
+		Action:      baselineAction(triggerType),
 		TriggerType: triggerType,
 		Score:       1.0,
 		Confidence:  1.0,
-		ReasonCodes: []string{"synchronous_replay"},
+		ReasonCodes: []string{"runtime_admitted"},
 	}
 }

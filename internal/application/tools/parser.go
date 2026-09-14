@@ -72,8 +72,9 @@ func ParseTerminalPlan(decisionID string, toolName string, raw string, session r
 			ReplyToMessageID: result.ReplyToMessageID,
 			PlannedActions:   []policydomain.DecisionAction{policydomain.ActionMemeOnly},
 			ActionParams: map[string]any{
-				"meme_id": result.MemeID,
-				"caption": result.Caption,
+				"meme_id":             result.MemeID,
+				"reply_to_message_id": result.ReplyToMessageID,
+				"caption":             result.Caption,
 			},
 			SendMode:     "group",
 			FallbackText: result.Caption,

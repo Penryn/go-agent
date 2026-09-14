@@ -166,6 +166,9 @@ func TestTerminalPlan(t *testing.T) {
 	if plan.PlannedActions[0] != "meme_only" {
 		t.Fatalf("unexpected planned action: %#v", plan.PlannedActions)
 	}
+	if plan.ActionParams["reply_to_message_id"] != "r1" {
+		t.Fatalf("meme reply target was not preserved: %#v", plan.ActionParams)
+	}
 }
 
 func TestTerminalPlanCarriesDeclaredPersonaFacts(t *testing.T) {
