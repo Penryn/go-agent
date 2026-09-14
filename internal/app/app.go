@@ -261,7 +261,6 @@ func New(ctx context.Context, cfg config.Config) (*App, error) {
 		toolRuntime,
 		composer,
 		fallbackPlanner,
-		presenceManager,
 	)
 	deliberator := presencedeliberation.NewAdapter(contextService, agentPlanner)
 	normalizer := normalizersvc.New("onebot", cfg.QQ.SelfID, cfg.Persona.Aliases)

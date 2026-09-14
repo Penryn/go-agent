@@ -3,7 +3,6 @@ package group_actor
 import (
 	"context"
 	"errors"
-	"fmt"
 	"slices"
 	"strings"
 	"sync"
@@ -23,8 +22,6 @@ const (
 	burstWindow    = 700 * time.Millisecond
 	burstMaxWindow = 3 * time.Second
 )
-
-var ErrStalePromptSession = errors.New("group actor: stale prompt session")
 
 type Manager struct {
 	log      *ingress.MemoryEventLog
@@ -237,34 +234,6 @@ func (m *Manager) Replay(ctx context.Context, groupID int64, after time.Time, af
 	memory := cloneMemory(a.memory)
 	a.mu.Unlock()
 	return memory, nil
-}
-
-// UpdatePromptSession persists the model-visible conversation for one group.
-// It is kept behind the same actor lock as event state so prompt history does
-// not race with working-memory updates.
-func (m *Manager) UpdatePromptSession(ctx context.Context, groupID int64, expectedProjectionVersion, expectedSessionRevision uint64, session conversationdomain.PromptSession) error {
-	a, err := m.actor(ctx, groupID)
-	if err != nil {
-		return err
-	}
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	a.touch()
-	if err := ctx.Err(); err != nil {
-		return err
-	}
-	if a.memory.Version != expectedProjectionVersion || a.memory.PromptSession.Revision != expectedSessionRevision {
-		return fmt.Errorf("%w: projection=%d/%d session=%d/%d", ErrStalePromptSession,
-			expectedProjectionVersion, a.memory.Version, expectedSessionRevision, a.memory.PromptSession.Revision)
-	}
-	next := cloneMemory(a.memory)
-	session.Revision = expectedSessionRevision + 1
-	next.PromptSession = session
-	if err := m.save(ctx, next); err != nil {
-		return err
-	}
-	a.memory = next
-	return nil
 }
 
 func (m *Manager) actor(ctx context.Context, groupID int64) (*actor, error) {
@@ -551,10 +520,6 @@ func cloneMemory(memory presencedomain.GroupWorkingMemory) presencedomain.GroupW
 			media[eventID] = append([]mediadomain.MediaDescriptor(nil), descriptors...)
 		}
 		memory.MediaByEvent = media
-	}
-	memory.PromptSession.Messages = append([]conversationdomain.PromptMessage(nil), memory.PromptSession.Messages...)
-	for i := range memory.PromptSession.Messages {
-		memory.PromptSession.Messages[i].ToolCalls = append([]conversationdomain.PromptToolCall(nil), memory.PromptSession.Messages[i].ToolCalls...)
 	}
 	memory.FeedbackWindows = append([]presencedomain.FeedbackWindow(nil), memory.FeedbackWindows...)
 	for i := range memory.FeedbackWindows {

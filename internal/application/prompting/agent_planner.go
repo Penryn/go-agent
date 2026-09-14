@@ -30,16 +30,14 @@ type AgentPlanner struct {
 	tools    *toolsvc.Runtime
 	composer *Composer
 	fallback *DeterministicPlanner
-	sessions []PromptSessionStore
 }
 
-func NewAgentPlanner(factory MainModelFactory, tools *toolsvc.Runtime, composer *Composer, fallback *DeterministicPlanner, sessions ...PromptSessionStore) *AgentPlanner {
+func NewAgentPlanner(factory MainModelFactory, tools *toolsvc.Runtime, composer *Composer, fallback *DeterministicPlanner) *AgentPlanner {
 	return &AgentPlanner{
 		factory:  factory,
 		tools:    tools,
 		composer: composer,
 		fallback: fallback,
-		sessions: sessions,
 	}
 }
 
@@ -129,7 +127,10 @@ func (p *AgentPlanner) Plan(ctx context.Context, snapshot conversationdomain.Con
 	}
 
 	runner := adk.NewRunner(ctx, adk.RunnerConfig{Agent: agent})
-	modelInput, promptSession := p.composer.sessionMessagesWithContext(ctx, snapshot, decision, toolHash)
+	// Model input is rebuilt from archived inbound/outbound facts on every turn.
+	// Tool calls and intermediate results remain local to this runner and cannot
+	// become phantom dialogue when a plan is silent or delivery fails.
+	modelInput := p.composer.MessagesWithContext(ctx, snapshot, decision)
 	currentTurnBytes := 0
 	if len(modelInput) >= 2 {
 		currentTurnBytes = promptMessageBytes(modelInput[len(modelInput)-2:])
@@ -143,7 +144,7 @@ func (p *AgentPlanner) Plan(ctx context.Context, snapshot conversationdomain.Con
 	if recorder := modelusage.FromContext(ctx); recorder != nil {
 		recorder.SetPromptShape(modelusage.PromptShape{
 			StaticBytes:      len(staticInstruction),
-			SessionBytes:     promptSessionBytes(snapshot.PromptSession.Messages),
+			SessionBytes:     0,
 			HistoryBytes:     max(promptBytes-currentTurnBytes, 0),
 			CurrentTurnBytes: currentTurnBytes,
 			MemoryBytes:      memoryBytes,
@@ -157,7 +158,6 @@ func (p *AgentPlanner) Plan(ctx context.Context, snapshot conversationdomain.Con
 		"group_id", snapshot.Event.GroupID,
 		"phase", "reply_planner",
 		"tool_schema_hash", toolHash,
-		"prompt_session_version", promptSession.Version,
 		"prompt_message_count", len(modelInput),
 		"prompt_bytes", promptBytes,
 		"static_bytes", len(staticInstruction),
@@ -183,10 +183,6 @@ func (p *AgentPlanner) Plan(ctx context.Context, snapshot conversationdomain.Con
 		if err != nil || msg == nil {
 			continue
 		}
-		if msg.Role == schema.Assistant || msg.Role == schema.Tool {
-			promptSession.Messages = append(promptSession.Messages, promptMessagesFromSchema([]*schema.Message{msg})...)
-		}
-
 		if event.Output.MessageOutput.Role == schema.Tool {
 			toolName := event.Output.MessageOutput.ToolName
 			if returnDirectly[toolName] && terminalName == "" && !toolResultFailed(msg.Content) {
@@ -210,10 +206,6 @@ func (p *AgentPlanner) Plan(ctx context.Context, snapshot conversationdomain.Con
 			slog.Debug("planner: assistant output", "trace_id", snapshot.SnapshotID, "text", preview)
 		}
 	}
-	if ctx.Err() == nil {
-		p.savePromptSession(ctx, snapshot.Event.GroupID, snapshot.Projection.Version, snapshot.PromptSession.Revision, promptSession)
-	}
-
 	if plan, ok, err := toolsvc.ParseTerminalPlan(decision.DecisionID, terminalName, terminalContent, toolContext); err == nil && ok {
 		slog.Info("planner: terminal tool", "tool", terminalName, "trace_id", snapshot.SnapshotID, "bubbles", len(plan.Bubbles))
 		return plan, nil
@@ -254,17 +246,6 @@ func evidenceEventIDs(snapshot conversationdomain.ContextSnapshot) []string {
 	}
 	appendID(snapshot.Event.EventID)
 	return ids
-}
-
-func (p *AgentPlanner) savePromptSession(ctx context.Context, groupID int64, projectionVersion, sessionRevision uint64, session conversationdomain.PromptSession) {
-	for _, store := range p.sessions {
-		if store == nil {
-			continue
-		}
-		if err := store.UpdatePromptSession(ctx, groupID, projectionVersion, sessionRevision, session); err != nil {
-			slog.Warn("planner: save prompt session failed", "group_id", groupID, "error", err)
-		}
-	}
 }
 
 const (

@@ -46,7 +46,6 @@ type GroupWorkingMemory struct {
 	OpenLoops     []string                                 `json:"open_loops"`
 	MediaByEvent  map[string][]mediadomain.MediaDescriptor `json:"media_by_event"`
 	LastUpdatedAt time.Time                                `json:"last_updated_at"`
-	PromptSession conversationdomain.PromptSession         `json:"prompt_session,omitempty"`
 	Checkpoint    ProjectionCheckpoint                     `json:"checkpoint"`
 	// FeedbackWindows 跟踪最近发送的消息的反馈窗口（最多保留3个）
 	FeedbackWindows []FeedbackWindow `json:"feedback_windows,omitempty"`
