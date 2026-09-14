@@ -26,15 +26,14 @@ type MemoryRetriever interface {
 
 type Composer struct {
 	persona               personadomain.PersonaConfig
-	recentMaxChar         int
-	memoryMaxChar         int
+	budget                promptBudget
 	llm                   LLMCaller
 	memoryRetriever       MemoryRetriever
 	constraintIntegration *MemoryConstraintIntegration
 }
 
 func NewComposer(persona personadomain.PersonaConfig) *Composer {
-	return &Composer{persona: persona, recentMaxChar: 6000, memoryMaxChar: 3000}
+	return &Composer{persona: persona, budget: defaultPromptBudget}
 }
 
 // WithLLM 设置 LLM 调用器
@@ -344,10 +343,10 @@ func (c *Composer) MessagesWithContext(ctx context.Context, snapshot conversatio
 	used := 0
 	start := len(history)
 	for i := len(history) - 1; i >= 0; i-- {
-		if c.recentMaxChar > 0 && used+len([]byte(history[i].content)) > c.recentMaxChar {
+		if c.budget.historyBytes > 0 && used+len(history[i].content) > c.budget.historyBytes {
 			break
 		}
-		used += len([]byte(history[i].content))
+		used += len(history[i].content)
 		start = i
 	}
 	recentTruncated := start > 0
@@ -383,11 +382,7 @@ func (c *Composer) turnMessages(snapshot conversationdomain.ContextSnapshot, dec
 
 func (c *Composer) turnMessagesWithContext(ctx context.Context, snapshot conversationdomain.ContextSnapshot, decision policydomain.AutonomyDecision, recentTruncated bool) []*schema.Message {
 	currentEvent := eventWithProfileIdentity(snapshot.Event, snapshot.MemberProfile)
-	memorySnippets := make([]string, 0, len(snapshot.RelevantMemories))
-	for _, record := range snapshot.RelevantMemories {
-		memorySnippets = append(memorySnippets, formatMemorySnippet(record))
-	}
-	memorySnippets, _ = retainNewestStrings(memorySnippets, c.memoryMaxChar)
+	memorySnippets := memorySnippets(snapshot.RelevantMemories, c.budget.memoryBytes)
 
 	mediaSnippets := make([]string, 0, len(snapshot.MediaDescriptors))
 	for _, descriptor := range snapshot.MediaDescriptors {
@@ -410,6 +405,7 @@ func (c *Composer) turnMessagesWithContext(ctx context.Context, snapshot convers
 		}
 		mediaSnippets = append(mediaSnippets, strings.Join(parts, " "))
 	}
+	mediaSnippets, _ = retainLeadingStrings(mediaSnippets, c.budget.mediaBytes)
 
 	workingState := make([]string, 0, 2)
 	if topic := strings.TrimSpace(snapshot.ActiveTopic); topic != "" {
@@ -426,6 +422,7 @@ func (c *Composer) turnMessagesWithContext(ctx context.Context, snapshot convers
 			thoughtLines = append(thoughtLines, fmt.Sprintf("[%s]%s", thought.Outcome, interpretation))
 		}
 	}
+	thoughtLines, _ = retainLeadingStrings(thoughtLines, c.budget.thoughtBytes)
 
 	contentParts := []string{
 		c.DynamicInstructionWithContext(ctx, snapshot, decision),

@@ -94,7 +94,7 @@ func (p *AgentPlanner) Plan(ctx context.Context, snapshot conversationdomain.Con
 	)
 
 	maxIterations := defaultMaxIterations
-	guard := newToolRuntimeGuard(snapshot.SnapshotID, defaultMaxToolCalls, defaultToolResultMaxBytes, returnDirectly)
+	guard := newToolRuntimeGuard(snapshot.SnapshotID, defaultMaxToolCalls, defaultPromptBudget.toolResultBytes, returnDirectly)
 
 	staticInstruction := p.composer.StaticInstruction()
 	agent, err := adk.NewChatModelAgent(ctx, &adk.ChatModelAgentConfig{
@@ -136,10 +136,7 @@ func (p *AgentPlanner) Plan(ctx context.Context, snapshot conversationdomain.Con
 		currentTurnBytes = promptMessageBytes(modelInput[len(modelInput)-2:])
 	}
 	promptBytes := promptMessageBytes(modelInput)
-	memoryBytes := 0
-	for _, record := range snapshot.RelevantMemories {
-		memoryBytes += len(formatMemorySnippet(record))
-	}
+	memoryBytes := stringBytes(memorySnippets(snapshot.RelevantMemories, p.composer.budget.memoryBytes))
 	schemaBytes := toolSchemaBytes(ctx, toolList)
 	if recorder := modelusage.FromContext(ctx); recorder != nil {
 		recorder.SetPromptShape(modelusage.PromptShape{

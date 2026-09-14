@@ -243,20 +243,3 @@ func promptData(value string, maxRunes int) string {
 	}
 	return value
 }
-
-// retainNewestStrings 保留最新的字符串，确保总长度不超过预算
-func retainNewestStrings(values []string, budget int) ([]string, bool) {
-	if budget <= 0 {
-		return values, false
-	}
-	used := 0
-	start := len(values)
-	for i := len(values) - 1; i >= 0; i-- {
-		if used+len([]byte(values[i])) > budget {
-			break
-		}
-		used += len([]byte(values[i]))
-		start = i
-	}
-	return values[start:], start > 0
-}

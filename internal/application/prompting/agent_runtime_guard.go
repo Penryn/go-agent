@@ -13,9 +13,8 @@ import (
 )
 
 const (
-	defaultMaxIterations      = 4
-	defaultMaxToolCalls       = 12
-	defaultToolResultMaxBytes = 12 * 1024
+	defaultMaxIterations = 4
+	defaultMaxToolCalls  = 12
 )
 
 type toolRuntimeGuard struct {
