@@ -98,6 +98,7 @@ type inFlightTurn struct {
 }
 
 const deliberationTimeout = 45 * time.Second
+const postSendHookTimeout = 5 * time.Second
 
 func (r *Runtime) SetConfirmationObserver(observer ConfirmationObserver) { r.confirmations = observer }
 
@@ -274,31 +275,51 @@ func (r *Runtime) deliberate(ctx context.Context, envelope conversationdomain.Ev
 	}
 	receipt, err := r.executor.Execute(ctx, envelope.Event, result.Decision, result.Plan)
 	outcome := Outcome{Envelope: envelope, Snapshot: result.Snapshot, Decision: result.Decision, Plan: result.Plan, Receipt: receipt}
+	var lifecycleErrs []error
 	if r.feedback != nil {
-		if feedbackErr := r.feedback.ObserveSent(ctx, envelope.Event, receipt, result.Decision.DecisionID); feedbackErr != nil {
-			return outcome, feedbackErr
+		if feedbackErr := runLifecycleHook(ctx, receipt.Sent, func(hookCtx context.Context) error {
+			return r.feedback.ObserveSent(hookCtx, envelope.Event, receipt, result.Decision.DecisionID)
+		}); feedbackErr != nil {
+			lifecycleErrs = append(lifecycleErrs, fmt.Errorf("observe sent feedback: %w", feedbackErr))
 		}
 	}
 	if proposal.ProposalID != "" {
 		if receipt.Sent {
-			if canonErr := r.canon.AfterDelivery(ctx, proposal, personasvc.CanonDelivery{
-				GroupID: envelope.Event.GroupID, SelfID: envelope.SelfID, SourceEventID: receipt.ActionID, Text: receipt.DeliveredText,
+			if canonErr := runLifecycleHook(ctx, true, func(hookCtx context.Context) error {
+				return r.canon.AfterDelivery(hookCtx, proposal, personasvc.CanonDelivery{
+					GroupID: envelope.Event.GroupID, SelfID: envelope.SelfID, SourceEventID: receipt.ActionID, Text: receipt.DeliveredText,
+				})
 			}); canonErr != nil {
-				return outcome, canonErr
+				lifecycleErrs = append(lifecycleErrs, fmt.Errorf("finalize persona canon: %w", canonErr))
 			}
 		} else {
-			_ = r.canon.AbortProposal(context.WithoutCancel(ctx), proposal)
+			if canonErr := runLifecycleHook(ctx, false, func(hookCtx context.Context) error {
+				return r.canon.AbortProposal(hookCtx, proposal)
+			}); canonErr != nil {
+				lifecycleErrs = append(lifecycleErrs, fmt.Errorf("abort persona canon: %w", canonErr))
+			}
 		}
 	}
-	if err != nil {
-		return outcome, err
-	}
-	if r.turns != nil {
-		if err := r.turns.AfterTurn(ctx, result.Snapshot, result.Decision, receipt); err != nil {
-			return outcome, err
+	// A partial multi-bubble send is already externally visible. Complete every
+	// post-send hook even when Execute returned an error so cooldown, persona,
+	// and feedback state cannot diverge based on hook ordering.
+	if r.turns != nil && (err == nil || receipt.Sent) {
+		if turnErr := runLifecycleHook(ctx, receipt.Sent, func(hookCtx context.Context) error {
+			return r.turns.AfterTurn(hookCtx, result.Snapshot, result.Decision, receipt)
+		}); turnErr != nil {
+			lifecycleErrs = append(lifecycleErrs, fmt.Errorf("observe completed turn: %w", turnErr))
 		}
 	}
-	return outcome, nil
+	return outcome, errors.Join(append([]error{err}, lifecycleErrs...)...)
+}
+
+func runLifecycleHook(ctx context.Context, detach bool, hook func(context.Context) error) error {
+	if !detach {
+		return hook(ctx)
+	}
+	hookCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), postSendHookTimeout)
+	defer cancel()
+	return hook(hookCtx)
 }
 
 func (r *Runtime) loop(interval time.Duration) {

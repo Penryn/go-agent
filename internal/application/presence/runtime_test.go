@@ -64,10 +64,14 @@ func (canonDeliberator) Deliberate(_ context.Context, input deliberation.Input) 
 }
 
 type runtimeCanonStore struct {
-	facts []personadomain.PersonaFact
+	facts     []personadomain.PersonaFact
+	appendErr error
 }
 
 func (s *runtimeCanonStore) AppendPersonaFact(_ context.Context, fact personadomain.PersonaFact) error {
+	if s.appendErr != nil {
+		return s.appendErr
+	}
 	s.facts = append(s.facts, fact)
 	return nil
 }
@@ -114,6 +118,34 @@ func (*blockingTurnObserver) AfterTurn(context.Context, conversationdomain.Conte
 type inboundResetTurnObserver struct {
 	checks int
 	reset  bool
+}
+
+type lifecycleTurnObserver struct {
+	afterCalls int
+	afterErr   error
+}
+
+func (*lifecycleTurnObserver) CanDeliberate(context.Context, int64, time.Time) (bool, error) {
+	return true, nil
+}
+
+func (o *lifecycleTurnObserver) AfterTurn(context.Context, conversationdomain.ContextSnapshot, policydomain.AutonomyDecision, replydomain.ActionReceipt) error {
+	o.afterCalls++
+	return o.afterErr
+}
+
+type lifecycleFeedbackObserver struct {
+	sentCalls int
+	sentErr   error
+}
+
+func (*lifecycleFeedbackObserver) ObserveInbound(context.Context, conversationdomain.ConversationEvent) error {
+	return nil
+}
+
+func (o *lifecycleFeedbackObserver) ObserveSent(context.Context, conversationdomain.ConversationEvent, replydomain.ActionReceipt, string) error {
+	o.sentCalls++
+	return o.sentErr
 }
 
 func (o *inboundResetTurnObserver) ObserveInbound(context.Context, conversationdomain.ConversationEvent) error {
@@ -303,6 +335,49 @@ func TestPersonaCanonUsesSuccessfullyDeliveredPartialText(t *testing.T) {
 	}
 	if len(store.facts) != 1 || store.facts[0].Value != "文科" {
 		t.Fatalf("fact from delivered first bubble was not persisted: %+v", store.facts)
+	}
+}
+
+func TestPostSendFeedbackFailureDoesNotSkipTurnObserver(t *testing.T) {
+	ctx := context.Background()
+	working := group_actor.NewManager(ingress.NewMemoryEventLog())
+	defer working.Close()
+	turns := &lifecycleTurnObserver{}
+	feedback := &lifecycleFeedbackObserver{sentErr: errors.New("feedback unavailable")}
+	runtime := New(ctx, normalizer.New("onebot", 123456, nil), working, &recordingDeliberator{}, nil, turns,
+		action.New(inmemory.NewSender(), nil, nil), Config{SelfID: 123456})
+	defer runtime.Close()
+	runtime.SetFeedbackObserver(feedback)
+
+	payload := []byte(`{"post_type":"message","message_type":"group","time":1710000000,"self_id":123456,"group_id":100,"user_id":200,"message_id":"m-feedback-fail","message":[{"type":"text","data":{"text":"hello"}}]}`)
+	outcome, err := runtime.ProcessRawEvent(ctx, payload)
+	if err == nil || !errors.Is(err, feedback.sentErr) {
+		t.Fatalf("expected feedback error, got %v", err)
+	}
+	if !outcome.Receipt.Sent || feedback.sentCalls != 1 || turns.afterCalls != 1 {
+		t.Fatalf("post-send lifecycle was short-circuited: receipt=%+v feedback=%d turns=%d", outcome.Receipt, feedback.sentCalls, turns.afterCalls)
+	}
+}
+
+func TestPostSendCanonFailureDoesNotSkipTurnObserver(t *testing.T) {
+	ctx := context.Background()
+	working := group_actor.NewManager(ingress.NewMemoryEventLog())
+	defer working.Close()
+	turns := &lifecycleTurnObserver{}
+	canonErr := errors.New("canon unavailable")
+	store := &runtimeCanonStore{appendErr: canonErr}
+	runtime := New(ctx, normalizer.New("onebot", 123456, nil), working, canonDeliberator{}, nil, turns,
+		action.New(inmemory.NewSender(), nil, nil), Config{SelfID: 123456})
+	defer runtime.Close()
+	runtime.SetCanonService(personasvc.NewCanonService(store, runtimeCanonDefinition(t), nil))
+
+	payload := []byte(`{"post_type":"message","message_type":"group","time":1710000000,"self_id":123456,"group_id":100,"user_id":200,"message_id":"m-canon-fail","message":[{"type":"text","data":{"text":"你高中学什么？"}}]}`)
+	outcome, err := runtime.ProcessRawEvent(ctx, payload)
+	if err == nil || !errors.Is(err, canonErr) {
+		t.Fatalf("expected canon error, got %v", err)
+	}
+	if !outcome.Receipt.Sent || turns.afterCalls != 1 {
+		t.Fatalf("turn observer was skipped after canon failure: receipt=%+v turns=%d", outcome.Receipt, turns.afterCalls)
 	}
 }
 
