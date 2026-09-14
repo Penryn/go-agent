@@ -120,6 +120,21 @@ func toolSchemaHash(ctx context.Context, tools []tool.BaseTool) string {
 	return hex.EncodeToString(hash.Sum(nil)[:8])
 }
 
+func toolSchemaBytes(ctx context.Context, tools []tool.BaseTool) int {
+	total := 0
+	for _, candidate := range tools {
+		info, err := candidate.Info(ctx)
+		if err != nil || info == nil {
+			continue
+		}
+		raw, err := json.Marshal(info)
+		if err == nil {
+			total += len(raw)
+		}
+	}
+	return total
+}
+
 func promptMessageBytes(messages []*schema.Message) int {
 	total := 0
 	for _, message := range messages {

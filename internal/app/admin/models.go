@@ -204,18 +204,18 @@ type ActivityPage struct {
 }
 
 type EventDetail struct {
-	EventID     string               `json:"event_id"`
-	MessageID   string               `json:"message_id"`
-	GroupID     int64                `json:"group_id"`
-	UserID      int64                `json:"user_id"`
-	Kind        string               `json:"kind"`
-	Text        string               `json:"text"`
-	Sender      string               `json:"sender"`
-	OccurredAt  time.Time            `json:"occurred_at"`
-	DurationMS  int64                `json:"duration_ms"`
-	Decision    *DecisionDetail      `json:"decision,omitempty"`
-	Retrievals  []RetrievalDetail    `json:"retrievals"`
-	ModelUsages []ModelUsageDetail   `json:"model_usages"`
+	EventID     string             `json:"event_id"`
+	MessageID   string             `json:"message_id"`
+	GroupID     int64              `json:"group_id"`
+	UserID      int64              `json:"user_id"`
+	Kind        string             `json:"kind"`
+	Text        string             `json:"text"`
+	Sender      string             `json:"sender"`
+	OccurredAt  time.Time          `json:"occurred_at"`
+	DurationMS  int64              `json:"duration_ms"`
+	Decision    *DecisionDetail    `json:"decision,omitempty"`
+	Retrievals  []RetrievalDetail  `json:"retrievals"`
+	ModelUsages []ModelUsageDetail `json:"model_usages"`
 }
 
 type DecisionDetail struct {
@@ -245,19 +245,33 @@ type RetrievalDetail struct {
 }
 
 type ModelUsageDetail struct {
-	TraceID        string           `json:"trace_id"`
-	Iteration      int              `json:"iteration"`
-	InputTokens    int              `json:"input_tokens"`
-	OutputTokens   int              `json:"output_tokens"`
-	DurationMS     int64            `json:"duration_ms"`
-	Tools          []string         `json:"tools"`
-	ToolCalls      []ToolCallDetail `json:"tool_calls"`
-	UsageAvailable bool             `json:"usage_available"`
-	Error          string           `json:"error"`
-	Sent           bool             `json:"sent"`
-	FinalAction    string           `json:"final_action"`
-	DropReason     string           `json:"drop_reason"`
-	CreatedAt      time.Time        `json:"created_at"`
+	TraceID         string            `json:"trace_id"`
+	Iteration       int               `json:"iteration"`
+	InputTokens     int               `json:"input_tokens"`
+	CachedTokens    int               `json:"cached_tokens"`
+	CacheMissTokens int               `json:"cache_miss_tokens"`
+	OutputTokens    int               `json:"output_tokens"`
+	DurationMS      int64             `json:"duration_ms"`
+	PromptShape     PromptShapeDetail `json:"prompt_shape"`
+	Tools           []string          `json:"tools"`
+	ToolCalls       []ToolCallDetail  `json:"tool_calls"`
+	UsageAvailable  bool              `json:"usage_available"`
+	Error           string            `json:"error"`
+	Sent            bool              `json:"sent"`
+	FinalAction     string            `json:"final_action"`
+	DropReason      string            `json:"drop_reason"`
+	CreatedAt       time.Time         `json:"created_at"`
+}
+
+type PromptShapeDetail struct {
+	StaticBytes      int `json:"static_bytes"`
+	SessionBytes     int `json:"session_bytes"`
+	HistoryBytes     int `json:"history_bytes"`
+	CurrentTurnBytes int `json:"current_turn_bytes"`
+	MemoryBytes      int `json:"memory_bytes"`
+	ToolSchemaBytes  int `json:"tool_schema_bytes"`
+	MessageCount     int `json:"message_count"`
+	ToolCount        int `json:"tool_count"`
 }
 
 type ToolCallDetail struct {
@@ -279,11 +293,14 @@ type RetrievalMetrics struct {
 }
 
 type ModelUsageMetrics struct {
-	Calls         int     `json:"calls"`
-	InputTokens   int64   `json:"input_tokens"`
-	OutputTokens  int64   `json:"output_tokens"`
-	AvgDurationMS float64 `json:"avg_duration_ms"`
-	ErrorCalls    int     `json:"error_calls"`
+	Calls           int     `json:"calls"`
+	InputTokens     int64   `json:"input_tokens"`
+	CachedTokens    int64   `json:"cached_tokens"`
+	CacheMissTokens int64   `json:"cache_miss_tokens"`
+	UncachedTokens  int64   `json:"uncached_tokens"`
+	OutputTokens    int64   `json:"output_tokens"`
+	AvgDurationMS   float64 `json:"avg_duration_ms"`
+	ErrorCalls      int     `json:"error_calls"`
 }
 
 type WindowMetrics struct {

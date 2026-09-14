@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/phlin/go-agent/internal/application/action"
+	"github.com/phlin/go-agent/internal/application/modelusage"
 	normalizersvc "github.com/phlin/go-agent/internal/application/normalizer"
 	personasvc "github.com/phlin/go-agent/internal/application/persona"
 	"github.com/phlin/go-agent/internal/application/ports"
@@ -77,6 +78,7 @@ type Runtime struct {
 	confirmations  ConfirmationObserver
 	feedback       FeedbackObserver
 	thoughts       ports.ThoughtStore
+	modelUsage     modelusage.Sink
 	turns          TurnObserver
 	canon          *personasvc.CanonService
 	executor       *action.Service
@@ -105,6 +107,8 @@ func (r *Runtime) SetConfirmationObserver(observer ConfirmationObserver) { r.con
 func (r *Runtime) SetFeedbackObserver(observer FeedbackObserver) { r.feedback = observer }
 
 func (r *Runtime) SetThoughtStore(store ports.ThoughtStore) { r.thoughts = store }
+
+func (r *Runtime) SetModelUsageSink(sink modelusage.Sink) { r.modelUsage = sink }
 
 // SetCanonService enables post-delivery persistence for fictional persona
 // facts declared in terminal reply tools.
@@ -247,10 +251,19 @@ func (r *Runtime) deliberate(ctx context.Context, envelope conversationdomain.Ev
 	if err != nil {
 		return Outcome{Envelope: envelope}, fmt.Errorf("snapshot event: %w", err)
 	}
-	result, err := r.deliberator.Deliberate(ctx, deliberation.Input{Envelope: envelope, Memory: working})
+	planningCtx, usageRecorder := modelusage.WithRecorder(ctx, modelusage.Metadata{
+		TraceID: envelope.TraceID, EventID: envelope.Event.EventID, GroupID: envelope.Event.GroupID,
+		UserID: envelope.Event.UserID, Phase: "reply_planner",
+	})
+	usageRecorder.SetSink(r.modelUsage)
+	finalUsage := modelusage.FinalState{}
+	defer func() { usageRecorder.Flush(finalUsage) }()
+	result, err := r.deliberator.Deliberate(planningCtx, deliberation.Input{Envelope: envelope, Memory: working})
 	if err != nil {
 		return Outcome{Envelope: envelope}, err
 	}
+	usageRecorder.SetTrigger(result.Decision.TriggerType)
+	finalUsage.Action = string(result.Decision.Action)
 	if err := ctx.Err(); err != nil {
 		return Outcome{Envelope: envelope, Snapshot: result.Snapshot, Decision: result.Decision, Plan: result.Plan}, err
 	}
@@ -274,6 +287,9 @@ func (r *Runtime) deliberate(ctx context.Context, envelope conversationdomain.Ev
 		return Outcome{Envelope: envelope, Snapshot: result.Snapshot, Decision: result.Decision, Plan: result.Plan}, nil
 	}
 	receipt, err := r.executor.Execute(ctx, envelope.Event, result.Decision, result.Plan)
+	finalUsage.Sent = receipt.Sent
+	finalUsage.Action = string(result.Decision.Action)
+	finalUsage.DropReason = receipt.DropReason
 	outcome := Outcome{Envelope: envelope, Snapshot: result.Snapshot, Decision: result.Decision, Plan: result.Plan, Receipt: receipt}
 	var lifecycleErrs []error
 	if r.feedback != nil {

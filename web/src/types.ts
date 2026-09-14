@@ -34,7 +34,7 @@ export interface BotSnapshot {
     selected_queries: number
     selection_rate: number
   }
-  model_usage: { calls: number; input_tokens: number; output_tokens: number; avg_duration_ms: number; error_calls: number }
+  model_usage: { calls: number; input_tokens: number; cached_tokens: number; cache_miss_tokens: number; uncached_tokens: number; output_tokens: number; avg_duration_ms: number; error_calls: number }
 }
 
 export interface MCPServerConfig {
@@ -226,7 +226,18 @@ export interface EventDetail {
   duration_ms: number
   decision?: { thought_id: string; action: string; outcome: string; interpretation: string; evidence: string[]; uncertainty: number; created_at: string }
   retrievals: { trace_id: string; query: string; candidate_count: number; hit_memory_ids: string[]; selected_ids: string[]; outcome: string; created_at: string }[]
-  model_usages: { trace_id: string; iteration: number; input_tokens: number; output_tokens: number; duration_ms: number; tools: string[]; tool_calls: ToolCallDetail[]; usage_available: boolean; error: string; sent: boolean; final_action: string; drop_reason: string; created_at: string }[]
+  model_usages: { trace_id: string; iteration: number; input_tokens: number; cached_tokens: number; cache_miss_tokens: number; output_tokens: number; duration_ms: number; prompt_shape: PromptShapeDetail; tools: string[]; tool_calls: ToolCallDetail[]; usage_available: boolean; error: string; sent: boolean; final_action: string; drop_reason: string; created_at: string }[]
+}
+
+export interface PromptShapeDetail {
+  static_bytes: number
+  session_bytes: number
+  history_bytes: number
+  current_turn_bytes: number
+  memory_bytes: number
+  tool_schema_bytes: number
+  message_count: number
+  tool_count: number
 }
 
 export interface ToolCallDetail {

@@ -5,6 +5,7 @@ import (
 	"io"
 	"strings"
 	"testing"
+	"time"
 
 	modelcomponent "github.com/cloudwego/eino/components/model"
 	toolcomponent "github.com/cloudwego/eino/components/tool"
@@ -22,6 +23,21 @@ func (fakeTool) InvokableRun(context.Context, string, ...toolcomponent.Option) (
 
 type fakeModel struct {
 	response *schema.Message
+}
+
+type recordingSink struct {
+	metadata Metadata
+	call     Call
+	final    FinalState
+	calls    int
+}
+
+func (s *recordingSink) SaveModelUsage(_ context.Context, metadata Metadata, call Call, final FinalState, _ time.Time) error {
+	s.metadata = metadata
+	s.call = call
+	s.final = final
+	s.calls++
+	return nil
 }
 
 func (f fakeModel) Generate(context.Context, []*schema.Message, ...modelcomponent.Option) (*schema.Message, error) {
@@ -59,6 +75,25 @@ func TestWrapRecordsUsageIterationAndTools(t *testing.T) {
 	}
 	if !call.UsageAvailable || len(call.Tools) != 1 || call.Tools[0] != "query_memory" {
 		t.Fatalf("unexpected tool metadata: %+v", call)
+	}
+}
+
+func TestRecorderPersistsPromptShapeAndFinalState(t *testing.T) {
+	ctx, recorder := WithRecorder(context.Background(), Metadata{TraceID: "trace-shape", Phase: "reply_planner"})
+	sink := &recordingSink{}
+	recorder.SetSink(sink)
+	recorder.SetPromptShape(PromptShape{StaticBytes: 100, CurrentTurnBytes: 50, ToolSchemaBytes: 200, ToolCount: 3})
+	if _, err := Wrap(fakeModel{response: schema.AssistantMessage("done", nil)}).Generate(ctx, []*schema.Message{schema.UserMessage("hello")}); err != nil {
+		t.Fatal(err)
+	}
+	recorder.SetTrigger("answer")
+	recorder.Flush(FinalState{Sent: true, Action: "reply"})
+
+	if sink.calls != 1 || sink.metadata.Trigger != "answer" || !sink.final.Sent || sink.final.Action != "reply" {
+		t.Fatalf("unexpected persisted metadata: sink=%+v", sink)
+	}
+	if sink.call.PromptShape.StaticBytes != 100 || sink.call.PromptShape.ToolSchemaBytes != 200 || sink.call.PromptShape.ToolCount != 3 {
+		t.Fatalf("prompt shape was not persisted: %+v", sink.call.PromptShape)
 	}
 }
 

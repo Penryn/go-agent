@@ -25,6 +25,7 @@ import (
 	learningsvc "github.com/phlin/go-agent/internal/application/learning"
 	memesvc "github.com/phlin/go-agent/internal/application/meme"
 	memsvc "github.com/phlin/go-agent/internal/application/memory"
+	"github.com/phlin/go-agent/internal/application/modelusage"
 	multimodalsvc "github.com/phlin/go-agent/internal/application/multimodal"
 	normalizersvc "github.com/phlin/go-agent/internal/application/normalizer"
 	outputguardsvc "github.com/phlin/go-agent/internal/application/outputguard"
@@ -298,6 +299,9 @@ func New(ctx context.Context, cfg config.Config) (*App, error) {
 	humanRuntime.SetConfirmationObserver(writeApprovals)
 	humanRuntime.SetCanonService(canonService)
 	humanRuntime.SetFeedbackObserver(presencefeedback.NewLifecycleObserver(presenceManager, relationshipService))
+	if usageSink, ok := stores.memory.(modelusage.Sink); ok {
+		humanRuntime.SetModelUsageSink(usageSink)
+	}
 	if thoughtStore, ok := stores.memory.(ports.ThoughtStore); ok {
 		humanRuntime.SetThoughtStore(thoughtStore)
 	}

@@ -47,7 +47,22 @@ type Call struct {
 	UsageAvailable  bool
 	Error           string
 	DurationMS      int64
+	PromptShape     PromptShape
 	startedAt       time.Time
+}
+
+// PromptShape attributes one request to its main context cost centers.
+// Provider usage remains authoritative for tokens; these byte counts explain
+// which partition caused a request to grow.
+type PromptShape struct {
+	StaticBytes      int `json:"static_bytes"`
+	SessionBytes     int `json:"session_bytes"`
+	HistoryBytes     int `json:"history_bytes"`
+	CurrentTurnBytes int `json:"current_turn_bytes"`
+	MemoryBytes      int `json:"memory_bytes"`
+	ToolSchemaBytes  int `json:"tool_schema_bytes"`
+	MessageCount     int `json:"message_count"`
+	ToolCount        int `json:"tool_count"`
 }
 
 type ToolCall struct {
@@ -66,6 +81,7 @@ type Recorder struct {
 	mu       sync.Mutex
 	metadata Metadata
 	calls    []*Call
+	shape    PromptShape
 	flushed  bool
 	sink     Sink
 }
@@ -86,6 +102,24 @@ func (r *Recorder) SetSink(sink Sink) {
 	if r != nil {
 		r.sink = sink
 	}
+}
+
+func (r *Recorder) SetTrigger(trigger string) {
+	if r == nil {
+		return
+	}
+	r.mu.Lock()
+	r.metadata.Trigger = trigger
+	r.mu.Unlock()
+}
+
+func (r *Recorder) SetPromptShape(shape PromptShape) {
+	if r == nil {
+		return
+	}
+	r.mu.Lock()
+	r.shape = shape
+	r.mu.Unlock()
 }
 
 // Calls returns a stable copy for tests and future metrics exporters.
@@ -111,7 +145,7 @@ func (r *Recorder) begin() *Call {
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	call := &Call{Iteration: len(r.calls) + 1, startedAt: time.Now()}
+	call := &Call{Iteration: len(r.calls) + 1, PromptShape: r.shape, startedAt: time.Now()}
 	r.calls = append(r.calls, call)
 	return call
 }
@@ -267,6 +301,7 @@ func (r *Recorder) Flush(final FinalState) {
 			"drop_reason", final.DropReason,
 			"error", call.Error,
 			"duration_ms", call.DurationMS,
+			"prompt_shape", call.PromptShape,
 		)
 	}
 }

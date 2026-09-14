@@ -130,6 +130,28 @@ func (p *AgentPlanner) Plan(ctx context.Context, snapshot conversationdomain.Con
 
 	runner := adk.NewRunner(ctx, adk.RunnerConfig{Agent: agent})
 	modelInput, promptSession := p.composer.sessionMessagesWithContext(ctx, snapshot, decision, toolHash)
+	currentTurnBytes := 0
+	if len(modelInput) >= 2 {
+		currentTurnBytes = promptMessageBytes(modelInput[len(modelInput)-2:])
+	}
+	promptBytes := promptMessageBytes(modelInput)
+	memoryBytes := 0
+	for _, record := range snapshot.RelevantMemories {
+		memoryBytes += len(formatMemorySnippet(record))
+	}
+	schemaBytes := toolSchemaBytes(ctx, toolList)
+	if recorder := modelusage.FromContext(ctx); recorder != nil {
+		recorder.SetPromptShape(modelusage.PromptShape{
+			StaticBytes:      len(staticInstruction),
+			SessionBytes:     promptSessionBytes(snapshot.PromptSession.Messages),
+			HistoryBytes:     max(promptBytes-currentTurnBytes, 0),
+			CurrentTurnBytes: currentTurnBytes,
+			MemoryBytes:      memoryBytes,
+			ToolSchemaBytes:  schemaBytes,
+			MessageCount:     len(modelInput) + 1,
+			ToolCount:        len(toolList),
+		})
+	}
 	slog.Info("planner: prompt shape",
 		"trace_id", snapshot.SnapshotID,
 		"group_id", snapshot.Event.GroupID,
@@ -137,7 +159,9 @@ func (p *AgentPlanner) Plan(ctx context.Context, snapshot conversationdomain.Con
 		"tool_schema_hash", toolHash,
 		"prompt_session_version", promptSession.Version,
 		"prompt_message_count", len(modelInput),
-		"prompt_bytes", promptMessageBytes(modelInput),
+		"prompt_bytes", promptBytes,
+		"static_bytes", len(staticInstruction),
+		"tool_schema_bytes", schemaBytes,
 	)
 	iter := runner.Run(ctx, modelInput)
 

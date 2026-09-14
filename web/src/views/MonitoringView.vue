@@ -18,7 +18,7 @@ const taskFailures = computed(() => snapshot.value?.window_metrics.failed_tasks 
 const taskFailureRate = computed(() => tasks.value ? taskFailures.value / tasks.value : 0)
 const decisionReplyRate = computed(() => decisions.value ? (snapshot.value?.window_metrics.action_decisions ?? 0) / decisions.value : 0)
 const retrieval = computed(() => snapshot.value?.retrieval || { queries: 0, queries_with_hits: 0, hit_rate: 0, avg_candidate_count: 0, result_recorded_queries: 0, selected_queries: 0, selection_rate: 0 })
-const modelUsage = computed(() => snapshot.value?.model_usage || { calls: 0, input_tokens: 0, output_tokens: 0, avg_duration_ms: 0, error_calls: 0 })
+const modelUsage = computed(() => snapshot.value?.model_usage || { calls: 0, input_tokens: 0, cached_tokens: 0, cache_miss_tokens: 0, uncached_tokens: 0, output_tokens: 0, avg_duration_ms: 0, error_calls: 0 })
 const windowMinutesLabel = computed(() => windowMinutes.value === 1440 ? '近 24 小时' : windowMinutes.value === 60 ? '近 1 小时' : '近 10 分钟')
 const trendMaxQueries = computed(() => Math.max(1, ...trendPoints.value.map((point) => point.queries)))
 async function loadTrend() {
@@ -81,6 +81,8 @@ onMounted(loadTrend)
       <article class="monitor-detail">
         <div class="panel-title"><div><span>MODEL USAGE</span><h3>模型用量（当前窗口）</h3></div><el-tag effect="plain">{{ modelUsage.error_calls }} 次错误</el-tag></div>
         <div class="quality-row"><span>输入 token</span><strong>{{ modelUsage.input_tokens.toLocaleString() }}</strong></div>
+        <div class="quality-row"><span>缓存命中 token</span><strong>{{ modelUsage.cached_tokens.toLocaleString() }}</strong></div>
+        <div class="quality-row"><span>未缓存 token</span><strong>{{ modelUsage.uncached_tokens.toLocaleString() }}</strong></div>
         <div class="quality-row"><span>输出 token</span><strong>{{ modelUsage.output_tokens.toLocaleString() }}</strong></div>
       </article>
     </section>

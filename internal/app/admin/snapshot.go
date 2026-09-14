@@ -38,6 +38,7 @@ type Dashboard struct {
 	groupNames        map[int64]string
 	groupNamesAt      time.Time
 }
+
 func (d *Dashboard) snapshot(ctx context.Context, selectedGroup int64) (Snapshot, error) {
 	return d.snapshotWindow(ctx, selectedGroup, 1440)
 }
@@ -266,11 +267,14 @@ func (d *Dashboard) loadModelUsageMetrics(ctx context.Context, groupID int64, wi
 	var metrics ModelUsageMetrics
 	var avg sql.NullFloat64
 	err := d.db.QueryRowContext(ctx, `
-		SELECT COUNT(*), COALESCE(SUM(input_tokens), 0), COALESCE(SUM(output_tokens), 0), AVG(duration_ms),
+		SELECT COUNT(*), COALESCE(SUM(input_tokens), 0), COALESCE(SUM(cached_tokens), 0),
+		       COALESCE(SUM(cache_miss_tokens), 0), COALESCE(SUM(GREATEST(input_tokens - cached_tokens, 0)), 0),
+		       COALESCE(SUM(output_tokens), 0), AVG(duration_ms),
 		       COUNT(*) FILTER (WHERE error <> '')
 		FROM model_usage_records
 		WHERE created_at > NOW() - make_interval(mins => $2) AND ($1 = 0 OR group_id = $1)
-	`, groupID, windowMinutes).Scan(&metrics.Calls, &metrics.InputTokens, &metrics.OutputTokens, &avg, &metrics.ErrorCalls)
+	`, groupID, windowMinutes).Scan(&metrics.Calls, &metrics.InputTokens, &metrics.CachedTokens, &metrics.CacheMissTokens,
+		&metrics.UncachedTokens, &metrics.OutputTokens, &avg, &metrics.ErrorCalls)
 	if err != nil {
 		return metrics, fmt.Errorf("model usage metrics: %w", err)
 	}
@@ -839,7 +843,8 @@ func loadAdminEventDetail(ctx context.Context, db *sql.DB, eventID string) (Even
 		return detail, err
 	}
 	modelRows, err := db.QueryContext(ctx, `
-		SELECT trace_id, iteration, input_tokens, output_tokens, duration_ms, tools_json, tool_calls_json, usage_available, error, sent, final_action, drop_reason, created_at
+			SELECT trace_id, iteration, input_tokens, cached_tokens, cache_miss_tokens, output_tokens, duration_ms,
+			       tools_json, tool_calls_json, prompt_shape_json, usage_available, error, sent, final_action, drop_reason, created_at
 		FROM model_usage_records WHERE event_id = $1
 		ORDER BY created_at ASC
 	`, eventID)
@@ -847,12 +852,15 @@ func loadAdminEventDetail(ctx context.Context, db *sql.DB, eventID string) (Even
 		defer modelRows.Close()
 		for modelRows.Next() {
 			var item ModelUsageDetail
-			var tools, toolCalls []byte
-			if err := modelRows.Scan(&item.TraceID, &item.Iteration, &item.InputTokens, &item.OutputTokens, &item.DurationMS, &tools, &toolCalls, &item.UsageAvailable, &item.Error, &item.Sent, &item.FinalAction, &item.DropReason, &item.CreatedAt); err != nil {
+			var tools, toolCalls, promptShape []byte
+			if err := modelRows.Scan(&item.TraceID, &item.Iteration, &item.InputTokens, &item.CachedTokens, &item.CacheMissTokens,
+				&item.OutputTokens, &item.DurationMS, &tools, &toolCalls, &promptShape, &item.UsageAvailable, &item.Error,
+				&item.Sent, &item.FinalAction, &item.DropReason, &item.CreatedAt); err != nil {
 				return detail, err
 			}
 			_ = json.Unmarshal(tools, &item.Tools)
 			_ = json.Unmarshal(toolCalls, &item.ToolCalls)
+			_ = json.Unmarshal(promptShape, &item.PromptShape)
 			detail.ModelUsages = append(detail.ModelUsages, item)
 		}
 		if err := modelRows.Err(); err != nil {
