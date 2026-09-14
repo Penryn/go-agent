@@ -27,13 +27,17 @@ type PromptSessionStore interface {
 }
 
 func (c *Composer) sessionMessages(snapshot conversationdomain.ContextSnapshot, decision policydomain.AutonomyDecision, toolHash string) ([]*schema.Message, conversationdomain.PromptSession) {
+	return c.sessionMessagesWithContext(context.Background(), snapshot, decision, toolHash)
+}
+
+func (c *Composer) sessionMessagesWithContext(ctx context.Context, snapshot conversationdomain.ContextSnapshot, decision policydomain.AutonomyDecision, toolHash string) ([]*schema.Message, conversationdomain.PromptSession) {
 	session := snapshot.PromptSession
 	version := promptSessionVersionFor(c.StaticInstruction(), toolHash)
 	if session.Version != version {
 		session = conversationdomain.PromptSession{Version: version}
 	}
 	if len(session.Messages) == 0 {
-		messages := c.Messages(snapshot, decision)
+		messages := c.MessagesWithContext(ctx, snapshot, decision)
 		session.Messages = promptMessagesFromSchema(messages)
 		return messages, session
 	}
@@ -42,7 +46,7 @@ func (c *Composer) sessionMessages(snapshot conversationdomain.ContextSnapshot, 
 		session.Messages = compactPromptMessages(session.Messages)
 	}
 	messages := promptMessagesToSchema(session.Messages)
-	messages = append(messages, c.TurnMessages(snapshot, decision)...)
+	messages = append(messages, c.TurnMessagesWithContext(ctx, snapshot, decision)...)
 	session.Messages = promptMessagesFromSchema(messages)
 	return messages, session
 }

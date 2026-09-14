@@ -13,6 +13,7 @@ import (
 	retrievalsvc "github.com/phlin/go-agent/internal/application/retrieval"
 	conversationdomain "github.com/phlin/go-agent/internal/domain/conversation"
 	mediadomain "github.com/phlin/go-agent/internal/domain/media"
+	memorydomain "github.com/phlin/go-agent/internal/domain/memory"
 	personadomain "github.com/phlin/go-agent/internal/domain/persona"
 	presencedomain "github.com/phlin/go-agent/internal/domain/presence"
 	profiledomain "github.com/phlin/go-agent/internal/domain/profile"
@@ -93,21 +94,30 @@ func (s *Service) BuildSnapshot(ctx context.Context, envelope conversationdomain
 		return conversationdomain.ContextSnapshot{}, err
 	}
 
-	relevantMemories, err := s.retriever.SearchMemories(ctx, ports.MemoryQuery{
-		GroupID: envelope.Event.GroupID,
-		UserID:  envelope.Event.UserID,
-		Query:   envelope.Event.Text,
-		TopK:    s.memoryTopK,
-		TraceID: envelope.TraceID,
-		EventID: envelope.Event.EventID,
-	})
-	if err != nil {
-		return conversationdomain.ContextSnapshot{}, fmt.Errorf("query memories: %w", err)
+	var relevantMemories []memorydomain.MemoryRecord
+	if s.retriever != nil {
+		relevantMemories, err = s.retriever.SearchMemories(ctx, ports.MemoryQuery{
+			GroupID: envelope.Event.GroupID,
+			UserID:  envelope.Event.UserID,
+			Query:   envelope.Event.Text,
+			TopK:    s.memoryTopK,
+			TraceID: envelope.TraceID,
+			EventID: envelope.Event.EventID,
+		})
+		if err != nil {
+			// 记忆是增强信息，不应让一次检索故障阻断普通群聊回复。
+			slog.WarnContext(ctx, "context: memory retrieval degraded", "group_id", envelope.Event.GroupID, "event_id", envelope.Event.EventID, "err", err)
+			relevantMemories = nil
+		}
 	}
 
-	memberProfile, err := s.profileStore.GetMemberProfile(ctx, envelope.Event.GroupID, envelope.Event.UserID)
-	if err != nil {
-		return conversationdomain.ContextSnapshot{}, fmt.Errorf("load member profile: %w", err)
+	var memberProfile profiledomain.MemberProfile
+	if s.profileStore != nil {
+		memberProfile, err = s.profileStore.GetMemberProfile(ctx, envelope.Event.GroupID, envelope.Event.UserID)
+		if err != nil {
+			slog.WarnContext(ctx, "context: member profile degraded", "group_id", envelope.Event.GroupID, "user_id", envelope.Event.UserID, "err", err)
+			memberProfile = profiledomain.MemberProfile{}
+		}
 	}
 
 	runtimeState, err := s.stateStore.GetRuntimeState(ctx, envelope.Event.GroupID)
@@ -129,14 +139,16 @@ func (s *Service) BuildSnapshot(ctx context.Context, envelope conversationdomain
 	if s.relationshipStore != nil {
 		socialRelationship, err = s.relationshipStore.GetSocialRelationship(ctx, s.persona.ID, envelope.Event.GroupID, envelope.Event.UserID)
 		if err != nil {
-			return conversationdomain.ContextSnapshot{}, fmt.Errorf("load social relationship: %w", err)
+			slog.WarnContext(ctx, "context: relationship degraded", "group_id", envelope.Event.GroupID, "user_id", envelope.Event.UserID, "err", err)
+			socialRelationship = relationshipdomain.State{}
 		}
 	}
 	var groupScene scenedomain.GroupScene
 	if s.sceneStore != nil {
 		groupScene, err = s.sceneStore.LoadGroupScene(ctx, envelope.Event.GroupID)
 		if err != nil {
-			return conversationdomain.ContextSnapshot{}, fmt.Errorf("load group scene: %w", err)
+			slog.WarnContext(ctx, "context: group scene degraded", "group_id", envelope.Event.GroupID, "err", err)
+			groupScene = scenedomain.GroupScene{}
 		}
 	}
 

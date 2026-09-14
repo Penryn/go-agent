@@ -33,6 +33,7 @@ import (
 	"github.com/phlin/go-agent/internal/application/ports"
 	presenceruntime "github.com/phlin/go-agent/internal/application/presence"
 	presencedeliberation "github.com/phlin/go-agent/internal/application/presence/deliberation"
+	presencefeedback "github.com/phlin/go-agent/internal/application/presence/feedback"
 	presenceactor "github.com/phlin/go-agent/internal/application/presence/group_actor"
 	presenceingress "github.com/phlin/go-agent/internal/application/presence/ingress"
 	presenceperception "github.com/phlin/go-agent/internal/application/presence/perception"
@@ -296,6 +297,10 @@ func New(ctx context.Context, cfg config.Config) (*App, error) {
 	})
 	humanRuntime.SetConfirmationObserver(writeApprovals)
 	humanRuntime.SetCanonService(canonService)
+	humanRuntime.SetFeedbackObserver(presencefeedback.NewLifecycleObserver(presenceManager, relationshipService))
+	if thoughtStore, ok := stores.memory.(ports.ThoughtStore); ok {
+		humanRuntime.SetThoughtStore(thoughtStore)
+	}
 	if thoughtStore, ok := stores.memory.(ports.ThoughtStore); ok {
 		contextService.WithThoughtStore(thoughtStore)
 	}
@@ -305,7 +310,7 @@ func New(ctx context.Context, cfg config.Config) (*App, error) {
 	moodSvc.RegisterJobs(sched, cfg.QQ.GroupWhitelist)
 
 	// learning service：接入运行时，每 6 小时对白名单群跑一次增量学习
-	profileService := profilesvc.New(stores.profile)
+	profileService := profilesvc.New(stores.profile, cfg.QQ.SelfID)
 	humanRuntime.AddEventObserver(profileService.ObserveEvent)
 	humanRuntime.AddEventObserver(sceneService.ObserveEvent)
 	humanRuntime.AddEventObserver(relationshipService.ObserveInbound)

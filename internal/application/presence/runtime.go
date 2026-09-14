@@ -13,6 +13,7 @@ import (
 	"github.com/phlin/go-agent/internal/application/action"
 	normalizersvc "github.com/phlin/go-agent/internal/application/normalizer"
 	personasvc "github.com/phlin/go-agent/internal/application/persona"
+	"github.com/phlin/go-agent/internal/application/ports"
 	"github.com/phlin/go-agent/internal/application/presence/deliberation"
 	groupactor "github.com/phlin/go-agent/internal/application/presence/group_actor"
 	conversationdomain "github.com/phlin/go-agent/internal/domain/conversation"
@@ -32,6 +33,11 @@ type PerceptionSubmitter interface {
 
 type ConfirmationObserver interface {
 	ObserveConfirmation(groupID, userID int64, text string, at time.Time)
+}
+
+type FeedbackObserver interface {
+	ObserveInbound(context.Context, conversationdomain.ConversationEvent) error
+	ObserveSent(context.Context, conversationdomain.ConversationEvent, replydomain.ActionReceipt, string) error
 }
 
 // EventObserverFunc 在每条入站事件后收到回调；错误只记日志。
@@ -69,6 +75,8 @@ type Runtime struct {
 	deliberator    deliberation.Deliberator
 	perception     PerceptionSubmitter
 	confirmations  ConfirmationObserver
+	feedback       FeedbackObserver
+	thoughts       ports.ThoughtStore
 	turns          TurnObserver
 	canon          *personasvc.CanonService
 	executor       *action.Service
@@ -76,12 +84,26 @@ type Runtime struct {
 	whitelist      map[int64]struct{}
 	selfID         int64
 
-	ctx    context.Context
-	cancel context.CancelFunc
-	wg     sync.WaitGroup
+	ctx         context.Context
+	cancel      context.CancelFunc
+	wg          sync.WaitGroup
+	turnMu      sync.Mutex
+	activeTurns map[int64]inFlightTurn
+	turnSeq     uint64
 }
 
+type inFlightTurn struct {
+	sequence uint64
+	cancel   context.CancelFunc
+}
+
+const deliberationTimeout = 45 * time.Second
+
 func (r *Runtime) SetConfirmationObserver(observer ConfirmationObserver) { r.confirmations = observer }
+
+func (r *Runtime) SetFeedbackObserver(observer FeedbackObserver) { r.feedback = observer }
+
+func (r *Runtime) SetThoughtStore(store ports.ThoughtStore) { r.thoughts = store }
 
 // SetCanonService enables post-delivery persistence for fictional persona
 // facts declared in terminal reply tools.
@@ -106,6 +128,7 @@ func New(parent context.Context, normalizer *normalizersvc.Service, working *gro
 		selfID:      cfg.SelfID,
 		ctx:         ctx,
 		cancel:      cancel,
+		activeTurns: make(map[int64]inFlightTurn),
 	}
 	for _, groupID := range cfg.GroupWhitelist {
 		r.whitelist[groupID] = struct{}{}
@@ -138,14 +161,21 @@ func (r *Runtime) SubmitRaw(ctx context.Context, payload []byte) error {
 	}
 	record := toEventRecord(envelope, presencedomain.OriginInbound)
 	_, err = r.working.Observe(ctx, record)
+	if err == nil && r.feedback != nil {
+		if feedbackErr := r.feedback.ObserveInbound(ctx, envelope.Event); feedbackErr != nil {
+			slog.Warn("human runtime: feedback observation failed", "group_id", envelope.Event.GroupID, "event_id", envelope.Event.EventID, "err", feedbackErr)
+		}
+	}
 	if err == nil && r.perception != nil {
 		r.perception.Submit(record)
 	}
 	if err == nil {
 		r.observeEvent(ctx, envelope.Event)
 		if r.deliberator != nil {
+			turnCtx, finish := r.beginTurn(envelope.Event.GroupID)
 			go func() {
-				if _, err := r.deliberate(context.Background(), envelope); err != nil {
+				defer finish()
+				if _, err := r.deliberate(turnCtx, envelope); err != nil && !errors.Is(err, context.Canceled) {
 					slog.Debug("human runtime: asynchronous deliberation failed", "trace_id", envelope.TraceID, "err", err)
 				}
 			}()
@@ -190,6 +220,11 @@ func (r *Runtime) ProcessRawEvent(ctx context.Context, payload []byte) (Outcome,
 		r.confirmations.ObserveConfirmation(envelope.Event.GroupID, envelope.Event.UserID, envelope.Event.Text, envelope.ReceivedAt)
 	}
 	r.observeEvent(ctx, envelope.Event)
+	if r.feedback != nil {
+		if err := r.feedback.ObserveInbound(ctx, envelope.Event); err != nil {
+			return Outcome{Envelope: envelope}, fmt.Errorf("observe feedback: %w", err)
+		}
+	}
 
 	return r.deliberate(ctx, envelope)
 }
@@ -215,6 +250,14 @@ func (r *Runtime) deliberate(ctx context.Context, envelope conversationdomain.Ev
 	if err != nil {
 		return Outcome{Envelope: envelope}, err
 	}
+	if err := ctx.Err(); err != nil {
+		return Outcome{Envelope: envelope, Snapshot: result.Snapshot, Decision: result.Decision, Plan: result.Plan}, err
+	}
+	if r.thoughts != nil {
+		if thoughtErr := r.thoughts.SaveThought(ctx, result.Thought); thoughtErr != nil {
+			slog.Warn("human runtime: save thought failed", "event_id", envelope.Event.EventID, "err", thoughtErr)
+		}
+	}
 	if len(result.Plan.Bubbles) == 0 && result.Plan.FallbackText == "" && len(result.Plan.PlannedActions) == 0 {
 		return Outcome{Envelope: envelope, Snapshot: result.Snapshot, Decision: result.Decision}, nil
 	}
@@ -231,6 +274,11 @@ func (r *Runtime) deliberate(ctx context.Context, envelope conversationdomain.Ev
 	}
 	receipt, err := r.executor.Execute(ctx, envelope.Event, result.Decision, result.Plan)
 	outcome := Outcome{Envelope: envelope, Snapshot: result.Snapshot, Decision: result.Decision, Plan: result.Plan, Receipt: receipt}
+	if r.feedback != nil {
+		if feedbackErr := r.feedback.ObserveSent(ctx, envelope.Event, receipt, result.Decision.DecisionID); feedbackErr != nil {
+			return outcome, feedbackErr
+		}
+	}
 	if proposal.ProposalID != "" {
 		if receipt.Sent {
 			if canonErr := r.canon.AfterDelivery(ctx, proposal, personasvc.CanonDelivery{
@@ -298,6 +346,26 @@ func (r *Runtime) observeEvent(ctx context.Context, event conversationdomain.Con
 	}
 }
 
+func (r *Runtime) beginTurn(groupID int64) (context.Context, func()) {
+	ctx, cancel := context.WithTimeout(r.ctx, deliberationTimeout)
+	r.turnMu.Lock()
+	if previous, ok := r.activeTurns[groupID]; ok {
+		previous.cancel()
+	}
+	r.turnSeq++
+	sequence := r.turnSeq
+	r.activeTurns[groupID] = inFlightTurn{sequence: sequence, cancel: cancel}
+	r.turnMu.Unlock()
+	return ctx, func() {
+		r.turnMu.Lock()
+		if current, ok := r.activeTurns[groupID]; ok && current.sequence == sequence {
+			delete(r.activeTurns, groupID)
+		}
+		r.turnMu.Unlock()
+		cancel()
+	}
+}
+
 func (r *Runtime) normalize(payload []byte) (conversationdomain.EventEnvelope, error) {
 	if r.normalizer == nil {
 		return conversationdomain.EventEnvelope{}, errors.New("human runtime: normalizer is nil")
@@ -329,6 +397,12 @@ func silentDecision(id, reason string) policydomain.AutonomyDecision {
 
 func (r *Runtime) Close() error {
 	r.cancel()
+	r.turnMu.Lock()
+	for groupID, turn := range r.activeTurns {
+		turn.cancel()
+		delete(r.activeTurns, groupID)
+	}
+	r.turnMu.Unlock()
 	r.wg.Wait()
 	return nil
 }

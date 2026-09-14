@@ -137,6 +137,29 @@ func (m *Manager) Snapshot(ctx context.Context, groupID int64) (presencedomain.G
 	return a.snapshot(), nil
 }
 
+// Update applies a small projection mutation under the owning group actor's
+// lock and persists it. It is intentionally generic so lifecycle observers
+// such as feedback windows do not need a second state store or a second actor.
+func (m *Manager) Update(ctx context.Context, groupID int64, update func(*presencedomain.GroupWorkingMemory) error) error {
+	if update == nil {
+		return errors.New("group actor: update callback is nil")
+	}
+	a, err := m.actor(ctx, groupID)
+	if err != nil {
+		return err
+	}
+	a.mu.Lock()
+	a.touch()
+	if err := update(&a.memory); err != nil {
+		a.mu.Unlock()
+		return err
+	}
+	memory := cloneMemory(a.memory)
+	err = m.save(ctx, memory)
+	a.mu.Unlock()
+	return err
+}
+
 // Replay rebuilds the group projection from durable events after a cursor.
 // Existing tail events are deduplicated by event ID, so replay is safe to
 // retry and can be used after a partial cache write.

@@ -55,6 +55,33 @@ func (a *Adapter) Deliberate(ctx context.Context, input Input) (Result, error) {
 	}
 	snapshot.PersonaFeedback = append([]string(nil), input.PersonaFeedback...)
 	decision := decisionFor(input.Envelope)
+	if reason := admissionReason(snapshot); reason != "" {
+		decision.Action = policydomain.ActionSilent
+		decision.Score = 0
+		decision.Confidence = 0.95
+		decision.ReasonCodes = []string{"admission_gate", reason}
+		plan := replydomain.ReplyPlan{
+			PlanID:         decision.DecisionID + "-plan",
+			PlannedActions: []policydomain.DecisionAction{policydomain.ActionSilent},
+			SendMode:       "silent",
+		}
+		return Result{
+			Snapshot: snapshot,
+			Decision: decision,
+			Plan:     plan,
+			Thought: replydomain.ThoughtRecord{
+				ThoughtID:      decision.DecisionID + "-thought",
+				GroupID:        input.Envelope.Event.GroupID,
+				EventID:        input.Envelope.Event.EventID,
+				Interpretation: "admission_gate_blocked",
+				Evidence:       append([]string(nil), decision.ReasonCodes...),
+				Uncertainty:    0.05,
+				ChosenAction:   string(decision.Action),
+				Outcome:        string(plan.SendMode),
+				CreatedAt:      time.Now(),
+			},
+		}, nil
+	}
 	plan, err := a.planner.Plan(ctx, snapshot, decision)
 	if err != nil {
 		return Result{}, err

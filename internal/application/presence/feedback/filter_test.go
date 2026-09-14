@@ -2,9 +2,25 @@ package feedback
 
 import (
 	"testing"
+	"time"
 
 	conversationdomain "github.com/phlin/go-agent/internal/domain/conversation"
+	presencedomain "github.com/phlin/go-agent/internal/domain/presence"
 )
+
+func TestResponseAttributionRequiresExplicitLink(t *testing.T) {
+	m := NewWindowManager(nil)
+	sentAt := time.Now()
+	if m.isResponseToBotMessage(conversationdomain.ConversationEvent{EventID: "unrelated", Text: "群里继续聊天"}, "bot-msg", sentAt) {
+		t.Fatal("unrelated group traffic must not be feedback")
+	}
+	if !m.isResponseToBotMessage(conversationdomain.ConversationEvent{EventID: "reply", ReplyToMessageID: "bot-msg"}, "bot-msg", sentAt) {
+		t.Fatal("direct reply must be feedback")
+	}
+	if m.isResponseToBotMessage(conversationdomain.ConversationEvent{EventID: "out", Origin: string(presencedomain.OriginOutbound), ReplyToMessageID: "bot-msg"}, "bot-msg", sentAt) {
+		t.Fatal("outbound event must not be feedback")
+	}
+}
 
 func TestRelevanceFilter_DirectReply(t *testing.T) {
 	filter := NewRelevanceFilter(100, "bot_msg_123")
@@ -29,8 +45,8 @@ func TestRelevanceFilter_Mention(t *testing.T) {
 
 	events := []conversationdomain.ConversationEvent{
 		{
-			MessageID:   "evt_1",
-			Text:        "我觉得不对",
+			MessageID:    "evt_1",
+			Text:         "我觉得不对",
 			MentionedBot: true,
 		},
 	}

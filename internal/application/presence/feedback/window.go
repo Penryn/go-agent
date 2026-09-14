@@ -48,18 +48,19 @@ func (m *WindowManager) WithSentimentAnalyzer(analyzer SentimentAnalyzer) *Windo
 }
 
 // OpenWindow 为刚发送的消息创建反馈窗口
-func (m *WindowManager) OpenWindow(memory *presencedomain.GroupWorkingMemory, botMessageID, decisionID string) {
+func (m *WindowManager) OpenWindow(memory *presencedomain.GroupWorkingMemory, actionID, platformMessageID, decisionID string) {
 	now := time.Now()
 	window := presencedomain.FeedbackWindow{
-		WindowID:        botMessageID + "-feedback",
-		DecisionID:      decisionID,
-		ActionID:        botMessageID,
-		GroupID:         memory.GroupID,
-		SentAt:          now,
-		ObserveDuration: FeedbackWindowDuration,
-		MaxEvents:       10,
-		Status:          "observing",
-		ObservedEventIDs: []string{},
+		WindowID:          actionID + "-feedback",
+		DecisionID:        decisionID,
+		ActionID:          actionID,
+		PlatformMessageID: platformMessageID,
+		GroupID:           memory.GroupID,
+		SentAt:            now,
+		ObserveDuration:   FeedbackWindowDuration,
+		MaxEvents:         10,
+		Status:            "observing",
+		ObservedEventIDs:  []string{},
 	}
 
 	// 添加新窗口并清理过期的
@@ -90,7 +91,7 @@ func (m *WindowManager) CheckInboundEvent(ctx context.Context, memory *presenced
 		}
 
 		// 检查是否是对机器人消息的回复或相关事件
-		if m.isResponseToBotMessage(event, window.ActionID, window.SentAt) {
+		if m.isResponseToBotMessage(event, window.PlatformMessageID, window.SentAt) {
 			window.ObservedEventIDs = append(window.ObservedEventIDs, event.EventID)
 
 			// 达到最大事件数，提前关闭
@@ -109,17 +110,11 @@ func (m *WindowManager) CheckInboundEvent(ctx context.Context, memory *presenced
 
 // isResponseToBotMessage 判断事件是否是对机器人消息的回复
 func (m *WindowManager) isResponseToBotMessage(event conversationdomain.ConversationEvent, botMessageID string, sentAt time.Time) bool {
-	// 1. 直接回复
-	if event.ReplyToMessageID == botMessageID {
-		return true
+	if event.Origin == string(presencedomain.OriginOutbound) || event.EventID == "" {
+		return false
 	}
-
-	// 2. 时间相近（30秒内）的消息，视为潜在反馈
-	if time.Since(sentAt) < FeedbackWindowDuration {
-		return true
-	}
-
-	return false
+	// 只接受有明确关联证据的消息。单纯“刚好在30秒内发言”不再算作反馈。
+	return event.ReplyToMessageID == botMessageID || event.IsReplyToBot || event.MentionedBot || event.NamedBot
 }
 
 // closeWindow 关闭反馈窗口并分析反馈类型
@@ -131,7 +126,7 @@ func (m *WindowManager) closeWindow(ctx context.Context, memory *presencedomain.
 		// 没有反馈 = 被忽略
 		window.FeedbackType = presencedomain.FeedbackIgnored
 		window.FeedbackNote = "No response within observation window"
-		return m.recordFeedback(ctx, memory.GroupID, window, relationshipdomain.EventConversationDropped, 0, 0)
+		return nil
 	}
 
 	// 分析反馈情绪
@@ -240,7 +235,7 @@ func classifyMessageSentiment(text string) float64 {
 
 // recordFeedback 记录反馈事件到关系系统
 func (m *WindowManager) recordFeedback(ctx context.Context, groupID int64, window *presencedomain.FeedbackWindow, kind relationshipdomain.EventKind, valence float64, userID int64) error {
-	if m.relationshipRecorder == nil {
+	if m.relationshipRecorder == nil || userID == 0 {
 		return nil
 	}
 

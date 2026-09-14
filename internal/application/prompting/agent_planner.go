@@ -129,7 +129,7 @@ func (p *AgentPlanner) Plan(ctx context.Context, snapshot conversationdomain.Con
 	}
 
 	runner := adk.NewRunner(ctx, adk.RunnerConfig{Agent: agent})
-	modelInput, promptSession := p.composer.sessionMessages(snapshot, decision, toolHash)
+	modelInput, promptSession := p.composer.sessionMessagesWithContext(ctx, snapshot, decision, toolHash)
 	slog.Info("planner: prompt shape",
 		"trace_id", snapshot.SnapshotID,
 		"group_id", snapshot.Event.GroupID,

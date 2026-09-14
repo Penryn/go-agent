@@ -335,6 +335,22 @@ func TestExecuteSingleBubbleRemainsOneAction(t *testing.T) {
 	}
 }
 
+func TestExecuteDoesNotSendCompletedActionTwice(t *testing.T) {
+	sender := inmemory.NewSender()
+	executor := New(sender, nil, nil)
+	decision := policydomain.AutonomyDecision{DecisionID: "d-idempotent", Action: policydomain.ActionReply}
+	plan := replydomain.ReplyPlan{Bubbles: []string{"只发一次"}, SendMode: "group"}
+	if _, err := executor.Execute(context.Background(), conversationEvent(), decision, plan); err != nil {
+		t.Fatalf("first send: %v", err)
+	}
+	if _, err := executor.Execute(context.Background(), conversationEvent(), decision, plan); err != nil {
+		t.Fatalf("second send: %v", err)
+	}
+	if got := len(sender.Actions()); got != 1 {
+		t.Fatalf("expected one physical send, got %d", got)
+	}
+}
+
 func TestExecuteGuardsFallbackText(t *testing.T) {
 	sender := inmemory.NewSender()
 	executor := New(sender, nil, outputguardsvc.New(0, 0))

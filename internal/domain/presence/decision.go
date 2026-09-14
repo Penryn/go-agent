@@ -26,55 +26,55 @@ type ParticipationDecision struct {
 	Intent string `json:"intent"` // "respond" / "continue" / "initiate" / "moderate" / "observe"
 
 	// 决策置信度和风险
-	SocialValue      float64 `json:"social_value"`       // 预期社交价值：-1.0 到 1.0
-	InterruptionRisk float64 `json:"interruption_risk"`  // 打断风险：0.0-1.0
-	ConfidenceScore  float64 `json:"confidence_score"`   // 决策置信度：0.0-1.0
+	SocialValue      float64 `json:"social_value"`      // 预期社交价值：-1.0 到 1.0
+	InterruptionRisk float64 `json:"interruption_risk"` // 打断风险：0.0-1.0
+	ConfidenceScore  float64 `json:"confidence_score"`  // 决策置信度：0.0-1.0
 
 	// 过期时间
 	ExpiresAt time.Time `json:"expires_at"`
 
 	// 决策依据（可选，用于审计）
-	RuleHits      []string `json:"rule_hits,omitempty"`       // 命中的硬规则
-	SceneSnapshot *scenedomain.GroupScene `json:"scene_snapshot,omitempty"`
+	RuleHits             []string                  `json:"rule_hits,omitempty"` // 命中的硬规则
+	SceneSnapshot        *scenedomain.GroupScene   `json:"scene_snapshot,omitempty"`
 	RelationshipSnapshot *relationshipdomain.State `json:"relationship_snapshot,omitempty"`
 }
 
 // DecisionReasonCode 决策原因代码
 const (
 	// 硬规则拒绝
-	ReasonBlacklisted       = "blacklisted"
-	ReasonCooldown          = "cooldown"
-	ReasonConsecutiveLimit  = "consecutive_limit"
-	ReasonEventExpired      = "event_expired"
-	ReasonPermissionDenied  = "permission_denied"
-	ReasonSelfMessage       = "self_message"
+	ReasonBlacklisted      = "blacklisted"
+	ReasonCooldown         = "cooldown"
+	ReasonConsecutiveLimit = "consecutive_limit"
+	ReasonEventExpired     = "event_expired"
+	ReasonPermissionDenied = "permission_denied"
+	ReasonSelfMessage      = "self_message"
 
 	// 场景判断拒绝
-	ReasonNoResponse        = "no_response_needed"
-	ReasonFastConversation  = "fast_conversation"
-	ReasonTopicClosed       = "topic_closed"
+	ReasonNoResponse       = "no_response_needed"
+	ReasonFastConversation = "fast_conversation"
+	ReasonTopicClosed      = "topic_closed"
 
 	// 关系判断拒绝
-	ReasonLowFamiliarity    = "low_familiarity"
-	ReasonHighFriction      = "high_friction"
-	ReasonLowTrust          = "low_trust"
+	ReasonLowFamiliarity = "low_familiarity"
+	ReasonHighFriction   = "high_friction"
+	ReasonLowTrust       = "low_trust"
 
 	// 人格判断拒绝
-	ReasonLowEnergy         = "low_energy"
-	ReasonLowPatience       = "low_patience"
-	ReasonPostureWithdrawn  = "posture_withdrawn"
+	ReasonLowEnergy        = "low_energy"
+	ReasonLowPatience      = "low_patience"
+	ReasonPostureWithdrawn = "posture_withdrawn"
 
 	// 模型判断拒绝
-	ReasonModelSilent       = "model_silent"
-	ReasonLowConfidence     = "low_confidence"
+	ReasonModelSilent   = "model_silent"
+	ReasonLowConfidence = "low_confidence"
 
 	// 参与原因
-	ReasonDirectMention     = "direct_mention"
-	ReasonQuestionToBot     = "question_to_bot"
-	ReasonTopicMatch        = "topic_match"
-	ReasonRelationshipGood  = "relationship_good"
-	ReasonOpportuneMoment   = "opportune_moment"
-	ReasonModelInitiate     = "model_initiate"
+	ReasonDirectMention    = "direct_mention"
+	ReasonQuestionToBot    = "question_to_bot"
+	ReasonTopicMatch       = "topic_match"
+	ReasonRelationshipGood = "relationship_good"
+	ReasonOpportuneMoment  = "opportune_moment"
+	ReasonModelInitiate    = "model_initiate"
 )
 
 // ResponsePlan 结构化回复计划，替代当前的工具编排。
@@ -107,11 +107,11 @@ type ActionPlan struct {
 	ActionType string `json:"action_type"` // "speak" / "quote" / "meme" / "react" / "poke" / "silent"
 
 	// 动作参数（按类型使用）
-	Text       string `json:"text,omitempty"`        // speak / quote
-	QuoteID    string `json:"quote_id,omitempty"`    // quote
+	Text        string `json:"text,omitempty"`          // speak / quote
+	QuoteID     string `json:"quote_id,omitempty"`      // quote
 	MemeAssetID string `json:"meme_asset_id,omitempty"` // meme
-	Emoji      string `json:"emoji,omitempty"`       // react
-	PokeUserID int64  `json:"poke_user_id,omitempty"` // poke
+	Emoji       string `json:"emoji,omitempty"`         // react
+	PokeUserID  int64  `json:"poke_user_id,omitempty"`  // poke
 
 	// 动作意图说明
 	Intent string `json:"intent,omitempty"`
@@ -122,19 +122,20 @@ type ActionPlan struct {
 
 // FeedbackWindow 发送后的反馈观察窗口
 type FeedbackWindow struct {
-	WindowID    string    `json:"window_id"`
-	DecisionID  string    `json:"decision_id"`
-	ActionID    string    `json:"action_id"` // 已发送动作的 ID
-	GroupID     int64     `json:"group_id"`
-	SentAt      time.Time `json:"sent_at"`
+	WindowID          string    `json:"window_id"`
+	DecisionID        string    `json:"decision_id"`
+	ActionID          string    `json:"action_id"`           // 已发送动作的内部 ID
+	PlatformMessageID string    `json:"platform_message_id"` // 平台实际消息 ID
+	GroupID           int64     `json:"group_id"`
+	SentAt            time.Time `json:"sent_at"`
 
 	// 观察配置
 	ObserveDuration time.Duration `json:"observe_duration"` // 观察时长
 	MaxEvents       int           `json:"max_events"`       // 最多观察事件数
 
 	// 窗口状态
-	Status      string    `json:"status"` // "observing" / "completed" / "cancelled"
-	ClosedAt    time.Time `json:"closed_at,omitempty"`
+	Status   string    `json:"status"` // "observing" / "completed" / "cancelled"
+	ClosedAt time.Time `json:"closed_at,omitempty"`
 
 	// 收集到的事件
 	ObservedEventIDs []string `json:"observed_event_ids"`

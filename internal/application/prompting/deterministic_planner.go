@@ -22,8 +22,8 @@ func NewDeterministicPlanner(persona personadomain.PersonaConfig) *Deterministic
 
 func (p *DeterministicPlanner) Plan(_ context.Context, snapshot conversationdomain.ContextSnapshot, decision policydomain.AutonomyDecision) (replydomain.ReplyPlan, error) {
 	plan := replydomain.ReplyPlan{
-		PlanID:       decision.DecisionID + "-plan",
-		SendMode:     "group",
+		PlanID:         decision.DecisionID + "-plan",
+		SendMode:       "group",
 		PlannedActions: []policydomain.DecisionAction{policydomain.ActionSilent},
 	}
 	if decision.Action == policydomain.ActionSilent {

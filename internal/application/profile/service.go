@@ -11,15 +11,26 @@ import (
 )
 
 type Service struct {
-	store ports.ProfileStore
+	store  ports.ProfileStore
+	selfID int64
 }
 
-func New(store ports.ProfileStore) *Service {
-	return &Service{store: store}
+func New(store ports.ProfileStore, selfIDs ...int64) *Service {
+	service := &Service{store: store}
+	if len(selfIDs) > 0 {
+		service.selfID = selfIDs[0]
+	}
+	return service
 }
 
 // ObserveEvent 只维护成员画像统计；关系变化由 relationship.Service 根据事件投影。
 func (s *Service) ObserveEvent(ctx context.Context, event conversationdomain.ConversationEvent) error {
+	// Outbound messages are already represented in runtime/scene state. They
+	// must not become member activity, otherwise the bot inflates its own
+	// profile and contaminates phrase statistics used for personalization.
+	if event.Origin == "outbound" || (s.selfID != 0 && event.UserID == s.selfID) {
+		return nil
+	}
 	profile, err := s.store.GetMemberProfile(ctx, event.GroupID, event.UserID)
 	if err != nil {
 		return err

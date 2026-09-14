@@ -34,6 +34,8 @@ type Service struct {
 	rhythmMu      sync.Mutex
 	rhythm        map[int64]rhythmEntry
 	rhythmSeq     uint64
+	sentMu        sync.Mutex
+	sent          map[string]replydomain.ActionReceipt
 }
 
 type rhythmEntry struct {
@@ -75,7 +77,7 @@ var bubbleDelayPerRune = 50 * time.Millisecond
 var bubbleMinimumDelay = 350 * time.Millisecond
 
 func New(sender ports.OutboundSender, memes *memesvc.Service, guard *outputguardsvc.Guard, opts ...Option) *Service {
-	service := &Service{sender: sender, memes: memes, guard: guard, rhythm: make(map[int64]rhythmEntry)}
+	service := &Service{sender: sender, memes: memes, guard: guard, rhythm: make(map[int64]rhythmEntry), sent: make(map[string]replydomain.ActionReceipt)}
 	for _, opt := range opts {
 		opt(service)
 	}
@@ -141,6 +143,9 @@ func (s *Service) Execute(ctx context.Context, event conversationdomain.Conversa
 	if err != nil {
 		return replydomain.ActionReceipt{}, err
 	}
+	if previous, ok := s.completed(action.ActionID); ok {
+		return previous, nil
+	}
 
 	// 记录实际发出的 segments，便于排查内容异常
 	textContent := ""
@@ -162,6 +167,9 @@ func (s *Service) Execute(ctx context.Context, event conversationdomain.Conversa
 	receipt, err := s.sendAndObserve(ctx, action)
 	if err != nil {
 		return replydomain.ActionReceipt{}, err
+	}
+	if receipt.Sent {
+		s.rememberCompleted(action.ActionID, receipt)
 	}
 
 	// B-1: 发送成功后提交标记表情包已发送的后台任务。
@@ -227,6 +235,33 @@ func (s *Service) sendAndObserve(ctx context.Context, action replydomain.ActionE
 		}
 	}
 	return receipt, nil
+}
+
+func (s *Service) completed(actionID string) (replydomain.ActionReceipt, bool) {
+	if actionID == "" {
+		return replydomain.ActionReceipt{}, false
+	}
+	s.sentMu.Lock()
+	defer s.sentMu.Unlock()
+	receipt, ok := s.sent[actionID]
+	return receipt, ok
+}
+
+func (s *Service) rememberCompleted(actionID string, receipt replydomain.ActionReceipt) {
+	if actionID == "" || !receipt.Sent {
+		return
+	}
+	s.sentMu.Lock()
+	// ponytail: process-local dedup window; durable replay can add a store-backed
+	// receipt later if restart-safe outbound recovery becomes necessary.
+	if len(s.sent) >= 1024 {
+		for id := range s.sent {
+			delete(s.sent, id)
+			break
+		}
+	}
+	s.sent[actionID] = receipt
+	s.sentMu.Unlock()
 }
 
 func (s *Service) executeRepair(ctx context.Context, event conversationdomain.ConversationEvent, decision policydomain.AutonomyDecision, plan replydomain.ReplyPlan) (replydomain.ActionReceipt, error) {
@@ -375,7 +410,9 @@ func (s *Service) executeRhythm(ctx context.Context, event conversationdomain.Co
 		if i > 0 {
 			part.ReplyToMessageID = ""
 		}
-		partReceipt, err := s.Execute(rhythmCtx, event, decision, part)
+		partDecision := decision
+		partDecision.DecisionID = fmt.Sprintf("%s-bubble-%d", decision.DecisionID, i)
+		partReceipt, err := s.Execute(rhythmCtx, event, partDecision, part)
 		aggregate.StepReceipts = append(aggregate.StepReceipts, partReceipt)
 		if partReceipt.Sent {
 			aggregate.Sent = true

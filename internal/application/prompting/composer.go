@@ -56,7 +56,14 @@ func (c *Composer) WithConstraintIntegration(integration *MemoryConstraintIntegr
 }
 
 func (c *Composer) Instruction(snapshot conversationdomain.ContextSnapshot, decision policydomain.AutonomyDecision) string {
-	return strings.Join([]string{c.StaticInstruction(), c.DynamicInstruction(snapshot, decision), c.TaskInstruction(snapshot, decision)}, "\n\n")
+	return c.InstructionWithContext(context.Background(), snapshot, decision)
+}
+
+// InstructionWithContext keeps external lookups inside prompt construction
+// on the caller's trace and cancellation boundary. Instruction remains as a
+// compatibility wrapper for tests and small offline callers.
+func (c *Composer) InstructionWithContext(ctx context.Context, snapshot conversationdomain.ContextSnapshot, decision policydomain.AutonomyDecision) string {
+	return strings.Join([]string{c.StaticInstruction(), c.DynamicInstructionWithContext(ctx, snapshot, decision), c.TaskInstruction(snapshot, decision)}, "\n\n")
 }
 
 // StaticInstruction is deliberately independent of a group, user, trigger and
@@ -122,7 +129,7 @@ func (c *Composer) StaticInstruction() string {
 		"只有对方明确说‘记住这个’、‘以后记得’或同等意思时，才用 remember_memory 把对方要求保存的信息写入记忆；普通聊天中出现的新信息不要主动保存。若对方表现出明确的态度变化，可用 record_relationship_signal 记录关系信号。没有明确理由时不要调用这些状态工具。",
 		"若本轮出现你自己的生活状态变化，可以在结束前用 update_persona_fact 记录：管理员明确告知的变化可作为已验证事实；普通群友描述或联网查到但未亲历的内容只能记为短期转述。不要为了显得会成长而每轮更新，也不要修改姓名、学校、专业、权限等稳定身份。",
 		"默认不要主动介绍自己的姓名、身份、学校或其他背景；除非对方直接问到、需要澄清误会，或当前话题自然需要。不要为了显得完整而复述人物设定。",
-		"不要主动讨论自己是不是 AI、像不像 AI，或用 AI、模型、机器人解释自己的语气和行为；被直接问到身份时按人物设定简短回答，不要延展自我分析。",
+		"平时和被直接问到身份时都保持人物口吻，不主动讨论 AI、模型或机器人；不得把虚构经历包装成现实世界的可验证事实。",
 		"这是纯虚拟角色。只能在统一人物真值视图列出的 self_complete_once 或 self_mutable 槽位中补全设定；locked、operator_managed、forbidden 以及未注册的 key 都不得自行补全。",
 		"一旦在最终文字中公开说出新的自我设定，必须在 speak_text 或 quote_reply 的 self_facts 中用视图给出的规范 key、value 和原文 evidence_text 同步声明。self_complete_once 只能形成一次；self_mutable 只有回复明确表达纠正时才可设置 correction=true。",
 	}...)
@@ -164,6 +171,10 @@ func (c *Composer) StaticInstruction() string {
 // kept after StaticInstruction so changes here do not invalidate the cacheable
 // prefix.
 func (c *Composer) DynamicInstruction(snapshot conversationdomain.ContextSnapshot, decision policydomain.AutonomyDecision) string {
+	return c.DynamicInstructionWithContext(context.Background(), snapshot, decision)
+}
+
+func (c *Composer) DynamicInstructionWithContext(ctx context.Context, snapshot conversationdomain.ContextSnapshot, decision policydomain.AutonomyDecision) string {
 	sections := []string{"本轮动态数据:"}
 	if interests := relevantInterests(c.persona.Interests, decision.TriggerType); len(interests) > 0 {
 		sections = append(sections, "当前较相关的兴趣: "+strings.Join(interests, "、")+"。")
@@ -223,7 +234,7 @@ func (c *Composer) DynamicInstruction(snapshot conversationdomain.ContextSnapsho
 		// TODO: 可以从上下文中提取更多潜在目标用户
 
 		constraintSection, err := c.constraintIntegration.BuildConstraintSection(
-			context.Background(), // TODO: 传递正确的 context
+			ctx,
 			snapshot.Event.GroupID,
 			targetUserIDs,
 		)
@@ -311,6 +322,10 @@ func (c *Composer) TaskInstruction(snapshot conversationdomain.ContextSnapshot, 
 // 辅助函数已移至 helpers.go
 
 func (c *Composer) Messages(snapshot conversationdomain.ContextSnapshot, decisions ...policydomain.AutonomyDecision) []*schema.Message {
+	return c.MessagesWithContext(context.Background(), snapshot, decisions...)
+}
+
+func (c *Composer) MessagesWithContext(ctx context.Context, snapshot conversationdomain.ContextSnapshot, decisions ...policydomain.AutonomyDecision) []*schema.Message {
 	var decision policydomain.AutonomyDecision
 	if len(decisions) > 0 {
 		decision = decisions[0]
@@ -353,7 +368,7 @@ func (c *Composer) Messages(snapshot conversationdomain.ContextSnapshot, decisio
 		}
 		messages = append(messages, schema.UserMessage(turn.content))
 	}
-	messages = append(messages, c.turnMessages(snapshot, decision, recentTruncated)...)
+	messages = append(messages, c.turnMessagesWithContext(ctx, snapshot, decision, recentTruncated)...)
 	return messages
 }
 
@@ -361,10 +376,18 @@ func (c *Composer) Messages(snapshot conversationdomain.ContextSnapshot, decisio
 // Keeping this delta separate lets a persisted session append new context
 // without rebuilding older dynamic instructions.
 func (c *Composer) TurnMessages(snapshot conversationdomain.ContextSnapshot, decision policydomain.AutonomyDecision) []*schema.Message {
-	return c.turnMessages(snapshot, decision, false)
+	return c.TurnMessagesWithContext(context.Background(), snapshot, decision)
+}
+
+func (c *Composer) TurnMessagesWithContext(ctx context.Context, snapshot conversationdomain.ContextSnapshot, decision policydomain.AutonomyDecision) []*schema.Message {
+	return c.turnMessagesWithContext(ctx, snapshot, decision, false)
 }
 
 func (c *Composer) turnMessages(snapshot conversationdomain.ContextSnapshot, decision policydomain.AutonomyDecision, recentTruncated bool) []*schema.Message {
+	return c.turnMessagesWithContext(context.Background(), snapshot, decision, recentTruncated)
+}
+
+func (c *Composer) turnMessagesWithContext(ctx context.Context, snapshot conversationdomain.ContextSnapshot, decision policydomain.AutonomyDecision, recentTruncated bool) []*schema.Message {
 	currentEvent := eventWithProfileIdentity(snapshot.Event, snapshot.MemberProfile)
 	memorySnippets := make([]string, 0, len(snapshot.RelevantMemories))
 	for _, record := range snapshot.RelevantMemories {
@@ -411,7 +434,7 @@ func (c *Composer) turnMessages(snapshot conversationdomain.ContextSnapshot, dec
 	}
 
 	contentParts := []string{
-		c.DynamicInstruction(snapshot, decision),
+		c.DynamicInstructionWithContext(ctx, snapshot, decision),
 		fmt.Sprintf("工作记忆: %s", strings.Join(workingState, " | ")),
 		fmt.Sprintf("相关记忆: %s", strings.Join(memorySnippets, " | ")),
 		fmt.Sprintf("媒体摘要: %s", strings.Join(mediaSnippets, " | ")),
@@ -426,267 +449,5 @@ func (c *Composer) turnMessages(snapshot conversationdomain.ContextSnapshot, dec
 	return []*schema.Message{
 		schema.UserMessage(stableHistoryTurn(currentEvent, snapshot.SelfID)),
 		schema.UserMessage(strings.Join(contentParts, "\n")),
-	}
-}
-
-// 辅助函数已移至 helpers.go
-
-// ComposeResponse 生成自然语言回复
-func (c *Composer) ComposeResponse(
-	ctx context.Context,
-	personaCtx *personadomain.PersonaContext,
-	evt *conversationdomain.ConversationEvent,
-	intent string,
-) (string, error) {
-	return c.ComposeResponseWithHistory(ctx, personaCtx, evt, nil, intent)
-}
-
-// ComposeResponseWithHistory 生成自然语言回复（带历史上下文）
-func (c *Composer) ComposeResponseWithHistory(
-	ctx context.Context,
-	personaCtx *personadomain.PersonaContext,
-	evt *conversationdomain.ConversationEvent,
-	history []conversationdomain.ConversationEvent,
-	intent string,
-) (string, error) {
-	// 如果没有配置 LLM，返回友好的错误提示而非 intent
-	if c.llm == nil {
-		return "抱歉，我现在有点困，稍后再聊吧", nil
-	}
-
-	// 1. 检索相关记忆
-	var memories []memorydomain.MemoryRecord
-	if c.memoryRetriever != nil && evt.GroupID > 0 {
-		queryParts := make([]string, 0, len(history)+1)
-		for _, item := range history {
-			if text := strings.TrimSpace(item.Text); text != "" {
-				queryParts = append(queryParts, text)
-			}
-		}
-		if text := strings.TrimSpace(evt.Text); text != "" {
-			queryParts = append(queryParts, text)
-		}
-		query := ports.MemoryQuery{
-			GroupID: evt.GroupID,
-			UserID:  evt.UserID,
-			UserIDs: addressedUserIDs(evt, history),
-			Query:   strings.Join(queryParts, "\n"),
-			TopK:    5,
-		}
-		retrieved, err := c.memoryRetriever.RetrieveRelevant(ctx, query)
-		if err == nil {
-			memories = retrieved
-		}
-	}
-
-	// 2. 构建完整的提示词（使用 PersonaContext 和历史）
-	prompt := c.buildEnhancedResponsePrompt(personaCtx, evt, history, intent, memories)
-
-	// 3. 调用 LLM 生成回复
-	response, err := c.llm.Generate(ctx, prompt)
-	if err != nil {
-		// LLM 失败时返回友好提示
-		return "嗯...我需要想想再回答", fmt.Errorf("LLM generate: %w", err)
-	}
-
-	// 4. 清理和验证回复
-	cleaned := strings.TrimSpace(response)
-	if cleaned == "" {
-		return "...", nil // 空回复时的友好提示
-	}
-
-	return cleaned, nil
-}
-
-// buildResponsePrompt 构建回复生成的提示词
-func (c *Composer) buildResponsePrompt(
-	personaCtx *personadomain.PersonaContext,
-	evt *conversationdomain.ConversationEvent,
-	intent string,
-	memories []memorydomain.MemoryRecord,
-) string {
-	var sb strings.Builder
-
-	// 人格设定
-	sb.WriteString("# 角色设定\n")
-	sb.WriteString(fmt.Sprintf("你是 %s\n", c.persona.Name))
-	sb.WriteString(fmt.Sprintf("%s\n\n", c.persona.Description))
-
-	// 性格特点
-	if len(c.persona.Traits) > 0 {
-		sb.WriteString("## 性格特点\n")
-		for _, trait := range c.persona.Traits {
-			sb.WriteString(fmt.Sprintf("- %s\n", trait))
-		}
-		sb.WriteString("\n")
-	}
-
-	// 说话风格（如果有）
-	if c.persona.Description != "" {
-		sb.WriteString("## 行为风格\n")
-		sb.WriteString(fmt.Sprintf("%s\n\n", c.persona.Description))
-	}
-
-	// 相关记忆
-	if len(memories) > 0 {
-		sb.WriteString("# 相关记忆\n")
-		for i, mem := range memories {
-			sb.WriteString(fmt.Sprintf("%d. %s\n", i+1, formatMemorySnippet(mem)))
-		}
-		sb.WriteString("\n")
-	}
-
-	// 当前上下文
-	sb.WriteString("# 当前对话\n")
-	// ConversationEvent 没有 UserName 字段，直接显示文本
-	sb.WriteString(fmt.Sprintf("用户说: %s\n\n", evt.Text))
-
-	// 回复意图
-	sb.WriteString("# 回复意图\n")
-	sb.WriteString(fmt.Sprintf("%s\n\n", intent))
-
-	// 生成指令
-	sb.WriteString("# 任务\n")
-	sb.WriteString("请根据以上信息，生成一句符合角色人格和说话风格的自然回复。\n")
-	sb.WriteString("要求：\n")
-	sb.WriteString("1. 保持角色的性格特点和说话习惯\n")
-	sb.WriteString("2. 回复要自然、简洁，不超过100字\n")
-	sb.WriteString("3. 只输出回复内容本身，不要包含任何解释或元信息\n")
-	sb.WriteString("4. 如果有相关记忆，可以自然地体现出来\n\n")
-	sb.WriteString("回复：")
-
-	return sb.String()
-}
-
-// buildEnhancedResponsePrompt 构建增强的回复提示词（包含 PersonaContext 和历史）
-func (c *Composer) buildEnhancedResponsePrompt(
-	personaCtx *personadomain.PersonaContext,
-	evt *conversationdomain.ConversationEvent,
-	history []conversationdomain.ConversationEvent,
-	intent string,
-	memories []memorydomain.MemoryRecord,
-) string {
-	var sb strings.Builder
-
-	// 人格设定
-	sb.WriteString("# 角色设定\n")
-	sb.WriteString(fmt.Sprintf("你是 %s\n", c.persona.Name))
-	sb.WriteString(fmt.Sprintf("%s\n\n", c.persona.Description))
-
-	// 性格特点
-	if len(c.persona.Traits) > 0 {
-		sb.WriteString("## 性格特点\n")
-		for _, trait := range c.persona.Traits {
-			sb.WriteString(fmt.Sprintf("- %s\n", trait))
-		}
-		sb.WriteString("\n")
-	}
-
-	// 当前状态（使用 PersonaContext）
-	if personaCtx != nil {
-		sb.WriteString("# 当前状态\n")
-
-		// 群姿态
-		if personaCtx.Posture.ParticipationBias > 0.5 {
-			sb.WriteString("状态: 比较活跃，愿意参与\n")
-		} else if personaCtx.Posture.ParticipationBias < -0.3 {
-			sb.WriteString("状态: 比较被动，话不多\n")
-		}
-
-		// 即时状态：情绪和精力
-		mood := personaCtx.EphemeralState.Mood
-		energy := personaCtx.EphemeralState.Energy
-
-		// 情绪状态
-		switch mood {
-		case personadomain.MoodHappy:
-			sb.WriteString("心情: 比较愉快\n")
-		case personadomain.MoodWithdrawn:
-			sb.WriteString("心情: 有些低落\n")
-		case personadomain.MoodAggro:
-			sb.WriteString("心情: 有点烦躁\n")
-		}
-
-		// 精力状态
-		switch energy {
-		case personadomain.EnergyTired, personadomain.EnergyLow:
-			sb.WriteString("精力: 有点累，回复简洁一些\n")
-		case personadomain.EnergyHigh:
-			sb.WriteString("精力: 充沛，可以多聊聊\n")
-		}
-
-		// 熟悉度
-		if personaCtx.Posture.Familiarity > 0.7 {
-			sb.WriteString("与这个群: 很熟悉，可以放松\n")
-		} else if personaCtx.Posture.Familiarity < 0.3 {
-			sb.WriteString("与这个群: 还不太熟，稍微拘谨\n")
-		}
-
-		sb.WriteString("\n")
-	}
-
-	// 相关记忆
-	if len(memories) > 0 {
-		sb.WriteString("# 相关记忆\n")
-		for i, mem := range memories {
-			sb.WriteString(fmt.Sprintf("%d. %s\n", i+1, formatMemorySnippet(mem)))
-		}
-		sb.WriteString("\n")
-	}
-
-	// 对话历史
-	if len(history) > 0 {
-		sb.WriteString("# 最近对话\n")
-		// 简单判断：如果事件没有 UserID 或为 0，认为是机器人
-		botName := c.persona.Name
-		for _, h := range history {
-			if h.UserID == 0 {
-				// 机器人消息
-				sb.WriteString(fmt.Sprintf("%s: %s\n", botName, h.Text))
-			} else {
-				// 用户消息
-				sb.WriteString(fmt.Sprintf("用户: %s\n", h.Text))
-			}
-		}
-		sb.WriteString("\n")
-	}
-
-	// 当前消息
-	sb.WriteString("# 当前消息\n")
-	sb.WriteString(fmt.Sprintf("用户说: %s\n\n", evt.Text))
-
-	// 回复意图
-	sb.WriteString("# 回复意图\n")
-	sb.WriteString(fmt.Sprintf("%s\n\n", c.translateIntent(intent)))
-
-	// 生成指令
-	sb.WriteString("# 任务\n")
-	sb.WriteString("请根据以上信息，生成一句符合角色人格和当前状态的自然回复。\n")
-	sb.WriteString("要求：\n")
-	sb.WriteString("1. 保持角色的性格特点和说话习惯\n")
-	sb.WriteString("2. 考虑当前的心情和精力状态\n")
-	sb.WriteString("3. 回复要自然、简洁，不超过100字\n")
-	sb.WriteString("4. 只输出回复内容本身，不要包含任何解释或元信息\n")
-	sb.WriteString("5. 如果有相关记忆或对话历史，可以自然地体现出来\n\n")
-	sb.WriteString("回复：")
-
-	return sb.String()
-}
-
-// translateIntent 翻译意图为自然语言
-func (c *Composer) translateIntent(intent string) string {
-	switch intent {
-	case "direct_answer":
-		return "直接回答用户的问题"
-	case "continue_topic":
-		return "延续当前话题"
-	case "moderate":
-		return "缓和气氛"
-	case "inform":
-		return "告知信息"
-	case "casual_chat":
-		return "轻松闲聊"
-	default:
-		return intent
 	}
 }
