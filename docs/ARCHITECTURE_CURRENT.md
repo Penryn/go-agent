@@ -22,7 +22,8 @@ NapCat / OneBot
           -> admission gate（非定向重复消息）
           -> AgentPlanner
               -> Composer 稳定人设指令
-              -> PromptSession
+              -> 从已归档 inbound / outbound 重建相关对话
+              -> 动态上下文预算与按轮工具集
               -> LLM + tools
           -> 将 ReplyPlan.PlannedActions 解析为 Decision.Action
       -> Action Service
@@ -71,6 +72,22 @@ NapCat / OneBot
 当前触发类型，并把它解析为唯一的 `Decision.Action`；最终动作仍由 `Action Service`、
 OutputGuard 和发送适配器控制。
 
+## 上下文与成本边界
+
+模型上下文不再持久化内部 `PromptSession`。每一轮都从 `GroupActor` 和消息归档中的
+真实 inbound / outbound 事件确定性重建，因此静默、工具中间结果、发送失败和未送达的
+计划不会变成下一轮的“幽灵对话”。短时间同一用户的分条消息会合并理解；历史默认保留
+最近 8 条，并额外保留当前说话人的近期消息和显式回复目标。
+
+可变上下文统一按字节预算裁剪：历史 4800、相关记忆 1800、媒体摘要 1800、最近判断
+700、单次工具结果 4096。相关记忆按检索顺序保留并按 `memory_id` 去重。工具 schema
+也按本轮能力裁剪：`poke_member` 只在被戳时提供，`repair_message` 只在存在可撤回消息时
+提供，群工具白名单之外的 schema 不发送给模型。
+
+`model_usage_records.prompt_shape_json` 记录静态指令、历史、当前轮、记忆和工具 schema
+的字节分区；同一记录同时保留输入、输出、cached、cache miss 和 uncached token，可在
+管理后台按真实供应商回执观察优化效果。
+
 ## 事件与画像边界
 
 入站消息会进入成员画像、群场景和关系投影。机器人 outbound 事件只进入群工作记忆、
@@ -81,5 +98,5 @@ OutputGuard 和发送适配器控制。
 角色仍由 `GroupScene.RecommendedRole` 作为上下文倾向提示模型，不独立成可执行的
 `PresenceMode` 状态机。模型自主决定参与方式，运行时只执行冷却、权限、工具和安全边界。
 
-发送后的反馈窗口也应继续沿 `action_id / decision_id / source_event_ids` 做归因，
-再幂等更新关系和群状态。
+发送后的反馈窗口沿 `action_id / decision_id / source_event_ids` 做归因，再幂等更新
+关系和群状态；后续只针对可复现的误归因继续收紧规则。

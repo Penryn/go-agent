@@ -21,7 +21,7 @@ NapCat / OneBot
   -> TurnObserver / GroupActor
   -> ContextService.BuildSnapshot
   -> Admission Gate
-  -> Composer / PromptSession / AgentPlanner
+  -> Composer（从真实收发事件重建相关历史）/ AgentPlanner
   -> resolve ReplyPlan.PlannedActions into Decision.Action
   -> Action Service / OutputGuard
   -> Canon prepare
@@ -30,7 +30,7 @@ NapCat / OneBot
   -> TurnObserver.AfterTurn
 ```
 
-`GroupActor` 负责群内事件归档、工作记忆、消息 burst 和 PromptSession；`ContextService` 负责一次性组装记忆、画像、场景、关系、策略和 PersonaView；`Deliberation Adapter` 将 Planner 的单一计划动作解析为 `Decision.Action`，`Action Service` 只按该决策执行发送、撤回、表情、表情包或戳一戳。
+`GroupActor` 负责群内事件归档、工作记忆、消息 burst 和反馈窗口；`ContextService` 负责一次性组装记忆、画像、场景、关系、策略和 PersonaView；`Composer` 从已归档的真实 inbound / outbound 事件重建模型历史，不保存工具草稿或未送达回复；`Deliberation Adapter` 将 Planner 的单一计划动作解析为 `Decision.Action`，`Action Service` 只按该决策执行发送、撤回、表情、表情包或戳一戳。
 
 ## 分层和依赖
 
@@ -94,7 +94,7 @@ Outbox handler 必须可重入，外部副作用使用稳定业务幂等键。�
 ## 当前演进边界
 
 - `GroupScene.RecommendedRole` 当前只作为模型上下文，不额外维护固定 `PresenceMode` 状态机。
-- 发送后的反馈窗口需要补齐基于 `action_id`、平台消息 ID 和源事件的可靠归因。
+- 发送后的反馈窗口已基于 `action_id`、平台消息 ID 和源事件完成最小可靠归因，后续只针对真实误归因补规则。
 - 同群新回合已能取消旧回合并在发送前检查 context；发送幂等目前仍是进程内 `action_id` 去重，尚未做到重启后 exactly-once。
 - BM25、Outbox 和向量 projection 需要继续补充健康检查、回放和死信运维能力。
 

@@ -25,7 +25,7 @@ OneBot / NapCat
   -> Presence Runtime / GroupActor
   -> ContextService.BuildSnapshot
   -> 轻量硬约束检查
-  -> AgentPlanner / Composer / PromptSession
+  -> AgentPlanner / Composer（真实事件历史 + 分区预算）
   -> Action Service / OutputGuard
   -> Canon prepare
   -> Outbound sender
@@ -71,6 +71,10 @@ OneBot / NapCat
 - 删除旧 Composer API 和旧状态接口。
 - 移除身份披露配置，保持始终角色扮演。
 - 删除旧角色决策相关文档和数据库表。
+- 移除持久化模型 `PromptSession`，只从实际归档的收发事件重建下一轮对话。
+- 合并短时间分条消息，保留回复链和当前说话人的相关历史，限制未解决问题数量与有效期。
+- 统一历史、记忆、媒体、最近判断和工具结果预算，并按本轮能力裁剪工具 schema。
+- 记录 prompt 分区和 cached / uncached token，支持用真实运行数据评估成本。
 
 ## 5. 必须改造的部分
 
@@ -81,11 +85,15 @@ OneBot / NapCat
 继续完善 `ContextSnapshot`，但只加入模型真正需要的信息：
 
 - 最近相关消息和当前话题；
+- 短时间同一用户的分条消息，以及显式回复目标；
 - 是否直接 @、回复或点名；
 - 当前群氛围和关系；
 - Persona 的情绪、能量和说话倾向；
 - 最近连续发言和冷却信息；
 - 相关记忆及其来源。
+
+模型历史只允许来自已归档的 inbound / outbound 事实；工具调用过程、静默计划、发送失败
+和未送达文本不进入下一轮上下文。预算与裁剪规则集中维护，不在各模块散落独立上限。
 
 不要把每一种可能行为提前写成规则表。
 
