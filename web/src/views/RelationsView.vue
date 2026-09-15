@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onMounted, ref, watch } from 'vue'
+import { onMounted, onUnmounted, ref, watch } from 'vue'
 import { storeToRefs } from 'pinia'
 import { Search } from '@element-plus/icons-vue'
 import { relativeTime } from '@/lib/format'
@@ -21,6 +21,8 @@ const expandedRow = ref<Relationship | null>(null)
 const events = ref<RelationshipEvent[]>([])
 const projectionHistory = ref<ProjectionSnapshot[]>([])
 const detailLoading = ref(false)
+const detailError = ref('')
+let searchTimer: number | undefined
 
 // 直接定义 API 函数以绕过导入问题
 async function loadRelationshipEvents(groupID: number, userID: number, tokenStr: string): Promise<RelationshipEvent[]> {
@@ -52,14 +54,12 @@ async function load(nextPage = page.value) {
   }
 }
 
-async function handleRowClick(row: Relationship) {
-  if (expandedRow.value?.user_id === row.user_id && expandedRow.value?.group_id === row.group_id) {
-    expandedRow.value = null
-    return
-  }
-
+async function loadDetail(row: Relationship) {
   expandedRow.value = row
   detailLoading.value = true
+  detailError.value = ''
+  events.value = []
+  projectionHistory.value = []
 
   try {
     const [eventsData, historyData] = await Promise.all([
@@ -69,10 +69,22 @@ async function handleRowClick(row: Relationship) {
     events.value = eventsData
     projectionHistory.value = historyData
   } catch (error) {
-    console.error('加载关系详情失败:', error)
+    detailError.value = error instanceof Error ? error.message : String(error)
   } finally {
     detailLoading.value = false
   }
+}
+
+async function handleRowClick(row: Relationship) {
+  if (expandedRow.value?.user_id === row.user_id && expandedRow.value?.group_id === row.group_id) {
+    expandedRow.value = null
+    return
+  }
+  await loadDetail(row)
+}
+
+async function retryDetail() {
+  if (expandedRow.value) await loadDetail(expandedRow.value)
 }
 
 function getEventLabel(kind: string): string {
@@ -111,16 +123,18 @@ function getFieldChange(index: number, field: keyof ProjectionSnapshot): string 
 onMounted(load)
 watch(selectedGroup, () => load(1))
 watch(query, () => {
+  if (searchTimer !== undefined) window.clearTimeout(searchTimer)
   page.value = 1
-  load(1)
+  searchTimer = window.setTimeout(() => { void load(1) }, 280)
 })
+onUnmounted(() => { if (searchTimer !== undefined) window.clearTimeout(searchTimer) })
 </script>
 
 <template>
   <section class="glass-panel page-panel relation-page">
     <div class="page-panel-head">
       <div><span>RELATIONSHIP GRAPH</span><h2>群友关系</h2><p>查看群友互动关系、情绪事件与投影版本历史 · 共 {{ total }} 位成员</p></div>
-      <el-input v-model="query" class="relation-search" placeholder="搜索成员名称" :prefix-icon="Search" clearable @clear="load(1)" />
+      <el-input v-model="query" class="relation-search" placeholder="搜索成员名称" :prefix-icon="Search" clearable />
     </div>
     <el-alert v-if="loadError" type="error" :title="`读取关系失败：${loadError}`" :closable="false" show-icon />
     <el-table :data="rows" class="relation-table" v-loading="loading" @row-click="handleRowClick" :row-class-name="({ row }: { row: Relationship }) => expandedRow?.user_id === row.user_id && expandedRow?.group_id === row.group_id ? 'expanded-row' : ''">
@@ -142,6 +156,9 @@ watch(query, () => {
         </div>
       </template>
 
+      <el-alert v-if="detailError" class="detail-error" type="error" :title="`读取关系详情失败：${detailError}`" :closable="false" show-icon>
+        <el-button link type="primary" @click="retryDetail">重试</el-button>
+      </el-alert>
       <el-tabs v-loading="detailLoading">
         <el-tab-pane label="关系事件">
           <div v-if="events.length === 0" class="empty-tip">暂无关系事件</div>
@@ -233,6 +250,10 @@ watch(query, () => {
   margin-top: 18px;
   border-color: var(--line);
   background: rgba(8, 11, 16, 0.42);
+}
+
+.detail-error {
+  margin-bottom: 14px;
 }
 
 .card-header {

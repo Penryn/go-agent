@@ -9,19 +9,21 @@ const { snapshot, loading } = storeToRefs(store)
 const persona = computed(() => snapshot.value?.persona)
 const groups = computed(() => [...(snapshot.value?.groups || [])].sort((a, b) => b.messages - a.messages))
 const stats = computed(() => [
-  { label: '活跃群聊', value: snapshot.value?.stats.groups ?? 0, code: 'GROUPS', tone: 'mint' },
-  { label: '已识别群友', value: snapshot.value?.stats.members ?? 0, code: 'PEOPLE', tone: 'violet' },
-  { label: '有效记忆', value: snapshot.value?.stats.memories ?? 0, code: 'MEMORY', tone: 'amber' },
-  { label: '后台任务', value: snapshot.value?.stats.pending_tasks ?? 0, code: 'QUEUE', tone: 'blue' },
+  { label: '活跃群聊', value: snapshot.value?.stats.groups ?? 0, code: 'GROUPS', tone: 'mint', to: '/' },
+  { label: '已识别群友', value: snapshot.value?.stats.members ?? 0, code: 'PEOPLE', tone: 'violet', to: '/relations' },
+  { label: '有效记忆', value: snapshot.value?.stats.memories ?? 0, code: 'MEMORY', tone: 'amber', to: '/memory' },
+  { label: '后台任务', value: snapshot.value?.stats.pending_tasks ?? 0, code: 'QUEUE', tone: 'blue', to: '/tasks' },
 ])
 </script>
 
 <template>
   <el-skeleton :loading="loading && !snapshot" animated :rows="8">
     <section class="metric-grid">
-      <article v-for="item in stats" :key="item.label" class="metric-card" :data-tone="item.tone">
-        <span>{{ item.label }}</span><small>{{ item.code }}</small><strong>{{ item.value }}</strong><i />
-      </article>
+      <RouterLink v-for="item in stats" :key="item.label" :to="item.to" class="metric-link" :aria-label="`查看${item.label}`">
+        <article class="metric-card" :data-tone="item.tone">
+          <span>{{ item.label }}</span><small>{{ item.code }}</small><strong>{{ item.value }}</strong><i />
+        </article>
+      </RouterLink>
     </section>
 
     <section class="overview-grid">
