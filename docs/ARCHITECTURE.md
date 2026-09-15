@@ -1,6 +1,6 @@
 # 项目架构
 
-当前身份与角色生产链路以 [`ARCHITECTURE_CURRENT.md`](./ARCHITECTURE_CURRENT.md) 为准；身份角色系统的后续改造以 [`AI_GROUP_FRIEND_ARCHITECTURE_PLAN.md`](./AI_GROUP_FRIEND_ARCHITECTURE_PLAN.md) 为准。
+本文是架构文档入口。当前身份与角色生产链路以 [`ARCHITECTURE_CURRENT.md`](./ARCHITECTURE_CURRENT.md) 为准；身份角色系统的后续改造以 [`AI_GROUP_FRIEND_ARCHITECTURE_PLAN.md`](./AI_GROUP_FRIEND_ARCHITECTURE_PLAN.md) 为准。新的架构文档应先在这里登记，避免出现多个未说明的“当前架构”版本。
 
 本文只保留当前仍有效的模块化单体、事件存储、检索和 Outbox 基础设计，不再描述已经删除的旧决策引擎、旧 Persona Context、旧 ResponsePlanner 或旧反馈表。
 
