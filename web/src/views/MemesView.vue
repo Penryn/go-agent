@@ -40,8 +40,7 @@ function dudRate(item: MemeRecord) {
 }
 
 function previewURL(item: MemeRecord) {
-  if (!item.preview_url || !token.value) return item.preview_url
-  return `${item.preview_url}?token=${encodeURIComponent(token.value)}`
+  return item.preview_url
 }
 
 async function remove(item: MemeRecord) {

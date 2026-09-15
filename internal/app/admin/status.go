@@ -19,6 +19,14 @@ type SystemStatus struct {
 // handleStatus 处理状态查询（轻量级，高频刷新）
 // GET /api/admin/status
 func (h *Handler) handleStatus(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if !h.authorized(r) {
+		http.Error(w, "admin token required", http.StatusUnauthorized)
+		return
+	}
 	ctx := r.Context()
 
 	// 使用现有的 load 函数获取快照
@@ -74,6 +82,14 @@ type IncrementalUpdate struct {
 // handleUpdates 处理增量更新查询
 // GET /api/admin/updates?since=1234567890
 func (h *Handler) handleUpdates(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if !h.authorized(r) {
+		http.Error(w, "admin token required", http.StatusUnauthorized)
+		return
+	}
 	ctx := r.Context()
 
 	// 解析 since 参数

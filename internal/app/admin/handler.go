@@ -24,8 +24,8 @@ import (
 
 	napcatsdk "github.com/zjutjh/napcat-sdk"
 
-	toolsvc "github.com/phlin/go-agent/internal/application/tools"
 	"github.com/phlin/go-agent/internal/application/ports"
+	toolsvc "github.com/phlin/go-agent/internal/application/tools"
 	"github.com/phlin/go-agent/internal/config"
 	personadomain "github.com/phlin/go-agent/internal/domain/persona"
 )
@@ -87,6 +87,11 @@ func NewHandler(
 }
 
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	// Establish a short-lived, HttpOnly cookie after a bearer-authenticated API
+	// request so browser image requests do not need credentials in the URL.
+	if h.token != "" && h.authorizedBearer(r) {
+		h.setAuthCookie(w)
+	}
 	if strings.HasPrefix(r.URL.Path, "/admin/api/memes/files/") {
 		h.handleMemeFile(w, r)
 		return
@@ -126,6 +131,10 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.handleMetrics(w, r)
 	case "/admin/api/memories":
 		h.handleMemories(w, r)
+	case "/admin/api/status":
+		h.handleStatus(w, r)
+	case "/admin/api/updates":
+		h.handleUpdates(w, r)
 	default:
 		if r.Method != http.MethodGet {
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -147,7 +156,7 @@ func (h *Handler) handleMemeFile(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	if !h.authorized(r) && !h.authorizedQueryToken(r) {
+	if !h.authorized(r) {
 		http.Error(w, "admin token required", http.StatusUnauthorized)
 		return
 	}
@@ -181,14 +190,6 @@ func (h *Handler) handleMemeFile(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", contentType)
 	}
 	http.ServeFile(w, r, resolvedTarget)
-}
-
-func (h *Handler) authorizedQueryToken(r *http.Request) bool {
-	if h.token == "" {
-		return false
-	}
-	provided := strings.TrimSpace(r.URL.Query().Get("token"))
-	return len(provided) == len(h.token) && subtle.ConstantTimeCompare([]byte(provided), []byte(h.token)) == 1
 }
 
 func (h *Handler) handleActivity(w http.ResponseWriter, r *http.Request) {
@@ -487,7 +488,8 @@ func (h *Handler) handleRelationships(w http.ResponseWriter, r *http.Request) {
 
 // handleRelationshipDetail 处理单个关系的详细信息请求
 // 路径格式: /admin/api/relationships/{group_id}/{user_id}/events
-//          /admin/api/relationships/{group_id}/{user_id}/projection-history
+//
+//	/admin/api/relationships/{group_id}/{user_id}/projection-history
 func (h *Handler) handleRelationshipDetail(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		w.Header().Set("Allow", http.MethodGet)
@@ -852,6 +854,19 @@ func (h *Handler) authorized(r *http.Request) bool {
 		return net.ParseIP(host).IsLoopback()
 	}
 	provided := strings.TrimSpace(strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer "))
+	if provided == "" {
+		if cookie, err := r.Cookie("bot-admin-token"); err == nil {
+			provided = cookie.Value
+		}
+	}
 	return len(provided) == len(h.token) && subtle.ConstantTimeCompare([]byte(provided), []byte(h.token)) == 1
 }
 
+func (h *Handler) authorizedBearer(r *http.Request) bool {
+	provided := strings.TrimSpace(strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer "))
+	return len(provided) == len(h.token) && subtle.ConstantTimeCompare([]byte(provided), []byte(h.token)) == 1
+}
+
+func (h *Handler) setAuthCookie(w http.ResponseWriter) {
+	http.SetCookie(w, &http.Cookie{Name: "bot-admin-token", Value: h.token, Path: "/admin/", HttpOnly: true, SameSite: http.SameSiteStrictMode, MaxAge: 3600})
+}
