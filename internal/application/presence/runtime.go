@@ -156,16 +156,19 @@ func (r *Runtime) SubmitRaw(ctx context.Context, payload []byte) error {
 	if r.executor != nil {
 		r.executor.CancelQueued(envelope.Event.GroupID)
 	}
-	if observer, ok := r.turns.(InboundTurnObserver); ok {
-		if err := observer.ObserveInbound(ctx, envelope.Event); err != nil {
-			return fmt.Errorf("observe inbound turn: %w", err)
-		}
-	}
-	if r.confirmations != nil {
-		r.confirmations.ObserveConfirmation(envelope.Event.GroupID, envelope.Event.UserID, envelope.Event.Text, envelope.ReceivedAt)
-	}
 	record := toEventRecord(envelope, presencedomain.OriginInbound)
 	_, err = r.working.Observe(ctx, record)
+	if err == nil {
+		// Only advance derived interaction state after the source event is durable.
+		if observer, ok := r.turns.(InboundTurnObserver); ok {
+			if observeErr := observer.ObserveInbound(ctx, envelope.Event); observeErr != nil {
+				return fmt.Errorf("observe inbound turn: %w", observeErr)
+			}
+		}
+		if r.confirmations != nil {
+			r.confirmations.ObserveConfirmation(envelope.Event.GroupID, envelope.Event.UserID, envelope.Event.Text, envelope.ReceivedAt)
+		}
+	}
 	if err == nil && r.feedback != nil {
 		if feedbackErr := r.feedback.ObserveInbound(ctx, envelope.Event); feedbackErr != nil {
 			slog.Warn("human runtime: feedback observation failed", "group_id", envelope.Event.GroupID, "event_id", envelope.Event.EventID, "err", feedbackErr)
@@ -208,15 +211,15 @@ func (r *Runtime) ProcessRawEvent(ctx context.Context, payload []byte) (Outcome,
 			return r.silentBeforeModel(ctx, envelope, "turn_gate")
 		}
 	}
-	if observer, ok := r.turns.(InboundTurnObserver); ok {
-		if err := observer.ObserveInbound(ctx, envelope.Event); err != nil {
-			return Outcome{Envelope: envelope}, fmt.Errorf("observe inbound turn: %w", err)
-		}
-	}
 	record := toEventRecord(envelope, presencedomain.OriginInbound)
 	_, err = r.working.ObserveReplay(ctx, record)
 	if err != nil {
 		return Outcome{}, fmt.Errorf("observe event: %w", err)
+	}
+	if observer, ok := r.turns.(InboundTurnObserver); ok {
+		if err := observer.ObserveInbound(ctx, envelope.Event); err != nil {
+			return Outcome{Envelope: envelope}, fmt.Errorf("observe inbound turn: %w", err)
+		}
 	}
 	if r.perception != nil {
 		r.perception.Submit(record)
