@@ -46,7 +46,7 @@ cmd/qqbotd
 - `domain` 不依赖数据库、模型、网络或应用生命周期。
 - `application` 通过 `ports` 使用外部能力，不直接依赖 adapter。
 - `adapters` 实现模型、NapCat、PostgreSQL 和其他外部系统。
-- `app` 只负责依赖组装、生命周期和健康检查。
+- `app` 只负责依赖组装、生命周期和健康检查；`app.New` 保持 HTTP/进程入口的薄编排，业务依赖图集中在 `runtime_builder.go`，由一个生命周期边界统一接管失败清理和正常关闭。
 - `search` 保持无基础设施依赖，提供 BM25、scope 等纯算法。
 
 架构依赖由 [`internal/architecture/layers_test.go`](../internal/architecture/layers_test.go) 检查。
