@@ -14,6 +14,7 @@
 | --- | --- |
 | [开发与验证](./DEVELOPMENT.md) | 构建、测试、前端开发和单事件验证 |
 | [当前架构](./ARCHITECTURE.md) | 主链路、职责、数据与生命周期 |
+| [QQ AI 群友重设计提案](./QQ_GROUP_FRIEND_REDESIGN.md) | 聚焦自然群聊、简化记忆并移除 Codex 等任务能力的目标方案，尚未实施 |
 | [混合检索](./RETRIEVAL.md) | 记忆与素材召回、融合、投影和故障边界 |
 | [应用层目录](../internal/application/README.md) | 应用包职责与命名约定 |
 | [数据库 Schema](../schema/README.md) | 启动时应用的数据库基线 |
