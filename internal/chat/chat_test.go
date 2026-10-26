@@ -39,7 +39,9 @@ func setup(t *testing.T, generator model.Generator) (*chat.Runtime, *replay.Stor
 	t.Helper()
 	store := replay.NewStore()
 	sender := &replay.Sender{}
-	r := chat.New(context.Background(), &chat.Runtime{Store: store, Model: generator, Sender: sender, SelfID: 99, Persona: chat.Persona{Name: "芙芙"}, Config: chat.Config{Merge: 5 * time.Millisecond, MaxWait: 20 * time.Millisecond, PassiveInterval: time.Millisecond, ActiveWindow: time.Second, Timeout: time.Second, SpontaneousInterval: time.Hour, MaxPerMinute: 20, History: 80, ContextRunes: 20000}})
+	r := chat.New(context.Background(), &chat.Runtime{Store: store, Model: generator, Sender: sender, SelfID: 99, Persona: chat.Persona{Name: "芙芙"}, // A burst must merge into one batch; the window stays wide enough to hold
+		// several sequential submits even when the suite runs under parallel load.
+		Config: chat.Config{Merge: 50 * time.Millisecond, MaxWait: 200 * time.Millisecond, PassiveInterval: time.Millisecond, ActiveWindow: time.Second, Timeout: time.Second, SpontaneousInterval: time.Hour, MaxPerMinute: 20, History: 80, ContextRunes: 20000}})
 	t.Cleanup(r.Close)
 	return r, store, sender
 }
