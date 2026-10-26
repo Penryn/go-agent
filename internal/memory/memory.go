@@ -109,6 +109,7 @@ func ids(notes []Note) []string {
 func (s *Service) Recall(ctx context.Context, group int64, events []qq.Event) ([]Note, Trace, error) {
 	start := time.Now()
 	trace := Trace{}
+	// ponytail: BM25 scans at most 5,000 group notes; use an inverted index if this bound becomes too small.
 	all, err := s.Store.Notes(ctx, group, 5000)
 	if err != nil {
 		return nil, trace, err

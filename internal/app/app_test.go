@@ -2,58 +2,106 @@ package app
 
 import (
 	"context"
+	"database/sql"
+	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
+	"os"
 	"testing"
 	"time"
 
-	postgresstore "github.com/phlin/go-agent/internal/adapters/storage/postgres"
 	"github.com/phlin/go-agent/internal/config"
-	memorydomain "github.com/phlin/go-agent/internal/domain/memory"
-	"github.com/phlin/go-agent/internal/testsupport"
 )
 
-func TestAppUsesUnifiedMemorySnapshotAndCloses(t *testing.T) {
-	db := testsupport.NewDB(t)
+func TestBootstrapHTTPAndPreviewNeverSendsQQ(t *testing.T) {
+	dsn := os.Getenv("TEST_POSTGRES_DSN")
+	required := dsn != ""
+	if dsn == "" {
+		dsn = "postgres://qqbot:qqbotpass@127.0.0.1:5432/postgres?sslmode=disable"
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	admin, err := sql.Open("pgx", dsn)
+	if err == nil {
+		err = admin.PingContext(ctx)
+	}
+	cancel()
+	if err != nil {
+		if admin != nil {
+			admin.Close()
+		}
+		if required {
+			t.Fatal(err)
+		}
+		t.Skipf("PostgreSQL unavailable: %v", err)
+	}
+	name := fmt.Sprintf("friend_app_test_%d", time.Now().UnixNano())
+	if _, err := admin.ExecContext(context.Background(), "CREATE DATABASE "+name); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_, _ = admin.ExecContext(context.Background(), "DROP DATABASE "+name+" WITH (FORCE)")
+		admin.Close()
+	})
+	u, err := url.Parse(dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	u.Path = "/" + name
 	cfg := config.Default()
-	cfg.Storage.Postgres.Password = "qqbotpass"
-	if err := db.QueryRow("SELECT current_database()").Scan(&cfg.Storage.Postgres.Database); err != nil {
-		t.Fatal(err)
-	}
-	cfg.QQ.SelfID = 123456
-	cfg.Storage.Postgres.VectorDim = 0
-	cfg.Storage.Postgres.ObservabilityRetentionDays = 0
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	store := postgresstore.NewStore(db)
-	if err := store.UpsertMemory(ctx, memorydomain.MemoryRecord{
-		MemoryID: "preference", Scope: "group:100", Subject: "200", Type: "social", Content: "不要戳我",
-		Predicate: memorydomain.PredicateAllowPoke, NormalizedValue: "false", Qualifier: "default",
-	}); err != nil {
-		t.Fatal(err)
-	}
-	application, err := New(ctx, cfg)
+	cfg.Storage.DatabaseURL = u.String()
+	cfg.Models.Embedding.Dimensions = 3
+	cfg.Meme.Path = t.TempDir()
+	cfg.Chat.Merge = time.Millisecond
+	cfg.Chat.MaxWait = 3 * time.Millisecond
+	a, err := New(context.Background(), cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer application.Close()
-	health := httptest.NewRecorder()
-	application.handleHealth(health, httptest.NewRequest(http.MethodGet, "/healthz", nil))
-	if health.Code != http.StatusOK {
-		t.Fatalf("health failed: %s", health.Body.String())
+	defer a.Close()
+	if a.runtime.Sender != nil {
+		t.Fatal("QQ disabled but sender attached")
 	}
-	payload := []byte(`{"post_type":"message","message_type":"group","self_id":123456,"group_id":100,"user_id":200,"message_id":"smoke","message":[{"type":"at","data":{"qq":"123456"}},{"type":"text","data":{"text":"你在吗"}}]}`)
-	outcome, err := application.ProcessRawEvent(ctx, payload)
+	server := httptest.NewServer(a.routes())
+	defer server.Close()
+	response, err := http.Get(server.URL + "/healthz")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(outcome.Snapshot.MemoryConstraints) != 1 || outcome.Snapshot.MemoryConstraints[0].Value != "false" {
-		t.Fatalf("app wired an inconsistent snapshot: %+v", outcome.Snapshot)
+	defer response.Body.Close()
+	if response.StatusCode != 200 {
+		t.Fatal(response.StatusCode)
 	}
-	if err := application.Close(); err != nil {
+	outcome, err := a.runtime.Process(context.Background(), []byte(`{"post_type":"message","message_type":"group","self_id":99,"group_id":1,"user_id":10,"message_id":1,"message":[{"type":"text","data":{"text":"hello"}},{"type":"at","data":{"qq":"99"}}]}`))
+	if err != nil {
 		t.Fatal(err)
 	}
-	if err := application.Close(); err != nil {
-		t.Fatalf("repeat close failed: %v", err)
+	if outcome.State == "confirmed" {
+		t.Fatal("unconfigured model created a delivered message")
+	}
+	response, err = http.Get(server.URL + "/admin/api/conversation?group=1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer response.Body.Close()
+	var body struct {
+		Messages []struct {
+			Outbound bool `json:"outbound"`
+		} `json:"messages"`
+	}
+	if err := json.NewDecoder(response.Body).Decode(&body); err != nil {
+		t.Fatal(err)
+	}
+	if len(body.Messages) != 1 || body.Messages[0].Outbound {
+		t.Fatal("preview produced phantom dialogue", body)
+	}
+	response, err = http.Get(server.URL + "/admin/api/mcp")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode != 404 {
+		t.Fatal("legacy tool API remains reachable")
 	}
 }

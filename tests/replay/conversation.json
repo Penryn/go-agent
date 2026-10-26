@@ -1,0 +1,151 @@
+{
+  "name": "旁听、分条接话与事件去重",
+  "responses": [
+    {
+      "action": "silent",
+      "text": "",
+      "reason": "fixture"
+    },
+    {
+      "action": "text",
+      "text": "删的是哪个库，先别继续操作",
+      "reason": "fixture"
+    }
+  ],
+  "steps": [
+    {
+      "events": [
+        {
+          "post_type": "message",
+          "message_type": "group",
+          "self_id": 99,
+          "group_id": 1,
+          "user_id": 10,
+          "message_id": 1,
+          "message": [
+            {
+              "type": "text",
+              "data": {
+                "text": "小王，今晚来不来"
+              }
+            }
+          ],
+          "sender": {
+            "nickname": "10"
+          }
+        }
+      ],
+      "state": "silent"
+    },
+    {
+      "events": [
+        {
+          "post_type": "message",
+          "message_type": "group",
+          "self_id": 99,
+          "group_id": 1,
+          "user_id": 10,
+          "message_id": 2,
+          "message": [
+            {
+              "type": "text",
+              "data": {
+                "text": "我刚才"
+              }
+            },
+            {
+              "type": "at",
+              "data": {
+                "qq": "99"
+              }
+            }
+          ],
+          "sender": {
+            "nickname": "10"
+          }
+        },
+        {
+          "post_type": "message",
+          "message_type": "group",
+          "self_id": 99,
+          "group_id": 1,
+          "user_id": 10,
+          "message_id": 3,
+          "message": [
+            {
+              "type": "text",
+              "data": {
+                "text": "把数据库"
+              }
+            },
+            {
+              "type": "at",
+              "data": {
+                "qq": "99"
+              }
+            }
+          ],
+          "sender": {
+            "nickname": "10"
+          }
+        },
+        {
+          "post_type": "message",
+          "message_type": "group",
+          "self_id": 99,
+          "group_id": 1,
+          "user_id": 10,
+          "message_id": 4,
+          "message": [
+            {
+              "type": "text",
+              "data": {
+                "text": "删了"
+              }
+            },
+            {
+              "type": "at",
+              "data": {
+                "qq": "99"
+              }
+            }
+          ],
+          "sender": {
+            "nickname": "10"
+          }
+        }
+      ],
+      "state": "confirmed"
+    },
+    {
+      "events": [
+        {
+          "post_type": "message",
+          "message_type": "group",
+          "self_id": 99,
+          "group_id": 1,
+          "user_id": 10,
+          "message_id": 4,
+          "message": [
+            {
+              "type": "text",
+              "data": {
+                "text": "删了"
+              }
+            },
+            {
+              "type": "at",
+              "data": {
+                "qq": "99"
+              }
+            }
+          ],
+          "sender": {
+            "nickname": "10"
+          }
+        }
+      ],
+      "state": "duplicate"
+    }
+  ]
+}

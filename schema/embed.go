@@ -2,5 +2,5 @@ package schema
 
 import _ "embed"
 
-//go:embed friend.sql
+//go:embed schema.sql
 var SQL string

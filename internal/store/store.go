@@ -91,7 +91,9 @@ func (s *Store) AcquireSender(ctx context.Context) error {
 }
 func (s *Store) Close() error {
 	if s.lease != nil {
-		_, _ = s.lease.ExecContext(context.Background(), `SELECT pg_advisory_unlock(-7842231567990181)`)
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		_, _ = s.lease.ExecContext(ctx, `SELECT pg_advisory_unlock(-7842231567990181)`)
+		cancel()
 		_ = s.lease.Close()
 	}
 	return s.DB.Close()

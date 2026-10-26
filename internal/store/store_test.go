@@ -1,10 +1,15 @@
 package store
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"image"
+	"image/png"
+	"io"
+	"net/http"
 	"net/url"
 	"os"
 	"testing"
@@ -13,8 +18,62 @@ import (
 	"github.com/phlin/go-agent/internal/chat"
 	"github.com/phlin/go-agent/internal/meme"
 	"github.com/phlin/go-agent/internal/memory"
+	"github.com/phlin/go-agent/internal/model"
 	"github.com/phlin/go-agent/internal/qq"
 )
+
+type roundTrip func(*http.Request) (*http.Response, error)
+
+func (f roundTrip) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
+
+type classifier struct{ calls int }
+
+func (c *classifier) Generate(context.Context, string, any, []string) (model.Result, error) {
+	c.calls++
+	return model.Result{Content: `{"collect":true,"description":"无语","tags":["无语","沉默"]}`}, nil
+}
+func TestAutomaticCollectionDeduplicatesAcrossGroupsAndRespectsBlock(t *testing.T) {
+	s := testStore(t)
+	ctx := context.Background()
+	var imageBytes bytes.Buffer
+	if err := png.Encode(&imageBytes, image.NewRGBA(image.Rect(0, 0, 16, 16))); err != nil {
+		t.Fatal(err)
+	}
+	httpClient := &http.Client{Transport: roundTrip(func(*http.Request) (*http.Response, error) {
+		return &http.Response{StatusCode: 200, Body: io.NopCloser(bytes.NewReader(imageBytes.Bytes())), Header: http.Header{}}, nil
+	})}
+	classifier := &classifier{}
+	service := meme.Service{Store: s, Model: classifier, HTTP: httpClient, Config: meme.Config{AutoCollect: true, Path: t.TempDir(), MaxItems: 10, MaxBytes: 2 << 20, MaxImageBytes: 1 << 20, TopK: 3, Cooldown: time.Minute}}
+	stage := func(id string, group int64) {
+		t.Helper()
+		if err := service.Observe(ctx, qq.Event{ID: id, GroupID: group, Images: []qq.Attachment{{ID: id + "-image", URL: "https://media.example/" + id, Sticker: true}}}); err != nil {
+			t.Fatal(err)
+		}
+		if err := service.Tick(ctx); err != nil {
+			t.Fatal(err)
+		}
+	}
+	stage("from-A", 1)
+	stage("from-B", 2)
+	out, err := service.Candidates(ctx, 999, "无语")
+	if err != nil || len(out) != 1 || classifier.calls != 1 {
+		t.Fatal("automatic global collection failed", out, classifier.calls, err)
+	}
+	if err := s.DisableSticker(ctx, out[0].ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(out[0].Path); err != nil {
+		t.Fatal(err)
+	}
+	stage("from-C", 3)
+	if _, err := os.Stat(out[0].Path); !os.IsNotExist(err) {
+		t.Fatal("blocked image file was automatically recreated", err)
+	}
+	out, err = service.Candidates(ctx, 2, "无语")
+	if err != nil || len(out) != 0 {
+		t.Fatal("blocked content was collected again", out, err)
+	}
+}
 
 func testStore(t *testing.T) *Store {
 	t.Helper()

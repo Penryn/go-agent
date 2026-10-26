@@ -1,108 +1,39 @@
-package architecture_test
+package architecture
 
 import (
-	"bufio"
-	"fmt"
 	"go/parser"
 	"go/token"
-	"os"
+	"io/fs"
 	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
 )
 
-const moduleInternal = "github.com/phlin/go-agent/internal/"
-
-// TestLayerDependencies keeps the directory layout meaningful. It checks
-// production imports only; tests may use adapters as fixtures.
-func TestLayerDependencies(t *testing.T) {
-	root := repositoryRoot(t)
-	internalRoot := filepath.Join(root, "internal")
-	fset := token.NewFileSet()
-
-	err := filepath.WalkDir(internalRoot, func(path string, entry os.DirEntry, walkErr error) error {
-		if walkErr != nil {
-			return walkErr
+func TestRuntimeHasNoLegacyOrExecutionDependencies(t *testing.T) {
+	err := filepath.WalkDir("..", func(path string, entry fs.DirEntry, err error) error {
+		if err != nil {
+			return err
 		}
-		if entry.IsDir() || filepath.Ext(path) != ".go" || strings.HasSuffix(path, "_test.go") {
+		if entry.IsDir() || !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") {
 			return nil
 		}
-
-		file, err := parser.ParseFile(fset, path, nil, parser.ImportsOnly)
+		f, err := parser.ParseFile(token.NewFileSet(), path, nil, parser.ImportsOnly)
 		if err != nil {
 			return err
 		}
-		rel, err := filepath.Rel(internalRoot, path)
-		if err != nil {
-			return err
-		}
-		layer := strings.Split(filepath.ToSlash(rel), "/")[0]
-
-		for _, spec := range file.Imports {
-			importPath, err := strconv.Unquote(spec.Path.Value)
-			if err != nil {
-				return err
+		for _, im := range f.Imports {
+			value, _ := strconv.Unquote(im.Path.Value)
+			if value == "os/exec" || strings.Contains(value, "modelcontextprotocol") || strings.Contains(value, "/application/") || strings.Contains(value, "/domain/") || strings.Contains(value, "/adapters/") || strings.Contains(value, "/eino/adk") || strings.Contains(value, "/eino/compose") {
+				t.Errorf("%s imports removed execution/legacy dependency %s", path, value)
 			}
-			if violation := forbiddenImport(layer, importPath); violation != "" {
-				position := fset.Position(spec.Pos())
-				t.Errorf("%s:%d: %s", filepath.ToSlash(rel), position.Line, violation)
+			if strings.Contains(path, string(filepath.Separator)+"search"+string(filepath.Separator)) && (value == "database/sql" || value == "net/http") {
+				t.Errorf("search algorithm performs I/O: %s", path)
 			}
 		}
 		return nil
 	})
 	if err != nil {
 		t.Fatal(err)
-	}
-}
-
-func forbiddenImport(layer, importPath string) string {
-	if !strings.HasPrefix(importPath, moduleInternal) {
-		return ""
-	}
-	dependency := strings.TrimPrefix(importPath, moduleInternal)
-
-	switch layer {
-	case "domain":
-		if !strings.HasPrefix(dependency, "domain/") {
-			return fmt.Sprintf("domain must not depend on %q", dependency)
-		}
-	case "search":
-		return fmt.Sprintf("search must stay independent of internal package %q", dependency)
-	case "application":
-		if strings.HasPrefix(dependency, "adapters/") || strings.HasPrefix(dependency, "app/") {
-			return fmt.Sprintf("application must not depend on %q", dependency)
-		}
-	case "adapters":
-		if strings.HasPrefix(dependency, "app/") {
-			return fmt.Sprintf("adapter must not depend on composition root %q", dependency)
-		}
-	}
-	return ""
-}
-
-func repositoryRoot(t *testing.T) string {
-	t.Helper()
-	dir, err := os.Getwd()
-	if err != nil {
-		t.Fatal(err)
-	}
-	for {
-		file, err := os.Open(filepath.Join(dir, "go.mod"))
-		if err == nil {
-			scanner := bufio.NewScanner(file)
-			for scanner.Scan() {
-				if strings.TrimSpace(scanner.Text()) == "module github.com/phlin/go-agent" {
-					_ = file.Close()
-					return dir
-				}
-			}
-			_ = file.Close()
-		}
-		parent := filepath.Dir(dir)
-		if parent == dir {
-			t.Fatal("repository root not found")
-		}
-		dir = parent
 	}
 }

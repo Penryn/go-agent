@@ -18,6 +18,8 @@ import (
 	"time"
 )
 
+var sharedMediaClient = MediaClient()
+
 // MediaClient only fetches public HTTP images; group input cannot access local services.
 func MediaClient() *http.Client {
 	transport := &http.Transport{ResponseHeaderTimeout: 4 * time.Second, MaxIdleConns: 8, IdleConnTimeout: 30 * time.Second}
@@ -74,7 +76,7 @@ func FetchImage(ctx context.Context, client *http.Client, raw string, maxBytes i
 		return nil, "", err
 	}
 	if client == nil {
-		client = MediaClient()
+		client = sharedMediaClient
 	}
 	if maxBytes <= 0 {
 		maxBytes = 10 << 20

@@ -87,9 +87,6 @@ func (s *Service) Candidates(ctx context.Context, group int64, query string) ([]
 		if a.State != "ready" {
 			continue
 		}
-		if _, err := os.Stat(a.Path); err != nil {
-			continue
-		}
 		byID[a.ID] = a
 		docs = append(docs, bm25.Document{ID: a.ID, Text: a.Description + " " + strings.Join(a.Tags, " ")})
 	}
@@ -114,7 +111,13 @@ func (s *Service) Candidates(ctx context.Context, group int64, query string) ([]
 		cancel()
 	}
 	out := []Asset{}
-	for _, id := range search.Fuse(max(1, s.Config.TopK), lexical, semantic) {
+	for _, id := range search.Fuse(max(20, s.Config.TopK*4), lexical, semantic) {
+		if len(out) >= max(1, s.Config.TopK) {
+			break
+		}
+		if _, err := os.Stat(byID[id].Path); err != nil {
+			continue
+		}
 		out = append(out, byID[id])
 	}
 	return out, nil
@@ -138,7 +141,7 @@ func (s *Service) Tick(ctx context.Context) error {
 			return err
 		}
 		for _, a := range pending {
-			if err := s.collect(ctx, a); err != nil {
+			if err := s.collect(ctx, a); err != nil && !errors.Is(err, model.ErrUnavailable) {
 				_ = s.Store.DeferSticker(ctx, a.ID, err.Error())
 			}
 		}
