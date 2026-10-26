@@ -1,108 +1,91 @@
 # 项目架构
 
-本文是当前架构的唯一入口。项目定位和功能地图见 [PROJECT.md](./PROJECT.md)。实现采用模块化单体与 Ports and Adapters：一个进程内组织群友能力，外部协议和存储通过接口接入。
-
-## 运行主链路
+当前实现是模块化单体。`internal/app` 组装 QQ、模型、记忆、表情包与 PostgreSQL；`internal/chat` 维护按群独立的聊天流程。图中的组件均运行在同一个 Go 进程内。
 
 ```mermaid
-flowchart TD
-    QQ[NapCat / OneBot] --> Normalize[Normalizer]
-    Normalize --> Ingress[Presence: 统一事件接入]
-    Ingress --> Actor[Group Actor: 归档与工作记忆]
-    Actor --> Observe[入站状态 / 确认 / 反馈 / 画像 / 场景 / 关系]
-    Observe --> Gate[TurnObserver: 冷却与连续发言检查]
-    Gate --> Snapshot[Context: 单次数据快照]
-    Snapshot --> Admission[Deliberation: 去重与触发约束]
-    Admission --> Planner[AgentPlanner: 模型与工具循环]
-    Snapshot --> Composer[Composer: 提示词与历史组装]
-    Composer --> Planner
-    Planner --> Canon[Canon: 自述事实预留与校验]
-    Canon --> Action[Action: 约束校验与实际发送]
-    Action --> Delivery[送达回执]
-    Delivery --> Feedback[反馈窗口 / Canon 提交 / 人格与冷却]
-    Observe --> Outbox[Outbox: 媒体感知]
+flowchart LR
+    QQ[NapCat / OneBot] --> IO[qq：标准化与归档接入]
+    IO --> Chat[chat：合并、参与和表达]
+    Chat --> Context[近期对话与相关资料]
+    Context --> Generate[一次聊天生成]
+    Generate --> Chat
+    Chat --> Send[发送与回执]
+    Context <--> Memory[memory：群内笔记与多路检索]
+    IO --> Meme[meme：全局自动采集]
+    Meme --> Context
+    Memory <--> DB[(PostgreSQL / pgvector)]
+    Meme <--> DB
+    Send --> DB
 ```
 
-`SubmitRaw` 与 CLI 的 `ProcessRawEvent` 共用事件接入和回合逻辑。两者只在等待方式上不同：在线入口完成事件接入后启动模型回合，CLI 等待回合结果。限流不会跳过事件归档、成员投影和感知任务。
+## 模块职责
 
-同群新回合取消旧回合；跨群可以并发。群状态由 Actor 锁保护，模型请求不持有群锁。Actor 只保留有界历史与去重集合，完整事件存放在 PostgreSQL。回合使用 45 秒截止时间，发送前检查取消状态。运行时关闭停止接收新操作，取消并等待已经接入的事件、模型回合及发送后收尾。
+| 模块 | 职责与源码 |
+| --- | --- |
+| 进程与运维 | [app](../internal/app/app.go)、[admin](../internal/app/admin.go)：配置组装、后台、接入、关闭 |
+| QQ 协议 | [qq](../internal/qq/qq.go)：事件身份、说话人与引用、WebSocket 重连、字面消息段和回执；[media](../internal/qq/media.go)：有界图片获取 |
+| 聊天 | [chat](../internal/chat/chat.go)：按群合并、参与判断、模型输出校验、发送预算与结果 |
+| 记忆 | [memory](../internal/memory/memory.go)：有证据的笔记、纠正与遗忘、多路召回、后台整理和索引修复 |
+| 表情包 | [meme](../internal/meme/meme.go)：自动采集、全局内容去重、描述、召回、冷却与容量回收 |
+| 模型 | [model](../internal/model/client.go)：聊天、图片、Embedding 客户端与请求并发，不执行工具 |
+| 存储 | [store](../internal/store/store.go)、[stickers](../internal/store/stickers.go)：数据库查询、事务、源版本和发送记录 |
+| 检索算法 | [BM25](../internal/search/bm25/bm25.go)、[RRF](../internal/search/fusion.go)：无 I/O 的排序与融合 |
+| 回放 | [replay](../cmd/replay/main.go)、[内存存储](../internal/replay/store.go)：复用聊天流程，隔离存储并模拟发送 |
 
-## 职责与依赖
+## 聊天与参与
 
-| 边界 | 唯一职责 | 代码入口 |
-| --- | --- | --- |
-| 进程入口 | 配置、信号、运行模式和退出码；返回错误后再退出，保证清理执行 | `cmd/qqbotd/main.go` |
-| 依赖组装 | 存储、模型、工具、业务能力、HTTP 和资源所有权 | `internal/app/app.go`、`runtime_builder.go` |
-| 事件接入 | 忽略规则、归档、入站观察及在线/同步入口 | `application/presence/ingestion.go` |
-| 回合执行 | 规划、临时工作区、Canon、发送与送达后的状态收尾 | `application/presence/turn.go` |
-| 回合生命周期 | 取消、同群替换、超时、Actor 回收及关闭等待 | `application/presence/lifecycle.go` |
-| 上下文 | 读取历史、记忆、画像、关系、场景、人格、策略和相处约束，产出 `ContextSnapshot` | `application/context/service.go` |
-| 参与与计划 | 低成本去重，触发类型允许动作，调用 Planner 并解析最终动作 | `presence/deliberation/deliberator.go` |
-| 提示词 | 只消费快照；组装稳定指令、动态数据、对话历史和预算 | `application/prompting/composer.go` |
-| 模型与工具 | Eino Agent 循环、工具能力与调用预算、用量记录、失败回退 | `application/prompting/agent_planner.go`、`application/tools` |
-| 表达执行 | 按解析后的决定校验和执行动作，返回真实回执 | `application/action/executor.go` |
+每条获准处理的入站事件先以平台事件身份去重并归档，再进入所属群的有界缓冲。不同成员复读同一句话仍是不同事件，不按文字内容去重。作者、时间、消息标识和引用关系保持独立。
 
-`presence.Dependencies` 在启动前一次组装完成。`TurnObserver` 包含入站、规划许可和回合完成三个生命周期方法。Deliberator 接收事件，由 Context 读取并组装快照。
+每群的协调器合并短时间内的分条消息，同时设置最长等待。明确 @、点名和引用机器人时优先处理；机器人刚参与过的对话保留内存中的活跃窗口，让相关参与者的无 @ 追问也能继续。优先处理只影响调度，是否回应由模型结合完整语境判断。
 
-分层方向：
+普通新消息进入后续缓冲，不取消正在生成的回答。新的明确互动会使旧草稿失效；撤回会使相关在途判断过期。模型请求不持有群状态锁，各群可以并行。空闲群的协调器会回收，重启不恢复尚未完成的聊天回合。
 
-```text
-cmd -> app -> application -> domain
-           -> adapters -> application/ports + domain
-           -> search（无 I/O 算法）
-```
+上下文包含近期真实对话、当前批次、稳定人物配置、有效笔记、已加载图片与少量表情包候选。近期对话按字符预算裁剪；其他输入分别受事件缓冲、笔记长度、召回数与媒体数量限制。当前模型输出只有沉默、文字或表情包这一份表达结果，引用对象和素材必须来自可见资料。
 
-`domain` 不依赖应用、数据库或网络；`application` 不依赖 adapter 或 app；adapter 不依赖 app。依赖方向由 [layers_test.go](../internal/architecture/layers_test.go) 检查。
+普通插话受间隔限制，直接互动和活跃对话可以绕过插话间隔；每群发言总额仍然生效。模型不可用、结构错误或没有实际内容时，不发送模板话术。稳定口吻、偏好和相处证据提供人物连续性，没有情绪、精力、好感或信任加分系统，也不自动扩写人物履历。
 
-## 人格与模型自主性
+## 记忆与检索
 
-稳定配置编译为 `PersonaDefinition`，有效人物事实生成 `PersonaView`。全局 `PersonaState` 描述情绪、精力和说话倾向；群场景和关系描述当前相处语境。它们影响模型选择，不扩展为固定角色切换状态机。
+长期笔记分为群信息、成员近况、经历与明确偏好，共用一套来源、修订和失效规则。成员信息只能由本人消息提供证据；群、作者和逐字引用由程序检查。明确的记住、纠正和遗忘请求可随本轮表达附带修改，写入成功后才发送确认。
 
-Canon 区分锁定、管理员管理、允许一次补全、可修改及禁止补全的槽位。公开自述先准备提案，只有实际送达文本中的事实才提交；静默和失败发送不写成已经发生的经历。未核实转述不升级为虚拟人物亲历，更不能包装成现实可验证事实。
+后台从持久化消息游标增量整理笔记，旁听期间也可学习。笔记修改与游标推进在同一事务提交；失败延后该群的整理。普通生成文本和未送达草稿不能作为学习证据。
 
-## 数据与记忆
+称呼、明确偏好和相处约定按群与参与者直接读取，不占经历检索的名额。其他资料使用以下轨道：
 
-| 权威数据 | 表 | 派生数据或使用方 |
-| --- | --- | --- |
-| 真实收发事件 | `messages` | 工作记忆、场景、画像、关系、模型历史 |
-| 长期记忆与偏好 | `memories` | BM25、`memory_vectors`、相处约束快照 |
-| 素材与描述 | `meme_assets`、`meme_descriptors` | `meme_vectors`、表情包检索 |
-| 人物事实 | `persona_fact_events`、`persona_fact_reservations` | `PersonaView` |
-| 运行状态 | `runtime_states`、`group_working_memory` | 冷却、全局人格状态与群上下文 |
-| 关系与群场景 | `relationships`、`relationship_events`、`relationship_history`、`member_profiles`、`group_scenes` | 相处语境 |
-| 观测与任务 | `thought_records`、`retrieval_traces`、`model_usage_records`、`learning_event_progress`、`async_outbox` | 管理后台与后台执行 |
+| 轨道 | 作用 |
+| --- | --- |
+| 语义向量 | 使用 Embedding 与 pgvector 找回换一种说法的旧话题 |
+| BM25 词法 | 找回原话、人名、游戏名和群内词，中文使用单字与相邻双字片段 |
+| 人物和时间 | 补充相关成员与明确时间线索下的经历；当前识别今天、昨天、前天和 ISO 日期 |
 
-显式记忆与后台学习共用 `memory.Service` 写入路径。学习保留证据和结构化偏好，偏好通过 `postgres.Store.GetConstraints` 从同一张表读取。结构化字段使用 `predicate`、`normalized_value`、`qualifier`，有效期使用 `expires_at`。Schema 的加载和变更边界见 [数据库说明](../schema/README.md)。
+各路先限制群、有效状态和有效期，再使用 RRF 融合并去重。未核实的转述保留来源，检索排名不能把它升级为事实。当前词法轨道最多扫描本群的 5,000 条笔记，没有持久化倒排索引；语义召回直接查询数据库向量索引。召回范围、排序和降级由 [memory.Recall](../internal/memory/memory.go) 实现。
 
-Context 加载当前说话人的相处偏好。Composer 消费快照中的约束来生成称呼和互动提醒；Action 使用同一份约束校验实际戳和 @ 动作。普通检索、画像、关系与场景读取失败可以降级；人物事实、运行状态和相处约束读取失败会阻止本轮规划。
+笔记修订时使旧向量失效，后台仅为同一内容版本提交新索引。遗忘保留必要的失效证据，阻止旧消息被换一个属性名重新抽取。查询和索引写入都检查源状态与版本。Embedding 模型标识变化后，旧投影不参与当前召回，并由后台重新生成。
 
-模型历史由真实收发事件重建；工具草稿、静默计划和未送达文字不持久化为对话。可变上下文按字节裁剪，预算集中在 [prompting/budget.go](../internal/application/prompting/budget.go)。工具 schema 按群白名单和触发场景选择；模型循环和工具次数限制集中在 [agent_runtime_guard.go](../internal/application/prompting/agent_runtime_guard.go)，使用与配置见 [工具说明](./TOOLS.md)。
+向量故障时保留词法与人物、时间轨道。普通记忆读取故障可退回近期对话；明确的保存或遗忘失败不能返回成功文案。各路命中、最终笔记标识和降级状态保存在回应尝试中。
 
-## 送达与关闭
+## 全局表情包
 
-送达回执是事实边界。即使多气泡回复只送达一部分，反馈、Canon 和冷却也必须基于实际送达内容收尾。已送达后的 hook 使用脱离原回合取消状态、上限 5 秒的 context；单个 hook 失败不跳过后续 hook。
+自动采集只消费获准群中的入站图片与贴纸，不要求主动收藏或逐张人工确认。候选先保存处理状态并有界下载，按内容哈希全局合并；同一份已理解内容不重复调用素材分类模型。GIF 原文件保留用于发送，理解时使用首帧。
 
-资源按生产者先停、依赖后停的顺序关闭：
+模型判断素材是否适合重复表达，生成简短含义和适用标签。普通照片、私人截图和看不懂的内容不应成为可发送素材。源事件和源群只用于内部追溯，不进入提供给聊天模型的全局素材信息；群内特定梗的背景仍属于群内记忆。
 
-```text
-Run 停止 WebSocket 接入与 HTTP
-  -> Scheduler 停止定时生产
-  -> Presence 停止接入、取消并等待回合与 hook
-  -> Outbox 停止 worker 并提交任务终态
-  -> Group Actor / MCP
-  -> PostgreSQL
-```
+文字描述参与词法与向量召回，融合后提供少量全局候选。发送前重新检查素材可用性。重复发送冷却根据该群确认送达的记录计算，在 A 群使用不会阻止 B 群使用同一张图。
 
-依赖组装失败与正常关闭共用同一清理函数。HTTP 或接入失败也会取消其余 Run 工作，CLI 错误通过返回值上报，避免 `os.Exit` 跳过资源清理。
+后台控制全局素材数量与磁盘用量，优先保留近期出现、可用的素材。禁用状态随内容身份保留，避免同图再次出现时重新收入。处理进度持久化；未配置模型不消耗失败次数，其他采集失败最多尝试五次，运维可查看状态并纠错。当前自动采集质量取决于图片模型，不保证所有普通图片都能正确分类。
 
-## 检索与 Outbox
+## 发送与关闭
 
-检索统一经过 scope/expiry/type 硬过滤、BM25 与向量候选、RRF 去重、领域排序。检索索引是可重建投影，不是事实来源。详情见 [混合检索](./RETRIEVAL.md)。
+模型结果经校验与发送前检查后，先记录发送中状态，再调用 OneBot。成功回执与真实出站归档同事务提交；冷却从确认送达记录计算。模型文字以字面消息段发送，正文中的 CQ 字符串不会成为额外动作。
 
-可重放副作用使用 Outbox，包含感知、记忆与素材索引、学习、发送计数和 Canon 抽取/完成任务。支持事务原子写入的事实与索引任务同事务提交；其余入队与回退行为按各用例执行，不能宣称所有副作用都已原子化。详情见 [ADR-0001](./adr/0001-runtime-lifecycle-and-outbox.md)。
+平台调用与 PostgreSQL 事务不能原子提交。网络超时、发送期间退出或回执成功后归档失败，都保留不确定状态并停止自动补发。只有确认送达的内容才进入真实聊天历史，不承诺跨系统恰好一次。
 
-## 可靠性边界
+启用 QQ 时，数据库会话锁限制同一数据库只有一个新运行时拥有发送权，发送前检查锁连接仍可用。它不管理旧版本进程，切换时必须先停止旧实例。健康检查同时检查数据库、发送锁和 QQ 连接。
 
-当前实现仍是单进程、合作式取消：外部模型或工具必须响应 context。没有全局模型并发限额，也没有可跨重启恢复的聊天回合。QQ 发送幂等只在进程内，不保证平台侧恰好一次；发送与出站归档也尚未具备事务闭环。视觉理解和学习异步完成，不保证第一轮就看到增强结果。
+退出时先取消接入和后台生产，关闭 HTTP，等待群协调器、在途模型调用与发送收尾，再等待后台工作并关闭数据库。已发送后的记录收尾使用独立、有界的上下文。模型、Embedding 和素材理解共享并发上限，后台同时最多占用一个请求名额；已开始的后台调用不会被抢占。
 
-项目能力边界见 [项目定位与功能](./PROJECT.md)，构建和验证方式见 [开发说明](./DEVELOPMENT.md)。
+## 数据与验证
+
+当前表、向量版本和命名空间见 [数据库说明](../schema/README.md)。运行配置只包含群友方向所需能力，不接受旧工具配置，也没有通用工具循环或持久化聊天任务队列。
+
+程序测试与回放说明见 [开发说明](DEVELOPMENT.md)。本地测试覆盖事件顺序、范围、版本、发送、关闭和自动采集；自然表达质量与真实 QQ 行为需要额外使用目标模型和群聊验证。

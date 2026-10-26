@@ -1,16 +1,28 @@
-# 数据库 Schema
+# 数据库
 
-[schema.sql](./schema.sql) 是应用启动时执行的幂等基线，使用 PostgreSQL 与 pgvector。应用会先启用 `vector` 扩展，再依次应用文件中的语句；数据库账号需具备相应权限。
+运行时通过 [store.Initialize](../internal/store/store.go) 应用嵌入的 [schema.sql](schema.sql)，使用独立的 `groupfriend` 命名空间。旧版本的公开表不参与读写，启动过程不删除旧数据，也不自动导入旧数据。
 
-[启动代码](../internal/app/dependencies.go) 从进程当前工作目录向上查找 `schema/schema.sql`。单独运行或分发二进制时，需要保留该文件及目录结构。当前没有单独加载 `migrations/` 目录的流程。
+| 表 | 职责 |
+| --- | --- |
+| `messages` | 去重后的入站事件、撤回状态与确认送达的出站消息 |
+| `notes` | 有来源的群内笔记、明确偏好、修订、有效期、遗忘状态与向量投影 |
+| `stickers` | 全局素材、内容哈希、内部来源、缓存文件、描述、处理状态和向量投影 |
+| `group_progress` | 每群后台整理的游标与重试时间 |
+| `reply_attempts` | 规划结果、检索摘要、用量、发送状态；也提供按群素材冷却的依据 |
+| `settings` | 当前数据库的向量维度 |
 
-## 数据边界
+## 结构与索引
 
-- `messages` 保存真实收发事件，`group_working_memory` 是可恢复的群上下文投影。
-- 普通记忆和相处偏好共用 `memories`；结构化偏好使用 `predicate`、`normalized_value`、`qualifier`，有效期使用 `expires_at`。
-- `memory_vectors` 和 `meme_vectors` 是可重建投影，当前使用 `halfvec(2048)`。
-- 人物事实、关系、运行状态和 Outbox 的职责见 [当前架构](../docs/ARCHITECTURE.md)。
+`schema.sql` 是启动模板，其中 `__DIM__` 由通过校验的 `models.embedding.dimensions` 替换，不直接把模板交给 psql。向量使用 pgvector `halfvec` 和 HNSW 索引，默认维度见配置示例。已有数据库的维度不匹配时拒绝启动，不隐式转换现有列。
 
-幂等基线不等于任意历史库的自动迁移。修改表结构时，需要同时核对存储 SQL、现存数据和异步任务 payload，不能只修改 Go 类型；已有非结构化记忆不会被猜测转换为偏好。
+索引写入同时检查记录修订与有效状态。更换同维度的 Embedding 模型时，查询排除旧模型投影，后台重新索引。不同维度需要显式建立新的数据库基线或迁移对应投影，启动流程不会代替维护者执行这种变更。
 
-数据库集成测试使用临时数据库；连接要求和跳过规则见 [开发与验证](../docs/DEVELOPMENT.md)。
+记忆按群过滤，素材按内容哈希全局唯一。素材源群与源事件只作内部追溯。冷却由 `reply_attempts` 中该群、该素材的确认发送记录计算，不采用素材全局最后发送时间。
+
+## 事务与恢复
+
+笔记更新和学习游标推进在同一事务完成，修订冲突时整批回滚。遗忘、纠正和禁用使旧投影失效，乱序到达的旧索引不能覆盖新状态。
+
+成功发送记录与出站消息同事务完成，但数据库与 OneBot 无法原子提交。启动发送所有权检查会将上次未完成的发送标为不确定，将未完成的规划标为放弃；不会自动补发旧聊天。
+
+本地 PostgreSQL 服务参数见 [docker-compose.yml](../docker-compose.yml)。应用连接由 `storage.database_url` 配置。测试库创建与清理规则见 [开发说明](../docs/DEVELOPMENT.md)。
