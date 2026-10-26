@@ -51,7 +51,7 @@ flowchart LR
 | 模块 | 职责与源码 |
 | --- | --- |
 | 进程与运维 | [app](../internal/app/app.go)、[admin](../internal/app/admin.go)：配置组装、后台、接入、关闭 |
-| QQ 协议 | [qq](../internal/qq/qq.go)：事件身份、说话人与引用、WebSocket 重连、字面消息段和回执；[media](../internal/qq/media.go)：有界图片获取 |
+| QQ 协议 | [qq](../internal/qq/qq.go)：基于 onebot-sdk 的事件身份、说话人与引用、WebSocket 重连、字面消息段和回执；[media](../internal/qq/media.go)：有界图片获取 |
 | 聊天 | [chat](../internal/chat/chat.go)：按群合并、参与判断、模型输出校验、发送预算与结果 |
 | 记忆 | [memory](../internal/memory/memory.go)：有证据的笔记、纠正与遗忘、多路召回、后台整理和索引修复 |
 | 表情包 | [meme](../internal/meme/meme.go)：自动采集、全局内容去重、描述、召回、冷却与容量回收 |

@@ -11,7 +11,7 @@ go-agent 是长期参与 QQ 群聊的虚拟群友：按语境选择接话或旁�
 
 ## 启动
 
-需要 Go 1.25.8、带 pgvector 的 PostgreSQL、NapCat OneBot HTTP 与 WebSocket 服务，以及模型配置。后台页面直接嵌入 Go 程序，构建不需要 Node.js 或前端依赖安装。
+需要 Go 1.26、带 pgvector 的 PostgreSQL、NapCat OneBot HTTP 与 WebSocket 服务，以及模型配置。后台页面直接嵌入 Go 程序，构建不需要 Node.js 或前端依赖安装。
 
 ```bash
 cp configs/config.example.yaml configs/config.yaml
