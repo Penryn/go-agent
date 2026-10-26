@@ -8,6 +8,9 @@ type MemoryRecord struct {
 	Type               string     `json:"type" yaml:"type"`
 	Subject            string     `json:"subject" yaml:"subject"`
 	Content            string     `json:"content" yaml:"content"`
+	Predicate          Predicate  `json:"predicate,omitempty" yaml:"predicate,omitempty"`
+	NormalizedValue    string     `json:"normalized_value,omitempty" yaml:"normalized_value,omitempty"`
+	Qualifier          string     `json:"qualifier,omitempty" yaml:"qualifier,omitempty"`
 	SourceEventID      string     `json:"source_event_id" yaml:"source_event_id"`
 	SourceEventIDs     []string   `json:"source_event_ids,omitempty" yaml:"source_event_ids,omitempty"`
 	SourceSessionID    string     `json:"source_session_id,omitempty" yaml:"source_session_id,omitempty"`

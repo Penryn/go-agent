@@ -63,6 +63,35 @@ func TestSenderBuildsSendGroupPayload(t *testing.T) {
 	}
 }
 
+func TestSenderPassesFileSegmentThroughGroupMessage(t *testing.T) {
+	var seenBody struct {
+		Message []conversationdomain.MessageSegment `json:"message"`
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&seenBody); err != nil {
+			t.Fatalf("decode request body: %v", err)
+		}
+		_, _ = w.Write([]byte(`{"status":"ok","retcode":0,"data":{"message_id":12345}}`))
+	}))
+	defer server.Close()
+
+	sender := NewSender(server.URL, "", server.Client())
+	if _, err := sender.Send(context.Background(), replydomain.ActionExecution{
+		ActionID: "file-1",
+		Kind:     policydomain.ActionReply,
+		GroupID:  10001,
+		Segments: []conversationdomain.MessageSegment{
+			{Type: "text", Data: map[string]any{"text": "处理好了"}},
+			{Type: "file", Data: map[string]any{"file": "/tmp/result.zip", "name": "result.zip"}},
+		},
+	}); err != nil {
+		t.Fatalf("send file action: %v", err)
+	}
+	if len(seenBody.Message) != 2 || seenBody.Message[1].Type != "file" || seenBody.Message[1].Data["file"] != "/tmp/result.zip" {
+		t.Fatalf("unexpected file message: %#v", seenBody.Message)
+	}
+}
+
 func TestSenderRecallAndPokePayload(t *testing.T) {
 	var paths []string
 	var bodies []map[string]any

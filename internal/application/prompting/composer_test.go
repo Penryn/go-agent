@@ -4,10 +4,23 @@ import (
 	"testing"
 
 	conversationdomain "github.com/phlin/go-agent/internal/domain/conversation"
+	memorydomain "github.com/phlin/go-agent/internal/domain/memory"
 	personadomain "github.com/phlin/go-agent/internal/domain/persona"
 	policydomain "github.com/phlin/go-agent/internal/domain/policy"
 	"github.com/stretchr/testify/assert"
 )
+
+func TestComposerRendersConstraintsFromSnapshot(t *testing.T) {
+	composer := NewComposer(personadomain.PersonaConfig{Name: "芙芙"})
+	snapshot := conversationdomain.ContextSnapshot{MemoryConstraints: []memorydomain.MemoryConstraint{
+		{SubjectID: "200", Type: "preferred_name", Value: "老张"},
+		{SubjectID: "200", Type: "allow_poke", Value: "false"},
+	}}
+	instruction := composer.DynamicInstruction(snapshot, policydomain.AutonomyDecision{})
+	assert.Contains(t, instruction, `User200="老张"`)
+	assert.Contains(t, instruction, "禁止戳一戳: User200")
+	assert.Equal(t, instruction, composer.DynamicInstruction(snapshot, policydomain.AutonomyDecision{}))
+}
 
 func TestStaticInstructionKeepsIdentityInCharacter(t *testing.T) {
 	instruction := NewComposer(personadomain.PersonaConfig{Name: "芙芙"}).StaticInstruction()

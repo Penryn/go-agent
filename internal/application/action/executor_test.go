@@ -12,11 +12,43 @@ import (
 	"github.com/phlin/go-agent/internal/config"
 	conversationdomain "github.com/phlin/go-agent/internal/domain/conversation"
 	mediadomain "github.com/phlin/go-agent/internal/domain/media"
+	memorydomain "github.com/phlin/go-agent/internal/domain/memory"
 	policydomain "github.com/phlin/go-agent/internal/domain/policy"
 	presencedomain "github.com/phlin/go-agent/internal/domain/presence"
 	replydomain "github.com/phlin/go-agent/internal/domain/reply"
 	"github.com/phlin/go-agent/internal/testsupport"
 )
+
+func TestExecuteEnforcesSnapshotInteractionConstraints(t *testing.T) {
+	expired := time.Now().Add(-time.Hour)
+	for _, test := range []struct {
+		name       string
+		constraint memorydomain.MemoryConstraint
+		blocked    bool
+	}{
+		{"active restriction", memorydomain.MemoryConstraint{SubjectID: "200", Type: "allow_poke", Value: "false"}, true},
+		{"expired restriction", memorydomain.MemoryConstraint{SubjectID: "200", Type: "allow_poke", Value: "false", ValidUntil: &expired}, false},
+		{"different member", memorydomain.MemoryConstraint{SubjectID: "300", Type: "allow_poke", Value: "false"}, false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			sender := inmemory.NewSender()
+			snapshot := conversationdomain.ContextSnapshot{
+				Event:             conversationdomain.ConversationEvent{GroupID: 1, UserID: 200},
+				MemoryConstraints: []memorydomain.MemoryConstraint{test.constraint},
+			}
+			receipt, err := New(sender, nil, nil).Execute(context.Background(), snapshot,
+				policydomain.AutonomyDecision{DecisionID: "poke", Action: policydomain.ActionPokeBack},
+				replydomain.ReplyPlan{ActionParams: map[string]any{"user_id": int64(200)}})
+			if test.blocked {
+				if err == nil || receipt.Sent || len(sender.Actions()) != 0 || receipt.DropReason != "interaction_constraint" {
+					t.Fatalf("restricted interaction reached sender: receipt=%+v err=%v", receipt, err)
+				}
+			} else if err != nil || !receipt.Sent || len(sender.Actions()) != 1 {
+				t.Fatalf("valid interaction was blocked: receipt=%+v err=%v", receipt, err)
+			}
+		})
+	}
+}
 
 func TestExecuteSendMemeAndRecall(t *testing.T) {
 	store := testsupport.NewStore(t)
@@ -41,7 +73,7 @@ func TestExecuteSendMemeAndRecall(t *testing.T) {
 	}
 
 	executor := New(sender, memeService, nil)
-	_, err := executor.Execute(context.Background(), conversationEvent(), policydomain.AutonomyDecision{
+	_, err := executor.Execute(context.Background(), conversationdomain.ContextSnapshot{Event: conversationEvent()}, policydomain.AutonomyDecision{
 		DecisionID: "d1",
 		Action:     policydomain.ActionMemeOnly,
 	}, replydomain.ReplyPlan{
@@ -61,7 +93,7 @@ func TestExecuteSendMemeAndRecall(t *testing.T) {
 		t.Fatalf("unexpected meme action: %#v", actions)
 	}
 
-	_, err = executor.Execute(context.Background(), conversationEvent(), policydomain.AutonomyDecision{
+	_, err = executor.Execute(context.Background(), conversationdomain.ContextSnapshot{Event: conversationEvent()}, policydomain.AutonomyDecision{
 		DecisionID: "d2",
 		Action:     policydomain.ActionRecall,
 	}, replydomain.ReplyPlan{
@@ -82,7 +114,7 @@ func TestExecuteReact(t *testing.T) {
 	sender := inmemory.NewSender()
 	executor := New(sender, nil, nil)
 
-	_, err := executor.Execute(context.Background(), conversationEvent(), policydomain.AutonomyDecision{
+	_, err := executor.Execute(context.Background(), conversationdomain.ContextSnapshot{Event: conversationEvent()}, policydomain.AutonomyDecision{
 		DecisionID: "d-react",
 		Action:     policydomain.ActionReact,
 	}, replydomain.ReplyPlan{
@@ -128,7 +160,7 @@ func TestExecuteNotifiesOutboundEventObserver(t *testing.T) {
 			return nil
 		}),
 	)
-	_, err := executor.Execute(context.Background(), conversationEvent(), policydomain.AutonomyDecision{
+	_, err := executor.Execute(context.Background(), conversationdomain.ContextSnapshot{Event: conversationEvent()}, policydomain.AutonomyDecision{
 		DecisionID: "d-outbound",
 		Action:     policydomain.ActionReply,
 	}, replydomain.ReplyPlan{Bubbles: []string{"收到"}, SendMode: "group"})
@@ -144,7 +176,7 @@ func TestExecuteReactFallsBackToEventMessageID(t *testing.T) {
 	sender := inmemory.NewSender()
 	executor := New(sender, nil, nil)
 
-	_, err := executor.Execute(context.Background(), conversationEvent(), policydomain.AutonomyDecision{
+	_, err := executor.Execute(context.Background(), conversationdomain.ContextSnapshot{Event: conversationEvent()}, policydomain.AutonomyDecision{
 		DecisionID: "d-react-fallback",
 		Action:     policydomain.ActionReact,
 	}, replydomain.ReplyPlan{
@@ -164,7 +196,7 @@ func TestExecuteReactFallsBackToEventMessageID(t *testing.T) {
 func TestExecuteRepairRecallsThenReplies(t *testing.T) {
 	sender := inmemory.NewSender()
 	executor := New(sender, nil, nil)
-	receipt, err := executor.Execute(context.Background(), conversationEvent(), policydomain.AutonomyDecision{
+	receipt, err := executor.Execute(context.Background(), conversationdomain.ContextSnapshot{Event: conversationEvent()}, policydomain.AutonomyDecision{
 		DecisionID: "d-repair",
 		Action:     policydomain.ActionRepair,
 	}, replydomain.ReplyPlan{
@@ -208,7 +240,7 @@ func (s *failSecondSender) Send(_ context.Context, action replydomain.ActionExec
 func TestExecuteRepairReportsPartialSuccess(t *testing.T) {
 	sender := &failSecondSender{}
 	executor := New(sender, nil, nil)
-	receipt, err := executor.Execute(context.Background(), conversationEvent(), policydomain.AutonomyDecision{
+	receipt, err := executor.Execute(context.Background(), conversationdomain.ContextSnapshot{Event: conversationEvent()}, policydomain.AutonomyDecision{
 		DecisionID: "d-partial",
 		Action:     policydomain.ActionRepair,
 	}, replydomain.ReplyPlan{
@@ -229,7 +261,7 @@ func TestExecuteRhythmSendsBubblesSeparately(t *testing.T) {
 	sender := inmemory.NewSender()
 	bubbleDelay = 0
 	executor := New(sender, nil, nil)
-	_, err := executor.Execute(context.Background(), conversationEvent(), policydomain.AutonomyDecision{
+	_, err := executor.Execute(context.Background(), conversationdomain.ContextSnapshot{Event: conversationEvent()}, policydomain.AutonomyDecision{
 		DecisionID: "d-rhythm",
 		Action:     policydomain.ActionReply,
 	}, replydomain.ReplyPlan{Bubbles: []string{"先说", "后说"}, ReplyToMessageID: "m1", SendMode: "group"})
@@ -273,7 +305,7 @@ func TestExecuteRhythmWaitsBetweenBubbles(t *testing.T) {
 	sender := inmemory.NewSender()
 	executor := New(sender, nil, nil)
 	started := time.Now()
-	if _, err := executor.Execute(context.Background(), conversationEvent(), policydomain.AutonomyDecision{
+	if _, err := executor.Execute(context.Background(), conversationdomain.ContextSnapshot{Event: conversationEvent()}, policydomain.AutonomyDecision{
 		DecisionID: "d-rhythm-delay",
 		Action:     policydomain.ActionReply,
 	}, replydomain.ReplyPlan{Bubbles: []string{"先说", "后说"}}); err != nil {
@@ -290,7 +322,7 @@ func TestExecuteRhythmDropsQueuedBubblesAfterCancellation(t *testing.T) {
 	executor := New(sender, nil, nil)
 	finished := make(chan error, 1)
 	go func() {
-		_, err := executor.Execute(context.Background(), conversationEvent(), policydomain.AutonomyDecision{
+		_, err := executor.Execute(context.Background(), conversationdomain.ContextSnapshot{Event: conversationEvent()}, policydomain.AutonomyDecision{
 			DecisionID: "d-cancel",
 			Action:     policydomain.ActionReply,
 		}, replydomain.ReplyPlan{Bubbles: []string{"先说", "不再发送"}})
@@ -324,7 +356,7 @@ func TestExecuteSingleBubbleRemainsOneAction(t *testing.T) {
 	bubbleDelay = time.Second
 	executor := New(sender, nil, nil)
 
-	if _, err := executor.Execute(context.Background(), conversationEvent(), policydomain.AutonomyDecision{
+	if _, err := executor.Execute(context.Background(), conversationdomain.ContextSnapshot{Event: conversationEvent()}, policydomain.AutonomyDecision{
 		DecisionID: "d-single",
 		Action:     policydomain.ActionReply,
 	}, replydomain.ReplyPlan{Bubbles: []string{"单句"}}); err != nil {
@@ -340,10 +372,10 @@ func TestExecuteDoesNotSendCompletedActionTwice(t *testing.T) {
 	executor := New(sender, nil, nil)
 	decision := policydomain.AutonomyDecision{DecisionID: "d-idempotent", Action: policydomain.ActionReply}
 	plan := replydomain.ReplyPlan{Bubbles: []string{"只发一次"}, SendMode: "group"}
-	if _, err := executor.Execute(context.Background(), conversationEvent(), decision, plan); err != nil {
+	if _, err := executor.Execute(context.Background(), conversationdomain.ContextSnapshot{Event: conversationEvent()}, decision, plan); err != nil {
 		t.Fatalf("first send: %v", err)
 	}
-	if _, err := executor.Execute(context.Background(), conversationEvent(), decision, plan); err != nil {
+	if _, err := executor.Execute(context.Background(), conversationdomain.ContextSnapshot{Event: conversationEvent()}, decision, plan); err != nil {
 		t.Fatalf("second send: %v", err)
 	}
 	if got := len(sender.Actions()); got != 1 {
@@ -354,7 +386,7 @@ func TestExecuteDoesNotSendCompletedActionTwice(t *testing.T) {
 func TestExecuteGuardsFallbackText(t *testing.T) {
 	sender := inmemory.NewSender()
 	executor := New(sender, nil, outputguardsvc.New(0, 0))
-	_, err := executor.Execute(context.Background(), conversationEvent(), policydomain.AutonomyDecision{
+	_, err := executor.Execute(context.Background(), conversationdomain.ContextSnapshot{Event: conversationEvent()}, policydomain.AutonomyDecision{
 		DecisionID: "d-fallback-guard",
 		Action:     policydomain.ActionReply,
 	}, replydomain.ReplyPlan{
@@ -396,7 +428,7 @@ func TestExecuteMarksReadBeforeSending(t *testing.T) {
 	executor := New(sender, nil, nil)
 	event := conversationdomain.ConversationEvent{GroupID: 1, UserID: 2, MessageID: "m-1"}
 	plan := replydomain.ReplyPlan{Bubbles: []string{"在"}, SendMode: "single"}
-	receipt, err := executor.Execute(context.Background(), event, policydomain.AutonomyDecision{Action: policydomain.ActionReply}, plan)
+	receipt, err := executor.Execute(context.Background(), conversationdomain.ContextSnapshot{Event: event}, policydomain.AutonomyDecision{Action: policydomain.ActionReply}, plan)
 	if err != nil || !receipt.Sent {
 		t.Fatalf("execute: receipt=%+v err=%v", receipt, err)
 	}
@@ -406,7 +438,7 @@ func TestExecuteMarksReadBeforeSending(t *testing.T) {
 
 	// silent 不应触发已读
 	sender.events = nil
-	_, err = executor.Execute(context.Background(), event, policydomain.AutonomyDecision{Action: policydomain.ActionSilent}, plan)
+	_, err = executor.Execute(context.Background(), conversationdomain.ContextSnapshot{Event: event}, policydomain.AutonomyDecision{Action: policydomain.ActionSilent}, plan)
 	if err != nil {
 		t.Fatalf("execute silent: %v", err)
 	}

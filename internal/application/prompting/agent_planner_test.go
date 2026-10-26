@@ -277,3 +277,10 @@ func sampleDecision() policydomain.AutonomyDecision {
 		Action:     policydomain.ActionReply,
 	}
 }
+
+func TestCodexArtifactsAreAttachedToReply(t *testing.T) {
+	files := codexArtifacts(`{"answer":"done","artifacts":[{"name":"project.zip","path":"/tmp/task/output/project.zip"},{"name":"project.zip","path":"/tmp/task/output/project.zip"}]}`)
+	if len(files) != 1 || files[0].Name != "project.zip" || files[0].Path != "/tmp/task/output/project.zip" {
+		t.Fatalf("unexpected Codex artifacts: %#v", files)
+	}
+}

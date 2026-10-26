@@ -232,18 +232,29 @@ func validateCandidateEvidence(candidate *memorydomain.MemoryCandidate, groupID 
 func candidateIntent(candidate *memorydomain.MemoryCandidate) memsvc.WriteIntent {
 	evidence := append([]string(nil), candidate.EvidenceEventIDs...)
 	sort.Strings(evidence)
-	raw := strings.Join([]string{candidate.Scope, string(candidate.SubjectKind), candidate.SubjectID, string(candidate.Type), candidate.Content, strings.Join(evidence, ",")}, "\x00")
+	raw := strings.Join([]string{candidate.Scope, string(candidate.SubjectKind), candidate.SubjectID, string(candidate.Type), candidate.Content,
+		string(candidate.Predicate), candidate.NormalizedValue, candidate.Qualifier, strings.Join(evidence, ",")}, "\x00")
 	sum := sha256.Sum256([]byte(raw))
 	sourceEventID := ""
 	if len(evidence) > 0 {
 		sourceEventID = evidence[0]
 	}
-	return memsvc.WriteIntent{
+	intent := memsvc.WriteIntent{
 		MemoryID: fmt.Sprintf("memory-%x", sum[:12]), Scope: candidate.Scope,
 		MemoryType: string(candidate.Type), Subject: candidate.SubjectID, Content: candidate.Content,
 		SourceEventID: sourceEventID, SourceEventIDs: evidence, Origin: "extraction",
 		Importance: 0.7, Confidence: 0.9,
+		ValidUntil: candidate.ValidUntil,
+		ObservedAt: candidate.ObservedAt,
 	}
+	// Interaction preferences belong to the evidence author, never a group
+	// subject with a coincidentally equal numeric ID.
+	if candidate.SubjectKind == memorydomain.SubjectKindUser {
+		intent.Predicate = candidate.Predicate
+		intent.NormalizedValue = candidate.NormalizedValue
+		intent.Qualifier = candidate.Qualifier
+	}
+	return intent
 }
 
 func (s *Service) markProgress(ctx context.Context, groupID int64, eventID, outcome, reason string, memoryCount int) error {

@@ -53,6 +53,11 @@ ALTER TABLE memories ADD COLUMN IF NOT EXISTS origin VARCHAR(32) NOT NULL DEFAUL
 ALTER TABLE memories ADD COLUMN IF NOT EXISTS supersedes_memory_id VARCHAR(128) NOT NULL DEFAULT '';
 ALTER TABLE memories ADD COLUMN IF NOT EXISTS recall_count INT NOT NULL DEFAULT 0;
 ALTER TABLE memories ADD COLUMN IF NOT EXISTS last_recalled_at TIMESTAMPTZ NULL;
+ALTER TABLE memories ADD COLUMN IF NOT EXISTS predicate VARCHAR(64) NOT NULL DEFAULT '';
+ALTER TABLE memories ADD COLUMN IF NOT EXISTS normalized_value TEXT NOT NULL DEFAULT '';
+ALTER TABLE memories ADD COLUMN IF NOT EXISTS qualifier VARCHAR(128) NOT NULL DEFAULT '';
+CREATE INDEX IF NOT EXISTS idx_memories_constraints ON memories (scope, subject, predicate, created_at DESC)
+  WHERE predicate <> '';
 
 CREATE TABLE IF NOT EXISTS learning_event_progress (
   event_id VARCHAR(128) NOT NULL,

@@ -1,289 +1,42 @@
-# CLAUDE.md
+# 项目协作说明
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+go-agent 是长期在线的 QQ AI 群友，使用 Go / Eino、NapCat、PostgreSQL/pgvector 和 Vue 管理后台。
 
-## 项目概述
+## 文档入口
 
-这是一个使用 Go 1.25.8 + Eino 框架构建的 QQ 群聊 AI Bot，通过 NapCat（OneBot 11）接入 QQ。Bot 采用事件驱动架构，能够自主判断参与时机，而非逐条应答。
+- [README](README.md)：安装、配置和启动。
+- [项目定位与功能](docs/PROJECT.md)：产品范围与能力边界。
+- [当前架构](docs/ARCHITECTURE.md)：运行链路、依赖方向、数据和生命周期。
+- [开发与验证](docs/DEVELOPMENT.md)：构建、测试、单事件验证和代码入口。
+- [工具与文件任务](docs/TOOLS.md)、[混合检索](docs/RETRIEVAL.md)：专项行为。
 
-核心技术栈：
-- **语言**: Go 1.25.8
-- **AI 框架**: Cloudwego Eino
-- **数据库**: PostgreSQL + pgvector（语义检索）
-- **QQ 接入**: NapCat（OneBot 11 协议）
-- **模型支持**: 火山方舟 Ark / OpenAI 兼容接口
-- **前端**: Vue 3 + Tailwind CSS + Element Plus
+修改行为时同步更新对应文档；当前实现以实际调用链和配置定义为准，不从历史计划推导已支持能力。
 
-## 常用命令
+## 实现边界
 
-### 开发与构建
+- `internal/app` 组装依赖并管理资源；业务编排放在 `internal/application`。
+- `domain` 不依赖应用或基础设施；`application` 不导入 adapter / app；adapter 不导入 app；`search` 保持无 I/O。依赖检查在 `internal/architecture/layers_test.go`。
+- Presence 在启动前完成依赖组装。在线和同步入口共用接入逻辑；源事件先归档，再推进派生状态。
+- 群状态串行更新，同群新回合取消旧回合，跨群并发。模型意愿与人格倾向交给模型，权限、冷却、事实和发送校验由运行时执行。
+- Context 读取统一快照，Composer 只组装提示词。历史来自真实收发事件，工具过程和未送达文本不写成聊天事实。
+- 人物公开自述以实际送达为边界；部分送达也需要完成反馈、Canon 和冷却收尾。
+- 可重放副作用使用 Outbox，保持 handler 可重入和持久化 payload 可读。普通 QQ 发送尚不保证跨重启恰好一次。
+- 新代码按职责归属，不为了目录分组增加抽象；仅供单个能力使用的辅助函数留在该能力内。
+
+## 工作区与验证
+
+保留已有暂存、未暂存和未跟踪改动。只修改任务相关文件，不提交 `configs/config.yaml`、数据目录或前端构建产物。
+
+首次执行 Go 构建或测试前先 `make web`，因为管理后台通过 `go:embed` 嵌入。
 
 ```bash
-# 构建（先 npm run build，再 go build）
 make build
-
-# 运行测试（会先打包前端；裸 go test 需要已有 adminui/dist）
 make test
-go test ./...
-go test -race ./...  # 带竞态检测
-
-# 运行 Bot
-make run
-# 或指定配置（需先 make web，否则 go:embed 找不到 dist）
-go run ./cmd/qqbotd -config configs/config.yaml
-
-# 仅构建前端
-make web
-
-# 本地事件验证（不连接 QQ）
-go run ./cmd/qqbotd -config configs/config.yaml -once-event tests/testdata/mention_event.json
+go test -race ./...
+go test ./internal/architecture/... -count=1
+git diff --check
 ```
 
-### 依赖服务
+按改动范围选择检查；文档整理只需核对代码事实、命令和链接。当前没有前端 `npm test` 脚本，使用 `make web` 验证类型与构建；数据库测试被跳过时需说明验证边界。
 
-```bash
-# 启动 PostgreSQL 和 NapCat
-docker compose up -d
-
-# 查看服务状态
-docker compose ps
-
-# 查看日志
-docker compose logs -f
-
-# 停止服务
-docker compose down
-
-# 健康检查
-curl http://127.0.0.1:8088/healthz
-```
-
-### 架构验证
-
-项目包含依赖方向测试，防止违反架构规则：
-
-```bash
-go test ./internal/architecture/...
-```
-
-该测试会检查：
-- domain 层不依赖 application 或 adapters
-- application 层不依赖 adapters
-- adapters 不依赖 app
-
-## 架构核心概念
-
-### 六边形架构分层
-
-项目严格遵循 Ports and Adapters 模式：
-
-```text
-cmd/qqbotd          # 程序入口
-    ↓
-internal/app        # Composition Root（唯一依赖组装点）
-    ↓
-application ——→ domain ←—— adapters
-    ↓               ↑          ↓
-  ports ←———————————+——————————+
-    ↓
-  search（无 I/O 算法内核）
-```
-
-**依赖规则**（由 `internal/architecture/layers_test.go` 强制执行）：
-- `domain`: 纯业务模型，零外部依赖
-- `application`: 编排业务逻辑，依赖 domain 和 ports 接口
-- `adapters`: 实现 ports 接口，依赖 domain
-- `app`: 创建具体实现并完成依赖注入
-
-### Presence Runtime 与 Group Actor
-
-**核心流程**：
-```text
-NapCat 事件
-  → 归一化 & 去重
-  → 归档到 messages 表
-  → Group Actor 处理
-      → 更新工作记忆
-      → 生成 ThoughtCandidate
-  → Presence Runtime 调度
-      → 同群串行、跨群并发
-      → 模型并发限制
-      → 时机判断（到期、抢占、冷却）
-  → Deliberation（上下文 + 检索 + Agent 规划）
-  → Action Executor（校验 + 发送）
-  → Reflection（记录思考、更新状态）
-```
-
-**关键特性**：
-- 每个群一个 Group Actor，维护独立的工作记忆
-- 同群消息串行处理，避免竞态
-- 跨群可并发，模型调用有全局槽位限制
-- 候选回复可过期、取消或沉默
-- Actor 空闲后可回收，下次消息到达时从持久化状态恢复
-
-### Outbox 可靠性模式
-
-异步任务（视觉理解、向量索引、学习等）通过持久化 Outbox 执行：
-
-```text
-业务事实 + Outbox task
-  ↓（同一事务）
-async_outbox 表
-  ↓
-worker claim + lease
-  ├── completed
-  ├── retry（指数退避）
-  └── dead_letter
-```
-
-**Outbox 任务类型**：
-- `perception_event`: 图片/视频/表情包感知
-- `memory_vector_index` / `meme_vector_index`: 向量投影
-- `learning_extract`: 群聊增量学习
-- `meme_mark_sent`: 发送计数更新
-
-### 检索架构
-
-统一检索入口在 `internal/application/retrieval/service.go`：
-
-```text
-query + 可见性规则
-  → 硬过滤（scope / expiry / type）
-  → BM25 候选 || 向量候选（可独立降级）
-  → RRF 融合去重
-  → 多维排序（重要性 / 置信度 / 新鲜度 / 冷却）
-  → 返回结果 + trace
-```
-
-**注意**：当前 BM25 是进程内全量扫描，适合中小规模数据。生产规模增长后需持久化倒排索引。
-
-## 目录职责与变更入口
-
-### 按职责归属代码
-
-新增代码时按以下顺序判断：
-
-1. **纯业务事实/状态** → `domain/<concept>/`
-   - 例：消息模型、关系状态、策略定义
-2. **业务编排/用例** → `application/<capability>/`
-   - 例：记忆检索、表情包推荐、Agent 规划
-3. **应用需要的外部能力接口** → `application/ports/`
-   - 例：MemoryStore、OutboundSender
-4. **协议/数据库/模型接入** → `adapters/<technology>/`
-   - 例：NapCat 适配器、PostgreSQL 实现
-5. **对象创建和生命周期** → `app/`
-   - 依赖注入、服务启动/关闭
-6. **无 I/O 的纯算法** → `search/` 等独立内核
-
-### 常见变更场景
-
-| 需求 | 主要涉及目录 |
-|------|--------------|
-| 改变参与时机或策略 | `application/presence/`, `domain/presence/`, `domain/policy/` |
-| 修改 Prompt 或工具 | `application/prompting/`, `application/tools/` |
-| 调整记忆/表情检索 | `application/retrieval/`, `search/`, `adapters/storage/postgres/` |
-| 改 QQ 协议接入 | `adapters/inbound/napcat/`, `adapters/outbound/napcat/` |
-| 修改数据库 Schema | `schema/schema.sql`, `adapters/storage/postgres/` |
-| 调整启动流程 | `app/app.go`, `cmd/qqbotd/main.go` |
-
-## 配置与环境
-
-### 配置文件
-
-主配置位于 `configs/config.yaml`（从 `config.example.yaml` 复制）：
-
-```yaml
-models:           # 主模型、视觉模型、Embedding 模型
-persona:          # 人格、语气、按群覆盖
-default_policy:   # 默认策略
-group_policies:   # 群级策略、工具白名单
-autonomy:         # 主动参与概率和限流
-memory:           # 记忆检索配置
-meme:             # 表情包策略
-tools:            # MCP、Codex 配置
-storage:          # PostgreSQL 连接
-qq:               # NapCat 地址、Token、群白名单
-```
-
-**重要**：`configs/config.yaml` 已被 Git 忽略，不要提交真实密钥。
-
-### 数据库 Schema
-
-Schema 位于 `schema/schema.sql`，启动时自动执行幂等迁移。主要表：
-
-| 表名 | 用途 |
-|------|------|
-| `messages` | 消息事实（入站 + 出站） |
-| `memories` | 长期记忆权威数据 |
-| `meme_assets` | 表情包权威数据 |
-| `group_working_memory` | 群工作记忆（可恢复的运行状态） |
-| `relationships` | 群友关系投影 |
-| `async_outbox` | 可靠异步任务队列 |
-| `thought_records` | AI 决策记录 |
-| `memory_vectors` / `meme_vectors` | pgvector 语义索引 |
-
-## 工具与扩展
-
-### 内置工具
-
-Bot 提供三类工具：
-
-1. **最终动作**（每轮只能选一个）：
-   - `speak_text`, `quote_reply`, `send_meme`, `react_emoji`
-   - `poke_member`（仅被戳场景）
-   - `repair_message`（撤回并纠正）
-   - `stay_silent`
-
-2. **信息读取**（可多次调用）：
-   - `query_memory`, `search_meme`, `query_member_profile`
-
-3. **状态更新**（提交候选，不直接修改）：
-   - `remember_memory`, `record_relationship_signal`, `update_persona_fact`
-
-### 可选扩展
-
-- **MCP**：配置 `tools.mcp_servers`，工具名格式为 `mcp_<server>_<tool>`
-- **Codex**：通过 `delegate_codex_task` 执行复杂本地任务，默认只读、需白名单
-
-外部工具必须显式加入群的 `tool_allowlist` 才可用。
-
-## 管理后台
-
-启动 Bot 后访问 [http://127.0.0.1:8088/admin/](http://127.0.0.1:8088/admin/)：
-
-- 查看身份、人格、记忆
-- 监控群友关系投影
-- 审查 Outbox 任务状态
-- 分析检索 trace 和模型用量
-
-前端源码在 `web/`，修改后用 `make web` 重新构建。产物输出到 `internal/app/adminui/dist/`，编译时嵌入二进制，该目录不入库。
-
-## 重要约束与最佳实践
-
-### 并发与可靠性
-
-1. **入站事实先归档**：消息必须先写入 `messages` 表，再更新内存游标
-2. **同群串行、跨群并发**：Group Actor 内有群锁
-3. **候选必须终态化**：stale/expired/cancelled/silent/sent/error 都要记录
-4. **可重放副作用入 Outbox**：进程内队列不作为事实来源
-5. **关闭顺序**：Scheduler → Runtime → Outbox → 外部连接
-
-### 代码规范
-
-- **包拆分**：优先按职责拆包，不按"一个类型一个包"
-- **单文件阈值**：约 700 行；优先拆文件，出现独立依赖边界时才拆包
-- **避免 utils**：工具函数必须有明确调用方，仅被一个能力用的留在内部
-- **测试覆盖**：关键业务逻辑需要单元测试，尤其是 domain 和 application 层
-
-### 性能考虑
-
-- BM25 是全量扫描，数据量大时考虑持久化索引
-- 向量查询依赖 pgvector，注意索引类型和参数
-- Outbox worker 数量可配置，避免任务积压
-
-## 参考文档
-
-- [架构详细说明](docs/ARCHITECTURE.md)
-- [配置示例](configs/config.example.yaml)
-- [测试事件数据](tests/testdata/)
-- ADR（架构决策记录）见 `docs/adr/`
+每次 Git 提交前必须运行 `dcc doctor`，确认 GitHooks 状态正常；提交范围需与任务一致，未经要求不推送。

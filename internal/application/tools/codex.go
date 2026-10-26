@@ -18,6 +18,7 @@ import (
 	"github.com/cloudwego/eino/schema"
 
 	"github.com/phlin/go-agent/internal/application/textutil"
+	workspaceapp "github.com/phlin/go-agent/internal/application/workspace"
 	"github.com/phlin/go-agent/internal/config"
 )
 
@@ -112,11 +113,33 @@ func (t *codexTool) InvokableRun(ctx context.Context, argumentsInJSON string, _ 
 	timeout := parseToolDuration(t.cfg.Timeout, 5*time.Minute)
 	runCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
-	answer, err := runCodexAppServer(runCtx, t.cfg, args.Task, args.Write)
+	workspaceTask, hasWorkspace := workspaceapp.TaskFromContext(ctx)
+	workspaceDir := t.cfg.CWD
+	if hasWorkspace {
+		workspaceDir = workspaceTask.Workspace.Root
+		args.Task = workspaceTaskPrompt(args.Task, workspaceTask)
+	}
+	answer, err := runCodexAppServerInDir(runCtx, t.cfg, workspaceDir, args.Task, args.Write)
 	if err != nil {
 		return "", err
 	}
-	return marshal(map[string]string{"answer": answer})
+	result := map[string]any{"answer": answer}
+	if hasWorkspace && workspaceTask.Manager != nil {
+		if artifacts, collectErr := workspaceTask.Manager.CollectOutputs(ctx, workspaceTask.Workspace); collectErr == nil && len(artifacts) > 0 {
+			result["artifacts"] = artifacts
+		} else if collectErr != nil {
+			result["artifact_error"] = collectErr.Error()
+		}
+	}
+	return marshal(result)
+}
+
+func workspaceTaskPrompt(task string, workspace workspaceapp.Task) string {
+	inputs := make([]string, 0, len(workspace.InputFiles))
+	for _, path := range workspace.InputFiles {
+		inputs = append(inputs, path)
+	}
+	return fmt.Sprintf("%s\n\nYou are working in the isolated task workspace %q. Input files: %s. Put any files intended for delivery in ./output/. Do not access paths outside this workspace.", task, workspace.Workspace.Root, strings.Join(inputs, ", "))
 }
 
 func dangerousWriteTask(task string) bool {
@@ -147,8 +170,18 @@ type appServerMessage struct {
 }
 
 func runCodexAppServer(ctx context.Context, cfg config.CodexConfig, task string, write bool) (string, error) {
+	return runCodexAppServerInDir(ctx, cfg, cfg.CWD, task, write)
+}
+
+// runCodexAppServerInDir runs Codex against an explicitly provisioned local
+// workspace. The caller is responsible for creating and authorizing the
+// directory; this keeps per-file task isolation separate from global config.
+func runCodexAppServerInDir(ctx context.Context, cfg config.CodexConfig, cwd, task string, write bool) (string, error) {
+	if strings.TrimSpace(cwd) == "" {
+		return "", errors.New("Codex workspace directory is required")
+	}
 	cmd := exec.CommandContext(ctx, cfg.Binary, "app-server")
-	cmd.Dir = cfg.CWD
+	cmd.Dir = cwd
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
 		return "", err
@@ -209,7 +242,7 @@ func runCodexAppServer(ctx context.Context, cfg config.CodexConfig, task string,
 		sandbox = "workspaceWrite"
 	}
 	threadParams := map[string]any{
-		"cwd": cfg.CWD, "approvalPolicy": "never", "sandbox": sandbox,
+		"cwd": cwd, "approvalPolicy": "never", "sandbox": sandbox,
 		"serviceName": "qq_group_bot", "ephemeral": true,
 	}
 	if cfg.Model != "" {
@@ -237,7 +270,7 @@ func runCodexAppServer(ctx context.Context, cfg config.CodexConfig, task string,
 	// read-only and write-capable turns.
 	sandboxPolicy := map[string]any{"type": sandbox, "networkAccess": cfg.NetworkEnabled}
 	if write {
-		sandboxPolicy["writableRoots"] = []string{cfg.CWD}
+		sandboxPolicy["writableRoots"] = []string{cwd}
 	}
 	if err := send("turn/start", &id, map[string]any{
 		"threadId":       started.Thread.ID,

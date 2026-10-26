@@ -37,7 +37,10 @@ type Service struct {
 	thoughts      ports.ThoughtStore
 	personaFacts  ports.PersonaFactStore
 	retriever     *retrievalsvc.Service
+	constraints   ports.MemoryConstraintStore
 }
+
+func (s *Service) WithConstraints(reader ports.MemoryConstraintStore) { s.constraints = reader }
 
 type eventReplayStore interface {
 	EventsAfter(context.Context, int64, time.Time, string, int) ([]conversationdomain.ConversationEvent, error)
@@ -158,6 +161,10 @@ func (s *Service) BuildSnapshot(ctx context.Context, envelope conversationdomain
 	// vision 未跑或失败时不再拼「收到一个xx附件」的假描述——
 	// 模型看到的媒体描述要么是真实理解，要么没有。
 	groupPolicy := s.policy.EffectiveGroupPolicy(envelope.Event.GroupID)
+	constraints, err := s.loadConstraints(ctx, envelope.Event)
+	if err != nil {
+		return conversationdomain.ContextSnapshot{}, fmt.Errorf("load interaction constraints: %w", err)
+	}
 	projection := conversationdomain.ProjectionMetadata{
 		Name:            "group_working_memory+archive",
 		Version:         working.Version,
@@ -175,6 +182,7 @@ func (s *Service) BuildSnapshot(ctx context.Context, envelope conversationdomain
 		Event:              envelope.Event,
 		RecentTurns:        recentTurns,
 		RelevantMemories:   relevantMemories,
+		MemoryConstraints:  constraints,
 		RecentThoughts:     s.recentThoughts(ctx, envelope.Event.GroupID),
 		MediaDescriptors:   mediaDescriptors,
 		ActiveTopic:        working.ActiveTopic,
@@ -189,6 +197,13 @@ func (s *Service) BuildSnapshot(ctx context.Context, envelope conversationdomain
 		RuntimeState:       runtimeState,
 		DecisionHints:      buildDecisionHints(envelope.Event),
 	}, nil
+}
+
+func (s *Service) loadConstraints(ctx context.Context, event conversationdomain.ConversationEvent) ([]memorydomain.MemoryConstraint, error) {
+	if s.constraints == nil || event.UserID <= 0 {
+		return nil, nil
+	}
+	return s.constraints.GetConstraints(ctx, fmt.Sprintf("group:%d", event.GroupID), []string{fmt.Sprintf("%d", event.UserID)})
 }
 
 func (s *Service) restoreRecentTurns(ctx context.Context, envelope conversationdomain.EventEnvelope, limit int) (presencedomain.GroupWorkingMemory, []conversationdomain.ConversationEvent, bool, error) {

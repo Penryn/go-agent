@@ -1,13 +1,13 @@
 # Application packages
 
-`internal/application` 按用例和运行能力拆分。目录保持一层扁平结构，避免为了目录分组引入跨包循环依赖；具体职责按下面几组理解：
+`internal/application` 的顶层包按用例和运行能力划分；`presence` 与 `runtime` 在包内继续细分生命周期职责。完整调用链见 [当前架构](../../docs/ARCHITECTURE.md)，日常变更入口见 [开发说明](../../docs/DEVELOPMENT.md)。
 
 ## 运行主链路
 
 - `normalizer`：输入标准化
-- `presence`：群组运行时、感知、审议、反馈和事件归档
+- `presence`：统一群事件与模型回合生命周期；`ingestion.go` 管接入，`turn.go` 管规划至送达，`lifecycle.go` 管取消与关闭
 - `context`：构建单次回合的统一上下文快照
-- `prompting`：提示词、规划和工具循环
+- `prompting`：Composer 只消费上下文快照；AgentPlanner 负责模型与工具循环
 - `action`、`outputguard`：动作校验与发送前安全控制
 
 ## 业务能力
@@ -19,6 +19,7 @@
 ## 支撑能力
 
 - `policy`、`ports`、`tools`：策略、外部能力接口和工具实现
+- `workspace`：按回合隔离输入与产物的临时工作区
 - `modelusage`、`textutil`：模型用量记录和通用文本工具
 - `runtime`：outbox、scheduler 等进程运行设施
 

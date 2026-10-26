@@ -22,6 +22,11 @@ type WriteIntent struct {
 	MemoryType         string
 	Subject            string
 	Content            string
+	Predicate          memorydomain.Predicate
+	NormalizedValue    string
+	Qualifier          string
+	ValidUntil         *time.Time
+	ObservedAt         time.Time
 	SourceEventID      string
 	SourceEventIDs     []string
 	SourceSessionID    string
@@ -140,6 +145,9 @@ func (s *Service) MarkIntent(ctx context.Context, intent WriteIntent) (memorydom
 		Type:               intent.MemoryType,
 		Subject:            intent.Subject,
 		Content:            intent.Content,
+		Predicate:          intent.Predicate,
+		NormalizedValue:    intent.NormalizedValue,
+		Qualifier:          intent.Qualifier,
 		SourceEventID:      intent.SourceEventID,
 		SourceEventIDs:     append([]string(nil), intent.SourceEventIDs...),
 		SourceSessionID:    intent.SourceSessionID,
@@ -149,6 +157,13 @@ func (s *Service) MarkIntent(ctx context.Context, intent WriteIntent) (memorydom
 		Importance:         intent.Importance,
 		CreatedAt:          time.Now(),
 		ExpiresAt:          s.resolveExpiresAt(intent.MemoryType),
+	}
+	if !intent.ObservedAt.IsZero() {
+		record.CreatedAt = intent.ObservedAt
+	}
+	if intent.ValidUntil != nil && (record.ExpiresAt == nil || intent.ValidUntil.Before(*record.ExpiresAt)) {
+		expiresAt := *intent.ValidUntil
+		record.ExpiresAt = &expiresAt
 	}
 	if record.Origin == "" {
 		record.Origin = "agent"

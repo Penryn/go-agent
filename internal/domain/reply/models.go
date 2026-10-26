@@ -38,7 +38,13 @@ type ReplyPlan struct {
 	ActionParams         map[string]any                `json:"action_params,omitempty" yaml:"action_params,omitempty"`
 	SendMode             string                        `json:"send_mode" yaml:"send_mode"`
 	FallbackText         string                        `json:"fallback_text" yaml:"fallback_text"`
+	Files                []FileAttachment              `json:"files,omitempty" yaml:"files,omitempty"`
 	ProposedPersonaFacts []PersonaFactCandidate        `json:"proposed_persona_facts,omitempty" yaml:"proposed_persona_facts,omitempty"`
+}
+
+type FileAttachment struct {
+	Path string `json:"path" yaml:"path"`
+	Name string `json:"name" yaml:"name"`
 }
 
 // ThoughtRecord is the durable, user-independent summary of one deliberation.
@@ -72,6 +78,7 @@ type ToolContext struct {
 	Budget               map[string]int                 `json:"budget" yaml:"budget"`
 	TriggerType          string                         `json:"trigger_type" yaml:"trigger_type"`
 	RecallableMessageIDs []string                       `json:"recallable_message_ids" yaml:"recallable_message_ids"`
+	LocalWorkspace       bool                           `json:"local_workspace" yaml:"local_workspace"`
 }
 
 type ActionExecution struct {

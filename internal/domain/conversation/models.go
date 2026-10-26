@@ -74,12 +74,13 @@ type ThoughtDigest struct {
 }
 
 type ContextSnapshot struct {
-	SnapshotID       string                      `json:"snapshot_id" yaml:"snapshot_id"`
-	SelfID           int64                       `json:"self_id" yaml:"self_id"`
-	Projection       ProjectionMetadata          `json:"projection" yaml:"projection"`
-	Event            ConversationEvent           `json:"event" yaml:"event"`
-	RecentTurns      []ConversationEvent         `json:"recent_turns" yaml:"recent_turns"`
-	RelevantMemories []memorydomain.MemoryRecord `json:"relevant_memories" yaml:"relevant_memories"`
+	SnapshotID        string                          `json:"snapshot_id" yaml:"snapshot_id"`
+	SelfID            int64                           `json:"self_id" yaml:"self_id"`
+	Projection        ProjectionMetadata              `json:"projection" yaml:"projection"`
+	Event             ConversationEvent               `json:"event" yaml:"event"`
+	RecentTurns       []ConversationEvent             `json:"recent_turns" yaml:"recent_turns"`
+	RelevantMemories  []memorydomain.MemoryRecord     `json:"relevant_memories" yaml:"relevant_memories"`
+	MemoryConstraints []memorydomain.MemoryConstraint `json:"memory_constraints,omitempty" yaml:"memory_constraints,omitempty"`
 	// RecentThoughts 是该群最近几轮的思考摘要（新到旧），供模型回看自己
 	// 上次的判断——说错过的话别再说，收过的梗换着接。
 	RecentThoughts     []ThoughtDigest               `json:"recent_thoughts,omitempty" yaml:"recent_thoughts,omitempty"`

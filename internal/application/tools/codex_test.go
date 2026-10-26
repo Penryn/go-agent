@@ -122,3 +122,45 @@ func TestMCPToolNameIsNamespaced(t *testing.T) {
 		t.Fatalf("unexpected MCP tool name %q", got)
 	}
 }
+
+func TestCodexAppServerUsesExplicitWorkspace(t *testing.T) {
+	root := t.TempDir()
+	fake := filepath.Join(root, "codex")
+	workspace := filepath.Join(root, "task")
+	if err := os.MkdirAll(filepath.Join(workspace, "output"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	script := `#!/bin/sh
+while IFS= read -r line; do
+  case "$line" in
+    *'"method":"initialize"'*) echo '{"id":0,"result":{}}' ;;
+    *'"method":"thread/start"'*) echo '{"id":1,"result":{"thread":{"id":"thr_workspace"}}}' ;;
+    *'"method":"turn/start"'*)
+      pwd > output/result.txt
+      echo '{"id":2,"result":{"turn":{"id":"turn_workspace","status":"inProgress"}}}'
+      echo '{"method":"item/agentMessage/delta","params":{"delta":"workspace done"}}'
+      echo '{"method":"turn/completed","params":{"turn":{"status":"completed"}}}'
+      ;;
+  esac
+done
+`
+	if err := os.WriteFile(fake, []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	answer, err := runCodexAppServerInDir(context.Background(), config.CodexConfig{
+		Enabled: true, Binary: fake, CWD: root, Timeout: "2s",
+	}, workspace, "inspect the staged file", false)
+	if err != nil {
+		t.Fatalf("run Codex in workspace: %v", err)
+	}
+	if answer != "workspace done" {
+		t.Fatalf("unexpected answer %q", answer)
+	}
+	content, err := os.ReadFile(filepath.Join(workspace, "output", "result.txt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.TrimSpace(string(content)) != workspace {
+		t.Fatalf("Codex did not run in workspace: %q", content)
+	}
+}

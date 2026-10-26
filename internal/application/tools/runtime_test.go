@@ -3,6 +3,8 @@ package tools
 import (
 	"context"
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -13,6 +15,7 @@ import (
 	memsvc "github.com/phlin/go-agent/internal/application/memory"
 	"github.com/phlin/go-agent/internal/application/ports"
 	relationshipsvc "github.com/phlin/go-agent/internal/application/relationship"
+	workspaceapp "github.com/phlin/go-agent/internal/application/workspace"
 	personadomain "github.com/phlin/go-agent/internal/domain/persona"
 	profiledomain "github.com/phlin/go-agent/internal/domain/profile"
 	replydomain "github.com/phlin/go-agent/internal/domain/reply"
@@ -56,6 +59,43 @@ func TestToolSchemas(t *testing.T) {
 		if _, ok := names[name]; !ok {
 			t.Fatalf("expected tool %s", name)
 		}
+	}
+}
+
+func TestSendFileToolOnlyReturnsWorkspaceArtifact(t *testing.T) {
+	manager, err := workspaceapp.NewManager(filepath.Join(t.TempDir(), "workspaces"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ws, err := manager.Create(context.Background(), "send-file")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer manager.Cleanup(ws)
+	if err := os.WriteFile(filepath.Join(ws.OutputDir, "result.zip"), []byte("artifact"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	taskCtx := workspaceapp.WithTask(context.Background(), workspaceapp.Task{Manager: manager, Workspace: ws})
+	tool := newSendFileTool(replydomain.ToolContext{LocalWorkspace: true})
+	result, err := tool.InvokableRun(taskCtx, `{"artifact_name":"result.zip","caption":"处理好了"}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(result, `"artifact_name":"result.zip"`) || !strings.Contains(result, `"caption":"处理好了"`) {
+		t.Fatalf("unexpected send_file result: %s", result)
+	}
+	if _, err := tool.InvokableRun(taskCtx, `{"artifact_name":"/etc/passwd","caption":"不应发送"}`); err == nil {
+		t.Fatal("expected arbitrary path rejection")
+	}
+}
+
+func TestParseSendFileTerminalPlan(t *testing.T) {
+	plan, ok, err := ParseTerminalPlan("decision-file", "send_file", `{"tool":"send_file","artifact_name":"result.zip","artifact_path":"/tmp/task/output/result.zip","caption":"处理好了"}`, replydomain.ToolContext{})
+	if err != nil || !ok {
+		t.Fatalf("parse send_file: ok=%v err=%v", ok, err)
+	}
+	if plan.ActionParams["artifact_name"] != "result.zip" || plan.ActionParams["artifact_path"] != "/tmp/task/output/result.zip" || plan.Bubbles[0] != "处理好了" {
+		t.Fatalf("unexpected send_file plan: %#v", plan)
 	}
 }
 

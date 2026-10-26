@@ -2,18 +2,44 @@ package context
 
 import (
 	stdcontext "context"
+	"errors"
+	"reflect"
 	"testing"
 	"time"
 
 	"github.com/phlin/go-agent/internal/application/ports"
 	groupactor "github.com/phlin/go-agent/internal/application/presence/group_actor"
-	"github.com/phlin/go-agent/internal/application/presence/ingress"
 	conversationdomain "github.com/phlin/go-agent/internal/domain/conversation"
 	memorydomain "github.com/phlin/go-agent/internal/domain/memory"
 	personadomain "github.com/phlin/go-agent/internal/domain/persona"
 	presencedomain "github.com/phlin/go-agent/internal/domain/presence"
 	"github.com/phlin/go-agent/internal/testsupport"
 )
+
+type recordingConstraints struct {
+	scope       string
+	targetIDs   []string
+	constraints []memorydomain.MemoryConstraint
+	err         error
+}
+
+func (r *recordingConstraints) GetConstraints(_ stdcontext.Context, scope string, ids []string) ([]memorydomain.MemoryConstraint, error) {
+	r.scope, r.targetIDs = scope, ids
+	return r.constraints, r.err
+}
+
+func TestLoadConstraintsUsesGroupAndCurrentMemberScope(t *testing.T) {
+	reader := &recordingConstraints{constraints: []memorydomain.MemoryConstraint{{SubjectID: "200", Type: "allow_poke", Value: "false"}}}
+	service := &Service{constraints: reader}
+	constraints, err := service.loadConstraints(stdcontext.Background(), conversationdomain.ConversationEvent{GroupID: 100, UserID: 200})
+	if err != nil || !reflect.DeepEqual(constraints, reader.constraints) || reader.scope != "group:100" || !reflect.DeepEqual(reader.targetIDs, []string{"200"}) {
+		t.Fatalf("incorrect constraint visibility: constraints=%+v scope=%q targets=%v err=%v", constraints, reader.scope, reader.targetIDs, err)
+	}
+	reader.err = errors.New("constraint store unavailable")
+	if _, err := service.loadConstraints(stdcontext.Background(), conversationdomain.ConversationEvent{GroupID: 100, UserID: 200}); !errors.Is(err, reader.err) {
+		t.Fatalf("constraint lookup failure was discarded: %v", err)
+	}
+}
 
 type replayMemoryStore struct {
 	recent, delta           []conversationdomain.ConversationEvent
@@ -59,7 +85,7 @@ func TestMergeRecentTurnsOrdersAndBoundsTheProjection(t *testing.T) {
 func TestRestoreRecentTurnsUsesCheckpointDelta(t *testing.T) {
 	ctx := stdcontext.Background()
 	store := &replayMemoryStore{delta: []conversationdomain.ConversationEvent{{EventID: "delta", TimestampUnix: 20}}}
-	manager := groupactor.NewManager(ingress.NewMemoryEventLog())
+	manager := groupactor.NewManager()
 	defer manager.Close()
 	base := time.Unix(10, 0)
 	if _, err := manager.Observe(ctx, presencedomain.EventRecord{
@@ -86,7 +112,7 @@ func TestRestoreRecentTurnsUsesCheckpointDelta(t *testing.T) {
 func TestRestoreRecentTurnsFallsBackWithoutCheckpoint(t *testing.T) {
 	ctx := stdcontext.Background()
 	store := &replayMemoryStore{recent: []conversationdomain.ConversationEvent{{EventID: "archived", TimestampUnix: 10}}}
-	manager := groupactor.NewManager(ingress.NewMemoryEventLog())
+	manager := groupactor.NewManager()
 	defer manager.Close()
 	service := &Service{memoryStore: store, workingMemory: manager}
 	_, turns, _, err := service.restoreRecentTurns(ctx, conversationdomain.EventEnvelope{

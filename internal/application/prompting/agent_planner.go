@@ -15,6 +15,7 @@ import (
 	"github.com/phlin/go-agent/internal/application/modelusage"
 	"github.com/phlin/go-agent/internal/application/textutil"
 	toolsvc "github.com/phlin/go-agent/internal/application/tools"
+	workspaceapp "github.com/phlin/go-agent/internal/application/workspace"
 	conversationdomain "github.com/phlin/go-agent/internal/domain/conversation"
 	policydomain "github.com/phlin/go-agent/internal/domain/policy"
 	replydomain "github.com/phlin/go-agent/internal/domain/reply"
@@ -30,6 +31,34 @@ type AgentPlanner struct {
 	tools    *toolsvc.Runtime
 	composer *Composer
 	fallback *DeterministicPlanner
+}
+
+func codexArtifacts(raw string) []replydomain.FileAttachment {
+	var result struct {
+		Artifacts []struct {
+			Name string `json:"name"`
+			Path string `json:"path"`
+		} `json:"artifacts"`
+	}
+	if json.Unmarshal([]byte(raw), &result) != nil {
+		return nil
+	}
+	files := make([]replydomain.FileAttachment, 0, len(result.Artifacts))
+	seen := make(map[string]struct{}, len(result.Artifacts))
+	for _, artifact := range result.Artifacts {
+		if strings.TrimSpace(artifact.Name) == "" || strings.TrimSpace(artifact.Path) == "" {
+			continue
+		}
+		if _, ok := seen[artifact.Path]; ok {
+			continue
+		}
+		seen[artifact.Path] = struct{}{}
+		files = append(files, replydomain.FileAttachment{Name: artifact.Name, Path: artifact.Path})
+		if len(files) >= 16 {
+			break
+		}
+	}
+	return files
 }
 
 func NewAgentPlanner(factory MainModelFactory, tools *toolsvc.Runtime, composer *Composer, fallback *DeterministicPlanner) *AgentPlanner {
@@ -77,6 +106,9 @@ func (p *AgentPlanner) Plan(ctx context.Context, snapshot conversationdomain.Con
 			PreferShortText: true,
 			MaxChars:        maxChars,
 		},
+	}
+	if _, ok := workspaceapp.TaskFromContext(ctx); ok {
+		toolContext.LocalWorkspace = true
 	}
 	ctx = p.tools.ToolContext(ctx, toolContext.GroupID, toolContext.UserID)
 
@@ -130,7 +162,7 @@ func (p *AgentPlanner) Plan(ctx context.Context, snapshot conversationdomain.Con
 	// Model input is rebuilt from archived inbound/outbound facts on every turn.
 	// Tool calls and intermediate results remain local to this runner and cannot
 	// become phantom dialogue when a plan is silent or delivery fails.
-	modelInput := p.composer.MessagesWithContext(ctx, snapshot, decision)
+	modelInput := p.composer.Messages(snapshot, decision)
 	currentTurnBytes := 0
 	if len(modelInput) >= 2 {
 		currentTurnBytes = promptMessageBytes(modelInput[len(modelInput)-2:])
@@ -166,6 +198,7 @@ func (p *AgentPlanner) Plan(ctx context.Context, snapshot conversationdomain.Con
 		assistantText   string
 		terminalName    string
 		terminalContent string
+		codexFiles      []replydomain.FileAttachment
 	)
 	for {
 		event, ok := iter.Next()
@@ -182,6 +215,9 @@ func (p *AgentPlanner) Plan(ctx context.Context, snapshot conversationdomain.Con
 		}
 		if event.Output.MessageOutput.Role == schema.Tool {
 			toolName := event.Output.MessageOutput.ToolName
+			if toolName == "delegate_codex_task" {
+				codexFiles = append(codexFiles, codexArtifacts(msg.Content)...)
+			}
 			if returnDirectly[toolName] && terminalName == "" && !toolResultFailed(msg.Content) {
 				terminalName = toolName
 				terminalContent = msg.Content
@@ -204,6 +240,7 @@ func (p *AgentPlanner) Plan(ctx context.Context, snapshot conversationdomain.Con
 		}
 	}
 	if plan, ok, err := toolsvc.ParseTerminalPlan(decision.DecisionID, terminalName, terminalContent, toolContext); err == nil && ok {
+		plan.Files = append(plan.Files, codexFiles...)
 		slog.Info("planner: terminal tool", "tool", terminalName, "trace_id", snapshot.SnapshotID, "bubbles", len(plan.Bubbles))
 		return plan, nil
 	}
@@ -218,6 +255,7 @@ func (p *AgentPlanner) Plan(ctx context.Context, snapshot conversationdomain.Con
 			PlannedActions: []policydomain.DecisionAction{policydomain.ActionReply},
 			SendMode:       "group",
 			FallbackText:   assistantText,
+			Files:          codexFiles,
 		}, nil
 	}
 

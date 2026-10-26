@@ -1,68 +1,23 @@
 package prompting
 
 import (
-	"context"
 	"fmt"
 	"strings"
 
 	"github.com/cloudwego/eino/schema"
 
-	"github.com/phlin/go-agent/internal/application/ports"
 	conversationdomain "github.com/phlin/go-agent/internal/domain/conversation"
-	memorydomain "github.com/phlin/go-agent/internal/domain/memory"
 	personadomain "github.com/phlin/go-agent/internal/domain/persona"
 	policydomain "github.com/phlin/go-agent/internal/domain/policy"
 )
 
-// LLMCaller 调用大语言模型的接口
-type LLMCaller interface {
-	Generate(ctx context.Context, prompt string) (string, error)
-}
-
-// MemoryRetriever 检索记忆的接口
-type MemoryRetriever interface {
-	RetrieveRelevant(ctx context.Context, query ports.MemoryQuery) ([]memorydomain.MemoryRecord, error)
-}
-
 type Composer struct {
-	persona               personadomain.PersonaConfig
-	budget                promptBudget
-	llm                   LLMCaller
-	memoryRetriever       MemoryRetriever
-	constraintIntegration *MemoryConstraintIntegration
+	persona personadomain.PersonaConfig
+	budget  promptBudget
 }
 
 func NewComposer(persona personadomain.PersonaConfig) *Composer {
 	return &Composer{persona: persona, budget: defaultPromptBudget}
-}
-
-// WithLLM 设置 LLM 调用器
-func (c *Composer) WithLLM(llm LLMCaller) *Composer {
-	c.llm = llm
-	return c
-}
-
-// WithMemoryRetriever 设置记忆检索器
-func (c *Composer) WithMemoryRetriever(retriever MemoryRetriever) *Composer {
-	c.memoryRetriever = retriever
-	return c
-}
-
-// WithConstraintIntegration 设置约束集成
-func (c *Composer) WithConstraintIntegration(integration *MemoryConstraintIntegration) *Composer {
-	c.constraintIntegration = integration
-	return c
-}
-
-func (c *Composer) Instruction(snapshot conversationdomain.ContextSnapshot, decision policydomain.AutonomyDecision) string {
-	return c.InstructionWithContext(context.Background(), snapshot, decision)
-}
-
-// InstructionWithContext keeps external lookups inside prompt construction
-// on the caller's trace and cancellation boundary. Instruction remains as a
-// compatibility wrapper for tests and small offline callers.
-func (c *Composer) InstructionWithContext(ctx context.Context, snapshot conversationdomain.ContextSnapshot, decision policydomain.AutonomyDecision) string {
-	return strings.Join([]string{c.StaticInstruction(), c.DynamicInstructionWithContext(ctx, snapshot, decision), c.TaskInstruction(snapshot, decision)}, "\n\n")
 }
 
 // StaticInstruction is deliberately independent of a group, user, trigger and
@@ -104,7 +59,7 @@ func (c *Composer) StaticInstruction() string {
 		"发言前检查别人和自己刚才是否已经说过相同意思；如果只是复述、没有新增信息、态度或笑点，优先使用 stay_silent。",
 		"同样的短反应最近出现过时换个说法或保持沉默，不要连续用同一个两三个字的回复。",
 		"对方连续分条发送时要合并理解；如果话明显还没说完，先结合前后文等待，不要抢答或截取半句话作结论。",
-		"如果需要收集信息，可以先用 query_memory、search_meme、MCP 或 Codex 工具；简单实时查询优先 MCP，复杂的代码、文件、浏览或多步任务才交给 delegate_codex_task。查询和状态工具可以连续调用，但最终只能选择一个终结工具。通常用 speak_text、quote_reply、send_meme、react_emoji 或 stay_silent 结束。",
+		"如果需要收集信息，可以先用 query_memory、search_meme、MCP 或 Codex 工具；简单实时查询优先 MCP，复杂的代码、文件、浏览或多步任务才交给 delegate_codex_task。查询和状态工具可以连续调用，但最终只能选择一个终结工具。通常用 speak_text、quote_reply、send_meme、react_emoji 或 stay_silent 结束；如果本轮有 Codex 工作区产物且用户需要文件，使用 send_file 发送精确的 output 相对文件名。",
 		"对方询问你会不会或能不能使用某个工具时，以本轮实际提供的工具为准如实回答；如果提供了 delegate_codex_task，就表示你会使用 Codex，不得回答不知道或不会。",
 		"如果任务需要修改文件，调用 delegate_codex_task 时必须传 write=true。只有 Codex 写权限 QQ 白名单用户可以使用；普通项目编辑无需重复确认，但删除、覆盖、凭据/密钥或其他破坏性任务会先在 QQ 中要求对完全相同任务明确回复“确认”或“允许”，不得绕过。",
 		"react_emoji 是「点个赞就走」的低成本互动：看到好图、认可对方说法、想接梗但没必要说话时，用它点一个表情回应即可，不必强行组织文字。",
@@ -159,10 +114,6 @@ func (c *Composer) StaticInstruction() string {
 // kept after StaticInstruction so changes here do not invalidate the cacheable
 // prefix.
 func (c *Composer) DynamicInstruction(snapshot conversationdomain.ContextSnapshot, decision policydomain.AutonomyDecision) string {
-	return c.DynamicInstructionWithContext(context.Background(), snapshot, decision)
-}
-
-func (c *Composer) DynamicInstructionWithContext(ctx context.Context, snapshot conversationdomain.ContextSnapshot, decision policydomain.AutonomyDecision) string {
 	sections := []string{"本轮动态数据:"}
 	if interests := relevantInterests(c.persona.Interests, decision.TriggerType); len(interests) > 0 {
 		sections = append(sections, "当前较相关的兴趣: "+strings.Join(interests, "、")+"。")
@@ -221,20 +172,8 @@ func (c *Composer) DynamicInstructionWithContext(ctx context.Context, snapshot c
 		}
 	}
 
-	// 注入记忆约束
-	if c.constraintIntegration != nil && snapshot.Event.GroupID != 0 {
-		// 提取所有相关用户 ID
-		targetUserIDs := []int64{snapshot.Event.UserID}
-		// TODO: 可以从上下文中提取更多潜在目标用户
-
-		constraintSection, err := c.constraintIntegration.BuildConstraintSection(
-			ctx,
-			snapshot.Event.GroupID,
-			targetUserIDs,
-		)
-		if err == nil && constraintSection != "" {
-			sections = append(sections, constraintSection)
-		}
+	if section := ConstraintSection(snapshot.MemoryConstraints); section != "" {
+		sections = append(sections, section)
 	}
 
 	mood := defaultMood(snapshot.PersonaState.Mood)
@@ -316,10 +255,6 @@ func (c *Composer) TaskInstruction(snapshot conversationdomain.ContextSnapshot, 
 // 辅助函数已移至 helpers.go
 
 func (c *Composer) Messages(snapshot conversationdomain.ContextSnapshot, decisions ...policydomain.AutonomyDecision) []*schema.Message {
-	return c.MessagesWithContext(context.Background(), snapshot, decisions...)
-}
-
-func (c *Composer) MessagesWithContext(ctx context.Context, snapshot conversationdomain.ContextSnapshot, decisions ...policydomain.AutonomyDecision) []*schema.Message {
 	var decision policydomain.AutonomyDecision
 	if len(decisions) > 0 {
 		decision = decisions[0]
@@ -356,26 +291,11 @@ func (c *Composer) MessagesWithContext(ctx context.Context, snapshot conversatio
 		messages = append(messages, schema.UserMessage(turn.content))
 	}
 	snapshot.Event = currentEvent
-	messages = append(messages, c.turnMessagesWithContext(ctx, snapshot, decision, recentTruncated)...)
+	messages = append(messages, c.turnMessages(snapshot, decision, recentTruncated)...)
 	return messages
 }
 
-// TurnMessages renders only the messages added for the current model turn.
-// Keeping this delta separate lets a persisted session append new context
-// without rebuilding older dynamic instructions.
-func (c *Composer) TurnMessages(snapshot conversationdomain.ContextSnapshot, decision policydomain.AutonomyDecision) []*schema.Message {
-	return c.TurnMessagesWithContext(context.Background(), snapshot, decision)
-}
-
-func (c *Composer) TurnMessagesWithContext(ctx context.Context, snapshot conversationdomain.ContextSnapshot, decision policydomain.AutonomyDecision) []*schema.Message {
-	return c.turnMessagesWithContext(ctx, snapshot, decision, false)
-}
-
 func (c *Composer) turnMessages(snapshot conversationdomain.ContextSnapshot, decision policydomain.AutonomyDecision, recentTruncated bool) []*schema.Message {
-	return c.turnMessagesWithContext(context.Background(), snapshot, decision, recentTruncated)
-}
-
-func (c *Composer) turnMessagesWithContext(ctx context.Context, snapshot conversationdomain.ContextSnapshot, decision policydomain.AutonomyDecision, recentTruncated bool) []*schema.Message {
 	currentEvent := eventWithProfileIdentity(snapshot.Event, snapshot.MemberProfile)
 	memorySnippets := memorySnippets(snapshot.RelevantMemories, c.budget.memoryBytes)
 
@@ -420,7 +340,7 @@ func (c *Composer) turnMessagesWithContext(ctx context.Context, snapshot convers
 	thoughtLines, _ = retainLeadingStrings(thoughtLines, c.budget.thoughtBytes)
 
 	contentParts := []string{
-		c.DynamicInstructionWithContext(ctx, snapshot, decision),
+		c.DynamicInstruction(snapshot, decision),
 		fmt.Sprintf("工作记忆: %s", strings.Join(workingState, " | ")),
 		fmt.Sprintf("相关记忆: %s", strings.Join(memorySnippets, " | ")),
 		fmt.Sprintf("媒体摘要: %s", strings.Join(mediaSnippets, " | ")),

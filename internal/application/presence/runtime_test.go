@@ -1,8 +1,12 @@
-package runtime
+package presence
 
 import (
 	"context"
 	"errors"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -16,15 +20,52 @@ import (
 	"github.com/phlin/go-agent/internal/application/ports"
 	"github.com/phlin/go-agent/internal/application/presence/deliberation"
 	"github.com/phlin/go-agent/internal/application/presence/group_actor"
-	"github.com/phlin/go-agent/internal/application/presence/ingress"
 	retrievalsvc "github.com/phlin/go-agent/internal/application/retrieval"
+	workspaceapp "github.com/phlin/go-agent/internal/application/workspace"
 	"github.com/phlin/go-agent/internal/config"
 	conversationdomain "github.com/phlin/go-agent/internal/domain/conversation"
+	mediadomain "github.com/phlin/go-agent/internal/domain/media"
 	personadomain "github.com/phlin/go-agent/internal/domain/persona"
 	policydomain "github.com/phlin/go-agent/internal/domain/policy"
 	replydomain "github.com/phlin/go-agent/internal/domain/reply"
 	"github.com/phlin/go-agent/internal/testsupport"
 )
+
+func TestPrepareWorkspaceStagesInboundAttachment(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte("attachment-content"))
+	}))
+	defer server.Close()
+	manager, err := workspaceapp.NewManager(filepath.Join(t.TempDir(), "workspaces"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	runtime := &Runtime{deps: Dependencies{Workspaces: manager}}
+	task, err := runtime.prepareWorkspace(context.Background(), conversationdomain.EventEnvelope{
+		Event: conversationdomain.ConversationEvent{
+			EventID: "event-1",
+			Attachments: []mediadomain.MultimodalAttachment{{
+				AttachmentID: "attachment-1",
+				Kind:         mediadomain.MediaFile,
+				URL:          server.URL + "/input.zip",
+			}},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer manager.Cleanup(task.Workspace)
+	if len(task.InputFiles) != 1 || task.InputFiles[0] != "./input/input.zip" {
+		t.Fatalf("unexpected input files: %#v", task.InputFiles)
+	}
+	content, err := os.ReadFile(filepath.Join(task.Workspace.Root, task.InputFiles[0][2:]))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(content) != "attachment-content" {
+		t.Fatalf("unexpected staged content %q", content)
+	}
+}
 
 // recordingPlanner 记录 Plan 被调用,返回固定回复——测试"消息走到 planner 并被执行",
 // 不依赖确定性 planner 的话术内容。
@@ -37,10 +78,10 @@ func (p *recordingPlanner) Plan(_ context.Context, _ conversationdomain.ContextS
 
 type recordingDeliberator struct{ calls int }
 
-func (d *recordingDeliberator) Deliberate(_ context.Context, input deliberation.Input) (deliberation.Result, error) {
+func (d *recordingDeliberator) Deliberate(_ context.Context, envelope conversationdomain.EventEnvelope) (deliberation.Result, error) {
 	d.calls++
 	return deliberation.Result{
-		Snapshot: conversationdomain.ContextSnapshot{Event: input.Envelope.Event},
+		Snapshot: conversationdomain.ContextSnapshot{Event: envelope.Event},
 		Decision: policydomain.AutonomyDecision{DecisionID: "model-decision", Action: policydomain.ActionReply},
 		Plan:     replydomain.ReplyPlan{Bubbles: []string{"model considered this"}, PlannedActions: []policydomain.DecisionAction{policydomain.ActionReply}, SendMode: "group"},
 	}, nil
@@ -48,9 +89,9 @@ func (d *recordingDeliberator) Deliberate(_ context.Context, input deliberation.
 
 type canonDeliberator struct{}
 
-func (canonDeliberator) Deliberate(_ context.Context, input deliberation.Input) (deliberation.Result, error) {
+func (canonDeliberator) Deliberate(_ context.Context, envelope conversationdomain.EventEnvelope) (deliberation.Result, error) {
 	return deliberation.Result{
-		Snapshot: conversationdomain.ContextSnapshot{Event: input.Envelope.Event},
+		Snapshot: conversationdomain.ContextSnapshot{Event: envelope.Event},
 		Decision: policydomain.AutonomyDecision{DecisionID: "canon-decision", Action: policydomain.ActionReply},
 		Plan: replydomain.ReplyPlan{
 			Bubbles:        []string{"我高中读的是文科。"},
@@ -98,13 +139,17 @@ func (s *secondSendFails) Send(_ context.Context, action replydomain.ActionExecu
 
 type partialCanonDeliberator struct{}
 
-func (partialCanonDeliberator) Deliberate(_ context.Context, input deliberation.Input) (deliberation.Result, error) {
-	result, _ := (canonDeliberator{}).Deliberate(context.Background(), input)
+func (partialCanonDeliberator) Deliberate(_ context.Context, envelope conversationdomain.EventEnvelope) (deliberation.Result, error) {
+	result, _ := (canonDeliberator{}).Deliberate(context.Background(), envelope)
 	result.Plan.Bubbles = []string{"我高中读的是文科。", "这事我记得很清楚。"}
 	return result, nil
 }
 
 type blockingTurnObserver struct{ checks int }
+
+func (*blockingTurnObserver) ObserveInbound(context.Context, conversationdomain.ConversationEvent) error {
+	return nil
+}
 
 func (o *blockingTurnObserver) CanDeliberate(context.Context, int64, time.Time) (bool, error) {
 	o.checks++
@@ -123,6 +168,10 @@ type inboundResetTurnObserver struct {
 type lifecycleTurnObserver struct {
 	afterCalls int
 	afterErr   error
+}
+
+func (*lifecycleTurnObserver) ObserveInbound(context.Context, conversationdomain.ConversationEvent) error {
+	return nil
 }
 
 func (*lifecycleTurnObserver) CanDeliberate(context.Context, int64, time.Time) (bool, error) {
@@ -171,8 +220,7 @@ func TestProcessRawEventUsesCandidateRuntime(t *testing.T) {
 	states := postgresstore.NewStateStore(db)
 	policy := policysvc.New(cfg)
 	normalizer := normalizer.New("onebot", cfg.QQ.SelfID, cfg.Persona.Aliases)
-	eventLog := ingress.NewMemoryEventLog()
-	working := group_actor.NewManager(eventLog)
+	working := group_actor.NewManager()
 	defer working.Close()
 	retriever := retrievalsvc.New(store, store, nil, nil, retrievalsvc.Config{})
 	contextService := contextsvc.New(store, store, states, policy, cfg.Persona, retriever, cfg.Memory.TopK)
@@ -182,7 +230,7 @@ func TestProcessRawEventUsesCandidateRuntime(t *testing.T) {
 	planner := &recordingPlanner{}
 	sender := inmemory.NewSender()
 	executor := action.New(sender, nil, nil, action.WithPresenceObserver(working), action.WithSelfID(cfg.QQ.SelfID))
-	runtime := New(ctx, normalizer, working, deliberation.NewAdapter(contextService, planner), nil, nil, executor, Config{SelfID: cfg.QQ.SelfID})
+	runtime := New(ctx, Dependencies{Normalizer: normalizer, WorkingMemory: working, Deliberator: deliberation.NewAdapter(contextService, planner), Executor: executor}, Config{})
 	defer runtime.Close()
 
 	payload := []byte(`{"post_type":"message","message_type":"group","time":1710000000,"self_id":123456,"group_id":100,"user_id":200,"message_id":"m1","message":[{"type":"text","data":{"text":"hello?"}}]}`)
@@ -200,10 +248,9 @@ func TestProcessRawEventUsesCandidateRuntime(t *testing.T) {
 
 func TestProcessRawEventIgnoresMetaAndInvalidGroups(t *testing.T) {
 	ctx := context.Background()
-	working := group_actor.NewManager(ingress.NewMemoryEventLog())
+	working := group_actor.NewManager()
 	defer working.Close()
-	runtime := New(ctx, normalizer.New("onebot", 123456, nil), working, nil, nil, nil,
-		action.New(inmemory.NewSender(), nil, nil), Config{SelfID: 123456})
+	runtime := New(ctx, Dependencies{Normalizer: normalizer.New("onebot", 123456, nil), WorkingMemory: working, Executor: action.New(inmemory.NewSender(), nil, nil)}, Config{})
 	defer runtime.Close()
 
 	tests := []struct {
@@ -239,12 +286,11 @@ func TestRateLimitAppliesBeforeModelDeliberation(t *testing.T) {
 	ctx := context.Background()
 	cfg := config.Default()
 	cfg.QQ.SelfID = 123456
-	working := group_actor.NewManager(ingress.NewMemoryEventLog())
+	working := group_actor.NewManager()
 	defer working.Close()
 	planner := &recordingDeliberator{}
 	turns := &blockingTurnObserver{}
-	runtime := New(ctx, normalizer.New("onebot", cfg.QQ.SelfID, cfg.Persona.Aliases), working, planner, nil, turns,
-		action.New(inmemory.NewSender(), nil, nil), Config{SelfID: cfg.QQ.SelfID})
+	runtime := New(ctx, Dependencies{Normalizer: normalizer.New("onebot", cfg.QQ.SelfID, cfg.Persona.Aliases), WorkingMemory: working, Deliberator: planner, Turns: turns, Executor: action.New(inmemory.NewSender(), nil, nil)}, Config{})
 	defer runtime.Close()
 
 	payload := []byte(`{"post_type":"message","message_type":"group","time":1710000000,"self_id":123456,"group_id":100,"user_id":200,"message_id":"m-rate","message":[{"type":"at","data":{"qq":"123456"}},{"type":"text","data":{"text":"帮我看看"}}]}`)
@@ -258,16 +304,19 @@ func TestRateLimitAppliesBeforeModelDeliberation(t *testing.T) {
 	if outcome.Decision.Action != policydomain.ActionSilent || outcome.Receipt.Sent {
 		t.Fatalf("rate limit did not suppress only output: %+v", outcome)
 	}
+	memory, err := working.Snapshot(ctx, 100)
+	if err != nil || len(memory.RecentTail) != 1 || memory.RecentTail[0].Event.MessageID != "m-rate" {
+		t.Fatalf("turn gate lost the inbound fact: memory=%+v err=%v", memory, err)
+	}
 }
 
 func TestInboundMessageResetsConsecutiveTurnGate(t *testing.T) {
 	ctx := context.Background()
-	working := group_actor.NewManager(ingress.NewMemoryEventLog())
+	working := group_actor.NewManager()
 	defer working.Close()
 	planner := &recordingDeliberator{}
 	turns := &inboundResetTurnObserver{}
-	runtime := New(ctx, normalizer.New("onebot", 123456, nil), working, planner, nil, turns,
-		action.New(inmemory.NewSender(), nil, nil), Config{SelfID: 123456})
+	runtime := New(ctx, Dependencies{Normalizer: normalizer.New("onebot", 123456, nil), WorkingMemory: working, Deliberator: planner, Turns: turns, Executor: action.New(inmemory.NewSender(), nil, nil)}, Config{})
 	defer runtime.Close()
 
 	payload := []byte(`{"post_type":"message","message_type":"group","time":1710000000,"self_id":123456,"group_id":100,"user_id":200,"message_id":"m-reset","message":[{"type":"at","data":{"qq":"123456"}},{"type":"text","data":{"text":"帮我看看"}}]}`)
@@ -275,7 +324,7 @@ func TestInboundMessageResetsConsecutiveTurnGate(t *testing.T) {
 	if err != nil {
 		t.Fatalf("process raw event: %v", err)
 	}
-	if !turns.reset || turns.checks != 2 {
+	if !turns.reset || turns.checks != 1 {
 		t.Fatalf("inbound reset hook was not applied: %+v", turns)
 	}
 	if !outcome.Receipt.Sent || outcome.Decision.Action != policydomain.ActionReply {
@@ -295,13 +344,12 @@ func TestPersonaCanonPersistsOnlyAfterSuccessfulSend(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			ctx := context.Background()
-			working := group_actor.NewManager(ingress.NewMemoryEventLog())
+			working := group_actor.NewManager()
 			defer working.Close()
 			store := &runtimeCanonStore{}
-			runtime := New(ctx, normalizer.New("onebot", 123456, nil), working, canonDeliberator{}, nil, nil,
-				action.New(test.sender, nil, nil), Config{SelfID: 123456})
+			runtime := New(ctx, Dependencies{Normalizer: normalizer.New("onebot", 123456, nil), WorkingMemory: working, Deliberator: canonDeliberator{}, Executor: action.New(test.sender, nil, nil)}, Config{})
 			defer runtime.Close()
-			runtime.SetCanonService(personasvc.NewCanonService(store, runtimeCanonDefinition(t), nil))
+			runtime.deps.Canon = personasvc.NewCanonService(store, runtimeCanonDefinition(t), nil)
 
 			payload := []byte(`{"post_type":"message","message_type":"group","time":1710000000,"self_id":123456,"group_id":100,"user_id":200,"message_id":"m-canon","message":[{"type":"text","data":{"text":"你高中学什么？"}}]}`)
 			_, err := runtime.ProcessRawEvent(ctx, payload)
@@ -317,13 +365,12 @@ func TestPersonaCanonPersistsOnlyAfterSuccessfulSend(t *testing.T) {
 
 func TestPersonaCanonUsesSuccessfullyDeliveredPartialText(t *testing.T) {
 	ctx := context.Background()
-	working := group_actor.NewManager(ingress.NewMemoryEventLog())
+	working := group_actor.NewManager()
 	defer working.Close()
 	store := &runtimeCanonStore{}
-	runtime := New(ctx, normalizer.New("onebot", 123456, nil), working, partialCanonDeliberator{}, nil, nil,
-		action.New(&secondSendFails{}, nil, nil), Config{SelfID: 123456})
+	runtime := New(ctx, Dependencies{Normalizer: normalizer.New("onebot", 123456, nil), WorkingMemory: working, Deliberator: partialCanonDeliberator{}, Executor: action.New(&secondSendFails{}, nil, nil)}, Config{})
 	defer runtime.Close()
-	runtime.SetCanonService(personasvc.NewCanonService(store, runtimeCanonDefinition(t), nil))
+	runtime.deps.Canon = personasvc.NewCanonService(store, runtimeCanonDefinition(t), nil)
 
 	payload := []byte(`{"post_type":"message","message_type":"group","time":1710000000,"self_id":123456,"group_id":100,"user_id":200,"message_id":"m-partial","message":[{"type":"text","data":{"text":"你高中学什么？"}}]}`)
 	outcome, err := runtime.ProcessRawEvent(ctx, payload)
@@ -340,14 +387,13 @@ func TestPersonaCanonUsesSuccessfullyDeliveredPartialText(t *testing.T) {
 
 func TestPostSendFeedbackFailureDoesNotSkipTurnObserver(t *testing.T) {
 	ctx := context.Background()
-	working := group_actor.NewManager(ingress.NewMemoryEventLog())
+	working := group_actor.NewManager()
 	defer working.Close()
 	turns := &lifecycleTurnObserver{}
 	feedback := &lifecycleFeedbackObserver{sentErr: errors.New("feedback unavailable")}
-	runtime := New(ctx, normalizer.New("onebot", 123456, nil), working, &recordingDeliberator{}, nil, turns,
-		action.New(inmemory.NewSender(), nil, nil), Config{SelfID: 123456})
+	runtime := New(ctx, Dependencies{Normalizer: normalizer.New("onebot", 123456, nil), WorkingMemory: working, Deliberator: &recordingDeliberator{}, Turns: turns, Executor: action.New(inmemory.NewSender(), nil, nil)}, Config{})
 	defer runtime.Close()
-	runtime.SetFeedbackObserver(feedback)
+	runtime.deps.Feedback = feedback
 
 	payload := []byte(`{"post_type":"message","message_type":"group","time":1710000000,"self_id":123456,"group_id":100,"user_id":200,"message_id":"m-feedback-fail","message":[{"type":"text","data":{"text":"hello"}}]}`)
 	outcome, err := runtime.ProcessRawEvent(ctx, payload)
@@ -361,15 +407,14 @@ func TestPostSendFeedbackFailureDoesNotSkipTurnObserver(t *testing.T) {
 
 func TestPostSendCanonFailureDoesNotSkipTurnObserver(t *testing.T) {
 	ctx := context.Background()
-	working := group_actor.NewManager(ingress.NewMemoryEventLog())
+	working := group_actor.NewManager()
 	defer working.Close()
 	turns := &lifecycleTurnObserver{}
 	canonErr := errors.New("canon unavailable")
 	store := &runtimeCanonStore{appendErr: canonErr}
-	runtime := New(ctx, normalizer.New("onebot", 123456, nil), working, canonDeliberator{}, nil, turns,
-		action.New(inmemory.NewSender(), nil, nil), Config{SelfID: 123456})
+	runtime := New(ctx, Dependencies{Normalizer: normalizer.New("onebot", 123456, nil), WorkingMemory: working, Deliberator: canonDeliberator{}, Turns: turns, Executor: action.New(inmemory.NewSender(), nil, nil)}, Config{})
 	defer runtime.Close()
-	runtime.SetCanonService(personasvc.NewCanonService(store, runtimeCanonDefinition(t), nil))
+	runtime.deps.Canon = personasvc.NewCanonService(store, runtimeCanonDefinition(t), nil)
 
 	payload := []byte(`{"post_type":"message","message_type":"group","time":1710000000,"self_id":123456,"group_id":100,"user_id":200,"message_id":"m-canon-fail","message":[{"type":"text","data":{"text":"你高中学什么？"}}]}`)
 	outcome, err := runtime.ProcessRawEvent(ctx, payload)

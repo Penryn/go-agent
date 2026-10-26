@@ -486,8 +486,8 @@ func upsertMemoryExec(ctx context.Context, execer sqlExecer, record memorydomain
 		INSERT INTO memories (
 			memory_id, scope, type, subject, content, source_event_id, source_event_ids_json,
 			source_session_id, origin, supersedes_memory_id, descriptor_ref,
-			confidence, importance, revision, created_at, expires_at, updated_at
-		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)
+			confidence, importance, revision, created_at, expires_at, updated_at, predicate, normalized_value, qualifier
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20)
 		ON CONFLICT (memory_id) DO UPDATE SET
 			scope = EXCLUDED.scope,
 			type = EXCLUDED.type,
@@ -503,10 +503,14 @@ func upsertMemoryExec(ctx context.Context, execer sqlExecer, record memorydomain
 			importance = EXCLUDED.importance,
 			revision = EXCLUDED.revision,
 			expires_at = EXCLUDED.expires_at,
+			predicate = EXCLUDED.predicate,
+			normalized_value = EXCLUDED.normalized_value,
+			qualifier = EXCLUDED.qualifier,
 			updated_at = EXCLUDED.updated_at
 	`, record.MemoryID, record.Scope, record.Type, record.Subject, record.Content, record.SourceEventID, eventIDs,
 		record.SourceSessionID, record.Origin, record.SupersedesMemoryID, record.DescriptorRef,
-		record.Confidence, record.Importance, revision, createdAt, nullableTime(record.ExpiresAt), now)
+		record.Confidence, record.Importance, revision, createdAt, nullableTime(record.ExpiresAt), now,
+		record.Predicate, record.NormalizedValue, record.Qualifier)
 	return err
 }
 
@@ -557,7 +561,7 @@ func (s *Store) QueryMemories(ctx context.Context, query ports.MemoryQuery) ([]m
 	base := `
 		SELECT memory_id, scope, type, subject, content, source_event_id, source_event_ids_json,
 		       source_session_id, origin, supersedes_memory_id, descriptor_ref,
-		       confidence, importance, revision, created_at, expires_at, recall_count, last_recalled_at
+		       confidence, importance, revision, created_at, expires_at, recall_count, last_recalled_at, predicate, normalized_value, qualifier
 		FROM memories
 		WHERE 1=1
 	`
@@ -635,6 +639,9 @@ func (s *Store) QueryMemories(ctx context.Context, query ports.MemoryQuery) ([]m
 			&expiresAt,
 			&record.RecallCount,
 			&lastRecalledAt,
+			&record.Predicate,
+			&record.NormalizedValue,
+			&record.Qualifier,
 		); err != nil {
 			return nil, err
 		}

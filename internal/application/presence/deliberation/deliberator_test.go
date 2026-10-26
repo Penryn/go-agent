@@ -56,10 +56,10 @@ func TestAdapterResolvesPlannedActionBeforeExecution(t *testing.T) {
 				PlannedActions: []policydomain.DecisionAction{test.planned},
 				SendMode:       "group",
 			}})
-			result, err := adapter.Deliberate(context.Background(), Input{Envelope: conversationdomain.EventEnvelope{
+			result, err := adapter.Deliberate(context.Background(), conversationdomain.EventEnvelope{
 				TraceID: "trace",
 				Event:   test.event,
-			}})
+			})
 			if err != nil {
 				t.Fatalf("Deliberate: %v", err)
 			}

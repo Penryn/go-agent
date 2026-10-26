@@ -16,6 +16,7 @@ import (
 type storeBundle struct {
 	db            *sql.DB
 	memory        ports.MemoryStore
+	constraints   ports.MemoryConstraintStore
 	meme          ports.MemeStore
 	profile       ports.ProfileStore
 	state         ports.RuntimeStateStore
@@ -41,6 +42,7 @@ func newStoreBundle(ctx context.Context, cfg config.Config) (*storeBundle, error
 
 	persistentStore := postgresstore.NewStore(db)
 	bundle.memory = persistentStore
+	bundle.constraints = persistentStore
 	bundle.learning = persistentStore
 	bundle.meme = persistentStore
 	bundle.profile = persistentStore

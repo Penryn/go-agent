@@ -17,6 +17,15 @@ import (
 )
 
 func main() {
+	if err := run(); err != nil {
+		slog.Error("qqbotd stopped", "error", err)
+		os.Exit(1)
+	}
+}
+
+// run owns process resources. Returning errors here lets every cleanup run
+// before main chooses an exit code.
+func run() error {
 	// 启动阶段先用 TextHandler，加载配置后按 mode 重新初始化。
 	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelDebug})))
 
@@ -28,8 +37,7 @@ func main() {
 
 	cfg, err := config.Load(*configPath)
 	if err != nil {
-		slog.Error("load config", "error", err)
-		os.Exit(1)
+		return fmt.Errorf("load config: %w", err)
 	}
 
 	// 按运行模式重新设置 handler：prod 输出 JSON，dev 输出易读 text。
@@ -46,8 +54,7 @@ func main() {
 
 	application, err := app.New(ctx, cfg)
 	if err != nil {
-		slog.Error("bootstrap app", "error", err)
-		os.Exit(1)
+		return fmt.Errorf("bootstrap app: %w", err)
 	}
 	defer func() {
 		if err := application.Close(); err != nil {
@@ -58,30 +65,27 @@ func main() {
 	if *onceEvent != "" {
 		payload, err := os.ReadFile(*onceEvent)
 		if err != nil {
-			slog.Error("read once-event payload", "error", err)
-			os.Exit(1)
+			return fmt.Errorf("read once-event payload: %w", err)
 		}
 
 		result, err := application.ProcessRawEvent(ctx, payload)
 		if err != nil {
-			slog.Error("process once-event payload", "error", err)
-			os.Exit(1)
+			return fmt.Errorf("process once-event payload: %w", err)
 		}
 
 		data, err := json.MarshalIndent(result, "", "  ")
 		if err != nil {
-			slog.Error("marshal once-event result", "error", err)
-			os.Exit(1)
+			return fmt.Errorf("marshal once-event result: %w", err)
 		}
 
 		fmt.Println(string(data))
-		return
+		return nil
 	}
 
 	if err := application.Run(ctx); err != nil && !errors.Is(err, context.Canceled) {
-		slog.Error("run app", "error", err)
-		os.Exit(1)
+		return fmt.Errorf("run app: %w", err)
 	}
+	return nil
 }
 
 func parseLogLevel(s string) slog.Level {

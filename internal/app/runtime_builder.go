@@ -6,10 +6,10 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"os"
+	"path/filepath"
 	"strings"
 	"time"
-
-	"github.com/jmoiron/sqlx"
 
 	"github.com/phlin/go-agent/internal/adapters/inmemory"
 	modeladapter "github.com/phlin/go-agent/internal/adapters/model"
@@ -31,7 +31,6 @@ import (
 	presencedeliberation "github.com/phlin/go-agent/internal/application/presence/deliberation"
 	presencefeedback "github.com/phlin/go-agent/internal/application/presence/feedback"
 	presenceactor "github.com/phlin/go-agent/internal/application/presence/group_actor"
-	presenceingress "github.com/phlin/go-agent/internal/application/presence/ingress"
 	presenceperception "github.com/phlin/go-agent/internal/application/presence/perception"
 	presencereflection "github.com/phlin/go-agent/internal/application/presence/reflection"
 	profilesvc "github.com/phlin/go-agent/internal/application/profile"
@@ -43,6 +42,7 @@ import (
 	scenesvc "github.com/phlin/go-agent/internal/application/scene"
 	textutil "github.com/phlin/go-agent/internal/application/textutil"
 	toolsvc "github.com/phlin/go-agent/internal/application/tools"
+	workspaceapp "github.com/phlin/go-agent/internal/application/workspace"
 	"github.com/phlin/go-agent/internal/config"
 	memorydomain "github.com/phlin/go-agent/internal/domain/memory"
 	personadomain "github.com/phlin/go-agent/internal/domain/persona"
@@ -50,7 +50,7 @@ import (
 )
 
 type runtimeGraph struct {
-	humanRuntime      *presenceruntime.Runtime
+	presenceRuntime   *presenceruntime.Runtime
 	sched             *scheduler.Scheduler
 	mcpManager        *toolsvc.MCPManager
 	modelFactory      *modeladapter.Factory
@@ -70,27 +70,32 @@ func buildRuntimeGraph(ctx context.Context, cfg config.Config, stores *storeBund
 		durableOutbox   *outboxruntime.Runtime
 		mcpTools        *toolsvc.MCPTools
 		mcpManager      *toolsvc.MCPManager
-		humanRuntime    *presenceruntime.Runtime
+		presenceRuntime *presenceruntime.Runtime
 	)
-	defer func() {
-		if buildErr == nil {
-			return
-		}
-		if mcpManager != nil {
-			_ = mcpManager.Close()
-		} else if mcpTools != nil {
-			_ = mcpTools.Close()
+	// Stop producers before the services they use. The same ownership order
+	// applies to incomplete construction and normal shutdown.
+	cleanup := func() error {
+		var errs []error
+		if presenceRuntime != nil {
+			errs = append(errs, presenceRuntime.Close())
 		}
 		if durableOutbox != nil {
-			_ = durableOutbox.Close()
-		}
-		if humanRuntime != nil {
-			_ = humanRuntime.Close()
+			errs = append(errs, durableOutbox.Close())
 		}
 		if presenceManager != nil {
-			_ = presenceManager.Close()
+			errs = append(errs, presenceManager.Close())
 		}
-		_ = stores.Close()
+		if mcpManager != nil {
+			errs = append(errs, mcpManager.Close())
+		} else if mcpTools != nil {
+			errs = append(errs, mcpTools.Close())
+		}
+		return errors.Join(append(errs, stores.Close())...)
+	}
+	defer func() {
+		if buildErr != nil {
+			buildErr = errors.Join(buildErr, cleanup())
+		}
 	}()
 
 	runtimeMCPServers, err := loadRuntimeMCPConfig(ctx, stores.db, cfg.Tools.MCPServers)
@@ -125,17 +130,12 @@ func buildRuntimeGraph(ctx context.Context, cfg config.Config, stores *storeBund
 		MemeThreshold:    cfg.Meme.SemanticThreshold,
 	})
 
-	// 配置 Composer 的 LLM 和 MemoryRetriever
-	composer.WithLLM(&llmAdapter{factory: modelFactory}).
-		WithMemoryRetriever(&memoryRetrieverAdapter{retrieval: hybridRetrieval})
-
 	contextService := contextsvc.New(stores.memory, stores.profile, stores.state, policyService, cfg.Persona, hybridRetrieval, cfg.Memory.TopK)
 	contextService.WithPersonaFactStore(stores.personaFacts)
 	contextService.WithRelationshipStore(stores.relationships)
 	contextService.WithSceneStore(stores.scenes)
 	relationshipService := relationshipsvc.New(stores.relationships, cfg.Persona.ID)
 	sceneService := scenesvc.New(stores.scenes)
-	eventLog := presenceingress.NewMemoryEventLog()
 
 	actorOptions := []presenceactor.Option{
 		presenceactor.WithArchive(stores.memory),
@@ -144,7 +144,7 @@ func buildRuntimeGraph(ctx context.Context, cfg config.Config, stores *storeBund
 	if stateStore, ok := stores.memory.(presenceactor.WorkingMemoryStore); ok {
 		actorOptions = append(actorOptions, presenceactor.WithStateStore(stateStore))
 	}
-	presenceManager = presenceactor.NewManager(eventLog, actorOptions...)
+	presenceManager = presenceactor.NewManager(actorOptions...)
 	contextService.WithWorkingMemory(presenceManager)
 	durableOutbox = outboxruntime.New(context.WithoutCancel(ctx), stores.outbox, outboxruntime.Config{
 		WorkerCount: cfg.Runtime.WorkerCount,
@@ -187,8 +187,7 @@ func buildRuntimeGraph(ctx context.Context, cfg config.Config, stores *storeBund
 		memOpts = append(memOpts, memsvc.WithAtomicProjectionStore(atomicStore))
 	}
 	memorySvc := memsvc.New(stores.memory, memOpts...)
-	constraintMemorySvc := memsvc.NewService(postgresstore.NewMemoryStore(sqlx.NewDb(stores.db, "pgx")))
-	composer.WithConstraintIntegration(promptingsvc.NewMemoryConstraintIntegration(constraintMemorySvc))
+	contextService.WithConstraints(stores.constraints)
 	if err := durableOutbox.Register("memory_vector_index", func(jobCtx context.Context, payload []byte) error {
 		var record memorydomain.MemoryRecord
 		if err := json.Unmarshal(payload, &record); err != nil {
@@ -284,32 +283,44 @@ func buildRuntimeGraph(ctx context.Context, cfg config.Config, stores *storeBund
 	turnObserver := presencereflection.New(stores.state, moodSvc, time.Duration(cfg.Autonomy.MinReplyIntervalSec)*time.Second, policyService)
 	turnObserver.SetRelationshipService(relationshipService)
 
-	humanRuntime = presenceruntime.New(ctx, normalizer, presenceManager, deliberator, perceptionPipeline, turnObserver, executor, presenceruntime.Config{
-		GroupWhitelist: cfg.QQ.GroupWhitelist,
-		SelfID:         cfg.QQ.SelfID,
-	})
-	humanRuntime.SetConfirmationObserver(writeApprovals)
-	humanRuntime.SetCanonService(canonService)
-	humanRuntime.SetFeedbackObserver(presencefeedback.NewLifecycleObserver(presenceManager, relationshipService))
-	if usageSink, ok := stores.memory.(modelusage.Sink); ok {
-		humanRuntime.SetModelUsageSink(usageSink)
+	var workspaceManager *workspaceapp.Manager
+	if cfg.Tools.Codex.Enabled {
+		workspaceRoot := cfg.Tools.Codex.WorkspaceRoot
+		if strings.TrimSpace(workspaceRoot) == "" {
+			workspaceRoot = filepath.Join(os.TempDir(), "qqbot-codex-workspaces")
+		}
+		workspaceManager, err = workspaceapp.NewManager(workspaceRoot)
+		if err != nil {
+			return nil, fmt.Errorf("create Codex workspace manager: %w", err)
+		}
 	}
-	if thoughtStore, ok := stores.memory.(ports.ThoughtStore); ok {
-		humanRuntime.SetThoughtStore(thoughtStore)
-	}
-	if thoughtStore, ok := stores.memory.(ports.ThoughtStore); ok {
-		contextService.WithThoughtStore(thoughtStore)
-	}
+	profileService := profilesvc.New(stores.profile, cfg.QQ.SelfID)
+	usageSink, _ := stores.memory.(modelusage.Sink)
+	thoughtStore, _ := stores.memory.(ports.ThoughtStore)
+	contextService.WithThoughtStore(thoughtStore)
+	presenceRuntime = presenceruntime.New(ctx, presenceruntime.Dependencies{
+		Normalizer:    normalizer,
+		WorkingMemory: presenceManager,
+		Deliberator:   deliberator,
+		Perception:    perceptionPipeline,
+		Turns:         turnObserver,
+		Executor:      executor,
+		Confirmations: writeApprovals,
+		Workspaces:    workspaceManager,
+		Canon:         canonService,
+		Feedback:      presencefeedback.NewLifecycleObserver(presenceManager, relationshipService),
+		ModelUsage:    usageSink,
+		Thoughts:      thoughtStore,
+		EventObservers: []presenceruntime.EventObserverFunc{
+			profileService.ObserveEvent,
+			sceneService.ObserveEvent,
+			relationshipService.ObserveInbound,
+		},
+	}, presenceruntime.Config{GroupWhitelist: cfg.QQ.GroupWhitelist})
 
-	// Scheduler：注册所有定时任务
 	sched := scheduler.New()
 	moodSvc.RegisterJobs(sched, cfg.QQ.GroupWhitelist)
-
-	// learning service：接入运行时，每 6 小时对白名单群跑一次增量学习
-	profileService := profilesvc.New(stores.profile, cfg.QQ.SelfID)
-	humanRuntime.AddEventObserver(profileService.ObserveEvent)
-	humanRuntime.AddEventObserver(sceneService.ObserveEvent)
-	humanRuntime.AddEventObserver(relationshipService.ObserveInbound)
+	// Incremental learning is an asynchronous group-friend capability.
 	learningSvc, learnErr := learningsvc.New(ctx, stores.memory, stores.learning, memorySvc,
 		learningsvc.WithOutbox(durableOutbox), learningsvc.WithLLM(&llmAdapter{factory: modelFactory}))
 	if learnErr != nil {
@@ -334,7 +345,7 @@ func buildRuntimeGraph(ctx context.Context, cfg config.Config, stores *storeBund
 		sched.Register("observability-retention", 24*time.Hour, prune)
 	}
 	graph = &runtimeGraph{
-		humanRuntime:      humanRuntime,
+		presenceRuntime:   presenceRuntime,
 		sched:             sched,
 		mcpManager:        mcpManager,
 		modelFactory:      modelFactory,
@@ -342,9 +353,7 @@ func buildRuntimeGraph(ctx context.Context, cfg config.Config, stores *storeBund
 		mainModelReady:    strings.TrimSpace(cfg.Models.Main.APIKey) != "" && strings.TrimSpace(cfg.Models.Main.Model) != "",
 		vectorSearchReady: vectorGraph.memory != nil,
 		healthCheck:       stores.HealthCheck,
-		cleanup: func() error {
-			return errors.Join(durableOutbox.Close(), humanRuntime.Close(), presenceManager.Close(), mcpManager.Close(), stores.Close())
-		},
+		cleanup:           cleanup,
 	}
 	return graph, nil
 }

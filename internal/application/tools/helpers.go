@@ -8,7 +8,7 @@ import (
 // 终端工具会结束 agent 循环并产生最终的 ReplyPlan
 func isTerminalTool(name string) bool {
 	switch name {
-	case "speak_text", "stay_silent", "react_emoji", "send_meme", "quote_reply", "repair_message", "poke_member":
+	case "speak_text", "stay_silent", "react_emoji", "send_meme", "quote_reply", "send_file", "repair_message", "poke_member":
 		return true
 	}
 	return false

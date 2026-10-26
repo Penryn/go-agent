@@ -12,6 +12,8 @@ import (
 	"github.com/cloudwego/eino/schema"
 
 	"github.com/phlin/go-agent/internal/application/textutil"
+	workspaceapp "github.com/phlin/go-agent/internal/application/workspace"
+	replydomain "github.com/phlin/go-agent/internal/domain/reply"
 )
 
 // speak_text 工具 - 发送文本消息
@@ -26,10 +28,10 @@ func (t *speakTextTool) Info(_ context.Context) (*schema.ToolInfo, error) {
 		Name: "speak_text",
 		Desc: "Send a text message in the current group chat",
 		ParamsOneOf: schema.NewParamsOneOfByParams(map[string]*schema.ParameterInfo{
-			"text":               {Type: "string", Desc: "The message text to send", Required: true},
-			"bubbles":            {Type: "array", Desc: "Split message into multiple bubbles for readability"},
+			"text":                {Type: "string", Desc: "The message text to send", Required: true},
+			"bubbles":             {Type: "array", Desc: "Split message into multiple bubbles for readability"},
 			"reply_to_message_id": {Type: "string", Desc: "ID of message to reply to (optional)"},
-			"self_facts":         {Type: "array", Desc: "Facts about yourself you want remembered (optional)"},
+			"self_facts":          {Type: "array", Desc: "Facts about yourself you want remembered (optional)"},
 		}),
 	}, nil
 }
@@ -142,6 +144,59 @@ func (t *quoteReplyTool) Info(_ context.Context) (*schema.ToolInfo, error) {
 			"self_facts":          {Type: "array", Desc: "Facts to remember"},
 		}),
 	}, nil
+}
+
+// send_file sends a file produced in the current Codex workspace. The tool
+// accepts an output-relative artifact name, never an arbitrary host path.
+type sendFileTool struct {
+	session replydomain.ToolContext
+}
+
+type sendFileArgs struct {
+	ArtifactName string `json:"artifact_name"`
+	Caption      string `json:"caption"`
+}
+
+func newSendFileTool(session replydomain.ToolContext) *sendFileTool {
+	return &sendFileTool{session: session}
+}
+
+func (t *sendFileTool) Name() string { return "send_file" }
+
+func (t *sendFileTool) Info(_ context.Context) (*schema.ToolInfo, error) {
+	return &schema.ToolInfo{
+		Name: t.Name(),
+		Desc: "Send a file produced in the current local Codex workspace. Use the exact output-relative artifact name returned by delegate_codex_task; do not provide an arbitrary host path.",
+		ParamsOneOf: schema.NewParamsOneOfByParams(map[string]*schema.ParameterInfo{
+			"artifact_name": {Type: schema.String, Required: true, Desc: "Exact artifact name under the workspace output directory."},
+			"caption":       {Type: schema.String, Required: true, Desc: "Short message sent with the file."},
+		}),
+	}, nil
+}
+
+func (t *sendFileTool) InvokableRun(ctx context.Context, argumentsInJSON string, _ ...tool.Option) (string, error) {
+	var args sendFileArgs
+	if err := json.Unmarshal([]byte(argumentsInJSON), &args); err != nil {
+		return "", fmt.Errorf("decode send_file args: %w", err)
+	}
+	if strings.TrimSpace(args.ArtifactName) == "" || strings.TrimSpace(args.Caption) == "" {
+		return "", errors.New("artifact_name and caption are required")
+	}
+	task, ok := workspaceapp.TaskFromContext(ctx)
+	if !ok || task.Manager == nil {
+		return "", errors.New("no local Codex workspace is active")
+	}
+	artifacts, err := task.Manager.CollectOutputs(ctx, task.Workspace)
+	if err != nil {
+		return "", fmt.Errorf("collect workspace outputs: %w", err)
+	}
+	for _, artifact := range artifacts {
+		if artifact.Name != args.ArtifactName {
+			continue
+		}
+		return marshal(sendFileResult{Tool: t.Name(), ArtifactName: artifact.Name, ArtifactPath: artifact.Path, Caption: strings.TrimSpace(args.Caption)})
+	}
+	return "", fmt.Errorf("workspace artifact %q not found", args.ArtifactName)
 }
 
 func (t *quoteReplyTool) InvokableRun(_ context.Context, argumentsInJSON string, _ ...tool.Option) (string, error) {

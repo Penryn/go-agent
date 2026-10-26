@@ -241,6 +241,9 @@ func (r *Runtime) replyTools(session replydomain.ToolContext) []namedTool {
 		newSendMemeTool(r.memeStore),
 		newQuoteReplyTool(),
 	}
+	if session.LocalWorkspace {
+		result = append(result, newSendFileTool(session))
+	}
 	if len(session.RecallableMessageIDs) > 0 {
 		result = append(result, newRepairMessageTool(session))
 	}

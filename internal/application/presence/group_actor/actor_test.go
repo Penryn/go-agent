@@ -6,7 +6,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/phlin/go-agent/internal/application/presence/ingress"
 	conversationdomain "github.com/phlin/go-agent/internal/domain/conversation"
 	presencedomain "github.com/phlin/go-agent/internal/domain/presence"
 )
@@ -30,7 +29,7 @@ func (s *workingMemoryStoreStub) SaveWorkingMemory(_ context.Context, memory pre
 
 func TestObserveDoesNotAdvanceActorWhenPersistenceFails(t *testing.T) {
 	store := &workingMemoryStoreStub{memory: presencedomain.GroupWorkingMemory{GroupID: 1}, saveErr: errors.New("store unavailable")}
-	manager := NewManager(ingress.NewMemoryEventLog(), WithStateStore(store))
+	manager := NewManager(WithStateStore(store))
 	defer manager.Close()
 	record := testEventRecord("event-1")
 
@@ -55,9 +54,21 @@ func TestObserveDoesNotAdvanceActorWhenPersistenceFails(t *testing.T) {
 	}
 }
 
+func TestObserveDeduplicatesWithinBoundedActorState(t *testing.T) {
+	manager := NewManager()
+	defer manager.Close()
+	record := testEventRecord("duplicate")
+	for range 2 {
+		memory, err := manager.Observe(context.Background(), record)
+		if err != nil || memory.Version != 1 || len(memory.RecentTail) != 1 {
+			t.Fatalf("duplicate advanced working memory: %+v err=%v", memory, err)
+		}
+	}
+}
+
 func TestUpdateRollsBackWhenPersistenceFails(t *testing.T) {
 	store := &workingMemoryStoreStub{memory: presencedomain.GroupWorkingMemory{GroupID: 1, ActiveTopic: "old"}, saveErr: errors.New("store unavailable")}
-	manager := NewManager(ingress.NewMemoryEventLog(), WithStateStore(store))
+	manager := NewManager(WithStateStore(store))
 	defer manager.Close()
 
 	err := manager.Update(context.Background(), 1, func(memory *presencedomain.GroupWorkingMemory) error {

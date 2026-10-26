@@ -12,15 +12,8 @@ import (
 	conversationdomain "github.com/phlin/go-agent/internal/domain/conversation"
 	mediadomain "github.com/phlin/go-agent/internal/domain/media"
 	policydomain "github.com/phlin/go-agent/internal/domain/policy"
-	presencedomain "github.com/phlin/go-agent/internal/domain/presence"
 	replydomain "github.com/phlin/go-agent/internal/domain/reply"
 )
-
-type Input struct {
-	Envelope        conversationdomain.EventEnvelope
-	Memory          presencedomain.GroupWorkingMemory
-	PersonaFeedback []string
-}
 
 type Result struct {
 	Snapshot conversationdomain.ContextSnapshot
@@ -30,7 +23,7 @@ type Result struct {
 }
 
 type Deliberator interface {
-	Deliberate(context.Context, Input) (Result, error)
+	Deliberate(context.Context, conversationdomain.EventEnvelope) (Result, error)
 }
 
 // Planner is the existing model-planning leaf contract. It stays behind this
@@ -54,13 +47,12 @@ func NewAdapter(contextService SnapshotBuilder, planner Planner) *Adapter {
 	return &Adapter{context: contextService, planner: planner}
 }
 
-func (a *Adapter) Deliberate(ctx context.Context, input Input) (Result, error) {
-	snapshot, err := a.context.BuildSnapshot(ctx, input.Envelope, nil)
+func (a *Adapter) Deliberate(ctx context.Context, envelope conversationdomain.EventEnvelope) (Result, error) {
+	snapshot, err := a.context.BuildSnapshot(ctx, envelope, nil)
 	if err != nil {
 		return Result{}, err
 	}
-	snapshot.PersonaFeedback = append([]string(nil), input.PersonaFeedback...)
-	decision := decisionFor(input.Envelope)
+	decision := decisionFor(envelope)
 	if reason := admissionReason(snapshot); reason != "" {
 		decision.Action = policydomain.ActionSilent
 		decision.Score = 0
@@ -77,8 +69,8 @@ func (a *Adapter) Deliberate(ctx context.Context, input Input) (Result, error) {
 			Plan:     plan,
 			Thought: replydomain.ThoughtRecord{
 				ThoughtID:      decision.DecisionID + "-thought",
-				GroupID:        input.Envelope.Event.GroupID,
-				EventID:        input.Envelope.Event.EventID,
+				GroupID:        envelope.Event.GroupID,
+				EventID:        envelope.Event.EventID,
 				Interpretation: "admission_gate_blocked",
 				Evidence:       append([]string(nil), decision.ReasonCodes...),
 				Uncertainty:    0.05,
@@ -104,8 +96,8 @@ func (a *Adapter) Deliberate(ctx context.Context, input Input) (Result, error) {
 		Thought: replydomain.ThoughtRecord{
 			ThoughtID:      decision.DecisionID + "-thought",
 			CandidateID:    "",
-			GroupID:        input.Envelope.Event.GroupID,
-			EventID:        input.Envelope.Event.EventID,
+			GroupID:        envelope.Event.GroupID,
+			EventID:        envelope.Event.EventID,
 			Interpretation: "planner_action_resolved",
 			Evidence:       append([]string(nil), decision.ReasonCodes...),
 			Uncertainty:    0,

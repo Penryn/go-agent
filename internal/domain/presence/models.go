@@ -23,7 +23,6 @@ type EventRecord struct {
 	GroupID    int64                                `json:"group_id"`
 	UserID     int64                                `json:"user_id"`
 	Origin     EventOrigin                          `json:"origin"`
-	Sequence   uint64                               `json:"sequence"`
 	Timestamp  time.Time                            `json:"timestamp"`
 	Event      conversationdomain.ConversationEvent `json:"event"`
 	RawPayload []byte                               `json:"raw_payload,omitempty"`

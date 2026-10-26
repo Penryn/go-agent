@@ -12,25 +12,22 @@ import (
 	inboundnapcat "github.com/phlin/go-agent/internal/adapters/inbound/napcat"
 	modeladapter "github.com/phlin/go-agent/internal/adapters/model"
 	"github.com/phlin/go-agent/internal/app/admin"
-	"github.com/phlin/go-agent/internal/application/ports"
 	presenceruntime "github.com/phlin/go-agent/internal/application/presence"
-	retrievalsvc "github.com/phlin/go-agent/internal/application/retrieval"
 	"github.com/phlin/go-agent/internal/application/runtime/scheduler"
 	"github.com/phlin/go-agent/internal/application/textutil"
 	"github.com/phlin/go-agent/internal/config"
-	memorydomain "github.com/phlin/go-agent/internal/domain/memory"
 )
 
 type App struct {
-	cfg          config.Config
-	humanRuntime *presenceruntime.Runtime
-	inbound      *inboundnapcat.WSReceiver
-	server       *http.Server
-	sched        *scheduler.Scheduler
-	closeOnce    sync.Once
-	closeErr     error
-	cleanup      func() error
-	healthCheck  func(context.Context) error
+	cfg             config.Config
+	presenceRuntime *presenceruntime.Runtime
+	inbound         *inboundnapcat.WSReceiver
+	server          *http.Server
+	sched           *scheduler.Scheduler
+	closeOnce       sync.Once
+	closeErr        error
+	cleanup         func() error
+	healthCheck     func(context.Context) error
 }
 
 func New(ctx context.Context, cfg config.Config) (*App, error) {
@@ -44,11 +41,11 @@ func New(ctx context.Context, cfg config.Config) (*App, error) {
 	}
 
 	app := &App{
-		cfg:          cfg,
-		humanRuntime: graph.humanRuntime,
-		sched:        graph.sched,
-		cleanup:      graph.cleanup,
-		healthCheck:  graph.healthCheck,
+		cfg:             cfg,
+		presenceRuntime: graph.presenceRuntime,
+		sched:           graph.sched,
+		cleanup:         graph.cleanup,
+		healthCheck:     graph.healthCheck,
 	}
 	if cfg.QQ.Enabled && cfg.QQ.EventWSURL != "" {
 		app.inbound = inboundnapcat.NewWSReceiver(cfg.QQ.EventWSURL, cfg.QQ.EventWSToken)
@@ -79,19 +76,36 @@ func New(ctx context.Context, cfg config.Config) (*App, error) {
 func (a *App) qqConnected() bool { return a.inbound != nil && a.inbound.Connected() }
 
 func (a *App) Run(ctx context.Context) error {
+	ctx, cancel := context.WithCancel(ctx)
+	var workers sync.WaitGroup
+	defer func() {
+		// Every exit path stops ingestion and HTTP before App.Close releases
+		// the runtime and its stores, including listener startup failures.
+		cancel()
+		shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer shutdownCancel()
+		if err := a.server.Shutdown(shutdownCtx); err != nil {
+			_ = a.server.Close()
+		}
+		workers.Wait()
+	}()
 	// 启动定时任务调度器（情绪衰减等 background job）
 	a.sched.Start(ctx)
 
-	errCh := make(chan error, 1)
+	errCh := make(chan error, 2)
+	workers.Add(1)
 	go func() {
+		defer workers.Done()
 		if err := a.server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			errCh <- err
 		}
 	}()
 	if a.inbound != nil {
+		workers.Add(1)
 		go func() {
+			defer workers.Done()
 			if err := a.inbound.Receive(ctx, func(inner context.Context, payload []byte) error {
-				return a.humanRuntime.SubmitRaw(inner, payload)
+				return a.presenceRuntime.SubmitRaw(inner, payload)
 			}); err != nil && !errors.Is(err, context.Canceled) {
 				errCh <- err
 			}
@@ -100,9 +114,6 @@ func (a *App) Run(ctx context.Context) error {
 
 	select {
 	case <-ctx.Done():
-		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		_ = a.server.Shutdown(shutdownCtx)
 		return ctx.Err()
 	case err := <-errCh:
 		return err
@@ -110,7 +121,7 @@ func (a *App) Run(ctx context.Context) error {
 }
 
 func (a *App) ProcessRawEvent(ctx context.Context, payload []byte) (presenceruntime.Outcome, error) {
-	return a.humanRuntime.ProcessRawEvent(ctx, payload)
+	return a.presenceRuntime.ProcessRawEvent(ctx, payload)
 }
 
 func (a *App) Close() error {
@@ -143,7 +154,7 @@ func (a *App) handleHealth(w http.ResponseWriter, r *http.Request) {
 	_, _ = w.Write([]byte(`{"ok":true}`))
 }
 
-// llmAdapter 适配 modelFactory 到 prompting.LLMCaller 接口
+// llmAdapter supplies the learning service with the configured main model.
 type llmAdapter struct {
 	factory *modeladapter.Factory
 }
@@ -170,22 +181,4 @@ func (a *llmAdapter) Generate(ctx context.Context, prompt string) (string, error
 	}
 
 	return response.Content, nil
-}
-
-// memoryRetrieverAdapter 适配 retrievalsvc.Service 到 prompting.MemoryRetriever 接口
-type memoryRetrieverAdapter struct {
-	retrieval *retrievalsvc.Service
-}
-
-func (a *memoryRetrieverAdapter) RetrieveRelevant(ctx context.Context, query ports.MemoryQuery) ([]memorydomain.MemoryRecord, error) {
-	if a.retrieval == nil {
-		return nil, nil
-	}
-
-	memories, err := a.retrieval.SearchMemories(ctx, query)
-	if err != nil {
-		return nil, err
-	}
-
-	return memories, nil
 }

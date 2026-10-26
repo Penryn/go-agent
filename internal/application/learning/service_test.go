@@ -65,6 +65,38 @@ func TestProcessBatchUsesRealEvidenceAndWritesRetrievableMemory(t *testing.T) {
 	}
 }
 
+func TestLearningPersistsInteractionPreferenceIntoCurrentStore(t *testing.T) {
+	llm := &fixedLLM{response: `[{"subject_kind":"user","subject_id":"7","type":"social","content":"用户7不希望被戳","predicate":"allow_poke","normalized_value":"false","evidence_event_ids":["0"],"confidence":0.95}]`}
+	service, store := newLearningTestService(t, llm, nil)
+	event := conversationdomain.ConversationEvent{EventID: "preference", GroupID: 1, UserID: 7, Text: "以后别戳我", TimestampUnix: time.Now().Unix()}
+	ctx := context.Background()
+	if err := store.ArchiveEvent(ctx, event); err != nil {
+		t.Fatal(err)
+	}
+	if err := service.ProcessBatch(ctx, 1, []string{event.EventID}); err != nil {
+		t.Fatal(err)
+	}
+	constraints, err := store.GetConstraints(ctx, "group:1", []string{"7"})
+	if err != nil || len(constraints) != 1 || constraints[0].Value != "false" {
+		t.Fatalf("learning lost the preference: %+v err=%v", constraints, err)
+	}
+	if err := memorydomain.ValidateInteraction(constraints, "poke", "7"); err == nil {
+		t.Fatal("learned preference did not restrict interaction")
+	}
+}
+
+func TestCandidateIntentRetainsPreferenceAndLifetime(t *testing.T) {
+	until := time.Now().Add(time.Hour)
+	intent := candidateIntent(&memorydomain.MemoryCandidate{
+		SubjectKind: memorydomain.SubjectKindUser, SubjectID: "7", Scope: "group:1",
+		Type: memorydomain.MemoryTypeSocial, Content: "别戳我", EvidenceEventIDs: []string{"event"},
+		Predicate: memorydomain.PredicateAllowPoke, NormalizedValue: "false", Qualifier: "default", ValidUntil: &until,
+	})
+	if intent.Predicate != memorydomain.PredicateAllowPoke || intent.NormalizedValue != "false" || intent.Qualifier != "default" || intent.ValidUntil == nil || !intent.ValidUntil.Equal(until) {
+		t.Fatalf("candidate conversion lost fields: %+v", intent)
+	}
+}
+
 func TestProcessBatchRejectsFabricatedEvidence(t *testing.T) {
 	llm := &fixedLLM{response: `[{"subject_kind":"user","subject_id":"7","type":"semantic","content":"伪造","evidence_event_ids":["missing"],"confidence":0.95}]`}
 	service, store := newLearningTestService(t, llm, nil)

@@ -8,15 +8,9 @@ import (
 
 func TestApplySchema(t *testing.T) {
 	ctx := context.Background()
-	db, err := Open(ctx, "postgres://qqbot:qqbotpass@127.0.0.1:5432/qqbot?sslmode=disable")
-	if err != nil {
-		t.Skipf("postgres unavailable: %v", err)
-	}
-	defer db.Close()
-
-	if err := ApplySchema(ctx, db, filepath.Join("..", "..", "..", "..", "schema", "schema.sql")); err != nil {
-		t.Fatalf("apply schema: %v", err)
-	}
+	// Never migrate the developer's running qqbot database during a test.
+	// setupPostgres creates an isolated database and applies the schema once.
+	db := setupPostgres(t)
 	// 幂等:重复应用不报错
 	if err := ApplySchema(ctx, db, filepath.Join("..", "..", "..", "..", "schema", "schema.sql")); err != nil {
 		t.Fatalf("re-apply schema: %v", err)

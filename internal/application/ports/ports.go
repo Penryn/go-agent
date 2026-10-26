@@ -91,6 +91,10 @@ type MemoryStore interface {
 	QueryMemories(ctx context.Context, query MemoryQuery) ([]memorydomain.MemoryRecord, error)
 }
 
+type MemoryConstraintStore interface {
+	GetConstraints(context.Context, string, []string) ([]memorydomain.MemoryConstraint, error)
+}
+
 // ========================================
 // 存储接口 - 社交关系和场景
 // ========================================

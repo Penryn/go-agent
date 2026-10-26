@@ -86,6 +86,13 @@ type quoteReplyResult struct {
 	SelfFacts        []replydomain.PersonaFactCandidate `json:"self_facts"`
 }
 
+type sendFileResult struct {
+	Tool         string `json:"tool"`
+	ArtifactName string `json:"artifact_name"`
+	ArtifactPath string `json:"artifact_path"`
+	Caption      string `json:"caption"`
+}
+
 // query_member_profile 工具的类型
 type queryMemberProfileArgs struct {
 	UserID int64    `json:"user_id"`

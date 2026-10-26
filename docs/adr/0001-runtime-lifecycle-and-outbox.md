@@ -1,29 +1,28 @@
-# ADR-0001: Runtime 生命周期与异步任务可靠性
+# ADR-0001：群友回合生命周期与异步副作用
 
 ## 状态
 
-Accepted
+Accepted。2026-10-14 按当前实现更新，替代旧稿中关于候选队列、固定模型 worker 和兼容后台 Runtime 的描述。
 
 ## 背景
 
-入站消息需要快速返回，模型推理、媒体理解、向量索引、学习和策展属于慢任务。旧实现为候选或后台任务直接创建 goroutine/进程内队列，存在并发无界、队列满载丢任务、进程重启丢状态和关闭时任务悬挂的问题。
+群友必须快速感知事件，模型与工具是慢操作；视觉理解、学习和向量投影需要重放。实时入口和 CLI 若分别维护生命周期，容易在归档、冷却、反馈失败和停机路径上产生不同结果。模型请求仍在运行时关闭数据库或工具，会打断送达后的事实收尾。
 
 ## 决策
 
-1. Human Presence Runtime 使用固定数量 worker 和有界 job queue；同一群通过 group lock 串行执行，候选在错误、过期和关闭路径都必须进入终态。
-2. Group Actor 使用有界候选/去重状态，并以 `actor_idle_ttl` 回收长期无操作且没有 live candidate 的 Actor。working memory 在每次写操作中持久化，重新出现消息时恢复。
-3. 可重放的异步副作用使用 `OutboxStore`。任务必须包含 `kind`、幂等键和 JSON payload，领取采用租约；成功标记 completed，失败按 attempts 进入 retry 或 dead-letter。
-4. 进程内 background Runtime 仅作为兼容回退和非关键短任务执行器，不能作为持久化事实来源。
+1. Presence 共用一个事件接入流程。源事件归档后才更新入站状态、确认和业务投影；冷却只阻止规划与输出。
+2. Group Actor 以群锁维护工作记忆，按 `actor_idle_ttl` 回收空闲实例，持久化投影从归档事件恢复。
+3. 同群新回合取消旧回合，跨群并发；每个模型回合最长 45 秒。当前没有全局模型 worker 池。
+4. 接入与回合计入同一个运行时生命周期。关闭在互斥边界内停止新操作，再取消并等待已登记操作，包含送达后的 hook。
+5. 实际送达后的反馈、人物事实和冷却使用有超时的独立 context 完成，不被新回合取消打断。多个 hook 都尝试执行并聚合错误。
+6. 感知、学习、索引、Canon finalize 等可重放副作用进入持久化 Outbox；注册所有 handler 后才启动固定数量 Outbox worker。
+7. 依赖构建失败和正常关闭共用资源清理顺序：Presence → Outbox → Actor/MCP → PostgreSQL；进程入口先停止 HTTP、接入和 Scheduler。
 
-## 后果
+## 后果与限制
 
-- 模型延迟或群数量增长不会线性创建 goroutine；关闭可等待有限 worker 收敛。
-- outbox 任务可在进程重启后恢复，重复投递由幂等键抑制。
-- 每种任务需要稳定的 payload schema 和注册 handler；schema 变更必须保持向后兼容或提供迁移。
-- outbox worker 需要监控 pending、retry、dead-letter 数量及处理延迟；生产环境应配置清理策略。
-
-## 约束
-
-- 不把模型 chain-of-thought 写入 outbox payload。
-- handler 必须可重入，外部副作用使用业务幂等键。
-- 修改租约、重试或终态语义前，先补充重启恢复和并发领取测试。
+- CLI 单事件验证与在线运行具备相同的事件和回合语义，等待方式不同。
+- 重启后 Outbox 任务可恢复；聊天回合和 Codex 委派不是持久化后台任务。
+- 关闭等待依赖模型、工具和存储响应 context；需要硬关闭期限时，应另外定义放弃事实收尾的策略。
+- 普通 QQ 发送尚未具备跨重启幂等与出站归档事务，不能以 Outbox 可重放推导平台发送恰好一次。
+- worker 领取使用租约，失败进入 retry 或 dead-letter；handler 必须可重入，payload 不能包含模型隐式思维过程。
+- Outbox payload 需要稳定 schema。任何任务格式变化都必须考虑库内尚未执行任务，不以内部 Go API 可以重构为理由丢弃持久任务。

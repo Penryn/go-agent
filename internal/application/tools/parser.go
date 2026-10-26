@@ -103,6 +103,27 @@ func ParseTerminalPlan(decisionID string, toolName string, raw string, session r
 			FallbackText:         cleanedText,
 			ProposedPersonaFacts: append([]replydomain.PersonaFactCandidate(nil), result.SelfFacts...),
 		}, true, nil
+	case "send_file":
+		var result sendFileResult
+		if err := json.Unmarshal([]byte(raw), &result); err != nil {
+			return replydomain.ReplyPlan{}, false, fmt.Errorf("decode send_file result: %w", err)
+		}
+		caption := textutil.StripThinkBlocks(result.Caption)
+		if result.ArtifactPath == "" || result.ArtifactName == "" || strings.TrimSpace(caption) == "" {
+			return replydomain.ReplyPlan{}, false, fmt.Errorf("send_file result is incomplete")
+		}
+		return replydomain.ReplyPlan{
+			PlanID:         decisionID + "-plan",
+			Intent:         session.Intent,
+			Bubbles:        []string{caption},
+			PlannedActions: []policydomain.DecisionAction{policydomain.ActionReply},
+			ActionParams: map[string]any{
+				"artifact_path": result.ArtifactPath,
+				"artifact_name": result.ArtifactName,
+			},
+			SendMode:     "group",
+			FallbackText: caption,
+		}, true, nil
 	case "repair_message":
 		var result repairMessageResult
 		if err := json.Unmarshal([]byte(raw), &result); err != nil {

@@ -10,7 +10,6 @@ import (
 	"time"
 
 	"github.com/phlin/go-agent/internal/application/ports"
-	"github.com/phlin/go-agent/internal/application/presence/ingress"
 	conversationdomain "github.com/phlin/go-agent/internal/domain/conversation"
 	mediadomain "github.com/phlin/go-agent/internal/domain/media"
 	presencedomain "github.com/phlin/go-agent/internal/domain/presence"
@@ -26,7 +25,6 @@ const (
 )
 
 type Manager struct {
-	log      *ingress.MemoryEventLog
 	archive  ports.MemoryStore
 	state    WorkingMemoryStore
 	tailSize int
@@ -53,7 +51,7 @@ type EventReplayStore interface {
 }
 
 // WithArchive mirrors every observed event into the durable conversation
-// store. The event log remains the fast perception path; archive failures are
+// store. Archive failures are
 // returned so callers can retry without losing the in-memory observation.
 func WithArchive(store ports.MemoryStore) Option {
 	return func(m *Manager) { m.archive = store }
@@ -74,8 +72,8 @@ func WithIdleTTL(ttl time.Duration) Option {
 	}
 }
 
-func NewManager(log *ingress.MemoryEventLog, opts ...Option) *Manager {
-	m := &Manager{log: log, tailSize: defaultTailSize, maxSeen: defaultMaxSeen, groups: make(map[int64]*actor)}
+func NewManager(opts ...Option) *Manager {
+	m := &Manager{tailSize: defaultTailSize, maxSeen: defaultMaxSeen, groups: make(map[int64]*actor)}
 	for _, opt := range opts {
 		opt(m)
 	}
@@ -88,15 +86,9 @@ func (m *Manager) Observe(ctx context.Context, record presencedomain.EventRecord
 	return m.observe(ctx, record)
 }
 
-// ObserveReplay records an event without starting the online decision loop.
-// Synchronous replay owns deliberation and must not produce a second reply.
-func (m *Manager) ObserveReplay(ctx context.Context, record presencedomain.EventRecord) (presencedomain.GroupWorkingMemory, error) {
-	return m.observe(ctx, record)
-}
-
 func (m *Manager) observe(ctx context.Context, record presencedomain.EventRecord) (presencedomain.GroupWorkingMemory, error) {
-	if m == nil || m.log == nil {
-		return presencedomain.GroupWorkingMemory{}, errors.New("group actor: event log is nil")
+	if m == nil {
+		return presencedomain.GroupWorkingMemory{}, errors.New("group actor: manager is nil")
 	}
 	if record.EventID == "" {
 		return presencedomain.GroupWorkingMemory{}, errors.New("group actor: event id is required")
@@ -117,9 +109,6 @@ func (m *Manager) observe(ctx context.Context, record presencedomain.EventRecord
 		}
 	}
 
-	if _, err := m.log.AppendIfNew(ctx, record); err != nil {
-		return presencedomain.GroupWorkingMemory{}, err
-	}
 	a, err := m.actor(ctx, record.GroupID)
 	if err != nil {
 		return presencedomain.GroupWorkingMemory{}, err
@@ -347,7 +336,7 @@ func (m *Manager) Close() error {
 	}
 	m.closed = true
 	m.mu.Unlock()
-	return m.log.Close()
+	return nil
 }
 
 // actor holds one group's working memory behind a mutex. Every method takes

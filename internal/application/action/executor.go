@@ -15,6 +15,7 @@ import (
 	outputguardsvc "github.com/phlin/go-agent/internal/application/outputguard"
 	"github.com/phlin/go-agent/internal/application/ports"
 	conversationdomain "github.com/phlin/go-agent/internal/domain/conversation"
+	memorydomain "github.com/phlin/go-agent/internal/domain/memory"
 	policydomain "github.com/phlin/go-agent/internal/domain/policy"
 	presencedomain "github.com/phlin/go-agent/internal/domain/presence"
 	replydomain "github.com/phlin/go-agent/internal/domain/reply"
@@ -105,14 +106,15 @@ func (s *Service) markRead(ctx context.Context, event conversationdomain.Convers
 	}
 }
 
-func (s *Service) Execute(ctx context.Context, event conversationdomain.ConversationEvent, decision policydomain.AutonomyDecision, plan replydomain.ReplyPlan) (replydomain.ActionReceipt, error) {
+func (s *Service) Execute(ctx context.Context, snapshot conversationdomain.ContextSnapshot, decision policydomain.AutonomyDecision, plan replydomain.ReplyPlan) (replydomain.ActionReceipt, error) {
+	event := snapshot.Event
 	// 已读回执：确定要发言后先把该群标记已读，模拟「看到→才回」。
 	// 失败静默——回执是拟人增强，不构成发送前置条件。
 	if decision.Action != policydomain.ActionSilent {
 		s.markRead(ctx, event)
 	}
 	if decision.Action == policydomain.ActionReply && len(plan.Bubbles) > 1 {
-		return s.executeRhythm(ctx, event, decision, plan)
+		return s.executeRhythm(ctx, snapshot, decision, plan)
 	}
 	if decision.Action == policydomain.ActionSilent {
 		return replydomain.ActionReceipt{
@@ -142,6 +144,9 @@ func (s *Service) Execute(ctx context.Context, event conversationdomain.Conversa
 	}
 	if err != nil {
 		return replydomain.ActionReceipt{}, err
+	}
+	if err := validateInteraction(snapshot.MemoryConstraints, action); err != nil {
+		return replydomain.ActionReceipt{ActionID: action.ActionID, DropReason: "interaction_constraint"}, err
 	}
 	if previous, ok := s.completed(action.ActionID); ok {
 		return previous, nil
@@ -373,7 +378,8 @@ func (s *Service) observeRecall(ctx context.Context, action replydomain.ActionEx
 	}
 }
 
-func (s *Service) executeRhythm(ctx context.Context, event conversationdomain.ConversationEvent, decision policydomain.AutonomyDecision, plan replydomain.ReplyPlan) (replydomain.ActionReceipt, error) {
+func (s *Service) executeRhythm(ctx context.Context, snapshot conversationdomain.ContextSnapshot, decision policydomain.AutonomyDecision, plan replydomain.ReplyPlan) (replydomain.ActionReceipt, error) {
+	event := snapshot.Event
 	rhythmCtx, cancel := context.WithCancel(ctx)
 	s.rhythmMu.Lock()
 	if previous, ok := s.rhythm[event.GroupID]; ok {
@@ -412,7 +418,7 @@ func (s *Service) executeRhythm(ctx context.Context, event conversationdomain.Co
 		}
 		partDecision := decision
 		partDecision.DecisionID = fmt.Sprintf("%s-bubble-%d", decision.DecisionID, i)
-		partReceipt, err := s.Execute(rhythmCtx, event, partDecision, part)
+		partReceipt, err := s.Execute(rhythmCtx, snapshot, partDecision, part)
 		aggregate.StepReceipts = append(aggregate.StepReceipts, partReceipt)
 		if partReceipt.Sent {
 			aggregate.Sent = true
@@ -426,6 +432,20 @@ func (s *Service) executeRhythm(ctx context.Context, event conversationdomain.Co
 		}
 	}
 	return aggregate, nil
+}
+
+func validateInteraction(constraints []memorydomain.MemoryConstraint, action replydomain.ActionExecution) error {
+	if action.Kind == policydomain.ActionPokeBack {
+		return memorydomain.ValidateInteraction(constraints, "poke", strconv.FormatInt(action.TargetUserID, 10))
+	}
+	for _, segment := range action.Segments {
+		if segment.Type == "at" {
+			if err := memorydomain.ValidateInteraction(constraints, "at", fmt.Sprint(segment.Data["qq"])); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }
 
 func rhythmDelay(bubble string) time.Duration {
@@ -601,6 +621,28 @@ func (s *Service) buildAction(ctx context.Context, event conversationdomain.Conv
 				"reply_to", plan.ReplyToMessageID,
 			)
 			return replydomain.ActionExecution{}, errDropSend
+		}
+		attachedFiles := make(map[string]struct{}, len(plan.Files)+1)
+		if artifactPath, _ := plan.ActionParams["artifact_path"].(string); artifactPath != "" {
+			artifactName, _ := plan.ActionParams["artifact_name"].(string)
+			segments = append(segments, conversationdomain.MessageSegment{
+				Type: "file",
+				Data: map[string]any{"file": artifactPath, "name": artifactName},
+			})
+			attachedFiles[artifactPath] = struct{}{}
+		}
+		for _, file := range plan.Files {
+			if file.Path == "" {
+				continue
+			}
+			if _, exists := attachedFiles[file.Path]; exists {
+				continue
+			}
+			segments = append(segments, conversationdomain.MessageSegment{
+				Type: "file",
+				Data: map[string]any{"file": file.Path, "name": file.Name},
+			})
+			attachedFiles[file.Path] = struct{}{}
 		}
 		return replydomain.ActionExecution{
 			ActionID:         fmt.Sprintf("%s-action", decision.DecisionID),

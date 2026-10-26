@@ -111,6 +111,7 @@ type CodexConfig struct {
 	Binary             string  `yaml:"binary"`
 	Model              string  `yaml:"model"`
 	CWD                string  `yaml:"cwd"`
+	WorkspaceRoot      string  `yaml:"workspace_root"`
 	NetworkEnabled     bool    `yaml:"network_enabled"`
 	Timeout            string  `yaml:"timeout"`
 	MaxConcurrency     int     `yaml:"max_concurrency"`
