@@ -1,6 +1,34 @@
 # 项目架构
 
-当前实现是模块化单体。`internal/app` 组装 QQ、模型、记忆、表情包与 PostgreSQL；`internal/chat` 维护按群独立的聊天流程。图中的组件均运行在同一个 Go 进程内。
+当前实现是模块化单体。`internal/app` 组装 QQ、模型、记忆、表情包与 PostgreSQL；`internal/chat` 维护按群独立的聊天流程。QQ 接入、聊天与后台能力在同一个 Go 进程内，NapCat、数据库和模型服务是外部依赖。
+
+## 目录布局
+
+源码按职责在 `internal` 下平铺，模块内部先按文件组织，不额外增加应用层、领域层或适配器层。
+
+```text
+cmd/
+  qqbotd/         # 在线进程
+  replay/         # 离线回放命令
+internal/
+  app/            # 依赖组装、HTTP 与嵌入页面
+  chat/           # 群聊协调与表达
+  config/         # 配置加载与校验
+  memory/         # 笔记、学习与记忆检索
+  meme/           # 全局表情包采集与复用
+  model/          # 聊天、视觉与 Embedding 客户端
+  qq/             # OneBot 协议与媒体获取
+  store/          # PostgreSQL 查询与事务
+  search/         # 融合算法与 bm25 子包
+  replay/         # 回放使用的内存存储和模拟发送
+  architecture/   # 模块边界检查
+configs/          # 配置示例与忽略入库的本地配置
+schema/           # 嵌入的数据库基线
+tests/replay/     # 对话回放样例
+docs/             # 当前架构和开发说明
+```
+
+`cmd/replay` 是命令入口，`internal/replay` 提供回放运行依赖。`data/`、`memes/` 和 `bin/` 属于本地运行数据或构建产物，按需生成，不提交到 Git。
 
 ```mermaid
 flowchart LR
