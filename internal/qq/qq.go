@@ -1,7 +1,6 @@
 package qq
 
 import (
-	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/base64"
@@ -18,7 +17,9 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/coder/websocket"
+	onebot "github.com/zjutjh/onebot-sdk"
+	"github.com/zjutjh/onebot-sdk/api"
+	"github.com/zjutjh/onebot-sdk/message"
 )
 
 type Attachment struct {
@@ -42,10 +43,6 @@ type Event struct {
 	At        time.Time    `json:"at"`
 	Images    []Attachment `json:"images,omitempty"`
 }
-type Segment struct {
-	Type string            `json:"type"`
-	Data map[string]string `json:"data"`
-}
 type Receipt struct {
 	MessageID string `json:"message_id"`
 }
@@ -56,14 +53,10 @@ type SendError struct {
 
 func (e *SendError) Error() string { return e.Err.Error() }
 func (e *SendError) Unwrap() error { return e.Err }
-func ID(raw json.RawMessage) string {
-	var s string
-	if json.Unmarshal(raw, &s) == nil {
-		return s
-	}
-	var n json.Number
-	if json.Unmarshal(raw, &n) == nil {
-		return string(n)
+func scalar(raw json.RawMessage) string {
+	var value message.StrNum
+	if json.Unmarshal(raw, &value) == nil {
+		return string(value)
 	}
 	return ""
 }
@@ -75,11 +68,11 @@ func Decode(payload []byte, self int64, aliases []string) (Event, bool, error) {
 		Post      string          `json:"post_type"`
 		Kind      string          `json:"message_type"`
 		Notice    string          `json:"notice_type"`
-		Group     int64           `json:"group_id"`
-		User      int64           `json:"user_id"`
-		Self      int64           `json:"self_id"`
+		Group     message.ID      `json:"group_id"`
+		User      message.ID      `json:"user_id"`
+		Self      message.ID      `json:"self_id"`
 		Time      int64           `json:"time"`
-		MessageID json.RawMessage `json:"message_id"`
+		MessageID message.ID      `json:"message_id"`
 		Message   json.RawMessage `json:"message"`
 		Sender    struct {
 			Nickname string `json:"nickname"`
@@ -90,16 +83,20 @@ func Decode(payload []byte, self int64, aliases []string) (Event, bool, error) {
 		return Event{}, false, err
 	}
 	if self == 0 {
-		self = raw.Self
+		self = raw.Self.Int64()
 	}
-	if raw.Group <= 0 || raw.User == self {
+	if raw.Group <= 0 || raw.User.Int64() == self {
 		return Event{}, false, nil
 	}
 	recall := raw.Post == "notice" && raw.Notice == "group_recall"
 	if !recall && (raw.Post != "message" || raw.Kind != "group") {
 		return Event{}, false, nil
 	}
-	e := Event{GroupID: raw.Group, UserID: raw.User, SelfID: self, MessageID: ID(raw.MessageID), Name: raw.Sender.Card, At: time.Unix(raw.Time, 0), Recalled: recall}
+	e := Event{GroupID: raw.Group.Int64(), UserID: raw.User.Int64(), SelfID: self, Name: raw.Sender.Card, At: time.Unix(raw.Time, 0), Recalled: recall}
+	// IDs are opaque locators; negative values are valid and must not be ordered.
+	if raw.MessageID != 0 {
+		e.MessageID = strconv.FormatInt(raw.MessageID.Int64(), 10)
+	}
 	if e.Name == "" {
 		e.Name = raw.Sender.Nickname
 	}
@@ -115,6 +112,8 @@ func Decode(payload []byte, self int64, aliases []string) (Event, bool, error) {
 	if recall {
 		return e, true, nil
 	}
+	// Preserve wire data: SDK string chains are literal text, and MFaceData
+	// does not retain the inbound download URL needed for automatic collection.
 	var segments []struct {
 		Type string                     `json:"type"`
 		Data map[string]json.RawMessage `json:"data"`
@@ -148,15 +147,21 @@ func Decode(payload []byte, self int64, aliases []string) (Event, bool, error) {
 	for i, s := range segments {
 		switch s.Type {
 		case "text":
-			e.Text += ID(s.Data["text"])
+			e.Text += scalar(s.Data["text"])
 		case "at":
-			e.Directed = e.Directed || ID(s.Data["qq"]) == strconv.FormatInt(self, 10)
+			e.Directed = e.Directed || scalar(s.Data["qq"]) == strconv.FormatInt(self, 10)
 		case "reply":
-			e.ReplyTo = ID(s.Data["id"])
+			var id message.ID
+			if err := json.Unmarshal(s.Data["id"], &id); err != nil {
+				return e, false, fmt.Errorf("reply id: %w", err)
+			}
+			if id != 0 {
+				e.ReplyTo = strconv.FormatInt(id.Int64(), 10)
+			}
 		case "image", "mface":
-			u := ID(s.Data["url"])
+			u := scalar(s.Data["url"])
 			if u != "" {
-				e.Images = append(e.Images, Attachment{ID: fmt.Sprintf("%s:%d", e.ID, i), URL: u, Sticker: s.Type == "mface" || ID(s.Data["sub_type"]) == "1"})
+				e.Images = append(e.Images, Attachment{ID: fmt.Sprintf("%s:%d", e.ID, i), URL: u, Sticker: s.Type == "mface" || scalar(s.Data["sub_type"]) == "1"})
 			}
 		}
 	}
@@ -179,12 +184,16 @@ type Client struct {
 }
 
 func (c *Client) Send(ctx context.Context, group int64, text, quote, path string) (Receipt, error) {
-	segments := []Segment{}
+	segments := message.Chain{}
 	if quote != "" {
-		segments = append(segments, Segment{"reply", map[string]string{"id": quote}})
+		id, err := strconv.ParseInt(quote, 10, 64)
+		if err != nil || id == 0 {
+			return Receipt{}, &SendError{errors.New("invalid reply id"), true}
+		}
+		segments = append(segments, message.Reply(id))
 	}
 	if text != "" {
-		segments = append(segments, Segment{"text", map[string]string{"text": text}})
+		segments = append(segments, message.Text(text))
 	}
 	if path != "" {
 		f, err := os.Open(path)
@@ -196,78 +205,41 @@ func (c *Client) Send(ctx context.Context, group int64, text, quote, path string
 		if err != nil || len(b) > 16<<20 {
 			return Receipt{}, &SendError{errors.New("invalid sticker file"), true}
 		}
-		segments = append(segments, Segment{"image", map[string]string{"file": "base64://" + base64.StdEncoding.EncodeToString(b)}})
+		segments = append(segments, message.Image("base64://"+base64.StdEncoding.EncodeToString(b)))
 	}
 	if group <= 0 || len(segments) == 0 {
 		return Receipt{}, &SendError{errors.New("empty or invalid message"), true}
 	}
-	body, err := json.Marshal(map[string]any{"group_id": group, "message": segments})
+	body, err := api.NewOB11Message(segments)
 	if err != nil {
 		return Receipt{}, &SendError{err, true}
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, strings.TrimRight(c.URL, "/")+"/send_group_msg", bytes.NewReader(body))
+	client := onebot.NewHTTPClient(c.URL, onebot.WithToken(c.Token), onebot.WithHTTPTimeout(5*time.Second), onebot.WithHTTPClient(c.HTTP))
+	result, err := client.API().SendGroupMsg(ctx, api.SendGroupMsgRequest{GroupID: message.ID(group), Message: body})
 	if err != nil {
-		return Receipt{}, &SendError{err, true}
+		var rejection *onebot.APIError
+		// OneBot retcode 1 with status "async" means the request was accepted
+		// for asynchronous processing; only real rejections are definite.
+		definite := errors.As(err, &rejection) && (rejection.Status == "failed" || (rejection.RetCode != 0 && rejection.RetCode != 1))
+		return Receipt{}, &SendError{err, definite}
 	}
-	req.Header.Set("Content-Type", "application/json")
-	if c.Token != "" {
-		req.Header.Set("Authorization", "Bearer "+c.Token)
-	}
-	client := c.HTTP
-	if client == nil {
-		client = &http.Client{Timeout: 5 * time.Second}
-	}
-	resp, err := client.Do(req)
-	if err != nil {
-		return Receipt{}, &SendError{err, false}
-	}
-	defer resp.Body.Close()
-	var result struct {
-		Status string `json:"status"`
-		Code   int    `json:"retcode"`
-		Data   struct {
-			ID json.RawMessage `json:"message_id"`
-		} `json:"data"`
-	}
-	if resp.StatusCode != 200 {
-		return Receipt{}, &SendError{fmt.Errorf("OneBot HTTP %d", resp.StatusCode), false}
-	}
-	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&result); err != nil {
-		return Receipt{}, &SendError{err, false}
-	}
-	if result.Code != 0 || result.Status == "failed" {
-		return Receipt{}, &SendError{fmt.Errorf("OneBot rejected message (%d)", result.Code), true}
-	}
-	id := ID(result.Data.ID)
-	if id == "" {
+	if result.MessageID == 0 {
 		return Receipt{}, &SendError{errors.New("OneBot returned no message id"), false}
 	}
-	return Receipt{id}, nil
+	return Receipt{strconv.FormatInt(result.MessageID.Int64(), 10)}, nil
 }
 func (c *Client) Receive(ctx context.Context, handle func(context.Context, []byte) error) error {
 	delay := time.Second
 	for ctx.Err() == nil {
-		headers := http.Header{}
-		if c.WSToken != "" {
-			headers.Set("Authorization", "Bearer "+c.WSToken)
-		}
-		conn, _, err := websocket.Dial(ctx, c.WSURL, &websocket.DialOptions{HTTPHeader: headers})
+		// Only core group messages and recalls are consumed, so event-only
+		// WebSocket endpoints need no backend detection or extension API calls.
+		client, err := onebot.DialWebSocket(ctx, c.WSURL,
+			onebot.WithToken(c.WSToken), onebot.WithBackend(onebot.BackendGeneric),
+			onebot.WithEventBuffer(256), onebot.WithEventDeliveryTimeout(5*time.Second),
+			onebot.WithLogger(slog.Default()))
 		if err == nil {
-			c.Connected.Store(true)
 			delay = time.Second
-			conn.SetReadLimit(2 << 20)
-			for ctx.Err() == nil {
-				_, b, readErr := conn.Read(ctx)
-				if readErr != nil {
-					err = readErr
-					break
-				}
-				if err := handle(ctx, b); err != nil {
-					slog.Error("receive event", "error", err)
-				}
-			}
-			c.Connected.Store(false)
-			_ = conn.CloseNow()
+			err = c.receive(ctx, client, handle)
 		}
 		if ctx.Err() != nil {
 			return ctx.Err()
@@ -283,4 +255,23 @@ func (c *Client) Receive(ctx context.Context, handle func(context.Context, []byt
 		delay = min(delay*2, 30*time.Second)
 	}
 	return ctx.Err()
+}
+
+func (c *Client) receive(ctx context.Context, client *onebot.Client, handle func(context.Context, []byte) error) error {
+	c.Connected.Store(true)
+	defer c.Connected.Store(false)
+	defer func() { _ = client.Close() }()
+	for {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case e, ok := <-client.Events():
+			if !ok {
+				return client.Err()
+			}
+			if err := handle(ctx, e.Raw()); err != nil {
+				slog.Error("receive event", "error", err)
+			}
+		}
+	}
 }
