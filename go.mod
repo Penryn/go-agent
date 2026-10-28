@@ -11,6 +11,7 @@ require (
 	github.com/jackc/pgx/v5 v5.10.0
 	github.com/pgvector/pgvector-go v0.4.1
 	github.com/zjutjh/onebot-sdk v1.1.0
+	golang.org/x/sync v0.23.0
 	gopkg.in/yaml.v3 v3.0.1
 )
 
@@ -20,7 +21,6 @@ require (
 	github.com/google/go-cmp v0.7.0 // indirect
 	github.com/mattn/go-isatty v0.0.14 // indirect
 	github.com/meguminnnnnnnnn/go-openai v0.1.2 // indirect
-	golang.org/x/sync v0.23.0 // indirect
 )
 
 require (

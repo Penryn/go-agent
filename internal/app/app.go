@@ -48,8 +48,9 @@ func New(ctx context.Context, cfg config.Config) (*App, error) {
 		return fail(err)
 	}
 	models := model.New(cfg.Models, cfg.ModelConcurrency)
-	a.memories = &memory.Service{Store: db, Model: models, Embedding: models, TopK: cfg.Memory.TopK}
-	a.memes = &meme.Service{Store: db, Model: models, Embedding: models, Config: cfg.Meme, HTTP: qq.MediaClient()}
+	embeddings := model.NewCachedEmbedder(models, 4096, 30*time.Minute)
+	a.memories = &memory.Service{Store: db, Model: models, Embedding: embeddings, TopK: cfg.Memory.TopK}
+	a.memes = &meme.Service{Store: db, Model: models, Embedding: embeddings, Config: cfg.Meme, HTTP: qq.MediaClient()}
 	a.qq = &qq.Client{URL: cfg.QQ.OutboundURL, Token: cfg.QQ.OutboundToken, WSURL: cfg.QQ.EventWSURL, WSToken: cfg.QQ.EventWSToken}
 	var sender chat.Sender
 	if cfg.QQ.Enabled {

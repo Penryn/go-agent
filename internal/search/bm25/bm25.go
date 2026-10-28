@@ -4,6 +4,7 @@ import (
 	"math"
 	"sort"
 	"strings"
+	"sync"
 	"unicode"
 )
 
@@ -18,38 +19,67 @@ type Result struct {
 	Score float64
 }
 
-// Rank scores all documents with BM25. The tokenizer deliberately keeps its
-// contract small so a production Chinese analyzer can replace it later.
-func Rank(query string, documents []Document, limit int) []Result {
-	queryTerms := tokenize(query)
-	if len(queryTerms) == 0 || len(documents) == 0 {
-		return nil
-	}
+type indexedDocument struct {
+	id     string
+	length int
+	terms  map[string]int
+}
 
-	type scoredDocument struct {
-		result Result
-		order  int
+// Index is an immutable, reusable BM25 index. Building it tokenizes and
+// normalizes every document once; ranked queries only tokenize the query.
+type Index struct {
+	mu        sync.RWMutex
+	documents []indexedDocument
+	df        map[string]int
+	average   float64
+}
+
+// NewIndex builds a reusable index. The input documents are copied, so callers
+// may reuse or discard the slice after construction.
+func NewIndex(documents []Document) *Index {
+	index := &Index{
+		documents: make([]indexedDocument, 0, len(documents)),
+		df:        make(map[string]int),
 	}
-	docTerms := make([]map[string]int, len(documents))
-	docLengths := make([]int, len(documents))
-	documentFrequency := make(map[string]int)
 	totalLength := 0
-	for i, document := range documents {
+	for _, document := range documents {
 		terms := tokenize(document.Text)
 		counts := make(map[string]int, len(terms))
 		for _, term := range terms {
 			counts[term]++
 		}
-		docTerms[i] = counts
-		docLengths[i] = len(terms)
+		index.documents = append(index.documents, indexedDocument{id: document.ID, length: len(terms), terms: counts})
 		totalLength += len(terms)
 		for term := range counts {
-			documentFrequency[term]++
+			index.df[term]++
 		}
 	}
+	if len(index.documents) > 0 {
+		index.average = float64(totalLength) / float64(len(index.documents))
+	}
+	return index
+}
 
-	avgLength := float64(totalLength) / float64(len(documents))
-	if avgLength == 0 {
+// Rank is retained as the small-input compatibility API. Reuse NewIndex when
+// ranking more than one query over the same corpus.
+func Rank(query string, documents []Document, limit int) []Result {
+	return NewIndex(documents).Rank(query, limit)
+}
+
+// Rank scores the indexed documents. It is safe for concurrent readers.
+func (i *Index) Rank(query string, limit int) []Result {
+	if i == nil {
+		return nil
+	}
+	queryTerms := tokenize(query)
+	if len(queryTerms) == 0 {
+		return nil
+	}
+
+	i.mu.RLock()
+	defer i.mu.RUnlock()
+
+	if len(i.documents) == 0 || i.average == 0 {
 		return nil
 	}
 	queryFrequency := make(map[string]int, len(queryTerms))
@@ -61,21 +91,21 @@ func Rank(query string, documents []Document, limit int) []Result {
 		k1 = 1.2
 		b  = 0.75
 	)
-	scored := make([]Result, 0, len(documents))
-	for i, terms := range docTerms {
+	scored := make([]Result, 0, len(i.documents))
+	for _, document := range i.documents {
 		score := 0.0
 		for term, qf := range queryFrequency {
-			tf := terms[term]
+			tf := document.terms[term]
 			if tf == 0 {
 				continue
 			}
-			df := documentFrequency[term]
-			idf := math.Log(1 + (float64(len(documents)-df)+0.5)/(float64(df)+0.5))
-			normalizedLength := 1 - b + b*float64(docLengths[i])/avgLength
+			df := i.df[term]
+			idf := math.Log(1 + (float64(len(i.documents)-df)+0.5)/(float64(df)+0.5))
+			normalizedLength := 1 - b + b*float64(document.length)/i.average
 			score += float64(qf) * idf * (float64(tf) * (k1 + 1)) / (float64(tf) + k1*normalizedLength)
 		}
 		if score > 0 {
-			scored = append(scored, Result{ID: documents[i].ID, Score: score})
+			scored = append(scored, Result{ID: document.id, Score: score})
 		}
 	}
 
