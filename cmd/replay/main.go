@@ -9,6 +9,7 @@ import (
 	"os"
 	"time"
 
+	"github.com/phlin/go-agent/internal/cache"
 	"github.com/phlin/go-agent/internal/chat"
 	"github.com/phlin/go-agent/internal/config"
 	"github.com/phlin/go-agent/internal/memory"
@@ -66,6 +67,7 @@ func run() error {
 	cfg := config.Default()
 	var generator model.Generator
 	var embedding model.Embedder
+	hub := cache.NewHub(cfg.Cache.MaxItems)
 	mode := "scripted"
 	scripted := &script{responses: f.Responses}
 	generator = scripted
@@ -74,9 +76,11 @@ func run() error {
 		if err != nil {
 			return err
 		}
+		hub = cache.NewHub(cfg.Cache.MaxItems)
 		client := model.New(cfg.Models, cfg.ModelConcurrency.ChatSlots())
-		generator = client
-		embedding = client
+		gateway := model.NewGateway(client, client, hub, cfg.Cache.EmbeddingTTL, cfg.ModelConcurrency.Chat, cfg.ModelConcurrency.Vision, cfg.ModelConcurrency.Embedding, cfg.ModelConcurrency.Background)
+		generator = gateway
+		embedding = gateway
 		mode = "live-model"
 	}
 	// Replays use production coordination and validation with isolated storage and simulated sends.
@@ -86,10 +90,10 @@ func run() error {
 	cfg.Chat.SpontaneousInterval = 0
 	store := replay.NewStore()
 	sender := &replay.Sender{}
-	memories := &memory.Service{Store: store, Model: generator, Embedding: embedding, TopK: cfg.Memory.TopK}
+	memories := &memory.Service{Store: store, Model: generator, Embedding: embedding, TopK: cfg.Memory.TopK, IndexLimit: cfg.Memory.IndexLimit, Cache: hub}
 	ctx, cancel := context.WithTimeout(context.Background(), *timeout)
 	defer cancel()
-	runtime := chat.New(ctx, &chat.Runtime{Store: store, Model: generator, Embedding: embedding, Memory: memories, Sender: sender, Persona: cfg.Persona, Config: cfg.Chat, SelfID: 0})
+	runtime := chat.New(ctx, &chat.Runtime{Store: store, Model: generator, Embedding: embedding, Cache: hub, Memory: memories, Sender: sender, Persona: cfg.Persona, Config: cfg.Chat, SelfID: 0})
 	defer runtime.Close()
 	outcomes := []chat.Attempt{}
 	for i, s := range f.Steps {
