@@ -34,9 +34,9 @@
 | 现状 | 依据 |
 | --- | --- |
 | Go 使用 `go:embed` 嵌入单个 `admin.html`，并在 `/admin/` 返回页面 | `internal/app/admin.go`、`internal/app/admin.html`，commit `60c042a` |
-| 管理 API 位于 `/admin/api/`，包括群列表、对话、笔记、表情包和图片读取 | [`internal/app/admin.go`](../internal/app/admin.go#L99-L188) |
-| 配置了 `server.admin_token` 时，API 使用 Bearer 令牌；未配置时只接受回环地址 | [`internal/app/admin.go`](../internal/app/admin.go#L39-L58) |
-| 非读请求会校验 `Origin` 是否与当前请求主机一致 | [`internal/app/admin.go`](../internal/app/admin.go#L59-L68) |
+| 管理 API 位于 `/admin/api/`，包括群列表、对话、笔记、表情包和图片读取 | `internal/app/admin.go`，commit `60c042a` |
+| 配置了 `server.admin_token` 时，API 使用 Bearer 令牌；未配置时只接受回环地址 | `internal/app/admin.go`，commit `60c042a` |
+| 非读请求会校验 `Origin` 是否与当前请求主机一致 | `internal/app/admin.go`，commit `60c042a` |
 | 笔记和表情包修改都携带版本号，存储层用版本号阻止覆盖并发修改 | [`internal/store/admin.go`](../internal/store/admin.go#L56-L106) |
 | 页面使用原生 DOM 创建节点，连接后读取群、对话和表情包，保存后重新刷新 | `internal/app/admin.html`，commit `60c042a` |
 | HTTP 服务和后台路由由同一个 Go `http.Server` 提供 | [`internal/app/app.go`](../internal/app/app.go#L62-L62) |
@@ -105,6 +105,9 @@ web/admin/
 
 internal/app/
   admin.go
+  admin_api.go
+  admin_assets.go
+  admin_auth.go
   admin_test.go
   admin-dist/
     index.html
@@ -127,7 +130,7 @@ internal/app/
 
 ### 4.3 Go 静态资源处理
 
-`internal/app/admin.go` 使用目录 embed，并把 `/admin/` 下的 `index.html` 和 `assets/` 文件交给受限静态文件处理器。处理器满足以下规则：
+`internal/app/admin_assets.go` 使用目录 embed，并把 `/admin/` 下的 `index.html` 和 `assets/` 文件交给受限静态文件处理器。处理器满足以下规则：
 
 1. `GET /admin` 继续重定向到 `/admin/`。
 2. `GET` 和 `HEAD /admin/` 返回构建后的 `index.html`。
@@ -261,7 +264,7 @@ React 客户端只封装现有管理 API，不在浏览器中直接访问数据�
 | 建立前端工程和类型边界 | 已完成 | `web/admin/package.json`、`web/admin/tsconfig.json`、`web/admin/vite.config.ts`、`web/admin/src/types.ts`、`web/admin/src/api.ts` | TypeScript 类型检查和 Vite 生产构建 |
 | 完成页面骨架和只读视图 | 已完成 | `web/admin/src/App.tsx`、`web/admin/src/views/`、`web/admin/src/styles.css` | 类型检查；真实数据下的浏览器验收待 8.3 完成 |
 | 接入笔记和表情包编辑 | 已完成 | `web/admin/src/views/NotesView.tsx`、`web/admin/src/views/StickersView.tsx` | 类型检查；真实保存、预览和冲突交互待 8.3 完成 |
-| 接入静态资源 embed | 已完成 | `internal/app/admin.go`、`internal/app/admin_test.go`、`internal/app/admin-dist/` | Go 路由测试和生产构建 |
+| 接入静态资源 embed | 已完成 | `internal/app/admin.go`、`internal/app/admin_api.go`、`internal/app/admin_assets.go`、`internal/app/admin_auth.go`、`internal/app/admin_test.go`、`internal/app/admin-dist/` | Go 路由、鉴权测试和生产构建 |
 | 更新开发入口 | 已完成 | `Makefile`、`README.md`、`CLAUDE.md`、`docs/DEVELOPMENT.md`、`docs/README.md` | 文档检查、前端构建和 Go 构建 |
 | 删除旧页面实现 | 已完成 | `internal/app/admin.html` | 全仓引用搜索和 Go 测试 |
 
