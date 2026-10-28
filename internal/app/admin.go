@@ -1,11 +1,13 @@
 package app
 
 import (
+	"bytes"
 	"context"
 	"crypto/subtle"
-	_ "embed"
+	"embed"
 	"encoding/json"
 	"errors"
+	"io/fs"
 	"net"
 	"net/http"
 	"net/netip"
@@ -17,8 +19,52 @@ import (
 	"time"
 )
 
-//go:embed admin.html
-var adminHTML []byte
+//go:embed admin-dist
+var adminBuildFS embed.FS
+
+var (
+	adminWebFS     = mustSubFS(adminBuildFS, "admin-dist")
+	adminAssetHTTP = http.StripPrefix("/admin/", http.FileServer(http.FS(adminWebFS)))
+)
+
+func mustSubFS(source fs.FS, dir string) fs.FS {
+	root, err := fs.Sub(source, dir)
+	if err != nil {
+		panic(err)
+	}
+	return root
+}
+
+const adminCSP = "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' blob:; connect-src 'self'; object-src 'none'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'"
+
+func serveAdminIndex(w http.ResponseWriter, r *http.Request) {
+	if r.URL.Path != "/admin/" || (r.Method != http.MethodGet && r.Method != http.MethodHead) {
+		http.NotFound(w, r)
+		return
+	}
+	page, err := fs.ReadFile(adminWebFS, "index.html")
+	if err != nil {
+		http.Error(w, "admin page unavailable", http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Set("Content-Security-Policy", adminCSP)
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	w.Header().Set("Referrer-Policy", "no-referrer")
+	w.Header().Set("X-Frame-Options", "DENY")
+	http.ServeContent(w, r, "index.html", time.Time{}, bytes.NewReader(page))
+}
+
+func serveAdminAsset(w http.ResponseWriter, r *http.Request) {
+	if r.URL.Path == "/admin/assets/" || (r.Method != http.MethodGet && r.Method != http.MethodHead) {
+		http.NotFound(w, r)
+		return
+	}
+	w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	adminAssetHTTP.ServeHTTP(w, r)
+}
 
 func writeJSON(w http.ResponseWriter, status int, v any) {
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
@@ -85,16 +131,9 @@ func (a *App) routes() http.Handler {
 		}
 		writeJSON(w, status, map[string]any{"ok": err == nil, "qq_enabled": a.cfg.QQ.Enabled, "qq_connected": a.qq.Connected.Load(), "main_model_configured": a.cfg.Models.Main.Model != "" && a.cfg.Models.Main.APIKey != "", "embedding_configured": a.cfg.Models.Embedding.Model != "" && a.cfg.Models.Embedding.APIKey != ""})
 	})
-	mux.HandleFunc("/admin/", func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/admin/" || (r.Method != "GET" && r.Method != "HEAD") {
-			http.NotFound(w, r)
-			return
-		}
-		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		w.Header().Set("Cache-Control", "no-store")
-		w.Header().Set("Content-Security-Policy", "default-src 'self'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src 'self' blob:; connect-src 'self'; frame-ancestors 'none'")
-		_, _ = w.Write(adminHTML)
-	})
+	mux.HandleFunc("/admin/assets", http.NotFound)
+	mux.HandleFunc("/admin/assets/", serveAdminAsset)
+	mux.HandleFunc("/admin/", serveAdminIndex)
 	api := http.NewServeMux()
 	api.HandleFunc("GET /admin/api/groups", func(w http.ResponseWriter, r *http.Request) {
 		groups, err := a.store.Groups(r.Context())
