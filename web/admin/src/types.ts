@@ -104,3 +104,12 @@ export interface Sticker {
 export interface UpdateResponse {
   ok: boolean;
 }
+
+export type AdminView = "conversation" | "notes" | "attempts" | "stickers";
+
+export type NoticeTone = "info" | "success" | "error";
+
+export interface AdminNotice {
+  tone: NoticeTone;
+  message: string;
+}
