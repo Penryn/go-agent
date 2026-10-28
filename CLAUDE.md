@@ -14,15 +14,17 @@ go-agent 是长期在线的 QQ 虚拟群友。入口是 `cmd/qqbotd`，主链路
 
 ## 工作区与验证
 
-保留已有改动。不要提交 `configs/config.yaml`、本地数据、图片缓存或构建产物。运行命令遵循 `/Users/admin/.codex/RTK.md`，使用 `rtk` 前缀。
+保留已有改动。不要提交 `configs/config.yaml`、本地数据或图片缓存。运行命令遵循 `/Users/admin/.codex/RTK.md`，使用 `rtk` 前缀。`internal/app/admin-dist/` 是随源码提交的嵌入产物，修改 `web/admin/` 后必须重新构建并同步提交，不要手工编辑。
 
 ```bash
+rtk npm --prefix web/admin run typecheck
+rtk npm --prefix web/admin run build
 rtk go test -race ./...
 rtk proxy go vet ./...
 rtk go build ./...
 rtk git diff --check
 ```
 
-后台是 `internal/app/admin.html`，由 Go 直接嵌入，不需要前端构建。页面脚本修改后检查 JavaScript 语法并验证相关 HTTP 接口。数据库测试使用独立临时数据库；跳过数据库或未做模型、QQ 联调时，明确说明边界。
+后台源码是 `web/admin/` 下的 React + TypeScript 应用，Vite 构建到 `internal/app/admin-dist/` 后由 Go 嵌入并提供 `/admin/` 与 `/admin/assets/`。页面保持同源 API、Bearer 令牌、本机访问限制和版本冲突语义；不要引入独立前端服务或把令牌写入持久存储。开发热更新使用 `web/admin/vite.config.ts` 的 `/admin/api` 代理。数据库测试使用独立临时数据库；跳过数据库或未做模型、QQ 联调时，明确说明边界。
 
 按可独立检查的功能分批提交。每次 Git 提交前必须运行 `rtk proxy dcc doctor`，确认 GitHooks 状态正常后再提交；未经要求不推送。

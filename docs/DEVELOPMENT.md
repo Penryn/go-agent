@@ -1,15 +1,52 @@
 # 开发与验证
 
-构建和测试直接使用 Go。后台为 [admin.html](../internal/app/admin.html)，通过 `go:embed` 嵌入，不需要前端构建。
+## 后台前端
+
+后台管理页使用 React、TypeScript 和 Vite，源码位于 `web/admin/`。生产构建输出到 [`internal/app/admin-dist/`](../internal/app/admin-dist/)，由 Go `embed` 嵌入并从 `/admin/` 提供。运行时和普通 Go 构建不需要 Node.js；修改前端源码时需要 Node.js 20.19 或更高版本。
+
+首次安装或依赖变化后执行：
 
 ```bash
-go test -race ./...
-go vet ./...
-go build ./...
-git diff --check
+make admin-install
 ```
 
-`make build` 生成 `bin/qqbotd`，`make check` 执行 vet、竞态测试和构建。修改页面脚本时还应检查 JavaScript 语法，并验证相关 HTTP 接口。
+类型检查与生产构建：
+
+```bash
+make admin-typecheck
+make admin-build
+```
+
+`make check` 会先执行类型检查和前端生产构建，再执行 Go vet、竞态测试和 Go 构建。没有 Node.js 环境时可运行 `make check-go`，只检查 Go 侧。生产构建具有确定性；提交前应确认构建后的 `git diff --exit-code -- internal/app/admin-dist` 没有额外差异，说明源码和嵌入产物一致。
+
+本地联调时，先启动 Go 服务，再运行：
+
+```bash
+make admin-dev
+```
+
+Vite 在 `http://127.0.0.1:5173/admin/` 提供热更新，并将 `/admin/api` 代理到 `http://127.0.0.1:8088`。生产环境仍由同一个 Go 进程提供页面和 API，没有独立前端服务。
+
+后台令牌只保存在 React 内存中，刷新页面后需要重新输入。笔记和表情包保存携带版本号；`409` 时应保留当前草稿并重新读取最新版本，`401`/`403` 表示鉴权或来源校验失败。
+
+## 检查与验证
+
+完整检查：
+
+```bash
+make admin-install
+make check
+rtk git diff --check
+```
+
+只检查 Go 侧：
+
+```bash
+make check-go
+rtk git diff --check
+```
+
+`make build` 生成 `bin/qqbotd`，使用仓库中已提交的后台静态资源，不要求 Node.js。
 
 ## 数据库测试
 

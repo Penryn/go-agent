@@ -11,7 +11,7 @@ go-agent 是长期参与 QQ 群聊的虚拟群友：按语境选择接话或旁�
 
 ## 启动
 
-需要 Go 1.26、带 pgvector 的 PostgreSQL、NapCat OneBot HTTP 与 WebSocket 服务，以及模型配置。后台页面直接嵌入 Go 程序，构建不需要 Node.js 或前端依赖安装。
+需要 Go 1.26、带 pgvector 的 PostgreSQL、NapCat OneBot HTTP 与 WebSocket 服务，以及模型配置。后台 React 源码位于 `web/admin/`，构建结果嵌入 Go 程序；运行和常规 Go 构建使用仓库中的已提交静态资源，不需要 Node.js。修改后台前端时需要 Node.js 20.19 或更高版本。
 
 ```bash
 cp configs/config.example.yaml configs/config.yaml
@@ -33,16 +33,17 @@ PostgreSQL 与 NapCat 的本地服务定义见 [docker-compose.yml](docker-compo
 ## 验证
 
 ```bash
-go test -race ./...
-go vet ./...
-go build ./...
+make admin-install
+make check
 make replay
 ```
+
+`make check` 同时执行后台类型检查、生产构建、Go vet、竞态测试和 Go 构建。没有 Node.js 环境时可用 `make check-go` 只验证 Go 侧；`make build` 始终只构建使用已提交后台资源的 Go 二进制。后台开发命令与构建产物同步要求见 [开发说明](docs/DEVELOPMENT.md)。
 
 两套默认回放使用预录模型输出、内存存储和模拟发送，不连接真实 QQ，也不调用外部模型。真实模型回放、测试数据库与验证边界见 [开发说明](docs/DEVELOPMENT.md)。
 
 ## 文档
 
 - [架构说明](docs/ARCHITECTURE.md)：聊天、记忆、全局表情包、发送与关闭。
-- [开发说明](docs/DEVELOPMENT.md)：检查命令、离线与真实模型回放。
+- [开发说明](docs/DEVELOPMENT.md)：后台前端构建、检查命令、离线与真实模型回放。
 - [数据库说明](schema/README.md)：表、索引、版本和数据边界。
