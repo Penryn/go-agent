@@ -43,6 +43,14 @@ type Note struct {
 	ValidTo        *time.Time `json:"valid_to,omitempty"`
 	MemoryRevision int64      `json:"memory_revision,omitempty"`
 }
+
+// Episode is a reusable event memory. It keeps the evidence and lifecycle
+// fields of Note while recording the topic it came from; it is never promoted
+// to a stable fact automatically.
+type Episode struct {
+	Note
+	TopicID string `json:"topic_id,omitempty"`
+}
 type Change struct {
 	ID       string     `json:"id,omitempty"`
 	Version  int64      `json:"version"`
