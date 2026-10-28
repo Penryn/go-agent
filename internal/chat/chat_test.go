@@ -168,8 +168,9 @@ func TestNewDirectMessageInvalidatesOldDraft(t *testing.T) {
 	}
 }
 func TestFollowupBypassesSpontaneousInterval(t *testing.T) {
-	r, _, _ := setup(t, generator{func(context.Context, any) (chat.Reply, error) {
-		return chat.Reply{Action: "text", Text: "接着说"}, nil
+	r, _, _ := setup(t, generator{func(_ context.Context, input any) (chat.Reply, error) {
+		batch := input.(map[string]any)["batch"].([]qq.Event)
+		return chat.Reply{Action: "text", Text: "接着说", Plan: &chat.ReplyPlan{TargetEventID: batch[len(batch)-1].ID, ResponseMode: "short"}}, nil
 	}})
 	for i := 1; i <= 2; i++ {
 		a, err := r.Process(context.Background(), payload(i, 1, 10, fmt.Sprint("继续", i), i == 1))
@@ -278,8 +279,39 @@ func TestConversationContextAndReplyPlan(t *testing.T) {
 	if a.Reply.Plan == nil || a.Reply.Plan.ResponseMode != "ack" || a.Reply.Plan.TargetEventID != received.Batch[0].EventID {
 		t.Fatalf("unexpected reply plan: %+v", a.Reply.Plan)
 	}
+	if len(received.Batch[0].TopicIDs) == 0 || a.Reply.Plan.TopicID == "" || a.Reply.Plan.TopicID != received.Batch[0].TopicIDs[0] {
+		t.Fatalf("topic was not inferred from the target: plan=%+v event=%+v", a.Reply.Plan, received.Batch[0])
+	}
 	if len(sender.Messages) != 1 || sender.Messages[0] != "收到" {
 		t.Fatal(sender.Messages)
+	}
+}
+
+func TestBotTopicContinuationDoesNotBypassForParallelTopic(t *testing.T) {
+	r, _, sender := setup(t, generator{func(_ context.Context, input any) (chat.Reply, error) {
+		batch := input.(map[string]any)["batch"].([]qq.Event)
+		return chat.Reply{
+			Action: "text",
+			Text:   "接着聊",
+			Plan:   &chat.ReplyPlan{TargetEventID: batch[len(batch)-1].ID, ResponseMode: "short"},
+		}, nil
+	}})
+	r.Config.ActiveWindow = time.Hour
+
+	first, err := r.Process(context.Background(), payload(1, 1, 10, "周末去爬山吗", true))
+	if err != nil || first.State != "confirmed" {
+		t.Fatal(first, err)
+	}
+	followup, err := r.Process(context.Background(), payload(2, 1, 11, "爬到山顶要多久", false))
+	if err != nil || followup.State != "confirmed" {
+		t.Fatal("same-topic followup did not bypass the interval", followup, err)
+	}
+	parallel, err := r.Process(context.Background(), payload(3, 1, 12, "今晚吃火锅", false))
+	if err != nil || parallel.State != "limited" {
+		t.Fatal("parallel topic bypassed the interval", parallel, err)
+	}
+	if len(sender.Messages) != 2 {
+		t.Fatalf("sent messages = %v, want first reply and followup", sender.Messages)
 	}
 }
 
