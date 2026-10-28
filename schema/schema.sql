@@ -9,16 +9,37 @@ CREATE TABLE IF NOT EXISTS groupfriend.messages (
 CREATE INDEX IF NOT EXISTS friend_messages_group_seq ON groupfriend.messages(group_id,seq DESC);
 CREATE INDEX IF NOT EXISTS friend_messages_platform ON groupfriend.messages(group_id,message_id);
 CREATE TABLE IF NOT EXISTS groupfriend.group_progress (
- group_id BIGINT PRIMARY KEY,after_seq BIGINT NOT NULL DEFAULT 0,retry_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+ group_id BIGINT PRIMARY KEY,after_seq BIGINT NOT NULL DEFAULT 0,summary_after_seq BIGINT NOT NULL DEFAULT 0,retry_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+ALTER TABLE groupfriend.group_progress ADD COLUMN IF NOT EXISTS summary_after_seq BIGINT NOT NULL DEFAULT 0;
 CREATE TABLE IF NOT EXISTS groupfriend.notes (
  id TEXT PRIMARY KEY,group_id BIGINT NOT NULL,subject BIGINT NOT NULL,kind TEXT NOT NULL,key TEXT NOT NULL,
  text TEXT NOT NULL,evidence JSONB NOT NULL,revision BIGINT NOT NULL,source_seq BIGINT NOT NULL,
  state TEXT NOT NULL CHECK (state IN ('active','forgotten')),updated_at TIMESTAMPTZ NOT NULL,
  expires_at TIMESTAMPTZ,embedding halfvec(__DIM__),indexed_revision BIGINT NOT NULL DEFAULT 0,embedding_model TEXT NOT NULL DEFAULT ''
 );
+ALTER TABLE groupfriend.notes ADD COLUMN IF NOT EXISTS salience SMALLINT NOT NULL DEFAULT 50;
+ALTER TABLE groupfriend.notes ADD COLUMN IF NOT EXISTS confidence REAL NOT NULL DEFAULT 1;
+ALTER TABLE groupfriend.notes ADD COLUMN IF NOT EXISTS last_used_at TIMESTAMPTZ;
+ALTER TABLE groupfriend.notes ADD COLUMN IF NOT EXISTS use_count BIGINT NOT NULL DEFAULT 0;
+ALTER TABLE groupfriend.notes ADD COLUMN IF NOT EXISTS valid_from TIMESTAMPTZ;
+ALTER TABLE groupfriend.notes ADD COLUMN IF NOT EXISTS valid_to TIMESTAMPTZ;
+ALTER TABLE groupfriend.notes ADD COLUMN IF NOT EXISTS memory_revision BIGINT NOT NULL DEFAULT 1;
 CREATE INDEX IF NOT EXISTS friend_notes_scope ON groupfriend.notes(group_id,subject,state);
 CREATE INDEX IF NOT EXISTS friend_notes_vector ON groupfriend.notes USING hnsw(embedding halfvec_cosine_ops);
+CREATE TABLE IF NOT EXISTS groupfriend.conversation_topics (
+ group_id BIGINT NOT NULL,topic_id TEXT NOT NULL,status TEXT NOT NULL,
+ participants JSONB NOT NULL DEFAULT '[]',first_seq BIGINT NOT NULL,last_seq BIGINT NOT NULL,
+ revision BIGINT NOT NULL DEFAULT 1,last_active_at TIMESTAMPTZ NOT NULL,
+ PRIMARY KEY(group_id,topic_id)
+);
+CREATE TABLE IF NOT EXISTS groupfriend.topic_summaries (
+ group_id BIGINT NOT NULL,topic_id TEXT NOT NULL,revision BIGINT NOT NULL,
+ summary TEXT NOT NULL,evidence JSONB NOT NULL DEFAULT '[]',source_seq BIGINT NOT NULL,
+ embedding halfvec(__DIM__),embedding_model TEXT NOT NULL DEFAULT '',updated_at TIMESTAMPTZ NOT NULL,
+ PRIMARY KEY(group_id,topic_id,revision)
+);
+CREATE INDEX IF NOT EXISTS friend_topic_summary_scope ON groupfriend.topic_summaries(group_id,topic_id,revision DESC);
 CREATE TABLE IF NOT EXISTS groupfriend.stickers (
  id TEXT PRIMARY KEY,content_hash TEXT UNIQUE,source_event TEXT NOT NULL,source_group BIGINT NOT NULL,
  url TEXT NOT NULL,path TEXT NOT NULL DEFAULT '',mime TEXT NOT NULL DEFAULT '',size BIGINT NOT NULL DEFAULT 0,

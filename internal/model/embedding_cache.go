@@ -2,8 +2,6 @@ package model
 
 import (
 	"context"
-	"crypto/sha256"
-	"fmt"
 	"strings"
 	"time"
 
@@ -51,8 +49,7 @@ func (e *CachedEmbedder) EmbeddingVersion() string {
 
 func (e *CachedEmbedder) Embed(ctx context.Context, text string) ([]float32, error) {
 	normalized := normalizeEmbeddingText(text)
-	sum := sha256.Sum256([]byte(normalized))
-	key := fmt.Sprintf("%s:%x", e.EmbeddingVersion(), sum[:])
+	key := cache.EmbeddingKey(e.EmbeddingVersion(), normalized)
 	value, _, err := e.cache.Load(ctx, key, e.ttl, func(call context.Context) ([]float32, error) {
 		return e.base.Embed(call, normalized)
 	})

@@ -7,8 +7,10 @@ import (
 	"fmt"
 	"slices"
 	"strings"
+	"sync"
 	"time"
 
+	"github.com/phlin/go-agent/internal/cache"
 	"github.com/phlin/go-agent/internal/model"
 	"github.com/phlin/go-agent/internal/qq"
 	"github.com/phlin/go-agent/internal/search"
@@ -20,19 +22,26 @@ type Evidence struct {
 	Quote   string `json:"quote"`
 }
 type Note struct {
-	Explicit  bool       `json:"-"`
-	ID        string     `json:"id"`
-	GroupID   int64      `json:"-"`
-	Subject   int64      `json:"subject"`
-	Kind      string     `json:"kind"`
-	Key       string     `json:"key"`
-	Text      string     `json:"text"`
-	Evidence  []Evidence `json:"evidence"`
-	Version   int64      `json:"version"`
-	State     string     `json:"state"`
-	SourceSeq int64      `json:"-"`
-	Updated   time.Time  `json:"updated"`
-	Expires   *time.Time `json:"expires,omitempty"`
+	Explicit       bool       `json:"-"`
+	ID             string     `json:"id"`
+	GroupID        int64      `json:"-"`
+	Subject        int64      `json:"subject"`
+	Kind           string     `json:"kind"`
+	Key            string     `json:"key"`
+	Text           string     `json:"text"`
+	Evidence       []Evidence `json:"evidence"`
+	Version        int64      `json:"version"`
+	State          string     `json:"state"`
+	SourceSeq      int64      `json:"-"`
+	Updated        time.Time  `json:"updated"`
+	Expires        *time.Time `json:"expires,omitempty"`
+	Salience       int16      `json:"salience,omitempty"`
+	Confidence     float32    `json:"confidence,omitempty"`
+	LastUsedAt     *time.Time `json:"last_used_at,omitempty"`
+	UseCount       int64      `json:"use_count,omitempty"`
+	ValidFrom      *time.Time `json:"valid_from,omitempty"`
+	ValidTo        *time.Time `json:"valid_to,omitempty"`
+	MemoryRevision int64      `json:"memory_revision,omitempty"`
 }
 type Change struct {
 	ID       string     `json:"id,omitempty"`
@@ -58,6 +67,10 @@ type Trace struct {
 	Degraded   []string `json:"degraded,omitempty"`
 	Millis     int64    `json:"millis"`
 }
+type RecallResult struct {
+	Notes []Note `json:"notes"`
+	Trace Trace  `json:"trace"`
+}
 type Store interface {
 	Notes(context.Context, int64, int) ([]Note, error)
 	VectorNotes(context.Context, int64, []float32, string, int) ([]Note, error)
@@ -67,11 +80,64 @@ type Store interface {
 	PendingNotes(context.Context, string, int) ([]Note, error)
 	IndexNote(context.Context, Note, []float32, string) error
 }
+type RevisionStore interface {
+	MemoryRevision(context.Context, int64) (int64, error)
+}
+type UsageStore interface {
+	FlushNoteUsage(context.Context, map[string]int64, time.Time) error
+}
 type Service struct {
-	Store     Store
-	Model     model.Generator
-	Embedding model.Embedder
-	TopK      int
+	Store      Store
+	Model      model.Generator
+	Embedding  model.Embedder
+	TopK       int
+	IndexLimit int
+	Cache      cache.CacheHub
+	IndexTTL   time.Duration
+	usageMu    sync.Mutex
+	usage      map[string]int64
+}
+
+func (s *Service) RecordUsage(notes []Note) {
+	if len(notes) == 0 {
+		return
+	}
+	s.usageMu.Lock()
+	defer s.usageMu.Unlock()
+	if s.usage == nil {
+		s.usage = map[string]int64{}
+	}
+	for _, note := range notes {
+		if note.ID != "" {
+			s.usage[note.ID]++
+		}
+	}
+}
+
+func (s *Service) FlushUsage(ctx context.Context) error {
+	store, ok := s.Store.(UsageStore)
+	if !ok {
+		return nil
+	}
+	s.usageMu.Lock()
+	pending := s.usage
+	s.usage = map[string]int64{}
+	s.usageMu.Unlock()
+	if len(pending) == 0 {
+		return nil
+	}
+	if err := store.FlushNoteUsage(ctx, pending, time.Now()); err != nil {
+		s.usageMu.Lock()
+		if s.usage == nil {
+			s.usage = map[string]int64{}
+		}
+		for id, count := range pending {
+			s.usage[id] += count
+		}
+		s.usageMu.Unlock()
+		return err
+	}
+	return nil
 }
 
 func Explicit(text string) bool {
@@ -90,10 +156,54 @@ func ids(notes []Note) []string {
 	return out
 }
 func (s *Service) Recall(ctx context.Context, group int64, events []qq.Event, query string) ([]Note, Trace, error) {
+	var vector []float32
+	version := ""
+	if s.Embedding != nil && strings.TrimSpace(query) != "" {
+		call, cancel := context.WithTimeout(ctx, 3*time.Second)
+		v, err := s.Embedding.Embed(call, query)
+		cancel()
+		if err == nil {
+			vector = v
+			version = s.Embedding.EmbeddingVersion()
+		}
+	}
+	return s.recall(ctx, group, events, query, vector, version)
+}
+
+// RecallWithEmbedding reuses a query vector produced by the model gateway.
+// Callers use this when memory and sticker retrieval happen in one turn.
+func (s *Service) RecallWithEmbedding(ctx context.Context, group int64, events []qq.Event, query string, vector []float32, version string) ([]Note, Trace, error) {
+	return s.recall(ctx, group, events, query, vector, version)
+}
+
+func (s *Service) RecallCached(ctx context.Context, group int64, actorVersion, memoryRevision uint64, events []qq.Event, query string, vector []float32, version string, ttl time.Duration) ([]Note, Trace, error) {
+	if s.Cache == nil {
+		return s.recall(ctx, group, events, query, vector, version)
+	}
+	key := cache.RecallKey(group, actorVersion, memoryRevision, query)
+	var cached RecallResult
+	if s.Cache.Get(key, &cached) {
+		return append([]Note(nil), cached.Notes...), cached.Trace, nil
+	}
+	notes, trace, err := s.recall(ctx, group, events, query, vector, version)
+	if err != nil {
+		return nil, trace, err
+	}
+	if ttl <= 0 {
+		ttl = 20 * time.Second
+	}
+	s.Cache.Set(key, RecallResult{Notes: notes, Trace: trace}, ttl)
+	return notes, trace, nil
+}
+
+func (s *Service) recall(ctx context.Context, group int64, events []qq.Event, query string, vector []float32, version string) ([]Note, Trace, error) {
 	start := time.Now()
 	trace := Trace{}
-	// ponytail: BM25 scans at most 5,000 group notes; use an inverted index if this bound becomes too small.
-	all, err := s.Store.Notes(ctx, group, 5000)
+	limit := s.IndexLimit
+	if limit <= 0 {
+		limit = 5000
+	}
+	all, err := s.loadIndex(ctx, group, limit)
 	if err != nil {
 		return nil, trace, err
 	}
@@ -106,6 +216,8 @@ func (s *Service) Recall(ctx context.Context, group int64, events []qq.Event, qu
 	docs := []bm25.Document{}
 	contextual := []string{}
 	required := []Note{}
+	profiles := []Note{}
+	episodes := []Note{}
 	for _, n := range all {
 		if n.GroupID != group || n.State != "active" || (n.Expires != nil && !n.Expires.After(time.Now())) {
 			continue
@@ -114,6 +226,13 @@ func (s *Service) Recall(ctx context.Context, group int64, events []qq.Event, qu
 		docs = append(docs, bm25.Document{ID: n.ID, Text: n.Text + " " + n.Key})
 		if n.Kind == "preference" && (n.Subject == 0 || subjects[n.Subject]) {
 			required = append(required, n)
+		} else if n.Kind == "member" && subjects[n.Subject] {
+			profiles = append(profiles, n)
+		} else if n.Kind == "episode" && ((hasTime && !n.Updated.Before(from) && n.Updated.Before(until)) || subjects[n.Subject]) {
+			episodes = append(episodes, n)
+			if hasTime && !n.Updated.Before(from) && n.Updated.Before(until) {
+				contextual = append(contextual, n.ID)
+			}
 		} else if (subjects[n.Subject] && n.Subject > 0 && strings.TrimSpace(query) != "") || (hasTime && n.Kind == "episode" && !n.Updated.Before(from) && n.Updated.Before(until)) {
 			contextual = append(contextual, n.ID)
 		}
@@ -122,20 +241,16 @@ func (s *Service) Recall(ctx context.Context, group int64, events []qq.Event, qu
 		trace.Lexical = append(trace.Lexical, r.ID)
 	}
 	trace.Contextual = contextual[:min(len(contextual), max(20, s.TopK*4))]
-	if s.Embedding != nil && strings.TrimSpace(query) != "" {
+	if len(vector) > 0 && version != "" {
 		call, cancel := context.WithTimeout(ctx, 3*time.Second)
-		vec, embedErr := s.Embedding.Embed(call, query)
+		ns, vectorErr := s.Store.VectorNotes(call, group, vector, version, max(20, s.TopK*4))
+		embedErr := vectorErr
 		if embedErr == nil {
-			ns, vectorErr := s.Store.VectorNotes(call, group, vec, s.Embedding.EmbeddingVersion(), max(20, s.TopK*4))
-			if vectorErr == nil {
-				for _, n := range ns {
-					if n.GroupID == group && n.State == "active" {
-						byID[n.ID] = n
-						trace.Semantic = append(trace.Semantic, n.ID)
-					}
+			for _, n := range ns {
+				if n.GroupID == group && n.State == "active" {
+					byID[n.ID] = n
+					trace.Semantic = append(trace.Semantic, n.ID)
 				}
-			} else {
-				embedErr = vectorErr
 			}
 		}
 		cancel()
@@ -149,6 +264,15 @@ func (s *Service) Recall(ctx context.Context, group int64, events []qq.Event, qu
 	for _, n := range out {
 		seen[n.ID] = true
 	}
+	for _, prioritized := range [][]Note{profiles, episodes} {
+		for _, n := range prioritized {
+			if seen[n.ID] || len(out) >= max(1, s.TopK)+len(required) {
+				continue
+			}
+			out = append(out, n)
+			seen[n.ID] = true
+		}
+	}
 	for _, id := range selected {
 		if !seen[id] && len(out)-len(required) < max(1, s.TopK) {
 			out = append(out, byID[id])
@@ -158,6 +282,35 @@ func (s *Service) Recall(ctx context.Context, group int64, events []qq.Event, qu
 	trace.Selected = ids(out)
 	trace.Millis = time.Since(start).Milliseconds()
 	return out, trace, nil
+}
+
+func (s *Service) loadIndex(ctx context.Context, group int64, limit int) ([]Note, error) {
+	if s.Cache == nil {
+		return s.Store.Notes(ctx, group, limit)
+	}
+	revisionStore, ok := s.Store.(RevisionStore)
+	if !ok {
+		return s.Store.Notes(ctx, group, limit)
+	}
+	revision, err := revisionStore.MemoryRevision(ctx, group)
+	if err != nil {
+		return nil, err
+	}
+	key := cache.NotesIndexKey(group, revision)
+	var notes []Note
+	if s.Cache.Get(key, &notes) {
+		return notes, nil
+	}
+	notes, err = s.Store.Notes(ctx, group, limit)
+	if err != nil {
+		return nil, err
+	}
+	ttl := s.IndexTTL
+	if ttl <= 0 {
+		ttl = 10 * time.Minute
+	}
+	s.Cache.Set(key, notes, ttl)
+	return append([]Note(nil), notes...), nil
 }
 func (s *Service) Apply(ctx context.Context, group int64, events []qq.Event, changes []Change, progress *Progress) error {
 	if len(changes) > 12 {
@@ -254,7 +407,7 @@ func (s *Service) Apply(ctx context.Context, group int64, events []qq.Event, cha
 			state = "forgotten"
 			ch.Evidence = append(append([]Evidence{}, old.Evidence...), ch.Evidence...)
 		}
-		n := Note{ID: id, GroupID: group, Subject: ch.Subject, Kind: ch.Kind, Key: ch.Key, Text: strings.TrimSpace(ch.Text), Evidence: ch.Evidence, Version: ch.Version, State: state, SourceSeq: sourceSeq, Explicit: explicit, Updated: evidenceAt, Expires: ch.Expires}
+		n := Note{ID: id, GroupID: group, Subject: ch.Subject, Kind: ch.Kind, Key: ch.Key, Text: strings.TrimSpace(ch.Text), Evidence: ch.Evidence, Version: ch.Version, State: state, SourceSeq: sourceSeq, Explicit: explicit, Updated: evidenceAt, Expires: ch.Expires, Salience: 50, Confidence: 1, MemoryRevision: 1}
 		if state == "active" && n.Text == "" {
 			return errors.New("empty memory")
 		}

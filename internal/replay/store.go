@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/phlin/go-agent/internal/chat"
+	"github.com/phlin/go-agent/internal/conversation"
 	"github.com/phlin/go-agent/internal/memory"
 	"github.com/phlin/go-agent/internal/qq"
 )
@@ -21,16 +22,18 @@ type projection struct {
 	Vector  []float32
 }
 type Store struct {
-	mu       sync.Mutex
-	events   []qq.Event
-	attempts map[string]chat.Attempt
-	notes    map[string]memory.Note
-	vectors  map[string]projection
-	cursors  map[int64]int64
+	mu             sync.Mutex
+	events         []qq.Event
+	attempts       map[string]chat.Attempt
+	notes          map[string]memory.Note
+	vectors        map[string]projection
+	cursors        map[int64]int64
+	topics         map[int64][]conversation.TopicView
+	summaryCursors map[int64]int64
 }
 
 func NewStore() *Store {
-	return &Store{attempts: map[string]chat.Attempt{}, notes: map[string]memory.Note{}, vectors: map[string]projection{}, cursors: map[int64]int64{}}
+	return &Store{attempts: map[string]chat.Attempt{}, notes: map[string]memory.Note{}, vectors: map[string]projection{}, cursors: map[int64]int64{}, topics: map[int64][]conversation.TopicView{}, summaryCursors: map[int64]int64{}}
 }
 func (s *Store) Ingest(_ context.Context, e *qq.Event) (bool, error) {
 	s.mu.Lock()
@@ -131,6 +134,51 @@ func (s *Store) Notes(_ context.Context, g int64, limit int) ([]memory.Note, err
 	}
 	return out, nil
 }
+func (s *Store) MemoryRevision(_ context.Context, g int64) (int64, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var revision int64
+	for _, n := range s.notes {
+		if n.GroupID == g && n.MemoryRevision > revision {
+			revision = n.MemoryRevision
+		}
+		if n.GroupID == g && n.MemoryRevision == 0 && n.Version > revision {
+			revision = n.Version
+		}
+	}
+	return revision, nil
+}
+func (s *Store) FlushNoteUsage(_ context.Context, usage map[string]int64, at time.Time) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for id, count := range usage {
+		if n, ok := s.notes[id]; ok && n.State == "active" {
+			n.UseCount += count
+			n.LastUsedAt = &at
+			s.notes[id] = n
+		}
+	}
+	return nil
+}
+func (s *Store) SaveTopics(_ context.Context, g int64, topics []conversation.TopicView, summaryAfterSeq int64) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.topics[g] = append([]conversation.TopicView(nil), topics...)
+	if summaryAfterSeq > s.summaryCursors[g] {
+		s.summaryCursors[g] = summaryAfterSeq
+	}
+	return nil
+}
+func (s *Store) LoadTopics(_ context.Context, g int64) ([]conversation.TopicView, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]conversation.TopicView(nil), s.topics[g]...), nil
+}
+func (s *Store) SummaryProgress(_ context.Context, g int64) (int64, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.summaryCursors[g], nil
+}
 func (s *Store) VectorNotes(_ context.Context, g int64, v []float32, version string, limit int) ([]memory.Note, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -182,6 +230,11 @@ func (s *Store) SaveNotes(_ context.Context, g int64, notes []memory.Note, p *me
 	}
 	for _, n := range notes {
 		n.Version++
+		if n.MemoryRevision < 1 {
+			n.MemoryRevision = 1
+		} else {
+			n.MemoryRevision++
+		}
 		s.notes[n.ID] = n
 		delete(s.vectors, n.ID)
 	}

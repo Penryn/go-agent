@@ -7,6 +7,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/phlin/go-agent/internal/conversation"
 	"github.com/phlin/go-agent/internal/qq"
 	"github.com/phlin/go-agent/internal/search/bm25"
 )
@@ -52,6 +53,9 @@ type topicState struct {
 	texts            []string
 	lastSeq          int64
 	lastAt           time.Time
+	firstSeq         int64
+	summary          string
+	revision         int64
 	botParticipated  bool
 	botAt            time.Time
 }
@@ -70,6 +74,45 @@ type topicCandidate struct {
 
 func newTopicTracker() *topicTracker {
 	return &topicTracker{groups: map[int64]*topicGraph{}}
+}
+
+func (t *topicTracker) Snapshot(groupID int64) []conversation.TopicView {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	g := t.groups[groupID]
+	if g == nil {
+		return nil
+	}
+	out := make([]conversation.TopicView, 0, len(g.topics))
+	for _, topic := range g.topics {
+		out = append(out, conversation.TopicView{ID: topic.id, Summary: topic.summary, Participants: sortedTopicParticipants(topic), FirstSeq: topic.firstSeq, LastSeq: topic.lastSeq, Revision: topic.revision, LastActiveAt: topic.lastAt, Status: topicStateAt(topic, time.Now(), 90*time.Second)})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].LastActiveAt.After(out[j].LastActiveAt) })
+	return out
+}
+
+func (t *topicTracker) Restore(groupID int64, views []conversation.TopicView) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	g := t.groups[groupID]
+	if g == nil {
+		g = &topicGraph{groupID: groupID, topics: map[string]*topicState{}, eventTopics: map[string][]string{}, eventMessageIDs: map[string]string{}, messageEvents: map[string]int{}, messageTopics: map[string][]string{}}
+		t.groups[groupID] = g
+	}
+	for _, view := range views {
+		if view.ID == "" {
+			continue
+		}
+		topic := &topicState{id: view.ID, participants: map[int64]bool{}, textEventIDs: map[string]bool{}, firstSeq: view.FirstSeq, lastSeq: view.LastSeq, lastAt: view.LastActiveAt, summary: view.Summary, revision: view.Revision}
+		for _, id := range view.Participants {
+			topic.addParticipant(id)
+		}
+		if topic.revision < 1 {
+			topic.revision = 1
+		}
+		g.topics[topic.id] = topic
+	}
+	g.lastActive = time.Now()
 }
 
 // observe incrementally updates a bounded group topic graph. The graph is
@@ -354,6 +397,12 @@ func (g *topicGraph) touch(topic *topicState, event qq.Event) {
 	}
 	if event.Seq > topic.lastSeq {
 		topic.lastSeq = event.Seq
+	}
+	if topic.firstSeq == 0 && event.Seq > 0 {
+		topic.firstSeq = event.Seq
+	}
+	if topic.revision == 0 {
+		topic.revision = 1
 	}
 	if event.At.After(topic.lastAt) {
 		topic.lastAt = event.At

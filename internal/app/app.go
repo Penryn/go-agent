@@ -9,6 +9,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/phlin/go-agent/internal/cache"
 	"github.com/phlin/go-agent/internal/chat"
 	"github.com/phlin/go-agent/internal/config"
 	"github.com/phlin/go-agent/internal/meme"
@@ -47,10 +48,11 @@ func New(ctx context.Context, cfg config.Config) (*App, error) {
 	if err := os.MkdirAll(cfg.Meme.Path, 0700); err != nil {
 		return fail(err)
 	}
-	models := model.New(cfg.Models, cfg.ModelConcurrency)
-	embeddings := model.NewCachedEmbedder(models, 4096, 30*time.Minute)
-	a.memories = &memory.Service{Store: db, Model: models, Embedding: embeddings, TopK: cfg.Memory.TopK}
-	a.memes = &meme.Service{Store: db, Model: models, Embedding: embeddings, Config: cfg.Meme, HTTP: qq.MediaClient()}
+	models := model.New(cfg.Models, cfg.ModelConcurrency.ChatSlots())
+	hub := cache.NewHub(cfg.Cache.MaxItems)
+	gateway := model.NewGateway(models, models, hub, cfg.Cache.EmbeddingTTL, cfg.ModelConcurrency.Chat, cfg.ModelConcurrency.Vision, cfg.ModelConcurrency.Embedding, cfg.ModelConcurrency.Background)
+	a.memories = &memory.Service{Store: db, Model: gateway, Embedding: gateway, TopK: cfg.Memory.TopK, IndexLimit: cfg.Memory.IndexLimit, Cache: hub}
+	a.memes = &meme.Service{Store: db, Model: gateway, Embedding: gateway, Config: cfg.Meme, HTTP: qq.MediaClient(), Cache: hub}
 	a.qq = &qq.Client{URL: cfg.QQ.OutboundURL, Token: cfg.QQ.OutboundToken, WSURL: cfg.QQ.EventWSURL, WSToken: cfg.QQ.EventWSToken}
 	var sender chat.Sender
 	if cfg.QQ.Enabled {
@@ -59,7 +61,7 @@ func New(ctx context.Context, cfg config.Config) (*App, error) {
 		}
 		sender = ownedSender{a.qq, db}
 	}
-	a.runtime = chat.New(child, &chat.Runtime{Store: db, Model: models, Memory: a.memories, Memes: a.memes, Sender: sender, Persona: cfg.Persona, Config: cfg.Chat, SelfID: cfg.QQ.SelfID, Groups: cfg.QQ.GroupWhitelist})
+	a.runtime = chat.New(child, &chat.Runtime{Store: db, Model: gateway, Embedding: gateway, Cache: hub, Memory: a.memories, Memes: a.memes, Sender: sender, Persona: cfg.Persona, Config: cfg.Chat, SelfID: cfg.QQ.SelfID, Groups: cfg.QQ.GroupWhitelist})
 	a.server = &http.Server{Addr: cfg.Server.HTTPListen, Handler: a.routes(), ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 10 * time.Second, WriteTimeout: 15 * time.Second, IdleTimeout: 60 * time.Second}
 	return a, nil
 }
@@ -97,6 +99,7 @@ func (a *App) Run(ctx context.Context) error {
 		}()
 	}
 	runBackground(a.ctx, &a.wg, a.cfg.Memory.Interval, a.memories.Tick)
+	runBackground(a.ctx, &a.wg, a.cfg.Memory.UsageFlushInterval, a.memories.FlushUsage)
 	runBackground(a.ctx, &a.wg, 3*time.Second, a.memes.Tick)
 	slog.Info("QQ group friend started", "listen", a.cfg.Server.HTTPListen, "qq_enabled", a.cfg.QQ.Enabled, "global_sticker_pool", true)
 	select {

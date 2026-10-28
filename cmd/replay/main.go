@@ -74,7 +74,7 @@ func run() error {
 		if err != nil {
 			return err
 		}
-		client := model.New(cfg.Models, cfg.ModelConcurrency)
+		client := model.New(cfg.Models, cfg.ModelConcurrency.ChatSlots())
 		generator = client
 		embedding = client
 		mode = "live-model"
@@ -89,7 +89,7 @@ func run() error {
 	memories := &memory.Service{Store: store, Model: generator, Embedding: embedding, TopK: cfg.Memory.TopK}
 	ctx, cancel := context.WithTimeout(context.Background(), *timeout)
 	defer cancel()
-	runtime := chat.New(ctx, &chat.Runtime{Store: store, Model: generator, Memory: memories, Sender: sender, Persona: cfg.Persona, Config: cfg.Chat, SelfID: 0})
+	runtime := chat.New(ctx, &chat.Runtime{Store: store, Model: generator, Embedding: embedding, Memory: memories, Sender: sender, Persona: cfg.Persona, Config: cfg.Chat, SelfID: 0})
 	defer runtime.Close()
 	outcomes := []chat.Attempt{}
 	for i, s := range f.Steps {

@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/phlin/go-agent/internal/delivery"
 	"github.com/phlin/go-agent/internal/meme"
 	"github.com/phlin/go-agent/internal/memory"
 	"github.com/phlin/go-agent/internal/model"
@@ -71,18 +72,41 @@ func (r *Runtime) prepareTurn(ctx context.Context, groupID int64, source []qq.Ev
 	}, nil
 }
 
-func (r *Runtime) retrieveTurn(ctx context.Context, groupID int64, turn turnContext, attempt *Attempt) turnResources {
+func (r *Runtime) retrieveTurn(ctx context.Context, groupID int64, turn turnContext, actorVersion uint64, attempt *Attempt) turnResources {
 	resources := turnResources{notes: []memory.Note{}, assets: []meme.Asset{}, images: []string{}}
+	var queryEmbedding []float32
+	embeddingVersion := ""
+	if r.Embedding != nil && strings.TrimSpace(turn.query) != "" {
+		call, cancel := context.WithTimeout(ctx, 3*time.Second)
+		var err error
+		queryEmbedding, err = r.Embedding.Embed(call, turn.query)
+		cancel()
+		if err != nil {
+			attempt.Retrieval.Degraded = append(attempt.Retrieval.Degraded, "embedding")
+		} else {
+			embeddingVersion = r.Embedding.EmbeddingVersion()
+		}
+	}
 	if r.Memory != nil {
 		var err error
-		resources.notes, attempt.Retrieval, err = r.Memory.Recall(ctx, groupID, turn.batch, turn.query)
+		if r.Memory.Cache != nil {
+			resources.notes, attempt.Retrieval, err = r.Memory.RecallCached(ctx, groupID, actorVersion, 0, turn.batch, turn.query, queryEmbedding, embeddingVersion, 20*time.Second)
+		} else {
+			resources.notes, attempt.Retrieval, err = r.Memory.RecallWithEmbedding(ctx, groupID, turn.batch, turn.query, queryEmbedding, embeddingVersion)
+		}
 		if err != nil {
 			attempt.Retrieval.Degraded = append(attempt.Retrieval.Degraded, "memory")
+		} else {
+			r.Memory.RecordUsage(resources.notes)
 		}
 	}
 	if r.Memes != nil {
 		var err error
-		resources.assets, err = r.Memes.Candidates(ctx, groupID, turn.query)
+		if r.Memes.Cache != nil {
+			resources.assets, err = r.Memes.CandidatesCached(ctx, groupID, turn.query, queryEmbedding, embeddingVersion, time.Now().Unix()/max(1, int64(r.Memes.Config.Cooldown.Seconds())), 20*time.Second)
+		} else {
+			resources.assets, err = r.Memes.CandidatesWithEmbedding(ctx, groupID, turn.query, queryEmbedding, embeddingVersion)
+		}
 		if err != nil {
 			attempt.Retrieval.Degraded = append(attempt.Retrieval.Degraded, "stickers")
 		}
@@ -212,7 +236,14 @@ func (r *Runtime) applyAndDeliver(parent, ctx context.Context, groupID int64, at
 		return attempt
 	}
 
-	receipt, err := r.Sender.Send(ctx, groupID, attempt.Reply.Text, attempt.Reply.Quote, path)
+	var receipt qq.Receipt
+	if r.Delivery != nil {
+		receipt, err = r.Delivery.Deliver(ctx, delivery.Request{GroupID: groupID, Text: attempt.Reply.Text, Quote: attempt.Reply.Quote, Path: path})
+	} else if r.Sender != nil {
+		receipt, err = r.Sender.Send(ctx, groupID, attempt.Reply.Text, attempt.Reply.Quote, path)
+	} else {
+		err = errors.New("delivery sender unavailable")
+	}
 	finish, cancelFinish := context.WithTimeout(context.WithoutCancel(parent), 5*time.Second)
 	defer cancelFinish()
 	if err != nil {

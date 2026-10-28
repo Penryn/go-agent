@@ -13,6 +13,7 @@ import (
 	_ "github.com/jackc/pgx/v5/stdlib"
 	"github.com/pgvector/pgvector-go"
 	"github.com/phlin/go-agent/internal/chat"
+	"github.com/phlin/go-agent/internal/conversation"
 	"github.com/phlin/go-agent/internal/memory"
 	"github.com/phlin/go-agent/internal/qq"
 	"github.com/phlin/go-agent/schema"
@@ -212,14 +213,14 @@ func (s *Store) RepliesSince(ctx context.Context, group int64, since time.Time) 
 	return count, last.Time, err
 }
 
-const noteColumns = `id,group_id,subject,kind,key,text,evidence,revision,source_seq,state,updated_at,expires_at`
+const noteColumns = `id,group_id,subject,kind,key,text,evidence,revision,source_seq,state,updated_at,expires_at,salience,confidence,last_used_at,use_count,valid_from,valid_to,memory_revision`
 
 func scanNotes(rows *sql.Rows) ([]memory.Note, error) {
 	out := []memory.Note{}
 	for rows.Next() {
 		var n memory.Note
 		var evidence []byte
-		if err := rows.Scan(&n.ID, &n.GroupID, &n.Subject, &n.Kind, &n.Key, &n.Text, &evidence, &n.Version, &n.SourceSeq, &n.State, &n.Updated, &n.Expires); err != nil {
+		if err := rows.Scan(&n.ID, &n.GroupID, &n.Subject, &n.Kind, &n.Key, &n.Text, &evidence, &n.Version, &n.SourceSeq, &n.State, &n.Updated, &n.Expires, &n.Salience, &n.Confidence, &n.LastUsedAt, &n.UseCount, &n.ValidFrom, &n.ValidTo, &n.MemoryRevision); err != nil {
 			return nil, err
 		}
 		if err := json.Unmarshal(evidence, &n.Evidence); err != nil {
@@ -272,7 +273,7 @@ func (s *Store) SaveNotes(ctx context.Context, group int64, notes []memory.Note,
 				return errors.New("forgotten source cannot be reintroduced")
 			}
 		}
-		result, err := tx.ExecContext(ctx, `INSERT INTO groupfriend.notes(id,group_id,subject,kind,key,text,evidence,revision,source_seq,state,updated_at,expires_at) VALUES($1,$2,$3,$4,$5,$6,$7,1,$8,$9,$10,$11) ON CONFLICT(id) DO UPDATE SET text=EXCLUDED.text,evidence=EXCLUDED.evidence,revision=groupfriend.notes.revision+1,source_seq=EXCLUDED.source_seq,state=EXCLUDED.state,updated_at=EXCLUDED.updated_at,expires_at=EXCLUDED.expires_at,embedding=NULL,indexed_revision=0 WHERE groupfriend.notes.revision=$12 AND groupfriend.notes.group_id=$2 AND groupfriend.notes.subject=$3 AND groupfriend.notes.key=$5 AND groupfriend.notes.kind=$4`, n.ID, group, n.Subject, n.Kind, n.Key, n.Text, proof, n.SourceSeq, n.State, n.Updated, n.Expires, n.Version)
+		result, err := tx.ExecContext(ctx, `INSERT INTO groupfriend.notes(id,group_id,subject,kind,key,text,evidence,revision,source_seq,state,updated_at,expires_at,salience,confidence,valid_from,valid_to,memory_revision) VALUES($1,$2,$3,$4,$5,$6,$7,1,$8,$9,$10,$11,$12,$13,$14,$15,1) ON CONFLICT(id) DO UPDATE SET text=EXCLUDED.text,evidence=EXCLUDED.evidence,revision=groupfriend.notes.revision+1,source_seq=EXCLUDED.source_seq,state=EXCLUDED.state,updated_at=EXCLUDED.updated_at,expires_at=EXCLUDED.expires_at,salience=EXCLUDED.salience,confidence=EXCLUDED.confidence,valid_from=EXCLUDED.valid_from,valid_to=EXCLUDED.valid_to,memory_revision=groupfriend.notes.memory_revision+1,embedding=NULL,indexed_revision=0 WHERE groupfriend.notes.revision=$16 AND groupfriend.notes.group_id=$2 AND groupfriend.notes.subject=$3 AND groupfriend.notes.key=$5 AND groupfriend.notes.kind=$4`, n.ID, group, n.Subject, n.Kind, n.Key, n.Text, proof, n.SourceSeq, n.State, n.Updated, n.Expires, n.Salience, n.Confidence, n.ValidFrom, n.ValidTo, n.Version)
 		if err != nil {
 			return err
 		}
@@ -295,6 +296,98 @@ func (s *Store) SaveNotes(ctx context.Context, group int64, notes []memory.Note,
 		}
 	}
 	return tx.Commit()
+}
+
+func (s *Store) MemoryRevision(ctx context.Context, group int64) (int64, error) {
+	var revision sql.NullInt64
+	err := s.DB.QueryRowContext(ctx, `SELECT COALESCE(MAX(memory_revision),0) FROM groupfriend.notes WHERE group_id=$1`, group).Scan(&revision)
+	return revision.Int64, err
+}
+
+func (s *Store) FlushNoteUsage(ctx context.Context, usage map[string]int64, at time.Time) error {
+	tx, err := s.DB.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	for id, count := range usage {
+		if count < 1 {
+			continue
+		}
+		if _, err := tx.ExecContext(ctx, `UPDATE groupfriend.notes SET use_count=use_count+$2,last_used_at=$3 WHERE id=$1 AND state='active'`, id, count, at); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
+}
+
+func (s *Store) SaveTopics(ctx context.Context, group int64, topics []conversation.TopicView, summaryAfterSeq int64) error {
+	tx, err := s.DB.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	for _, topic := range topics {
+		if topic.ID == "" {
+			continue
+		}
+		participants, err := json.Marshal(topic.Participants)
+		if err != nil {
+			return err
+		}
+		_, err = tx.ExecContext(ctx, `INSERT INTO groupfriend.conversation_topics(group_id,topic_id,status,participants,first_seq,last_seq,revision,last_active_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8) ON CONFLICT(group_id,topic_id) DO UPDATE SET status=EXCLUDED.status,participants=EXCLUDED.participants,first_seq=EXCLUDED.first_seq,last_seq=EXCLUDED.last_seq,revision=EXCLUDED.revision,last_active_at=EXCLUDED.last_active_at`, group, topic.ID, topic.Status, participants, topic.FirstSeq, topic.LastSeq, max64(topic.Revision, 1), topic.LastActiveAt)
+		if err != nil {
+			return err
+		}
+		if topic.Summary != "" {
+			_, err = tx.ExecContext(ctx, `INSERT INTO groupfriend.topic_summaries(group_id,topic_id,revision,summary,evidence,source_seq,updated_at) VALUES($1,$2,$3,$4,'[]',$5,NOW()) ON CONFLICT(group_id,topic_id,revision) DO UPDATE SET summary=EXCLUDED.summary,source_seq=EXCLUDED.source_seq,updated_at=EXCLUDED.updated_at`, group, topic.ID, max64(topic.Revision, 1), topic.Summary, topic.LastSeq)
+			if err != nil {
+				return err
+			}
+		}
+	}
+	_, err = tx.ExecContext(ctx, `INSERT INTO groupfriend.group_progress(group_id,summary_after_seq) VALUES($1,$2) ON CONFLICT(group_id) DO UPDATE SET summary_after_seq=GREATEST(groupfriend.group_progress.summary_after_seq,EXCLUDED.summary_after_seq)`, group, summaryAfterSeq)
+	if err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+func (s *Store) LoadTopics(ctx context.Context, group int64) ([]conversation.TopicView, error) {
+	rows, err := s.DB.QueryContext(ctx, `SELECT t.topic_id,t.status,t.participants,t.first_seq,t.last_seq,t.revision,t.last_active_at,COALESCE((SELECT summary FROM groupfriend.topic_summaries x WHERE x.group_id=t.group_id AND x.topic_id=t.topic_id ORDER BY revision DESC LIMIT 1),'') FROM groupfriend.conversation_topics t WHERE t.group_id=$1 ORDER BY t.last_active_at DESC LIMIT 64`, group)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []conversation.TopicView{}
+	for rows.Next() {
+		var t conversation.TopicView
+		var participants []byte
+		if err := rows.Scan(&t.ID, &t.Status, &participants, &t.FirstSeq, &t.LastSeq, &t.Revision, &t.LastActiveAt, &t.Summary); err != nil {
+			return nil, err
+		}
+		if err := json.Unmarshal(participants, &t.Participants); err != nil {
+			return nil, err
+		}
+		out = append(out, t)
+	}
+	return out, rows.Err()
+}
+
+func (s *Store) SummaryProgress(ctx context.Context, group int64) (int64, error) {
+	var seq int64
+	err := s.DB.QueryRowContext(ctx, `SELECT summary_after_seq FROM groupfriend.group_progress WHERE group_id=$1`, group).Scan(&seq)
+	if errors.Is(err, sql.ErrNoRows) {
+		return 0, nil
+	}
+	return seq, err
+}
+
+func max64(a, b int64) int64 {
+	if a > b {
+		return a
+	}
+	return b
 }
 func (s *Store) LearningBatch(ctx context.Context, limit int) ([]qq.Event, memory.Progress, error) {
 	var p memory.Progress

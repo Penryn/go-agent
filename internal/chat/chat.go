@@ -10,9 +10,14 @@ import (
 	"sync"
 	"time"
 
+	"github.com/phlin/go-agent/internal/cache"
+	ctxbuilder "github.com/phlin/go-agent/internal/context"
+	"github.com/phlin/go-agent/internal/conversation"
+	"github.com/phlin/go-agent/internal/delivery"
 	"github.com/phlin/go-agent/internal/meme"
 	"github.com/phlin/go-agent/internal/memory"
 	"github.com/phlin/go-agent/internal/model"
+	"github.com/phlin/go-agent/internal/policy"
 	"github.com/phlin/go-agent/internal/qq"
 )
 
@@ -67,23 +72,33 @@ type Store interface {
 type Sender interface {
 	Send(context.Context, int64, string, string, string) (qq.Receipt, error)
 }
+type topicStore interface {
+	LoadTopics(context.Context, int64) ([]conversation.TopicView, error)
+	SaveTopics(context.Context, int64, []conversation.TopicView, int64) error
+}
 type Runtime struct {
-	Store   Store
-	Model   model.Generator
-	Memory  *memory.Service
-	Memes   *meme.Service
-	Sender  Sender
-	Persona Persona
-	Config  Config
-	SelfID  int64
-	Groups  []int64
-	ctx     context.Context
-	cancel  context.CancelFunc
-	mu      sync.Mutex
-	groups  map[int64]*group
-	topics  *topicTracker
-	wg      sync.WaitGroup
-	closed  bool
+	Store          Store
+	Model          model.Generator
+	Embedding      model.Embedder
+	Cache          cache.CacheHub
+	ContextBuilder ctxbuilder.Builder
+	Policy         policy.ResponsePolicy
+	Delivery       delivery.Service
+	Memory         *memory.Service
+	Memes          *meme.Service
+	Sender         Sender
+	Persona        Persona
+	Config         Config
+	SelfID         int64
+	Groups         []int64
+	ctx            context.Context
+	cancel         context.CancelFunc
+	mu             sync.Mutex
+	groups         map[int64]*group
+	actors         map[int64]conversation.GroupActor
+	topics         *topicTracker
+	wg             sync.WaitGroup
+	closed         bool
 }
 type queued struct {
 	event qq.Event
@@ -99,11 +114,26 @@ type group struct {
 	strong            uint64
 	lastEval, lastBot time.Time
 	participants      map[int64]bool
+	version           uint64
+	lastSeq           int64
 }
 
 func New(ctx context.Context, r *Runtime) *Runtime {
 	r.ctx, r.cancel = context.WithCancel(ctx)
+	if r.Cache == nil {
+		r.Cache = cache.NewHub(10000)
+	}
 	r.groups = map[int64]*group{}
+	r.actors = map[int64]conversation.GroupActor{}
+	if r.Policy == nil {
+		r.Policy = policy.DeterministicPolicy{}
+	}
+	if r.Delivery == nil && r.Sender != nil {
+		r.Delivery = delivery.StateMachine{Sender: r.Sender}
+	}
+	if r.ContextBuilder == nil {
+		r.ContextBuilder = runtimeContextBuilder{runtime: r}
+	}
 	r.topics = newTopicTracker()
 	return r
 }
@@ -159,6 +189,19 @@ func (r *Runtime) ingest(ctx context.Context, payload []byte, wait bool) (Attemp
 	if g == nil {
 		g = &group{runtime: r, id: e.GroupID, wake: make(chan struct{}, 1), participants: map[int64]bool{}}
 		r.groups[e.GroupID] = g
+		r.actors[e.GroupID] = g
+		if ts, ok := r.Store.(topicStore); ok {
+			if views, loadErr := ts.LoadTopics(ctx, e.GroupID); loadErr == nil {
+				r.topics.Restore(e.GroupID, views)
+				for _, view := range views {
+					for _, userID := range view.Participants {
+						g.participants[userID] = true
+					}
+				}
+			} else {
+				slog.Warn("restore topics", "group", e.GroupID, "error", loadErr)
+			}
+		}
 		r.wg.Add(1)
 		go func() { defer r.wg.Done(); g.loop() }()
 	}
@@ -170,6 +213,10 @@ func (r *Runtime) ingest(ctx context.Context, payload []byte, wait bool) (Attemp
 	now := time.Now()
 	if e.Directed || e.Recalled {
 		g.strong++
+	}
+	g.version++
+	if e.Seq > g.lastSeq {
+		g.lastSeq = e.Seq
 	}
 	if len(g.pending) == 0 {
 		g.first = now
@@ -244,9 +291,17 @@ func (g *group) loop() {
 			g.runtime.mu.Lock()
 			g.mu.Lock()
 			if len(g.pending) == 0 {
+				views := g.runtime.topics.Snapshot(g.id)
+				lastSeq := g.lastSeq
 				delete(g.runtime.groups, g.id)
+				delete(g.runtime.actors, g.id)
 				g.mu.Unlock()
 				g.runtime.mu.Unlock()
+				if ts, ok := g.runtime.Store.(topicStore); ok {
+					if err := ts.SaveTopics(g.runtime.ctx, g.id, views, lastSeq); err != nil {
+						slog.Warn("save topics", "group", g.id, "error", err)
+					}
+				}
 				return
 			}
 			g.mu.Unlock()
@@ -255,16 +310,18 @@ func (g *group) loop() {
 		}
 		g.pending = nil
 		version := g.strong
+		actorVersion := g.version
 		g.lastEval = time.Now()
 		g.mu.Unlock()
 		events := make([]qq.Event, 0, len(items))
 		for _, q := range items {
 			events = append(events, q.event)
 		}
-		outcome := g.runtime.respond(g.runtime.ctx, g.id, events, func() bool { g.mu.Lock(); defer g.mu.Unlock(); return g.strong != version })
+		outcome := g.runtime.respond(g.runtime.ctx, g.id, events, actorVersion, func() bool { g.mu.Lock(); defer g.mu.Unlock(); return g.strong != version })
 		if outcome.State == "confirmed" {
 			g.mu.Lock()
 			g.lastBot = time.Now()
+			g.version++
 			g.participants = replyParticipants(events, outcome.Reply.Plan)
 			if outcome.Reply.Plan != nil {
 				for userID := range g.runtime.topics.topicParticipants(g.id, outcome.Reply.Plan.TopicID) {
@@ -280,6 +337,65 @@ func (g *group) loop() {
 		}
 	}
 }
+
+// Submit implements conversation.GroupActor for events that have already
+// crossed the ingress/archive boundary. Ingress remains responsible for
+// deduplication and persistence; the actor only serializes group state.
+func (g *group) Submit(ctx context.Context, event qq.Event) error {
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	default:
+	}
+	g.runtime.mu.Lock()
+	if g.runtime.closed {
+		g.runtime.mu.Unlock()
+		return context.Canceled
+	}
+	g.runtime.wg.Add(1)
+	g.runtime.mu.Unlock()
+	defer g.runtime.wg.Done()
+	g.mu.Lock()
+	if len(g.pending) == 0 {
+		g.first = time.Now()
+	}
+	g.last = time.Now()
+	if event.Directed || event.Recalled {
+		g.strong++
+	}
+	g.version++
+	if event.Seq > g.lastSeq {
+		g.lastSeq = event.Seq
+	}
+	g.pending = append(g.pending, queued{event: event})
+	g.mu.Unlock()
+	select {
+	case g.wake <- struct{}{}:
+	default:
+	}
+	return nil
+}
+
+func (g *group) Snapshot(ctx context.Context) (conversation.Snapshot, error) {
+	select {
+	case <-ctx.Done():
+		return conversation.Snapshot{}, ctx.Err()
+	default:
+	}
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	participants := make([]int64, 0, len(g.participants))
+	for id := range g.participants {
+		participants = append(participants, id)
+	}
+	pending := make([]conversation.PendingQuestion, 0, len(g.pending))
+	for _, q := range g.pending {
+		pending = append(pending, conversation.PendingQuestion{EventID: q.event.ID, Text: q.event.Text, At: q.event.At})
+	}
+	return conversation.Snapshot{GroupID: g.id, Version: g.version, LastBotAt: g.lastBot, Participants: participants, Pending: pending}, nil
+}
+
+func (g *group) Close() { g.failPending() }
 func (g *group) failPending() {
 	g.mu.Lock()
 	defer g.mu.Unlock()
@@ -309,10 +425,23 @@ func (r *Runtime) Close() {
 		r.cancel()
 	}
 	r.mu.Unlock()
+	if ts, ok := r.Store.(topicStore); ok {
+		r.mu.Lock()
+		groups := make([]int64, 0, len(r.groups))
+		for groupID := range r.groups {
+			groups = append(groups, groupID)
+		}
+		r.mu.Unlock()
+		for _, groupID := range groups {
+			if err := ts.SaveTopics(context.WithoutCancel(context.Background()), groupID, r.topics.Snapshot(groupID), 0); err != nil {
+				slog.Warn("save topics on close", "group", groupID, "error", err)
+			}
+		}
+	}
 	r.wg.Wait()
 }
 
-func (r *Runtime) respond(parent context.Context, groupID int64, batch []qq.Event, stale func() bool) (a Attempt) {
+func (r *Runtime) respond(parent context.Context, groupID int64, batch []qq.Event, actorVersion uint64, stale func() bool) (a Attempt) {
 	if len(batch) == 0 {
 		return Attempt{State: "ignored"}
 	}
@@ -349,7 +478,7 @@ func (r *Runtime) respond(parent context.Context, groupID int64, batch []qq.Even
 		return a
 	}
 
-	resources := r.retrieveTurn(ctx, groupID, turn, &a)
+	resources := r.retrieveTurn(ctx, groupID, turn, actorVersion, &a)
 	a = r.generateTurn(ctx, a, turn, resources)
 	if a.State != "planning" {
 		return a

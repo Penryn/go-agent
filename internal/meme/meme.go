@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/phlin/go-agent/internal/cache"
 	"github.com/phlin/go-agent/internal/model"
 	"github.com/phlin/go-agent/internal/qq"
 	"github.com/phlin/go-agent/internal/search"
@@ -56,11 +57,13 @@ type Config struct {
 	TopK          int           `yaml:"top_k"`
 }
 type Service struct {
-	Store     Store
-	Model     model.Generator
-	Embedding model.Embedder
-	Config    Config
-	HTTP      *http.Client
+	Store         Store
+	Model         model.Generator
+	Embedding     model.Embedder
+	Config        Config
+	HTTP          *http.Client
+	Cache         cache.CacheHub
+	AssetRevision int64
 }
 
 func (s *Service) Observe(ctx context.Context, e qq.Event) error {
@@ -77,6 +80,46 @@ func (s *Service) Observe(ctx context.Context, e qq.Event) error {
 	return nil
 }
 func (s *Service) Candidates(ctx context.Context, group int64, query string) ([]Asset, error) {
+	var vector []float32
+	version := ""
+	if s.Embedding != nil && strings.TrimSpace(query) != "" {
+		call, cancel := context.WithTimeout(ctx, 2*time.Second)
+		v, err := s.Embedding.Embed(call, query)
+		cancel()
+		if err == nil {
+			vector = v
+			version = s.Embedding.EmbeddingVersion()
+		}
+	}
+	return s.candidates(ctx, group, query, vector, version)
+}
+
+// CandidatesWithEmbedding reuses a query vector computed by ContextBuilder.
+func (s *Service) CandidatesWithEmbedding(ctx context.Context, group int64, query string, vector []float32, version string) ([]Asset, error) {
+	return s.candidates(ctx, group, query, vector, version)
+}
+
+func (s *Service) CandidatesCached(ctx context.Context, group int64, query string, vector []float32, version string, cooldownEpoch int64, ttl time.Duration) ([]Asset, error) {
+	if s.Cache == nil {
+		return s.candidates(ctx, group, query, vector, version)
+	}
+	key := cache.StickerKey(group, s.AssetRevision, cooldownEpoch, query)
+	var assets []Asset
+	if s.Cache.Get(key, &assets) {
+		return append([]Asset(nil), assets...), nil
+	}
+	assets, err := s.candidates(ctx, group, query, vector, version)
+	if err != nil {
+		return nil, err
+	}
+	if ttl <= 0 {
+		ttl = 20 * time.Second
+	}
+	s.Cache.Set(key, assets, ttl)
+	return assets, nil
+}
+
+func (s *Service) candidates(ctx context.Context, group int64, query string, vector []float32, version string) ([]Asset, error) {
 	all, err := s.Store.StickerCandidates(ctx, group, s.Config.Cooldown, max(100, s.Config.MaxItems))
 	if err != nil {
 		return nil, err
@@ -95,16 +138,13 @@ func (s *Service) Candidates(ctx context.Context, group int64, query string) ([]
 		lexical = append(lexical, r.ID)
 	}
 	semantic := []string{}
-	if s.Embedding != nil && strings.TrimSpace(query) != "" {
+	if len(vector) > 0 && version != "" {
 		call, cancel := context.WithTimeout(ctx, 2*time.Second)
-		v, e := s.Embedding.Embed(call, query)
+		as, e := s.Store.VectorStickers(call, vector, version, 20)
 		if e == nil {
-			as, e := s.Store.VectorStickers(call, v, s.Embedding.EmbeddingVersion(), 20)
-			if e == nil {
-				for _, a := range as {
-					if _, ok := byID[a.ID]; ok {
-						semantic = append(semantic, a.ID)
-					}
+			for _, a := range as {
+				if _, ok := byID[a.ID]; ok {
+					semantic = append(semantic, a.ID)
 				}
 			}
 		}
