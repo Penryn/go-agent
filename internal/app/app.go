@@ -95,8 +95,8 @@ func (a *App) Run(ctx context.Context) error {
 			}
 		}()
 	}
-	memory.RunBackground(a.ctx, &a.wg, a.cfg.Memory.Interval, a.memories.Tick)
-	memory.RunBackground(a.ctx, &a.wg, 3*time.Second, a.memes.Tick)
+	runBackground(a.ctx, &a.wg, a.cfg.Memory.Interval, a.memories.Tick)
+	runBackground(a.ctx, &a.wg, 3*time.Second, a.memes.Tick)
 	slog.Info("QQ group friend started", "listen", a.cfg.Server.HTTPListen, "qq_enabled", a.cfg.QQ.Enabled, "global_sticker_pool", true)
 	select {
 	case <-a.ctx.Done():
