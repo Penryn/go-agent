@@ -250,3 +250,85 @@ func TestExplicitMemoryRequiresOwnEvidence(t *testing.T) {
 		t.Fatal("false success confirmation was sent")
 	}
 }
+
+func TestConversationContextAndReplyPlan(t *testing.T) {
+	var received chat.ConversationContext
+	var prior []qq.Event
+	r, _, sender := setup(t, generator{func(_ context.Context, input any) (chat.Reply, error) {
+		values := input.(map[string]any)
+		received = values["conversation_context"].(chat.ConversationContext)
+		prior = values["history"].([]qq.Event)
+		batch := values["batch"].([]qq.Event)
+		return chat.Reply{
+			Action: "text",
+			Text:   "收到",
+			Plan:   &chat.ReplyPlan{TargetEventID: batch[0].ID, ResponseMode: "ack"},
+		}, nil
+	}})
+	a, err := r.Process(context.Background(), payload(1, 1, 10, "你看一下这个", true))
+	if err != nil || a.State != "confirmed" {
+		t.Fatal(a, err)
+	}
+	if len(received.Batch) != 1 || received.Batch[0].Relation != "direct" {
+		t.Fatalf("unexpected conversation context: %+v", received)
+	}
+	if len(prior) != 0 || len(received.History) != 0 {
+		t.Fatalf("current batch leaked into prior history: history=%+v context=%+v", prior, received.History)
+	}
+	if a.Reply.Plan == nil || a.Reply.Plan.ResponseMode != "ack" || a.Reply.Plan.TargetEventID != received.Batch[0].EventID {
+		t.Fatalf("unexpected reply plan: %+v", a.Reply.Plan)
+	}
+	if len(sender.Messages) != 1 || sender.Messages[0] != "收到" {
+		t.Fatal(sender.Messages)
+	}
+}
+
+func TestReplyPlanTargetControlsContinuationUsers(t *testing.T) {
+	var calls atomic.Int32
+	r, _, sender := setup(t, generator{func(_ context.Context, input any) (chat.Reply, error) {
+		call := calls.Add(1)
+		if call == 1 {
+			batch := input.(map[string]any)["batch"].([]qq.Event)
+			if len(batch) != 2 {
+				return chat.Reply{}, fmt.Errorf("expected merged batch, got %+v", batch)
+			}
+			return chat.Reply{
+				Action: "text",
+				Text:   "回答提问者",
+				Plan:   &chat.ReplyPlan{TargetEventID: batch[1].ID, ResponseMode: "short"},
+			}, nil
+		}
+		return chat.Reply{Action: "text", Text: "不应发送", Plan: &chat.ReplyPlan{ResponseMode: "short"}}, nil
+	}})
+	if err := r.Submit(context.Background(), payload(1, 1, 11, "我旁听", false)); err != nil {
+		t.Fatal(err)
+	}
+	a, err := r.Process(context.Background(), payload(2, 1, 10, "问我", true))
+	if err != nil || a.State != "confirmed" {
+		t.Fatal(a, err)
+	}
+	a, err = r.Process(context.Background(), payload(3, 1, 11, "继续旁听", false))
+	if err != nil || a.State != "limited" {
+		t.Fatal("non-target participant bypassed the reply interval", a, err)
+	}
+	if len(sender.Messages) != 1 || sender.Messages[0] != "回答提问者" {
+		t.Fatal(sender.Messages)
+	}
+}
+
+func TestReplyPlanRejectsInvisibleTarget(t *testing.T) {
+	r, _, sender := setup(t, generator{func(_ context.Context, _ any) (chat.Reply, error) {
+		return chat.Reply{
+			Action: "text",
+			Text:   "不应该发送",
+			Plan:   &chat.ReplyPlan{TargetEventID: "missing", ResponseMode: "short"},
+		}, nil
+	}})
+	a, err := r.Process(context.Background(), payload(1, 1, 10, "测试目标校验", true))
+	if err != nil || a.State != "failed" || a.Error != "reply target is not visible" {
+		t.Fatal(a, err)
+	}
+	if len(sender.Messages) != 0 {
+		t.Fatal(sender.Messages)
+	}
+}
