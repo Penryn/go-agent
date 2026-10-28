@@ -300,7 +300,7 @@ func (s *Store) SaveNotes(ctx context.Context, group int64, notes []memory.Note,
 
 func (s *Store) MemoryRevision(ctx context.Context, group int64) (int64, error) {
 	var revision sql.NullInt64
-	err := s.DB.QueryRowContext(ctx, `SELECT COALESCE(MAX(memory_revision),0) FROM groupfriend.notes WHERE group_id=$1`, group).Scan(&revision)
+	err := s.DB.QueryRowContext(ctx, `SELECT COALESCE(SUM(memory_revision),0) FROM groupfriend.notes WHERE group_id=$1`, group).Scan(&revision)
 	return revision.Int64, err
 }
 

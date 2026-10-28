@@ -139,11 +139,15 @@ func (s *Store) MemoryRevision(_ context.Context, g int64) (int64, error) {
 	defer s.mu.Unlock()
 	var revision int64
 	for _, n := range s.notes {
-		if n.GroupID == g && n.MemoryRevision > revision {
-			revision = n.MemoryRevision
-		}
-		if n.GroupID == g && n.MemoryRevision == 0 && n.Version > revision {
-			revision = n.Version
+		if n.GroupID == g {
+			if n.MemoryRevision > 0 {
+				revision += n.MemoryRevision
+			} else {
+				revision += n.Version
+			}
+			if revision == 0 {
+				revision = 1
+			}
 		}
 	}
 	return revision, nil
