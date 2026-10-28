@@ -1,19 +1,19 @@
-# 后台管理页 React 重构方案
+# 后台管理页 React 重构方案与实施记录
 
-**将 `internal/app` 当前的单文件后台整理为可维护的 React 前端，并继续由 Go 进程提供静态资源和管理 API。**
+**将原单文件后台整理为可维护的 React 前端，并继续由 Go 进程提供静态资源和管理 API。**
 
 | 项目 | 内容 |
 | --- | --- |
-| **状态** | Draft，待开发评审 |
+| **状态** | 已实施，自动化检查通过；真实 API 浏览器验收待完成 |
 | **负责人** | 项目开发者 |
 | **范围** | `/admin/` 管理页的前端实现、静态资源构建和 Go embed 集成 |
 | **不包含** | 业务 API 重设计、数据库迁移、QQ 聊天流程调整和生产发布执行 |
 | **读者** | 项目开发者、技术评审人、测试人员 |
-| **依据** | 当前 `main` 分支源码，基线为 commit `60c042a` |
+| **依据** | 重构前基线为 commit `60c042a`；当前实现以 `web/admin/`、Go 嵌入路由和对应测试为准 |
 
 ## 1. 结论
 
-建议采用「React 源码独立维护，Vite 构建，Go embed 提供运行时资源」的方案。前端源码放在 `web/admin/`，构建产物放在 `internal/app/admin-dist/`，Go 仍然在同一个进程中提供 `/admin/` 页面和 `/admin/api/` 接口。
+采用「React 源码独立维护，Vite 构建，Go embed 提供运行时资源」的方案。前端源码位于 `web/admin/`，构建产物位于 `internal/app/admin-dist/`，Go 仍在同一个进程中提供 `/admin/` 页面和 `/admin/api/` 接口。源码、嵌入路由和自动化测试已经完成，真实 API 的浏览器验收仍按 8.3 执行。
 
 本次重构保留现有 API 路径、请求字段、鉴权规则和数据库修订校验。前端只重构页面状态管理、组件结构、响应式布局、加载反馈和错误处理。这样可以先改善后台的维护成本和使用体验，同时把后端业务风险限制在静态资源路由的调整范围内。
 
@@ -27,22 +27,22 @@
 >
 > **Fallback：** 如果前端构建环境不可用，仓库保留已构建的 `internal/app/admin-dist/`，Go 仍可直接编译和运行。
 
-## 2. 现状依据
+## 2. 重构前基线
 
-以下结论来自当前源码。它们描述的是已存在的行为，不是本方案要新增的能力。
+以下结论描述 commit `60c042a` 中的行为，只用于说明重构起点。
 
 | 现状 | 依据 |
 | --- | --- |
-| Go 使用 `go:embed` 嵌入单个 `admin.html`，并在 `/admin/` 返回页面 | [`internal/app/admin.go`](../internal/app/admin.go#L20-L21)、[`internal/app/admin.go`](../internal/app/admin.go#L88-L97) |
+| Go 使用 `go:embed` 嵌入单个 `admin.html`，并在 `/admin/` 返回页面 | `internal/app/admin.go`、`internal/app/admin.html`，commit `60c042a` |
 | 管理 API 位于 `/admin/api/`，包括群列表、对话、笔记、表情包和图片读取 | [`internal/app/admin.go`](../internal/app/admin.go#L99-L188) |
 | 配置了 `server.admin_token` 时，API 使用 Bearer 令牌；未配置时只接受回环地址 | [`internal/app/admin.go`](../internal/app/admin.go#L39-L58) |
 | 非读请求会校验 `Origin` 是否与当前请求主机一致 | [`internal/app/admin.go`](../internal/app/admin.go#L59-L68) |
 | 笔记和表情包修改都携带版本号，存储层用版本号阻止覆盖并发修改 | [`internal/store/admin.go`](../internal/store/admin.go#L56-L106) |
-| 页面当前使用原生 DOM 创建节点，连接后读取群、对话和表情包，保存后重新刷新 | [`internal/app/admin.html`](../internal/app/admin.html#L1-L25) |
+| 页面使用原生 DOM 创建节点，连接后读取群、对话和表情包，保存后重新刷新 | `internal/app/admin.html`，commit `60c042a` |
 | HTTP 服务和后台路由由同一个 Go `http.Server` 提供 | [`internal/app/app.go`](../internal/app/app.go#L62-L62) |
-| 当前开发文档明确说明后台不需要前端构建 | [`docs/DEVELOPMENT.md`](DEVELOPMENT.md#L3-L3) |
+| 开发文档说明后台不需要前端构建 | `docs/DEVELOPMENT.md`，commit `60c042a` |
 
-当前工作区在检查时没有 React、Vite、`package.json` 或前端构建目录。上述结论不代表线上页面和本地页面已经完成浏览器联调，浏览器联调需要在实施后补做。
+基线检查时，仓库没有 React、Vite、`package.json` 或前端构建目录。上述结论不包含浏览器联调状态。
 
 ## 3. 目标与非目标
 
@@ -80,11 +80,11 @@ flowchart LR
     Store --> DB[(PostgreSQL)]
 ```
 
-图中的 `Go 静态资源处理器` 是本方案新增的路由实现，`authorize`、后台 API、存储查询和数据库是现有组件。页面资源请求不经过 API 鉴权，数据请求继续经过现有 API 鉴权；页面本身不携带令牌到 URL。
+图中的 `Go 静态资源处理器` 和 React 资源是当前实现，`authorize`、后台 API、存储查询和数据库保持原有边界。页面资源请求不经过 API 鉴权，数据请求继续经过现有 API 鉴权；页面本身不携带令牌到 URL。
 
 ### 4.2 目录和构建产物
 
-建议新增以下目录和文件：
+实现后的主要目录和文件如下：
 
 ```text
 web/admin/
@@ -99,9 +99,13 @@ web/admin/
     api.ts
     types.ts
     styles.css
+    components/
+    utils/
+    views/
 
 internal/app/
   admin.go
+  admin_test.go
   admin-dist/
     index.html
     assets/
@@ -109,7 +113,7 @@ internal/app/
       index-<hash>.css
 ```
 
-`web/admin/` 是人工维护的源码目录。`internal/app/admin-dist/` 是构建输出目录，建议纳入版本控制，以便 `go build ./...` 不依赖本机 Node 环境。持续集成在包含已提交产物的干净检出中执行前端构建，再检查构建目录没有差异，防止源码和 embed 产物不一致。本地实施期间产生的新产物差异属于待提交变更，不能按干净检出的结果判断。
+`web/admin/` 是人工维护的源码目录。`internal/app/admin-dist/` 是随源码提交的构建输出目录，因此 `go build ./...` 不依赖本机 Node 环境。安装依赖并完成前端构建后，再用 `git diff --exit-code -- internal/app/admin-dist` 检查源码和嵌入产物一致。
 
 > **Why & What - 保留构建产物**
 >
@@ -123,9 +127,7 @@ internal/app/
 
 ### 4.3 Go 静态资源处理
 
-`internal/app/admin.go` 建议将单文件 embed 改为目录 embed，并把 `/admin/` 下的 `index.html` 和 `assets/` 文件交给 `http.FileServer` 或等价的受限静态文件处理器。
-
-处理器需要满足以下规则：
+`internal/app/admin.go` 使用目录 embed，并把 `/admin/` 下的 `index.html` 和 `assets/` 文件交给受限静态文件处理器。处理器满足以下规则：
 
 1. `GET /admin` 继续重定向到 `/admin/`。
 2. `GET` 和 `HEAD /admin/` 返回构建后的 `index.html`。
@@ -189,7 +191,7 @@ React 客户端只封装现有管理 API，不在浏览器中直接访问数据�
 
 ### 5.2 页面状态
 
-`AdminApp` 管理连接和页面级状态，编辑器只管理本地草稿。建议使用以下状态：
+`AdminApp` 管理连接和页面级状态，编辑器只管理本地草稿。页面级状态如下：
 
 | 状态 | 作用 | 生命周期 |
 | --- | --- | --- |
@@ -225,7 +227,7 @@ React 客户端只封装现有管理 API，不在浏览器中直接访问数据�
 1. 页面锁定当前对象的操作按钮。
 2. 页面发送原始版本号和编辑内容。
 3. `200` 时重新读取受影响的数据并显示成功状态。
-4. `409` 时提示版本冲突并重新读取受影响的数据，保留服务端结果。
+4. `409` 时提示版本冲突并重新读取受影响的数据，保留当前未保存草稿，下一次保存使用服务端返回的最新版本。
 5. 其他错误时恢复按钮，保留未提交的本地草稿，并显示错误原因。
 
 预览表情包：
@@ -250,20 +252,20 @@ React 客户端只封装现有管理 API，不在浏览器中直接访问数据�
 
 页面入口、API 路径和后端响应保持不变，现有书签和后台配置不需要调整。构建产物路径改为 `/admin/assets/`，Go 路由需要覆盖该路径。若部署在反向代理的子路径下，代理必须继续转发 `/admin/` 和 `/admin/api/`，具体代理配置不在仓库当前文档中，属于部署侧待确认事项。
 
-## 7. 实施顺序
+## 7. 实施记录
 
-每项工作都应留下可独立检查的结果。前端源码和 Go 路由可以分开开发，但在浏览器联调前必须完成一次完整构建。
+重构按独立阶段完成。React 源码、Go embed、构建命令和旧页面清理已经落在仓库中，所有自动化检查的当前结果见 8.4。
 
-| 顺序 | 目标 | 主要文件 | 检查方式 |
+| 阶段 | 结果 | 主要文件 | 验证方式 |
 | --- | --- | --- | --- |
-| 1 | 建立前端工程和类型边界 | `web/admin/package.json`、`web/admin/tsconfig.json`、`web/admin/vite.config.ts`、`web/admin/src/types.ts`、`web/admin/src/api.ts` | `rtk npm ci`、`rtk npm run typecheck` |
-| 2 | 完成页面骨架和只读视图 | `web/admin/src/App.tsx`、`web/admin/src/styles.css` | 类型检查，浏览器检查连接、群切换、四个空状态和窄屏布局 |
-| 3 | 接入笔记和表情包编辑 | `web/admin/src/App.tsx` 或拆分后的组件文件 | 检查成功保存、遗忘、禁用、恢复、`401`、`403` 和 `409` |
-| 4 | 接入静态资源 embed | `internal/app/admin.go`、`internal/app/admin-dist/`、`internal/app/admin_test.go` | 检查 `/admin/`、`/admin/assets/*`、CSP、错误路径和 API 鉴权 |
-| 5 | 更新构建说明和开发入口 | `Makefile`、`README.md`、`CLAUDE.md`、`docs/DEVELOPMENT.md`、`docs/README.md` | 前端构建、Go 测试、Go 构建和文档链接检查 |
-| 6 | 删除旧页面实现 | `internal/app/admin.html` | 确认没有源码或文档继续引用旧单文件入口 |
+| 建立前端工程和类型边界 | 已完成 | `web/admin/package.json`、`web/admin/tsconfig.json`、`web/admin/vite.config.ts`、`web/admin/src/types.ts`、`web/admin/src/api.ts` | TypeScript 类型检查和 Vite 生产构建 |
+| 完成页面骨架和只读视图 | 已完成 | `web/admin/src/App.tsx`、`web/admin/src/views/`、`web/admin/src/styles.css` | 类型检查；真实数据下的浏览器验收待 8.3 完成 |
+| 接入笔记和表情包编辑 | 已完成 | `web/admin/src/views/NotesView.tsx`、`web/admin/src/views/StickersView.tsx` | 类型检查；真实保存、预览和冲突交互待 8.3 完成 |
+| 接入静态资源 embed | 已完成 | `internal/app/admin.go`、`internal/app/admin_test.go`、`internal/app/admin-dist/` | Go 路由测试和生产构建 |
+| 更新开发入口 | 已完成 | `Makefile`、`README.md`、`CLAUDE.md`、`docs/DEVELOPMENT.md`、`docs/README.md` | 文档检查、前端构建和 Go 构建 |
+| 删除旧页面实现 | 已完成 | `internal/app/admin.html` | 全仓引用搜索和 Go 测试 |
 
-建议的前端脚本如下：
+前端脚本如下：
 
 ```json
 {
@@ -276,31 +278,30 @@ React 客户端只封装现有管理 API，不在浏览器中直接访问数据�
 }
 ```
 
-`vite.config.ts` 需要固定 `base: "/admin/"`，将 `outDir` 指向 `../../internal/app/admin-dist`，并在开发服务器中把 `/admin/api` 代理到本地 Go 服务。开发代理只用于本地开发，不改变生产运行时拓扑。
+`vite.config.ts` 固定 `base: "/admin/"`，将 `outDir` 指向 `../../internal/app/admin-dist`，并在开发服务器中把 `/admin/api` 代理到本地 Go 服务。开发代理只用于本地开发，不改变生产运行时拓扑。
 
 ## 8. 测试和验收标准
 
 ### 8.1 自动检查
 
-实施完成后，以下命令需要通过：
+在仓库根目录执行：
 
 ```bash
-cd web/admin
-rtk npm ci
-rtk npm run typecheck
-rtk npm run build
-cd ../..
+rtk npm --prefix web/admin ci
+rtk npm --prefix web/admin run typecheck
+rtk npm --prefix web/admin run build
 rtk go test -race ./...
 rtk proxy go vet ./...
 rtk go build ./...
 rtk git diff --check
+rtk git diff --exit-code -- internal/app/admin-dist
 ```
 
-在包含已提交源码和 embed 产物的干净 CI 检出中，执行构建后再运行 `rtk git diff --exit-code -- internal/app/admin-dist`。该检查确认构建输出与源码一致；本地实施期间不使用这个命令判断工作区是否应该有差异。
+最后一次差异检查确认构建输出与当前源码一致。部署流水线若执行同组命令，需要在构建阶段提供 Node.js 20.19 或更高版本。
 
 ### 8.2 Go 集成检查
 
-`internal/app/admin_test.go` 建议增加以下测试：
+`internal/app/admin_test.go` 覆盖以下测试：
 
 - `GET /admin/` 返回 `200`、HTML 内容和 React 根节点。
 - 从入口 HTML 提取的 JavaScript 资源路径可以通过 `/admin/assets/` 返回。
@@ -325,6 +326,17 @@ rtk git diff --check
 8. 桌面和窄屏宽度下，导航、表单、文本和按钮都可操作，长文本不会撑破布局。
 9. 浏览器控制台没有资源路径、CSP、未处理 Promise 或 React 渲染错误。
 
+### 8.4 自动化检查结果
+
+在 commit `67441f3` 的 detached 干净工作树中执行以下检查，结果均通过：
+
+- `npm ci`、`npm run typecheck` 和 `npm run build` 通过。
+- `go test -race ./...` 通过，共 59 项测试、覆盖 15 个包。
+- `go vet ./...` 和 `go build ./...` 通过。
+- 重新构建后的 `internal/app/admin-dist` 与提交内容一致，`git diff --check` 无问题。
+
+这些检查确认源码、构建产物、资源路由和安全边界一致；真实 API、浏览器布局和编辑交互仍以 8.3 的验收结果为准。
+
 ## 9. 回滚和发布边界
 
 本方案不需要数据库迁移，也不改变后台 API。回滚只需要恢复上一版 Go 静态资源处理逻辑和 `admin.html` embed 文件，再重新构建 Go 二进制。API 和数据库数据可以继续由旧版后台读取。
@@ -340,20 +352,18 @@ rtk git diff --check
 | 收益 | 页面状态、编辑器和请求逻辑可以按组件维护；TypeScript 和 Vite 提供构建期检查；响应式布局和错误反馈可以集中实现 |
 | 成本 | 增加 Node、npm lockfile 和前端产物；前端开发者需要同时理解 Go embed 路由和 Vite 资源前缀 |
 | 风险 | 构建产物未更新会导致源码和运行页面不一致；`base` 配置错误会导致资源 `404`；版本冲突处理不完整会覆盖本地草稿或服务端数据 |
-| 控制措施 | 构建产物一致性检查、Go 静态资源测试、`409` 专门测试、真实 API 浏览器验收和回滚路径检查 |
+| 控制措施 | 构建产物一致性检查、Go 静态资源测试、`409` 冲突处理和浏览器验收项、回滚路径检查 |
 
 本次方案不引入 UI 组件库可以减少依赖和样式迁移工作，但页面需要自行维护表格、状态标签和响应式样式。若后续后台出现复杂表单、分页表格或权限矩阵，再单独评估组件库的引入范围。
 
-## 11. 待确认事项
+## 11. 剩余确认事项
 
-| 问题 | 影响 | 负责人 |
+| 问题 | 当前状态 | 负责人 |
 | --- | --- | --- |
-| 部署流水线是否允许在构建阶段安装 Node 依赖 | 决定是否能在流水线重新生成 `admin-dist` | 项目维护者 |
-| `internal/app/admin-dist/` 是否接受作为版本控制中的生成目录 | 决定 Go 直接构建是否继续不依赖 Node | 项目维护者 |
-| 是否需要通过 URL 直接打开某个后台视图 | 若需要，需增加路由或查询参数设计 | 使用方代表 |
-| 是否有统一的前端视觉规范或组件库 | 决定是否调整首版 CSS 和依赖范围 | 使用方代表 |
-| 访问令牌是否允许在浏览器会话内持久化 | 影响安全边界和登录体验 | 安全负责人 |
+| 部署流水线是否提供 Node.js 20.19 或更高版本 | 仓库已经提供 `make admin-install` 和 `make check`；流水线接入情况尚未记录 | 项目维护者 |
+| 目标部署环境是否保留 `/admin/` 和 `/admin/api/` 的反向代理路径 | 页面和 API 合同没有变化；代理配置不在本仓库中 | 部署维护者 |
+| 真实数据下是否满足 8.3 的全部浏览器验收项 | 尚未记录验收结果 | 测试人员 |
 
-在这些问题确认前，可以按本文推荐方案实施。除「是否持久化令牌」外，其他问题不会改变现有 API 合同；令牌持久化若要采用，需要单独评估浏览器存储风险。
+`internal/app/admin-dist/` 已作为版本控制中的嵌入产物，`admin-dist` 的 Go 直接构建路径也已确定。首版继续只提供 `/admin/` 入口，不增加客户端路由。组件库和令牌持久化仍不引入；若后续出现复杂表单或会话保持需求，需要单独增加设计和安全评估。
 
-> 本文的现状结论均来自源码依据表，React 工程、资源路由、组件结构和验收项属于待评审的设计提案。评审重点是构建产物管理、部署流水线和令牌会话策略。
+第 2 节描述重构前基线，第 4 至第 10 节描述当前实现及设计约束。自动化检查能够确认源码、构建结果、资源路由和安全边界；目标环境中的真实 API、浏览器布局和编辑交互仍以 8.3 的验收结果为准。
