@@ -477,6 +477,18 @@ func (r *Runtime) respond(parent context.Context, groupID int64, batch []qq.Even
 		a.Reply.Reason = "recall"
 		return a
 	}
+	if r.Policy != nil {
+		directed := false
+		for _, event := range turn.batch {
+			directed = directed || event.Directed
+		}
+		decision := r.Policy.Decide(ctx, policy.Input{GroupID: groupID, Directed: directed, Continuing: turn.conversation.Continuing, HasNewInfo: strings.TrimSpace(turn.query) != "", WithinBudget: true})
+		if !decision.ShouldGenerate {
+			a.State = "silent"
+			a.Reply.Reason = decision.Reason
+			return a
+		}
+	}
 
 	resources := r.retrieveTurn(ctx, groupID, turn, actorVersion, &a)
 	a = r.generateTurn(ctx, a, turn, resources)
