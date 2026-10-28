@@ -55,6 +55,10 @@ type ConversationContext struct {
 func buildConversationContext(batch, history []qq.Event, topics topicObservation) ConversationContext {
 	history = priorConversation(history, batch)
 	visible := combineEvents(history, batch)
+	return buildConversationContextFromVisible(batch, history, visible, topics)
+}
+
+func buildConversationContextFromVisible(batch, history, visible []qq.Event, topics topicObservation) ConversationContext {
 	context := ConversationContext{Topics: topics.Topics}
 	context.Batch = make([]ConversationEvent, 0, len(batch))
 	for _, e := range batch {

@@ -2,7 +2,6 @@ package chat
 
 import (
 	"context"
-	"crypto/sha256"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -337,189 +336,27 @@ func (r *Runtime) respond(parent context.Context, groupID int64, batch []qq.Even
 			}
 		}
 	}()
-	live := batch[:0]
-	for _, e := range batch {
-		if !e.Recalled {
-			live = append(live, e)
-		}
+
+	turn, err := r.prepareTurn(ctx, groupID, batch)
+	if err != nil {
+		a.State = "failed"
+		a.Error = err.Error()
+		return a
 	}
-	batch = live
-	if len(batch) == 0 {
+	if len(turn.batch) == 0 {
 		a.State = "silent"
 		a.Reply.Reason = "recall"
 		return a
 	}
-	recent, err := r.Store.Recent(ctx, groupID, r.Config.History)
-	if err != nil {
-		a.State = "failed"
-		a.Error = err.Error()
+
+	resources := r.retrieveTurn(ctx, groupID, turn, &a)
+	a = r.generateTurn(ctx, a, turn, resources)
+	if a.State != "planning" {
 		return a
 	}
-	recent = priorConversation(recent, batch)
-	// A bounded chronological tail keeps author and quotation identity intact.
-	runes := 0
-	for i := len(recent) - 1; i >= 0; i-- {
-		runes += len([]rune(recent[i].Text))
-		if runes > r.Config.ContextRunes {
-			recent = recent[i+1:]
-			break
-		}
-	}
-	topics := r.topics.observe(groupID, recent, batch, r.Config.ActiveWindow)
-	conversationContext := buildConversationContext(batch, recent, topics)
-	notes := []memory.Note{}
-	if r.Memory != nil {
-		notes, a.Retrieval, err = r.Memory.Recall(ctx, groupID, batch)
-		if err != nil {
-			a.Retrieval.Degraded = append(a.Retrieval.Degraded, "memory")
-		}
-	}
-	assets := []meme.Asset{}
-	if r.Memes != nil {
-		assets, err = r.Memes.Candidates(ctx, groupID, memory.Query(batch))
-		if err != nil {
-			a.Retrieval.Degraded = append(a.Retrieval.Degraded, "stickers")
-		}
-	}
-	images := []string{}
-	for _, e := range batch {
-		for _, image := range e.Images {
-			if len(images) >= 2 {
-				break
-			}
-			call, cancel := context.WithTimeout(ctx, 3*time.Second)
-			b, mime, fetchErr := qq.FetchImage(call, nil, image.URL, 8<<20)
-			cancel()
-			if fetchErr == nil {
-				data, err := qq.ImageData(b, mime)
-				if err == nil {
-					images = append(images, data)
-				}
-			}
-		}
-	}
-	if r.Model == nil {
-		a.State = "silent"
-		a.Reply.Reason = "model_unavailable"
-		return a
-	}
-	result, err := r.Model.Generate(ctx, Prompt, map[string]any{"persona": r.Persona, "now": time.Now().Format(time.RFC3339), "history": recent, "batch": batch, "conversation_context": conversationContext, "notes": notes, "sticker_candidates": assets, "loaded_image_count": len(images)}, images)
-	if err != nil {
-		a.State = "failed"
-		a.Error = err.Error()
-		return a
-	}
-	a.Usage = result.Usage
-	if err := model.JSON(result.Content, &a.Reply); err != nil {
-		a.State = "failed"
-		a.Error = "invalid reply structure"
-		return a
-	}
-	normalizeReply(&a.Reply)
-	if err := validate(a.Reply, combineEvents(recent, batch), assets, topics); err != nil {
-		a.State = "failed"
-		a.Error = err.Error()
-		return a
-	}
-	if stale() || ctx.Err() != nil {
-		a.State = "stale"
-		return a
-	}
-	if len(a.Reply.Memory) > 0 {
-		explicit := false
-		for _, e := range batch {
-			explicit = explicit || memory.Explicit(e.Text)
-		}
-		if r.Memory == nil || !explicit {
-			a.State = "failed"
-			a.Error = "memory changes require an explicit request"
-			return a
-		}
-		if err := r.Memory.Apply(ctx, groupID, batch, a.Reply.Memory, nil); err != nil {
-			a.State = "failed"
-			a.Error = "memory update failed: " + err.Error()
-			return a
-		}
-	}
-	if a.Reply.Action == "silent" {
-		a.State = "silent"
-		return a
-	}
-	count, lastSent, err := r.Store.RepliesSince(ctx, groupID, time.Now().Add(-time.Minute))
-	if err != nil {
-		a.State = "failed"
-		a.Error = err.Error()
-		return a
-	}
-	directed := false
-	for _, e := range batch {
-		directed = directed || e.Directed
-	}
-	directed = directed || conversationContext.Continuing
-	if count >= r.Config.MaxPerMinute || (!directed && !lastSent.IsZero() && time.Since(lastSent) < r.Config.SpontaneousInterval) {
-		a.State = "limited"
-		return a
-	}
-	path := ""
-	if a.Reply.Action == "sticker" {
-		asset, err := r.Memes.Resolve(ctx, a.Reply.StickerID)
-		if err != nil {
-			a.State = "failed"
-			a.Error = err.Error()
-			return a
-		}
-		path = asset.Path
-	}
-	if r.Sender == nil {
-		a.State = "preview"
-		return a
-	}
-	if stale() || ctx.Err() != nil {
-		a.State = "stale"
-		return a
-	}
-	a.State = "sending"
-	if err := r.Store.UpdateAttempt(ctx, a); err != nil {
-		a.State = "failed"
-		a.Error = err.Error()
-		return a
-	}
-	receipt, err := r.Sender.Send(ctx, groupID, a.Reply.Text, a.Reply.Quote, path)
-	finish, cancelFinish := context.WithTimeout(context.WithoutCancel(parent), 5*time.Second)
-	defer cancelFinish()
-	if err != nil {
-		a.State = "unknown"
-		var sendError *qq.SendError
-		if errors.As(err, &sendError) && sendError.Definite {
-			a.State = "failed"
-		}
-		a.Error = err.Error()
-		if e := r.Store.UpdateAttempt(finish, a); e != nil {
-			slog.Error("record send failure", "attempt", a.ID, "error", e)
-		}
-		return a
-	}
-	a.State = "confirmed"
-	text := a.Reply.Text
-	if a.Reply.Action == "sticker" {
-		text = "[表情包] "
-		for _, asset := range assets {
-			if asset.ID == a.Reply.StickerID {
-				text += asset.Description
-			}
-		}
-	}
-	hash := sha256.Sum256([]byte(a.ID))
-	out := qq.Event{ID: fmt.Sprintf("out:%x", hash[:12]), MessageID: receipt.MessageID, GroupID: groupID, UserID: r.SelfID, SelfID: r.SelfID, Name: r.Persona.Name, Text: text, ReplyTo: a.Reply.Quote, Outbound: true, At: time.Now()}
-	if err := r.Store.FinishAttempt(finish, a, out); err != nil {
-		a.State = "unknown"
-		a.Error = "delivery confirmed but archive failed"
-		slog.Error(a.Error, "attempt", a.ID, "error", err)
-		return a
-	}
-	r.topics.markBotReply(groupID, a.Reply.Plan.TopicID, out)
-	return a
+	return r.applyAndDeliver(parent, ctx, groupID, a, turn, resources, stale)
 }
+
 func validate(reply Reply, history []qq.Event, assets []meme.Asset, topics topicObservation) error {
 	if !slices.Contains([]string{"silent", "text", "sticker"}, reply.Action) || len([]rune(reply.Text)) > 2000 || len(reply.Reason) > 120 {
 		return errors.New("invalid reply action or length")

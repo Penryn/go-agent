@@ -34,7 +34,7 @@ func TestSemanticRecallAndPreferencesSurviveTopK(t *testing.T) {
 		}
 	}
 	service := memory.Service{Store: s, Embedding: embedder{}, TopK: 1}
-	out, trace, err := service.Recall(ctx, 1, []qq.Event{{GroupID: 1, UserID: 42, Text: "宇宙旅途"}})
+	out, trace, err := service.Recall(ctx, 1, []qq.Event{{GroupID: 1, UserID: 42, Text: "宇宙旅途"}}, "宇宙旅途")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -54,7 +54,7 @@ func TestExplicitTimeHintRecallsAnEpisode(t *testing.T) {
 		t.Fatal(err)
 	}
 	service := memory.Service{Store: s, TopK: 1}
-	_, trace, err := service.Recall(context.Background(), 1, []qq.Event{{GroupID: 1, UserID: 42, Text: "昨天那个事情"}})
+	_, trace, err := service.Recall(context.Background(), 1, []qq.Event{{GroupID: 1, UserID: 42, Text: "昨天那个事情"}}, "昨天那个事情")
 	if err != nil || !slices.Contains(trace.Contextual, n.ID) {
 		t.Fatal(trace, err)
 	}
