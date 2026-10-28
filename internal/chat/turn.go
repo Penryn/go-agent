@@ -79,7 +79,11 @@ func (r *Runtime) retrieveTurn(ctx context.Context, groupID int64, turn turnCont
 	if r.Embedding != nil && strings.TrimSpace(turn.query) != "" {
 		call, cancel := context.WithTimeout(ctx, 3*time.Second)
 		var err error
-		queryEmbedding, err = r.Embedding.Embed(call, turn.query)
+		if gateway, ok := r.Embedding.(model.ModelGateway); ok {
+			queryEmbedding, err = gateway.EmbedRequest(call, model.EmbedRequest{Text: turn.query, ModelVersion: r.Embedding.EmbeddingVersion(), Priority: model.PriorityInteractive, GroupID: groupID, AttemptID: attempt.ID})
+		} else {
+			queryEmbedding, err = r.Embedding.Embed(call, turn.query)
+		}
 		cancel()
 		if err != nil {
 			attempt.Retrieval.Degraded = append(attempt.Retrieval.Degraded, "embedding")
@@ -139,7 +143,7 @@ func (r *Runtime) generateTurn(ctx context.Context, attempt Attempt, turn turnCo
 		attempt.Reply.Reason = "model_unavailable"
 		return attempt
 	}
-	result, err := r.Model.Generate(ctx, Prompt, map[string]any{
+	input := map[string]any{
 		"persona":              r.Persona,
 		"now":                  time.Now().Format(time.RFC3339),
 		"history":              turn.history,
@@ -148,7 +152,14 @@ func (r *Runtime) generateTurn(ctx context.Context, attempt Attempt, turn turnCo
 		"notes":                resources.notes,
 		"sticker_candidates":   resources.assets,
 		"loaded_image_count":   len(resources.images),
-	}, resources.images)
+	}
+	var result model.Result
+	var err error
+	if gateway, ok := r.Model.(model.ModelGateway); ok {
+		result, err = gateway.GenerateRequest(ctx, model.GenerateRequest{PromptVersion: "chat-v1", System: Prompt, Input: input, Images: resources.images, Priority: model.PriorityInteractive, GroupID: attempt.GroupID, AttemptID: attempt.ID})
+	} else {
+		result, err = r.Model.Generate(ctx, Prompt, input, resources.images)
+	}
 	if err != nil {
 		attempt.State = "failed"
 		attempt.Error = err.Error()

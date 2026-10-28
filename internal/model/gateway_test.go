@@ -2,7 +2,11 @@ package model
 
 import (
 	"context"
+	"sync/atomic"
 	"testing"
+	"time"
+
+	"github.com/phlin/go-agent/internal/cache"
 )
 
 type gatewayGenerator struct{}
@@ -26,3 +30,39 @@ func TestGatewayRequestBoundary(t *testing.T) {
 		t.Fatalf("embedding request failed: %v %v", values, err)
 	}
 }
+
+func TestGatewayCachesEmbeddingAndObservesRequests(t *testing.T) {
+	var calls atomic.Int32
+	base := &countingEmbedder{}
+	base.version.Store("v1")
+	g := NewGateway(gatewayGenerator{}, countingEmbedderAdapter{base: base, calls: &calls}, cache.NewHub(4), time.Minute, 1, 1, 1, 1)
+	var observed atomic.Int32
+	g.Observe = func(o Observation) {
+		if o.Operation == "embedding" {
+			observed.Add(1)
+		}
+	}
+	if _, err := g.Embed(context.Background(), " Hello "); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := g.Embed(context.Background(), "hello"); err != nil {
+		t.Fatal(err)
+	}
+	if calls.Load() != 1 {
+		t.Fatalf("cached embedding called base %d times", calls.Load())
+	}
+	if observed.Load() != 2 {
+		t.Fatalf("missing observations: %d", observed.Load())
+	}
+}
+
+type countingEmbedderAdapter struct {
+	base  *countingEmbedder
+	calls *atomic.Int32
+}
+
+func (e countingEmbedderAdapter) Embed(ctx context.Context, text string) ([]float32, error) {
+	e.calls.Add(1)
+	return e.base.Embed(ctx, text)
+}
+func (e countingEmbedderAdapter) EmbeddingVersion() string { return e.base.EmbeddingVersion() }
