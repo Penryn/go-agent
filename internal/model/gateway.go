@@ -241,12 +241,12 @@ func (g *Gateway) embed(ctx context.Context, req EmbedRequest) ([]float32, error
 	return append([]float32(nil), vector...), nil
 }
 
-func (g Gateway) GenerateRequest(ctx context.Context, req GenerateRequest) (Result, error) {
+func (g *Gateway) GenerateRequest(ctx context.Context, req GenerateRequest) (Result, error) {
 	return g.generate(ctx, req)
 }
 
-func (g Gateway) EmbedRequest(ctx context.Context, req EmbedRequest) ([]float32, error) {
-	return (&g).embed(ctx, req)
+func (g *Gateway) EmbedRequest(ctx context.Context, req EmbedRequest) ([]float32, error) {
+	return g.embed(ctx, req)
 }
 
 func normalizeGatewayText(text string) string {
