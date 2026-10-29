@@ -52,7 +52,6 @@ type ContextSnapshot struct {
 	Topics         []conversation.TopicView
 	Participants   []ParticipantProfile
 	Notes          []memory.Note
-	Episodes       []memory.Episode
 	StickerAssets  []meme.Asset
 	Images         []string
 	Query          string

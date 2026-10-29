@@ -59,9 +59,15 @@ chat:
 memory:
   top_k: 6
   interval: 20s
+  index_limit: 5000
   summary_batch: 8
   summary_interval: 30s
-  usage_flush_interval: 30s
+  # 语义召回使用余弦距离，范围 (0,2]，默认 0.6。
+  semantic_distance_threshold: 0.6
+  # 0 表示使用内置默认值：偏好 6、成员 8、经历 6。
+  preference_budget: 6
+  member_budget: 8
+  episode_budget: 6
 cache:
   max_items: 10000
   embedding_ttl: 30m

@@ -23,7 +23,7 @@ func (s *revisionStub) IsBotReply(context.Context, int64, string) (bool, error) 
 }
 func (s *revisionStub) BeginAttempt(context.Context, Attempt) (bool, error) { return false, nil }
 func (s *revisionStub) UpdateAttempt(context.Context, Attempt) error        { return nil }
-func (s *revisionStub) FinishAttempt(context.Context, Attempt, qq.Event) error {
+func (s *revisionStub) FinishAttempt(context.Context, Attempt, qq.Event, []string) error {
 	return nil
 }
 func (s *revisionStub) RepliesSince(context.Context, int64, time.Time) (int, time.Time, error) {

@@ -1,0 +1,178 @@
+{
+  "name": "脱敏记忆召回评测集",
+  "notes": [
+    {
+      "id": "nickname",
+      "group_id": 1,
+      "subject": 10,
+      "kind": "preference",
+      "key": "nickname",
+      "text": "称呼阿林"
+    },
+    {
+      "id": "nickname-stale",
+      "group_id": 1,
+      "subject": 10,
+      "kind": "preference",
+      "key": "旧称呼",
+      "text": "称呼小林",
+      "state": "forgotten"
+    },
+    {
+      "id": "allergy",
+      "group_id": 1,
+      "subject": 20,
+      "kind": "member",
+      "key": "allergy",
+      "text": "对花生过敏"
+    },
+    {
+      "id": "game-star",
+      "group_id": 1,
+      "subject": 11,
+      "kind": "episode",
+      "key": "星际探索",
+      "topic_id": "topic:game",
+      "text": "上周六玩了星际探索游戏"
+    },
+    {
+      "id": "game-food",
+      "group_id": 1,
+      "subject": 12,
+      "kind": "episode",
+      "key": "火锅",
+      "topic_id": "topic:food",
+      "text": "上周六吃了火锅"
+    },
+    {
+      "id": "music",
+      "group_id": 1,
+      "subject": 15,
+      "kind": "episode",
+      "key": "摇滚乐",
+      "topic_id": "topic:music",
+      "text": "喜欢听摇滚乐"
+    },
+    {
+      "id": "expired",
+      "group_id": 1,
+      "subject": 13,
+      "kind": "episode",
+      "key": "滑雪",
+      "topic_id": "topic:old",
+      "text": "去年冬天滑雪",
+      "valid_to": "-1h"
+    },
+    {
+      "id": "future",
+      "group_id": 1,
+      "subject": 14,
+      "kind": "episode",
+      "key": "演唱会",
+      "topic_id": "topic:future",
+      "text": "下个月看演唱会",
+      "valid_from": "24h"
+    },
+    {
+      "id": "group2-secret",
+      "group_id": 2,
+      "subject": 11,
+      "kind": "episode",
+      "key": "秘密",
+      "topic_id": "topic:secret",
+      "text": "另一个群的秘密"
+    },
+    {
+      "id": "forgotten-fact",
+      "group_id": 1,
+      "subject": 30,
+      "kind": "member",
+      "key": "old_fact",
+      "text": "喜欢星际探索",
+      "state": "forgotten",
+      "evidence": [
+        {"event_id": "old-event", "quote": "喜欢星际探索"}
+      ]
+    }
+  ],
+  "cases": [
+    {
+      "name": "episode-topic",
+      "group_id": 1,
+      "user_id": 11,
+      "query": "继续那个话题",
+      "topics": ["topic:game"],
+      "wanted": ["game-star"]
+    },
+    {
+      "name": "episode-lexical",
+      "group_id": 1,
+      "user_id": 15,
+      "query": "摇滚乐",
+      "wanted": ["music"]
+    },
+    {
+      "name": "episode-food",
+      "group_id": 1,
+      "user_id": 12,
+      "query": "火锅",
+      "topics": ["topic:food"],
+      "wanted": ["game-food"]
+    },
+    {
+      "name": "correction",
+      "group_id": 1,
+      "user_id": 10,
+      "query": "我叫什么",
+      "wanted": ["nickname"],
+      "forbidden": ["nickname-stale"],
+      "correction": true
+    },
+    {
+      "name": "member-authority",
+      "group_id": 1,
+      "user_id": 20,
+      "query": "谁不能吃花生",
+      "wanted": ["allergy"]
+    },
+    {
+      "name": "negative-expired",
+      "group_id": 1,
+      "user_id": 13,
+      "query": "滑雪",
+      "forbidden": ["expired"]
+    },
+    {
+      "name": "negative-future",
+      "group_id": 1,
+      "user_id": 14,
+      "query": "演唱会",
+      "forbidden": ["future"]
+    },
+    {
+      "name": "negative-cross-group",
+      "group_id": 1,
+      "user_id": 16,
+      "query": "秘密",
+      "forbidden": ["group2-secret"]
+    },
+    {
+      "name": "negative-member-authority",
+      "group_id": 1,
+      "user_id": 21,
+      "query": "谁知道这件事",
+      "forbidden": ["allergy"]
+    }
+  ],
+  "rebuild": {
+    "group_id": 1,
+    "subject": 30,
+    "kind": "member",
+    "key": "new_alias_for_old_fact",
+    "text": "喜欢星际探索",
+    "event_id": "old-event",
+    "event_text": "记住我喜欢星际探索",
+    "quote": "喜欢星际探索",
+    "until_seq": 100
+  }
+}

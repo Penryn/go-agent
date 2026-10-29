@@ -78,7 +78,7 @@ func New(ctx context.Context, cfg config.Config) (*App, error) {
 		}
 		slog.Info("model request", attrs...)
 	}
-	a.memories = &memory.Service{Store: db, Model: gateway, Embedding: gateway, TopK: cfg.Memory.TopK, IndexLimit: cfg.Memory.IndexLimit, Cache: hub, IndexTTL: cfg.Cache.IndexTTL, IndexCache: cache.New(cfg.Cache.MaxItems, func(index *bm25.Index) *bm25.Index { return index })}
+	a.memories = &memory.Service{Store: db, Model: gateway, Embedding: gateway, TopK: cfg.Memory.TopK, IndexLimit: cfg.Memory.IndexLimit, DistanceThreshold: cfg.Memory.SemanticDistanceThreshold, PreferenceBudget: cfg.Memory.PreferenceBudget, MemberBudget: cfg.Memory.MemberBudget, EpisodeBudget: cfg.Memory.EpisodeBudget, Cache: hub, IndexTTL: cfg.Cache.IndexTTL, IndexCache: cache.New(cfg.Cache.MaxItems, func(index *bm25.Index) *bm25.Index { return index })}
 	a.memes = &meme.Service{Store: db, Model: gateway, Embedding: gateway, Config: cfg.Meme, HTTP: qq.MediaClient(), Cache: hub}
 	a.qq = &qq.Client{URL: cfg.QQ.OutboundURL, Token: cfg.QQ.OutboundToken, WSURL: cfg.QQ.EventWSURL, WSToken: cfg.QQ.EventWSToken}
 	var sender chat.Sender
@@ -130,7 +130,6 @@ func (a *App) Run(ctx context.Context) error {
 	}
 	runBackground(a.ctx, &a.wg, a.cfg.Memory.Interval, a.memories.Tick)
 	runBackground(a.ctx, &a.wg, a.cfg.Memory.SummaryInterval, a.topics.Tick)
-	runBackground(a.ctx, &a.wg, a.cfg.Memory.UsageFlushInterval, a.memories.FlushUsage)
 	runBackground(a.ctx, &a.wg, 3*time.Second, a.memes.Tick)
 	slog.Info("QQ group friend started", "listen", a.cfg.Server.HTTPListen, "qq_enabled", a.cfg.QQ.Enabled, "global_sticker_pool", true)
 	select {

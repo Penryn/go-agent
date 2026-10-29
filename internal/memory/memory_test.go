@@ -2,7 +2,6 @@ package memory_test
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"slices"
 	"sync/atomic"
@@ -31,7 +30,7 @@ func TestSemanticRecallAndPreferencesSurviveTopK(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, group := range []int64{1, 2} {
-		ns, _ := s.Notes(ctx, group, 10)
+		ns, _ := s.ActiveNotes(ctx, group, 10)
 		for _, n := range ns {
 			if err := s.IndexNote(ctx, n, []float32{1, 0, 0}, "v1"); err != nil {
 				t.Fatal(err)
@@ -70,9 +69,9 @@ type countingStore struct {
 	notesCalls atomic.Int32
 }
 
-func (s *countingStore) Notes(ctx context.Context, group int64, limit int) ([]memory.Note, error) {
+func (s *countingStore) ActiveNotes(ctx context.Context, group int64, limit int) ([]memory.Note, error) {
 	s.notesCalls.Add(1)
-	return s.Store.Notes(ctx, group, limit)
+	return s.Store.ActiveNotes(ctx, group, limit)
 }
 
 func newCachedService(store memory.Store) *memory.Service {
@@ -145,40 +144,5 @@ func TestValidityWindowAndTopicEpisodeRecall(t *testing.T) {
 	}
 	if !found["topic"] || found["expired"] || found["pending"] {
 		t.Fatalf("validity or topic filter failed: %v", found)
-	}
-}
-
-type failingUsageStore struct {
-	*replay.Store
-	fail atomic.Bool
-}
-
-func (s *failingUsageStore) FlushNoteUsage(ctx context.Context, usage map[string]int64, at time.Time) error {
-	if s.fail.Load() {
-		return errors.New("write unavailable")
-	}
-	return s.Store.FlushNoteUsage(ctx, usage, at)
-}
-
-func TestUsageFlushRetainsFailedBatch(t *testing.T) {
-	ctx := context.Background()
-	base := replay.NewStore()
-	if err := base.SaveNotes(ctx, 1, []memory.Note{{ID: "n1", GroupID: 1, Kind: "episode", Key: "game", Text: "星际", State: "active", Updated: time.Now()}}, nil); err != nil {
-		t.Fatal(err)
-	}
-	store := &failingUsageStore{Store: base}
-	service := memory.Service{Store: store}
-	service.RecordUsage([]memory.Note{{ID: "n1"}})
-	store.fail.Store(true)
-	if err := service.FlushUsage(ctx); err == nil {
-		t.Fatal("expected the failed batch to surface")
-	}
-	store.fail.Store(false)
-	if err := service.FlushUsage(ctx); err != nil {
-		t.Fatal(err)
-	}
-	notes, err := base.Notes(ctx, 1, 10)
-	if err != nil || notes[0].UseCount != 1 {
-		t.Fatalf("usage was lost: %+v %v", notes, err)
 	}
 }

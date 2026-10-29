@@ -32,12 +32,15 @@ type Config struct {
 	Chat    chat.Config  `yaml:"chat"`
 	Meme    meme.Config  `yaml:"meme"`
 	Memory  struct {
-		TopK               int           `yaml:"top_k"`
-		Interval           time.Duration `yaml:"interval"`
-		IndexLimit         int           `yaml:"index_limit"`
-		SummaryBatch       int           `yaml:"summary_batch"`
-		SummaryInterval    time.Duration `yaml:"summary_interval"`
-		UsageFlushInterval time.Duration `yaml:"usage_flush_interval"`
+		TopK                      int           `yaml:"top_k"`
+		Interval                  time.Duration `yaml:"interval"`
+		IndexLimit                int           `yaml:"index_limit"`
+		SummaryBatch              int           `yaml:"summary_batch"`
+		SummaryInterval           time.Duration `yaml:"summary_interval"`
+		SemanticDistanceThreshold float64       `yaml:"semantic_distance_threshold"`
+		PreferenceBudget          int           `yaml:"preference_budget"`
+		MemberBudget              int           `yaml:"member_budget"`
+		EpisodeBudget             int           `yaml:"episode_budget"`
 	} `yaml:"memory"`
 	Cache struct {
 		MaxItems     int           `yaml:"max_items"`
@@ -126,7 +129,10 @@ func Default() Config {
 	c.Memory.IndexLimit = 5000
 	c.Memory.SummaryBatch = 8
 	c.Memory.SummaryInterval = 30 * time.Second
-	c.Memory.UsageFlushInterval = 30 * time.Second
+	c.Memory.SemanticDistanceThreshold = 0.6
+	c.Memory.PreferenceBudget = 6
+	c.Memory.MemberBudget = 8
+	c.Memory.EpisodeBudget = 6
 	c.Cache = struct {
 		MaxItems     int           `yaml:"max_items"`
 		EmbeddingTTL time.Duration `yaml:"embedding_ttl"`
@@ -171,8 +177,11 @@ func (c Config) Validate() error {
 	if c.Chat.Merge < 0 || c.Chat.MaxWait <= 0 || c.Chat.MaxWait < c.Chat.Merge || c.Chat.Timeout <= 0 || c.Chat.ActiveWindow < 0 || c.Chat.PassiveInterval < 0 || c.Chat.SpontaneousInterval < 0 || c.Chat.MaxPerMinute < 1 || c.Chat.MaxPerMinute > 60 || c.Chat.History < 1 || c.Chat.History > 500 || c.Chat.ContextRunes < 1000 || c.Chat.ContextRunes > 100000 {
 		return errors.New("invalid chat limits")
 	}
-	if c.Memory.TopK < 1 || c.Memory.TopK > 30 || c.Memory.Interval < time.Second || c.Memory.IndexLimit < c.Memory.TopK || c.Memory.IndexLimit > 100000 || c.Memory.SummaryBatch < 1 || c.Memory.SummaryBatch > 100 || c.Memory.SummaryInterval < time.Second || c.Memory.UsageFlushInterval < time.Second {
+	if c.Memory.TopK < 1 || c.Memory.TopK > 30 || c.Memory.Interval < time.Second || c.Memory.IndexLimit < c.Memory.TopK || c.Memory.IndexLimit > 100000 || c.Memory.SummaryBatch < 1 || c.Memory.SummaryBatch > 100 || c.Memory.SummaryInterval < time.Second {
 		return errors.New("invalid memory limits")
+	}
+	if c.Memory.SemanticDistanceThreshold <= 0 || c.Memory.SemanticDistanceThreshold > 2 || c.Memory.PreferenceBudget < 0 || c.Memory.PreferenceBudget > 50 || c.Memory.MemberBudget < 0 || c.Memory.MemberBudget > 50 || c.Memory.EpisodeBudget < 0 || c.Memory.EpisodeBudget > 50 {
+		return errors.New("invalid memory recall limits")
 	}
 	if c.Cache.MaxItems < 1 || c.Cache.MaxItems > 100000 || c.Cache.EmbeddingTTL <= 0 || c.Cache.IndexTTL <= 0 || c.Cache.RecallTTL <= 0 || c.Cache.StickerTTL <= 0 || c.Cache.ImageTTL <= 0 || c.Cache.ContextTTL <= 0 {
 		return errors.New("invalid cache limits")

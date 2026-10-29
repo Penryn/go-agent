@@ -59,6 +59,25 @@ func (s *Store) Initialize(ctx context.Context, dimensions int) error {
 			}
 		}
 	}
+	// One-time baseline for pre-ledger data. confidence=1 was a hardcoded
+	// default, not a model measurement, and use_count counted recall attempts.
+	// Both are cleared once so they cannot masquerade as new-semantics data.
+	var migrated string
+	err = tx.QueryRowContext(ctx, `SELECT value FROM groupfriend.settings WHERE key='memory_rework_migration'`).Scan(&migrated)
+	switch {
+	case errors.Is(err, sql.ErrNoRows):
+		if _, err := tx.ExecContext(ctx, `UPDATE groupfriend.notes SET confidence=0.7 WHERE confidence=1`); err != nil {
+			return err
+		}
+		if _, err := tx.ExecContext(ctx, `UPDATE groupfriend.notes SET use_count=0,last_used_at=NULL WHERE usage_version=0`); err != nil {
+			return err
+		}
+		if _, err := tx.ExecContext(ctx, `INSERT INTO groupfriend.settings(key,value) VALUES('memory_rework_migration','1')`); err != nil {
+			return err
+		}
+	case err != nil:
+		return err
+	}
 	expected := fmt.Sprint(dimensions)
 	_, err = tx.ExecContext(ctx, `INSERT INTO groupfriend.settings(key,value) VALUES('vector_dimensions',$1) ON CONFLICT DO NOTHING`, expected)
 	if err != nil {
@@ -178,7 +197,7 @@ func (s *Store) UpdateAttempt(ctx context.Context, a chat.Attempt) error {
 	_, err = s.DB.ExecContext(ctx, `UPDATE groupfriend.reply_attempts SET state=$2,sticker_id=$3,body=$4,updated_at=NOW() WHERE id=$1 AND state<>'confirmed'`, a.ID, a.State, a.Reply.StickerID, b)
 	return err
 }
-func (s *Store) FinishAttempt(ctx context.Context, a chat.Attempt, e qq.Event) error {
+func (s *Store) FinishAttempt(ctx context.Context, a chat.Attempt, e qq.Event, noteIDs []string) error {
 	tx, err := s.DB.BeginTx(ctx, nil)
 	if err != nil {
 		return err
@@ -204,6 +223,36 @@ func (s *Store) FinishAttempt(ctx context.Context, a chat.Attempt, e qq.Event) e
 	if err != nil {
 		return err
 	}
+	// The ledger is the fact source; the notes projection only advances for
+	// rows this attempt actually inserted. note_usage has no notes foreign key,
+	// so the source rows are validated here instead of at the schema level.
+	inserted := []string{}
+	if len(noteIDs) > 0 {
+		rows, err := tx.QueryContext(ctx, `INSERT INTO groupfriend.note_usage(attempt_id,note_id,group_id,confirmed_at) SELECT $1,n.id,n.group_id,$3 FROM groupfriend.notes n WHERE n.group_id=$2 AND n.id=ANY($4) ON CONFLICT DO NOTHING RETURNING note_id`, a.ID, a.GroupID, e.At, noteIDs)
+		if err != nil {
+			return err
+		}
+		for rows.Next() {
+			var id string
+			if err := rows.Scan(&id); err != nil {
+				rows.Close()
+				return err
+			}
+			inserted = append(inserted, id)
+		}
+		if err := rows.Err(); err != nil {
+			rows.Close()
+			return err
+		}
+		if err := rows.Close(); err != nil {
+			return err
+		}
+	}
+	if len(inserted) > 0 {
+		if _, err := tx.ExecContext(ctx, `UPDATE groupfriend.notes SET use_count=CASE WHEN usage_version=1 THEN use_count+1 ELSE 1 END,usage_version=1,last_used_at=$2 WHERE id=ANY($1)`, inserted, e.At); err != nil {
+			return err
+		}
+	}
 	return tx.Commit()
 }
 func (s *Store) RepliesSince(ctx context.Context, group int64, since time.Time) (int, time.Time, error) {
@@ -213,14 +262,14 @@ func (s *Store) RepliesSince(ctx context.Context, group int64, since time.Time) 
 	return count, last.Time, err
 }
 
-const noteColumns = `id,group_id,subject,kind,key,text,evidence,revision,source_seq,state,updated_at,expires_at,salience,confidence,last_used_at,use_count,valid_from,valid_to,memory_revision,topic_id`
+const noteColumns = `id,group_id,subject,kind,key,text,evidence,revision,source_seq,state,updated_at,expires_at,salience,confidence,last_used_at,use_count,usage_version,valid_from,valid_to,memory_revision,topic_id`
 
 func scanNotes(rows *sql.Rows) ([]memory.Note, error) {
 	out := []memory.Note{}
 	for rows.Next() {
 		var n memory.Note
 		var evidence []byte
-		if err := rows.Scan(&n.ID, &n.GroupID, &n.Subject, &n.Kind, &n.Key, &n.Text, &evidence, &n.Version, &n.SourceSeq, &n.State, &n.Updated, &n.Expires, &n.Salience, &n.Confidence, &n.LastUsedAt, &n.UseCount, &n.ValidFrom, &n.ValidTo, &n.MemoryRevision, &n.TopicID); err != nil {
+		if err := rows.Scan(&n.ID, &n.GroupID, &n.Subject, &n.Kind, &n.Key, &n.Text, &evidence, &n.Version, &n.SourceSeq, &n.State, &n.Updated, &n.Expires, &n.Salience, &n.Confidence, &n.LastUsedAt, &n.UseCount, &n.UsageVersion, &n.ValidFrom, &n.ValidTo, &n.MemoryRevision, &n.TopicID); err != nil {
 			return nil, err
 		}
 		if err := json.Unmarshal(evidence, &n.Evidence); err != nil {
@@ -230,7 +279,21 @@ func scanNotes(rows *sql.Rows) ([]memory.Note, error) {
 	}
 	return out, rows.Err()
 }
-func (s *Store) Notes(ctx context.Context, group int64, limit int) ([]memory.Note, error) {
+
+// ActiveNotes is the hot recall window: only currently valid active notes can
+// enter the index, so expired or inactive rows cannot consume index_limit.
+func (s *Store) ActiveNotes(ctx context.Context, group int64, limit int) ([]memory.Note, error) {
+	rows, err := s.DB.QueryContext(ctx, `SELECT `+noteColumns+` FROM groupfriend.notes WHERE group_id=$1 AND state='active' AND (expires_at IS NULL OR expires_at>NOW()) AND (valid_from IS NULL OR valid_from<=NOW()) AND (valid_to IS NULL OR valid_to>NOW()) ORDER BY (kind='preference') DESC,updated_at DESC,id LIMIT $2`, group, max(1, limit))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	return scanNotes(rows)
+}
+
+// AllNotes is the administrative audit view and intentionally includes every
+// lifecycle state.
+func (s *Store) AllNotes(ctx context.Context, group int64, limit int) ([]memory.Note, error) {
 	rows, err := s.DB.QueryContext(ctx, `SELECT `+noteColumns+` FROM groupfriend.notes WHERE group_id=$1 ORDER BY (kind='preference') DESC,updated_at DESC,id LIMIT $2`, group, max(1, limit))
 	if err != nil {
 		return nil, err
@@ -238,8 +301,36 @@ func (s *Store) Notes(ctx context.Context, group int64, limit int) ([]memory.Not
 	defer rows.Close()
 	return scanNotes(rows)
 }
-func (s *Store) VectorNotes(ctx context.Context, group int64, v []float32, version string, limit int) ([]memory.Note, error) {
-	rows, err := s.DB.QueryContext(ctx, `SELECT `+noteColumns+` FROM groupfriend.notes WHERE group_id=$1 AND state='active' AND (expires_at IS NULL OR expires_at>NOW()) AND (valid_from IS NULL OR valid_from<=NOW()) AND (valid_to IS NULL OR valid_to>NOW()) AND indexed_revision=revision AND embedding_model=$2 AND embedding IS NOT NULL AND (embedding <=> $3)<0.6 ORDER BY embedding <=> $3 LIMIT $4`, group, version, pgvector.NewHalfVector(v), limit)
+func (s *Store) NotesByID(ctx context.Context, group int64, ids []string) ([]memory.Note, error) {
+	rows, err := s.DB.QueryContext(ctx, `SELECT `+noteColumns+` FROM groupfriend.notes WHERE group_id=$1 AND id=ANY($2)`, group, ids)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	return scanNotes(rows)
+}
+
+// NotesByIdentity returns every lifecycle state for the candidate identities,
+// including forgotten rows that must stay visible to the reconciler.
+func (s *Store) NotesByIdentity(ctx context.Context, group int64, identities []memory.Identity) ([]memory.Note, error) {
+	out := []memory.Note{}
+	for _, identity := range identities {
+		rows, err := s.DB.QueryContext(ctx, `SELECT `+noteColumns+` FROM groupfriend.notes WHERE group_id=$1 AND subject=$2 AND kind=$3 AND key=$4 AND (kind<>'episode' OR topic_id=$5) ORDER BY updated_at DESC,id`, group, identity.Subject, identity.Kind, identity.Key, identity.TopicID)
+		if err != nil {
+			return nil, err
+		}
+		notes, err := scanNotes(rows)
+		rows.Close()
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, notes...)
+	}
+	return out, nil
+}
+
+func (s *Store) VectorNotes(ctx context.Context, group int64, v []float32, version string, limit int, threshold float64) ([]memory.Note, error) {
+	rows, err := s.DB.QueryContext(ctx, `SELECT `+noteColumns+` FROM groupfriend.notes WHERE group_id=$1 AND state='active' AND (expires_at IS NULL OR expires_at>NOW()) AND (valid_from IS NULL OR valid_from<=NOW()) AND (valid_to IS NULL OR valid_to>NOW()) AND indexed_revision=revision AND embedding_model=$2 AND embedding IS NOT NULL AND (embedding <=> $3)<$5 ORDER BY embedding <=> $3 LIMIT $4`, group, version, pgvector.NewHalfVector(v), limit, threshold)
 	if err != nil {
 		return nil, err
 	}
@@ -265,7 +356,7 @@ func (s *Store) SaveNotes(ctx context.Context, group int64, notes []memory.Note,
 		}
 		if n.State == "active" {
 			var blocked bool
-			err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM groupfriend.notes n, jsonb_array_elements(n.evidence) old, jsonb_array_elements($2::jsonb) incoming WHERE n.group_id=$1 AND n.state='forgotten' AND old->>'event_id'=incoming->>'event_id' AND (NOT $3 OR n.source_seq >= $4))`, group, proof, n.Explicit, n.SourceSeq).Scan(&blocked)
+			err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM groupfriend.notes n, jsonb_array_elements(n.evidence) old, jsonb_array_elements($2::jsonb) incoming WHERE n.group_id=$1 AND n.state='forgotten' AND old->>'event_id'=incoming->>'event_id')`, group, proof).Scan(&blocked)
 			if err != nil {
 				return err
 			}
@@ -304,21 +395,20 @@ func (s *Store) MemoryRevision(ctx context.Context, group int64) (int64, error) 
 	return revision.Int64, err
 }
 
-func (s *Store) FlushNoteUsage(ctx context.Context, usage map[string]int64, at time.Time) error {
-	tx, err := s.DB.BeginTx(ctx, nil)
+func (s *Store) RecordLearningRun(ctx context.Context, run memory.LearningRun) error {
+	_, err := s.DB.ExecContext(ctx, `INSERT INTO groupfriend.learning_runs(group_id,after_seq,until_seq,started_at,duration_ms,extract_ms,reconcile_ms,extract_tokens,reconcile_tokens,candidate_count,change_count,status,error_class) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)`, run.GroupID, run.AfterSeq, run.UntilSeq, run.StartedAt, run.DurationMS, run.ExtractMS, run.ReconcileMS, run.ExtractTokens, run.ReconcileTokens, run.CandidateCount, run.ChangeCount, run.Status, run.ErrorClass)
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback()
-	for id, count := range usage {
-		if count < 1 {
-			continue
-		}
-		if _, err := tx.ExecContext(ctx, `UPDATE groupfriend.notes SET use_count=use_count+$2,last_used_at=$3 WHERE id=$1 AND state='active'`, id, count, at); err != nil {
-			return err
-		}
-	}
-	return tx.Commit()
+	// The status endpoint only reads 24 hours; keep a bounded history for
+	// incident review without letting telemetry grow forever.
+	_, err = s.DB.ExecContext(ctx, `DELETE FROM groupfriend.learning_runs WHERE started_at < NOW()-INTERVAL '30 days'`)
+	return err
+}
+
+func (s *Store) RecordMemoryEvent(ctx context.Context, group int64, kind string) error {
+	_, err := s.DB.ExecContext(ctx, `INSERT INTO groupfriend.memory_events(group_id,kind) VALUES($1,$2)`, group, kind)
+	return err
 }
 
 func (s *Store) SaveTopics(ctx context.Context, group int64, topics []conversation.TopicView, events []conversation.TopicEventView) error {
@@ -503,12 +593,12 @@ func (s *Store) LearningBatch(ctx context.Context, limit int) ([]qq.Event, memor
 	}
 	return events, p, err
 }
-func (s *Store) DeferLearning(ctx context.Context, group int64) error {
-	_, err := s.DB.ExecContext(ctx, `UPDATE groupfriend.group_progress SET retry_at=NOW()+INTERVAL '1 minute' WHERE group_id=$1`, group)
+func (s *Store) DeferLearning(ctx context.Context, group int64, delay time.Duration) error {
+	_, err := s.DB.ExecContext(ctx, `UPDATE groupfriend.group_progress SET retry_at=NOW()+make_interval(secs=>$2) WHERE group_id=$1`, group, delay.Seconds())
 	return err
 }
 func (s *Store) PendingNotes(ctx context.Context, version string, limit int) ([]memory.Note, error) {
-	rows, err := s.DB.QueryContext(ctx, `SELECT `+noteColumns+` FROM groupfriend.notes WHERE state='active' AND (expires_at IS NULL OR expires_at>NOW()) AND (embedding IS NULL OR indexed_revision<>revision OR embedding_model<>$1) ORDER BY updated_at LIMIT $2`, version, limit)
+	rows, err := s.DB.QueryContext(ctx, `SELECT `+noteColumns+` FROM groupfriend.notes WHERE state='active' AND (expires_at IS NULL OR expires_at>NOW()) AND (valid_from IS NULL OR valid_from<=NOW()) AND (valid_to IS NULL OR valid_to>NOW()) AND (embedding IS NULL OR indexed_revision<>revision OR embedding_model<>$1) ORDER BY updated_at LIMIT $2`, version, limit)
 	if err != nil {
 		return nil, err
 	}

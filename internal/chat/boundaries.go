@@ -141,6 +141,7 @@ func (b runtimeContextBuilder) Build(ctx context.Context, admission ctxsnapshot.
 
 func (r *Runtime) retrieveResources(ctx context.Context, admission ctxsnapshot.AdmissionSnapshot, vector []float32, modelVersion string, cooldownEpoch int64, resources turnResources) turnResources {
 	if r.Memory != nil {
+		resources.Trace.RecallAttempted = true
 		notes, trace, err := r.Memory.RecallCached(ctx, memory.Query{
 			GroupID:      admission.GroupID,
 			Events:       admission.Batch,
@@ -159,8 +160,8 @@ func (r *Runtime) retrieveResources(ctx context.Context, admission ctxsnapshot.A
 			resources.Trace.Lexical = trace.Lexical
 			resources.Trace.Contextual = trace.Contextual
 			resources.Trace.Selected = trace.Selected
+			resources.Trace.RecallHits = trace.RecallHits
 			resources.Trace.Degraded = append(resources.Trace.Degraded, trace.Degraded...)
-			r.Memory.RecordUsage(notes)
 		}
 	}
 	if r.Memes != nil {

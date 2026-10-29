@@ -21,15 +21,35 @@ CREATE TABLE IF NOT EXISTS groupfriend.notes (
 );
 ALTER TABLE groupfriend.notes ADD COLUMN IF NOT EXISTS salience SMALLINT NOT NULL DEFAULT 50;
 ALTER TABLE groupfriend.notes ADD COLUMN IF NOT EXISTS confidence REAL NOT NULL DEFAULT 1;
+ALTER TABLE groupfriend.notes ALTER COLUMN confidence SET DEFAULT 0.7;
 ALTER TABLE groupfriend.notes ADD COLUMN IF NOT EXISTS last_used_at TIMESTAMPTZ;
 ALTER TABLE groupfriend.notes ADD COLUMN IF NOT EXISTS use_count BIGINT NOT NULL DEFAULT 0;
 ALTER TABLE groupfriend.notes ADD COLUMN IF NOT EXISTS valid_from TIMESTAMPTZ;
 ALTER TABLE groupfriend.notes ADD COLUMN IF NOT EXISTS valid_to TIMESTAMPTZ;
 ALTER TABLE groupfriend.notes ADD COLUMN IF NOT EXISTS memory_revision BIGINT NOT NULL DEFAULT 1;
 ALTER TABLE groupfriend.notes ADD COLUMN IF NOT EXISTS topic_id TEXT NOT NULL DEFAULT '';
+ALTER TABLE groupfriend.notes ADD COLUMN IF NOT EXISTS usage_version INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE groupfriend.notes DROP CONSTRAINT IF EXISTS notes_state_check;
+ALTER TABLE groupfriend.notes ADD CONSTRAINT notes_state_check CHECK (state IN ('active','dormant','archived','forgotten'));
 CREATE INDEX IF NOT EXISTS friend_notes_scope ON groupfriend.notes(group_id,subject,state);
 CREATE INDEX IF NOT EXISTS friend_notes_topic ON groupfriend.notes(group_id,topic_id,kind,state);
 CREATE INDEX IF NOT EXISTS friend_notes_vector ON groupfriend.notes USING hnsw(embedding halfvec_cosine_ops);
+CREATE TABLE IF NOT EXISTS groupfriend.note_usage (
+ attempt_id TEXT NOT NULL,note_id TEXT NOT NULL,group_id BIGINT NOT NULL,confirmed_at TIMESTAMPTZ NOT NULL,
+ PRIMARY KEY(attempt_id,note_id)
+);
+CREATE INDEX IF NOT EXISTS friend_note_usage_note_time ON groupfriend.note_usage(note_id,confirmed_at DESC);
+CREATE TABLE IF NOT EXISTS groupfriend.learning_runs (
+ id BIGSERIAL PRIMARY KEY,group_id BIGINT NOT NULL,after_seq BIGINT NOT NULL,until_seq BIGINT NOT NULL,
+ started_at TIMESTAMPTZ NOT NULL,duration_ms BIGINT NOT NULL,extract_ms BIGINT NOT NULL,reconcile_ms BIGINT NOT NULL,
+ extract_tokens BIGINT NOT NULL,reconcile_tokens BIGINT NOT NULL,candidate_count INTEGER NOT NULL,change_count INTEGER NOT NULL,
+ status TEXT NOT NULL,error_class TEXT NOT NULL DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS friend_learning_runs_time ON groupfriend.learning_runs(started_at DESC);
+CREATE TABLE IF NOT EXISTS groupfriend.memory_events (
+ id BIGSERIAL PRIMARY KEY,group_id BIGINT NOT NULL,kind TEXT NOT NULL,at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS friend_memory_events_kind_time ON groupfriend.memory_events(kind,at DESC);
 CREATE TABLE IF NOT EXISTS groupfriend.conversation_topics (
  group_id BIGINT NOT NULL,topic_id TEXT NOT NULL,status TEXT NOT NULL,
  participants JSONB NOT NULL DEFAULT '[]',first_seq BIGINT NOT NULL,last_seq BIGINT NOT NULL,

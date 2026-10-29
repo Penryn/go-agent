@@ -29,7 +29,7 @@ func (a *App) adminAPI() *http.ServeMux {
 			writeJSON(w, 500, map[string]string{"error": err.Error()})
 			return
 		}
-		notes, err := a.store.Notes(r.Context(), groupID, 200)
+		notes, err := a.store.AllNotes(r.Context(), groupID, 200)
 		if err != nil {
 			writeJSON(w, 500, map[string]string{"error": err.Error()})
 			return
@@ -56,6 +56,14 @@ func (a *App) adminAPI() *http.ServeMux {
 			return
 		}
 		writeJSON(w, 200, map[string]bool{"ok": true})
+	})
+	api.HandleFunc("GET /admin/api/memory", func(w http.ResponseWriter, r *http.Request) {
+		status, err := a.store.MemoryStatus(r.Context())
+		if err != nil {
+			writeJSON(w, 500, map[string]string{"error": err.Error()})
+			return
+		}
+		writeJSON(w, 200, status)
 	})
 	api.HandleFunc("GET /admin/api/stickers", func(w http.ResponseWriter, r *http.Request) {
 		assets, err := a.store.AdminStickers(r.Context())

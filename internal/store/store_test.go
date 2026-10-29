@@ -161,7 +161,7 @@ func TestMemoryEvidenceVersionsAndIndexInvalidation(t *testing.T) {
 	if err := svc.Apply(ctx, 1, []qq.Event{e}, []memory.Change{ch}, nil); err != nil {
 		t.Fatal(err)
 	}
-	notes, _ := s.Notes(ctx, 1, 10)
+	notes, _ := s.ActiveNotes(ctx, 1, 10)
 	if len(notes) != 1 {
 		t.Fatal(notes)
 	}
@@ -169,11 +169,11 @@ func TestMemoryEvidenceVersionsAndIndexInvalidation(t *testing.T) {
 	if err := s.IndexNote(ctx, n, []float32{1, 0, 0}, "v1"); err != nil {
 		t.Fatal(err)
 	}
-	matched, err := s.VectorNotes(ctx, 1, []float32{1, 0, 0}, "v1", 5)
+	matched, err := s.VectorNotes(ctx, 1, []float32{1, 0, 0}, "v1", 5, 0.6)
 	if err != nil || len(matched) != 1 {
 		t.Fatalf("vector recall: %v %v", matched, err)
 	}
-	foreign, err := s.VectorNotes(ctx, 2, []float32{1, 0, 0}, "v1", 5)
+	foreign, err := s.VectorNotes(ctx, 2, []float32{1, 0, 0}, "v1", 5, 0.6)
 	if err != nil || len(foreign) != 0 {
 		t.Fatal("cross-group memory leak", err)
 	}
@@ -199,7 +199,7 @@ func TestMemoryEvidenceVersionsAndIndexInvalidation(t *testing.T) {
 	if err := s.IndexNote(ctx, n, []float32{1, 0, 0}, "v1"); err != nil {
 		t.Fatal(err)
 	}
-	matched, err = s.VectorNotes(ctx, 1, []float32{1, 0, 0}, "v1", 5)
+	matched, err = s.VectorNotes(ctx, 1, []float32{1, 0, 0}, "v1", 5, 0.6)
 	if err != nil || len(matched) != 0 {
 		t.Fatal("old vector revived forgotten memory", err)
 	}
@@ -207,6 +207,10 @@ func TestMemoryEvidenceVersionsAndIndexInvalidation(t *testing.T) {
 	p := memory.Progress{GroupID: 1, After: 0, Until: forget.Seq}
 	if err := svc.Apply(ctx, 1, []qq.Event{e}, []memory.Change{recreated}, &p); err == nil {
 		t.Fatal("old evidence recreated a forgotten fact")
+	}
+	var blocked int
+	if err := s.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM groupfriend.memory_events WHERE kind='forgotten_blocked'`).Scan(&blocked); err != nil || blocked == 0 {
+		t.Fatalf("blocked rebuild was not recorded: count=%d err=%v", blocked, err)
 	}
 }
 func TestLearningCursorCommitsWithNotes(t *testing.T) {
@@ -224,7 +228,7 @@ func TestLearningCursorCommitsWithNotes(t *testing.T) {
 	if err := svc.Apply(ctx, 3, events, []memory.Change{ch}, &wrong); err == nil {
 		t.Fatal("stale cursor accepted")
 	}
-	notes, _ := s.Notes(ctx, 3, 10)
+	notes, _ := s.ActiveNotes(ctx, 3, 10)
 	if len(notes) != 0 {
 		t.Fatal("partial note write was committed")
 	}
@@ -236,6 +240,220 @@ func TestLearningCursorCommitsWithNotes(t *testing.T) {
 		t.Fatal("cursor not advanced", events, err)
 	}
 }
+func TestMemoryReworkMigrationRunsOnce(t *testing.T) {
+	s := testStore(t)
+	ctx := context.Background()
+	if _, err := s.DB.ExecContext(ctx, `INSERT INTO groupfriend.notes(id,group_id,subject,kind,key,text,evidence,revision,source_seq,state,updated_at,confidence,use_count,usage_version) VALUES('legacy',1,10,'preference','nickname','称呼小林','[]',1,1,'active',NOW(),1,5,0)`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.DB.ExecContext(ctx, `DELETE FROM groupfriend.settings WHERE key='memory_rework_migration'`); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Initialize(ctx, 3); err != nil {
+		t.Fatal(err)
+	}
+	notes, err := s.AllNotes(ctx, 1, 10)
+	if err != nil || len(notes) != 1 || notes[0].Confidence != 0.7 || notes[0].UseCount != 0 || notes[0].UsageVersion != 0 {
+		t.Fatalf("legacy row = %+v err=%v", notes, err)
+	}
+	// The marker makes the baseline one-time; later confidence=1 stays.
+	if _, err := s.DB.ExecContext(ctx, `UPDATE groupfriend.notes SET confidence=1,use_count=3 WHERE id='legacy'`); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Initialize(ctx, 3); err != nil {
+		t.Fatal(err)
+	}
+	notes, _ = s.AllNotes(ctx, 1, 10)
+	if notes[0].Confidence != 1 || notes[0].UseCount != 3 {
+		t.Fatalf("migration reran: %+v", notes[0])
+	}
+}
+
+func TestConfirmedUsageLedgerIsIdempotent(t *testing.T) {
+	s := testStore(t)
+	ctx := context.Background()
+	svc := memory.Service{Store: s, TopK: 4}
+	create := func(group int64, eventID, text string) memory.Note {
+		e := event(t, s, eventID, group, 10, "记住"+text)
+		change := memory.Change{Subject: 10, Kind: "preference", Key: "interest", Text: text, Evidence: []memory.Evidence{{EventID: e.ID, Quote: text}}}
+		if err := svc.Apply(ctx, group, []qq.Event{e}, []memory.Change{change}, nil); err != nil {
+			t.Fatal(err)
+		}
+		notes, err := s.ActiveNotes(ctx, group, 10)
+		if err != nil || len(notes) != 1 {
+			t.Fatalf("notes = %+v err=%v", notes, err)
+		}
+		return notes[0]
+	}
+	note := create(1, "usage-a", "喜欢星际探索")
+	foreign := create(2, "usage-b", "喜欢音乐")
+
+	useCount := func(group int64, id string) memory.Note {
+		notes, err := s.ActiveNotes(ctx, group, 10)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, n := range notes {
+			if n.ID == id {
+				return n
+			}
+		}
+		t.Fatalf("note %s missing", id)
+		return memory.Note{}
+	}
+	ledgerRows := func(attempt string) int {
+		var n int
+		if err := s.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM groupfriend.note_usage WHERE attempt_id=$1`, attempt).Scan(&n); err != nil {
+			t.Fatal(err)
+		}
+		return n
+	}
+	start := func(id string) chat.Attempt {
+		a := chat.Attempt{ID: id, GroupID: 1, InputSeq: 1, State: "planning", At: time.Now()}
+		if ok, err := s.BeginAttempt(ctx, a); err != nil || !ok {
+			t.Fatal(ok, err)
+		}
+		a.State = "sending"
+		if err := s.UpdateAttempt(ctx, a); err != nil {
+			t.Fatal(err)
+		}
+		return a
+	}
+
+	first := start("usage-1")
+	confirmed := qq.Event{ID: "out-usage-1", GroupID: 1, MessageID: "platform-1", Outbound: true, At: time.Now()}
+	// Duplicate, cross-group and unknown note IDs are all filtered out.
+	if err := s.FinishAttempt(ctx, first, confirmed, []string{note.ID, note.ID, foreign.ID, "missing"}); err != nil {
+		t.Fatal(err)
+	}
+	if n := ledgerRows("usage-1"); n != 1 {
+		t.Fatalf("ledger rows = %d, want 1", n)
+	}
+	if got := useCount(1, note.ID); got.UseCount != 1 || got.UsageVersion != 1 {
+		t.Fatalf("projection = %+v", got)
+	}
+	if got := useCount(2, foreign.ID); got.UseCount != 0 {
+		t.Fatalf("cross-group note was booked: %+v", got)
+	}
+	// A repeated finish cannot book again.
+	first.State = "confirmed"
+	if err := s.FinishAttempt(ctx, first, confirmed, []string{note.ID}); err == nil {
+		t.Fatal("repeated finish was accepted")
+	}
+	if n := ledgerRows("usage-1"); n != 1 || useCount(1, note.ID).UseCount != 1 {
+		t.Fatal("repeated finish changed the ledger")
+	}
+	// A second confirmed attempt books the same note once more.
+	second := start("usage-2")
+	if err := s.FinishAttempt(ctx, second, qq.Event{ID: "out-usage-2", GroupID: 1, MessageID: "platform-2", Outbound: true, At: time.Now()}, []string{note.ID}); err != nil {
+		t.Fatal(err)
+	}
+	if n := ledgerRows("usage-2"); n != 1 || useCount(1, note.ID).UseCount != 2 {
+		t.Fatal("second attempt did not book exactly once")
+	}
+	// A planning attempt cannot finish.
+	planning := chat.Attempt{ID: "usage-planning", GroupID: 1, InputSeq: 2, State: "planning", At: time.Now()}
+	if ok, err := s.BeginAttempt(ctx, planning); err != nil || !ok {
+		t.Fatal(ok, err)
+	}
+	if err := s.FinishAttempt(ctx, planning, qq.Event{ID: "out-planning", GroupID: 1, MessageID: "platform-3", Outbound: true, At: time.Now()}, []string{note.ID}); err == nil {
+		t.Fatal("planning attempt finished")
+	}
+	if ledgerRows("usage-planning") != 0 {
+		t.Fatal("planning attempt wrote usage")
+	}
+	// A failing outbound insert rolls back the confirmed state and the ledger.
+	rollback := start("usage-rollback")
+	if err := s.FinishAttempt(ctx, rollback, confirmed, []string{note.ID}); err == nil {
+		t.Fatal("duplicate outbound event was accepted")
+	}
+	var state string
+	if err := s.DB.QueryRowContext(ctx, `SELECT state FROM groupfriend.reply_attempts WHERE id='usage-rollback'`).Scan(&state); err != nil || state != "sending" {
+		t.Fatalf("attempt state after rollback = %q err=%v", state, err)
+	}
+	if ledgerRows("usage-rollback") != 0 || useCount(1, note.ID).UseCount != 2 {
+		t.Fatal("failed transaction left ledger or projection changes")
+	}
+	status, err := s.MemoryStatus(ctx)
+	if err != nil || status.UsageProjectionDiff != 0 || len(status.Groups) == 0 || status.Groups[0].Lag <= 0 || status.Ledger.ConfirmedAttempts != 2 || status.Ledger.UsageRows != 2 {
+		t.Fatalf("memory status = %+v err=%v", status, err)
+	}
+}
+
+func TestMemoryStatusAggregatesOperationalMetrics(t *testing.T) {
+	s := testStore(t)
+	ctx := context.Background()
+	for _, run := range []memory.LearningRun{
+		{GroupID: 1, UntilSeq: 5, StartedAt: time.Now(), DurationMS: 30, ExtractMS: 10, ReconcileMS: 20, ExtractTokens: 100, ReconcileTokens: 50, CandidateCount: 1, ChangeCount: 3, Status: "succeeded"},
+		{GroupID: 1, UntilSeq: 6, StartedAt: time.Now(), DurationMS: 10, ExtractMS: 10, ExtractTokens: 20, Status: "failed", ErrorClass: "invalid_output"},
+	} {
+		if err := s.RecordLearningRun(ctx, run); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := s.RecordMemoryEvent(ctx, 1, "forgotten_blocked"); err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range []string{"dup-a", "dup-b"} {
+		if _, err := s.DB.ExecContext(ctx, `INSERT INTO groupfriend.notes(id,group_id,subject,kind,key,text,evidence,revision,source_seq,state,updated_at,confidence) VALUES($1,1,10,'preference','nickname','称呼小林','[]',1,1,'active',NOW(),0.7)`, id); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := s.DB.ExecContext(ctx, `INSERT INTO groupfriend.reply_attempts(id,group_id,input_seq,state,at,body) VALUES('status-recall',1,1,'silent',NOW(),'{"retrieval":{"recall_attempted":true,"recall_hits":1,"recall_cache_hit":true,"degraded":["semantic"]}}')`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.DB.ExecContext(ctx, `INSERT INTO groupfriend.reply_attempts(id,group_id,input_seq,state,at,body) VALUES('status-fail',1,2,'unknown',NOW(),'{"error":"delivery confirmed but archive failed"}')`); err != nil {
+		t.Fatal(err)
+	}
+	status, err := s.MemoryStatus(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status.Learning.Runs != 2 || status.Learning.Succeeded != 1 || status.Learning.Failed != 1 || status.Learning.AvgDurationMS != 20 || status.Learning.AvgExtractMS != 10 || status.Learning.AvgReconcileMS != 10 || status.Learning.ExtractTokens != 120 || status.Learning.ReconcileTokens != 50 || status.Learning.ChangeCount != 3 {
+		t.Fatalf("learning stats = %+v", status.Learning)
+	}
+	if status.Recall.Attempted != 1 || status.Recall.Hits != 1 || status.Recall.Empty != 0 || status.Recall.CacheHits != 1 || status.Recall.CacheMisses != 0 || status.Recall.SemanticDegraded != 1 || status.Recall.HitRate != 1 || status.Recall.EmptyRate != 0 || status.Recall.CacheHitRate != 1 {
+		t.Fatalf("recall stats = %+v", status.Recall)
+	}
+	if status.Ledger.WriteFailures != 1 || status.Ledger.WriteRetries != 0 {
+		t.Fatalf("ledger stats = %+v", status.Ledger)
+	}
+	if status.Notes.DuplicateIdentities != 1 || status.Notes.TotalIdentities != 1 || status.Notes.DuplicateRate != 1 || status.Notes.ForgottenRebuilds != 1 || status.Notes.ForgottenRebuildRate != 0.25 {
+		t.Fatalf("note stats = %+v", status.Notes)
+	}
+	if status.PendingEmbeddings != 2 || status.UsageProjectionDiff != 0 {
+		t.Fatalf("projection stats = %+v", status)
+	}
+}
+
+func TestStaleNoteRevisionCannotOverwrite(t *testing.T) {
+	s := testStore(t)
+	ctx := context.Background()
+	svc := memory.Service{Store: s, TopK: 4}
+	first := event(t, s, "rev-e1", 1, 10, "记住我喜欢星际探索")
+	change := memory.Change{Subject: 10, Kind: "preference", Key: "interest", Text: "喜欢星际探索", Evidence: []memory.Evidence{{EventID: first.ID, Quote: "喜欢星际探索"}}}
+	if err := svc.Apply(ctx, 1, []qq.Event{first}, []memory.Change{change}, nil); err != nil {
+		t.Fatal(err)
+	}
+	notes, _ := s.ActiveNotes(ctx, 1, 10)
+	stale := notes[0]
+	second := event(t, s, "rev-e2", 1, 10, "记住我现在喜欢深海探索")
+	change.ID, change.Version = stale.ID, stale.Version
+	change.Text = "喜欢深海探索"
+	change.Evidence = []memory.Evidence{{EventID: second.ID, Quote: "喜欢深海探索"}}
+	if err := svc.Apply(ctx, 1, []qq.Event{second}, []memory.Change{change}, nil); err != nil {
+		t.Fatal(err)
+	}
+	stale.Text = "过时覆盖"
+	if err := s.SaveNotes(ctx, 1, []memory.Note{stale}, nil); err == nil {
+		t.Fatal("stale revision overwrote the newer note")
+	}
+	notes, _ = s.ActiveNotes(ctx, 1, 10)
+	if notes[0].Text != "喜欢深海探索" || notes[0].Version != stale.Version+1 {
+		t.Fatalf("note = %+v", notes[0])
+	}
+}
+
 func TestGlobalStickersAndPerGroupCooldown(t *testing.T) {
 	s := testStore(t)
 	ctx := context.Background()
@@ -296,7 +514,7 @@ func TestGlobalStickersAndPerGroupCooldown(t *testing.T) {
 		t.Fatal(err)
 	}
 	attempt.State = "confirmed"
-	if err := s.FinishAttempt(ctx, attempt, qq.Event{ID: "out", GroupID: 1, MessageID: "100", Outbound: true, At: time.Now()}); err != nil {
+	if err := s.FinishAttempt(ctx, attempt, qq.Event{ID: "out", GroupID: 1, MessageID: "100", Outbound: true, At: time.Now()}, nil); err != nil {
 		t.Fatal(err)
 	}
 	same, _ := s.StickerCandidates(ctx, 1, time.Minute, 20)

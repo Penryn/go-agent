@@ -73,7 +73,7 @@ type Store interface {
 	IsBotReply(context.Context, int64, string) (bool, error)
 	BeginAttempt(context.Context, Attempt) (bool, error)
 	UpdateAttempt(context.Context, Attempt) error
-	FinishAttempt(context.Context, Attempt, qq.Event) error
+	FinishAttempt(context.Context, Attempt, qq.Event, []string) error
 	RepliesSince(context.Context, int64, time.Time) (int, time.Time, error)
 }
 type Sender interface {

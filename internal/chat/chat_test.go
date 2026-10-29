@@ -126,7 +126,7 @@ func TestNewDirectMessageInvalidatesOldDraft(t *testing.T) {
 	started := make(chan struct{})
 	release := make(chan struct{})
 	var calls atomic.Int32
-	r, _, sender := setup(t, generator{func(ctx context.Context, input any) (chat.Reply, error) {
+	r, store, sender := setup(t, generator{func(ctx context.Context, input any) (chat.Reply, error) {
 		if calls.Add(1) == 1 {
 			close(started)
 			<-release
@@ -134,6 +134,8 @@ func TestNewDirectMessageInvalidatesOldDraft(t *testing.T) {
 		}
 		return chat.Reply{Action: "text", Text: "更新后的回答"}, nil
 	}})
+	seedPreference(t, store, 1, "note-stale")
+	r.Memory = &memory.Service{Store: store, TopK: 3}
 	first := make(chan chat.Attempt, 1)
 	go func() {
 		a, _ := r.Process(context.Background(), payload(1, 1, 10, "第一个问题", true))
@@ -158,11 +160,16 @@ func TestNewDirectMessageInvalidatesOldDraft(t *testing.T) {
 	close(release)
 	if a := <-first; a.State != "stale" {
 		t.Fatal(a)
+	} else if booked := store.Usage(a.ID); len(booked) != 0 {
+		t.Fatalf("stale turn booked usage: %v", booked)
 	}
 	if a := <-second; a.State != "confirmed" {
 		t.Fatal(a)
 	}
 	r.Close()
+	if note := noteUsage(t, store, 1, "note-stale"); note.UseCount != 1 {
+		t.Fatalf("stale turn was counted: use_count=%d", note.UseCount)
+	}
 	if len(sender.Messages) != 1 || sender.Messages[0] != "更新后的回答" {
 		t.Fatal(sender.Messages)
 	}

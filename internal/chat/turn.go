@@ -174,14 +174,34 @@ func (r *Runtime) applyAndDeliver(parent, ctx context.Context, groupID int64, at
 	}
 	hash := sha256.Sum256([]byte(attempt.ID))
 	out := qq.Event{ID: fmt.Sprintf("out:%x", hash[:12]), MessageID: receipt.MessageID, GroupID: groupID, UserID: r.SelfID, SelfID: r.SelfID, Name: r.Persona.Name, Text: text, ReplyTo: attempt.Reply.Quote, Outbound: true, At: time.Now()}
-	if err := r.Store.FinishAttempt(finish, attempt, out); err != nil {
+	if err := r.Store.FinishAttempt(finish, attempt, out, snapshotNoteIDs(snapshot.Notes)); err != nil {
 		attempt.State = "unknown"
 		attempt.Error = "delivery confirmed but archive failed"
+		record, cancelRecord := context.WithTimeout(context.WithoutCancel(parent), 3*time.Second)
+		if updateErr := r.Store.UpdateAttempt(record, attempt); updateErr != nil {
+			slog.Error("record archive failure", "attempt", attempt.ID, "error", updateErr)
+		}
+		cancelRecord()
 		slog.Error(attempt.Error, "attempt", attempt.ID, "error", err)
 		return attempt
 	}
 	r.topics.markBotReply(groupID, attempt.Reply.Plan.TopicID, out)
 	return attempt
+}
+
+// snapshotNoteIDs freezes the recalled note identities for the usage ledger.
+// A confirmed send books each unique note once, independent of cache state.
+func snapshotNoteIDs(notes []memory.Note) []string {
+	ids := make([]string, 0, len(notes))
+	seen := map[string]bool{}
+	for _, note := range notes {
+		if note.ID == "" || seen[note.ID] {
+			continue
+		}
+		seen[note.ID] = true
+		ids = append(ids, note.ID)
+	}
+	return ids
 }
 
 func observationFromSnapshot(snapshot ctxsnapshot.ContextSnapshot) topicObservation {

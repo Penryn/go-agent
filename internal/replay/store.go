@@ -25,16 +25,19 @@ type Store struct {
 	mu             sync.Mutex
 	events         []qq.Event
 	attempts       map[string]chat.Attempt
+	usage          map[string]map[string]bool
 	notes          map[string]memory.Note
 	vectors        map[string]projection
 	cursors        map[int64]int64
 	topics         map[int64][]conversation.TopicView
 	topicEvents    map[int64][]conversation.TopicEventView
 	summaryCursors map[int64]int64
+	runs           []memory.LearningRun
+	memoryEvents   []string
 }
 
 func NewStore() *Store {
-	return &Store{attempts: map[string]chat.Attempt{}, notes: map[string]memory.Note{}, vectors: map[string]projection{}, cursors: map[int64]int64{}, topics: map[int64][]conversation.TopicView{}, topicEvents: map[int64][]conversation.TopicEventView{}, summaryCursors: map[int64]int64{}}
+	return &Store{attempts: map[string]chat.Attempt{}, usage: map[string]map[string]bool{}, notes: map[string]memory.Note{}, vectors: map[string]projection{}, cursors: map[int64]int64{}, topics: map[int64][]conversation.TopicView{}, topicEvents: map[int64][]conversation.TopicEventView{}, summaryCursors: map[int64]int64{}}
 }
 func (s *Store) Ingest(_ context.Context, e *qq.Event) (bool, error) {
 	s.mu.Lock()
@@ -92,16 +95,89 @@ func (s *Store) UpdateAttempt(_ context.Context, a chat.Attempt) error {
 	}
 	return nil
 }
-func (s *Store) FinishAttempt(_ context.Context, a chat.Attempt, e qq.Event) error {
+func (s *Store) FinishAttempt(_ context.Context, a chat.Attempt, e qq.Event, noteIDs []string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.attempts[a.ID].State != "sending" {
 		return errors.New("send was not pending")
 	}
+	for _, old := range s.events {
+		if old.ID == e.ID {
+			return errors.New("outbound event already archived")
+		}
+	}
+	a.State = "confirmed"
 	s.attempts[a.ID] = a
 	e.Seq = int64(len(s.events) + 1)
 	s.events = append(s.events, e)
+	booked := s.usage[a.ID]
+	if booked == nil {
+		booked = map[string]bool{}
+		s.usage[a.ID] = booked
+	}
+	for _, id := range noteIDs {
+		n, ok := s.notes[id]
+		if !ok || n.GroupID != a.GroupID || booked[id] {
+			continue
+		}
+		booked[id] = true
+		if n.UsageVersion != 1 {
+			n.UseCount = 0
+		}
+		n.UseCount++
+		n.UsageVersion = 1
+		at := e.At
+		n.LastUsedAt = &at
+		s.notes[id] = n
+	}
 	return nil
+}
+
+// Usage lists the note IDs booked by one confirmed attempt. Replays use it to
+// verify that no other outcome writes the ledger.
+func (s *Store) Usage(attemptID string) []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := []string{}
+	for id := range s.usage[attemptID] {
+		out = append(out, id)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// Attempt exposes the stored attempt body for replay assertions.
+func (s *Store) Attempt(id string) (chat.Attempt, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	a, ok := s.attempts[id]
+	return a, ok
+}
+
+func (s *Store) RecordLearningRun(_ context.Context, run memory.LearningRun) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.runs = append(s.runs, run)
+	return nil
+}
+
+func (s *Store) LearningRuns() []memory.LearningRun {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]memory.LearningRun(nil), s.runs...)
+}
+
+func (s *Store) RecordMemoryEvent(_ context.Context, _ int64, kind string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.memoryEvents = append(s.memoryEvents, kind)
+	return nil
+}
+
+func (s *Store) MemoryEvents() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]string(nil), s.memoryEvents...)
 }
 func (s *Store) RepliesSince(_ context.Context, g int64, since time.Time) (int, time.Time, error) {
 	s.mu.Lock()
@@ -120,12 +196,13 @@ func (s *Store) RepliesSince(_ context.Context, g int64, since time.Time) (int, 
 	}
 	return count, last, nil
 }
-func (s *Store) Notes(_ context.Context, g int64, limit int) ([]memory.Note, error) {
+func (s *Store) ActiveNotes(_ context.Context, g int64, limit int) ([]memory.Note, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	now := time.Now()
 	out := []memory.Note{}
 	for _, n := range s.notes {
-		if n.GroupID == g {
+		if n.GroupID == g && n.State == "active" && (n.Expires == nil || n.Expires.After(now)) && (n.ValidFrom == nil || !n.ValidFrom.After(now)) && (n.ValidTo == nil || n.ValidTo.After(now)) {
 			out = append(out, n)
 		}
 	}
@@ -152,18 +229,6 @@ func (s *Store) MemoryRevision(_ context.Context, g int64) (int64, error) {
 		}
 	}
 	return revision, nil
-}
-func (s *Store) FlushNoteUsage(_ context.Context, usage map[string]int64, at time.Time) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	for id, count := range usage {
-		if n, ok := s.notes[id]; ok && n.State == "active" {
-			n.UseCount += count
-			n.LastUsedAt = &at
-			s.notes[id] = n
-		}
-	}
-	return nil
 }
 func (s *Store) SaveTopics(_ context.Context, g int64, topics []conversation.TopicView, events []conversation.TopicEventView) error {
 	s.mu.Lock()
@@ -195,7 +260,7 @@ func (s *Store) SummaryProgress(_ context.Context, g int64) (int64, error) {
 	defer s.mu.Unlock()
 	return s.summaryCursors[g], nil
 }
-func (s *Store) VectorNotes(_ context.Context, g int64, v []float32, version string, limit int) ([]memory.Note, error) {
+func (s *Store) VectorNotes(_ context.Context, g int64, v []float32, version string, limit int, threshold float64) ([]memory.Note, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	type scored struct {
@@ -206,7 +271,7 @@ func (s *Store) VectorNotes(_ context.Context, g int64, v []float32, version str
 	for id, p := range s.vectors {
 		n := s.notes[id]
 		if n.GroupID == g && n.State == "active" && (n.Expires == nil || n.Expires.After(time.Now())) && (n.ValidFrom == nil || !n.ValidFrom.After(time.Now())) && (n.ValidTo == nil || n.ValidTo.After(time.Now())) && p.Version == n.Version && p.Model == version {
-			if score := cosine(v, p.Vector); score > 0.4 {
+			if score := cosine(v, p.Vector); score > 1-threshold {
 				out = append(out, scored{n, score})
 			}
 		}
@@ -245,7 +310,29 @@ func (s *Store) SaveNotes(_ context.Context, g int64, notes []memory.Note, p *me
 		}
 	}
 	for _, n := range notes {
+		if n.State != "active" {
+			continue
+		}
+		for _, other := range s.notes {
+			if other.GroupID != g || other.State != "forgotten" {
+				continue
+			}
+			for _, incoming := range n.Evidence {
+				for _, blocked := range other.Evidence {
+					if incoming.EventID == blocked.EventID {
+						return errors.New("forgotten source cannot be reintroduced")
+					}
+				}
+			}
+		}
+	}
+	for _, n := range notes {
 		n.Version++
+		if old, ok := s.notes[n.ID]; ok {
+			n.UseCount = old.UseCount
+			n.UsageVersion = old.UsageVersion
+			n.LastUsedAt = old.LastUsedAt
+		}
 		if n.MemoryRevision < 1 {
 			n.MemoryRevision = 1
 		} else {
@@ -258,6 +345,38 @@ func (s *Store) SaveNotes(_ context.Context, g int64, notes []memory.Note, p *me
 		s.cursors[g] = p.Until
 	}
 	return nil
+}
+func (s *Store) NotesByID(_ context.Context, g int64, ids []string) ([]memory.Note, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := []memory.Note{}
+	for _, id := range ids {
+		if n, ok := s.notes[id]; ok && n.GroupID == g {
+			out = append(out, n)
+		}
+	}
+	return out, nil
+}
+func (s *Store) NotesByIdentity(_ context.Context, g int64, identities []memory.Identity) ([]memory.Note, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := []memory.Note{}
+	for _, identity := range identities {
+		matches := []memory.Note{}
+		for _, n := range s.notes {
+			if n.GroupID == g && n.Subject == identity.Subject && n.Kind == identity.Kind && n.Key == identity.Key && (n.Kind != "episode" || n.TopicID == identity.TopicID) {
+				matches = append(matches, n)
+			}
+		}
+		sort.Slice(matches, func(i, j int) bool {
+			if matches[i].Updated.Equal(matches[j].Updated) {
+				return matches[i].ID < matches[j].ID
+			}
+			return matches[i].Updated.After(matches[j].Updated)
+		})
+		out = append(out, matches...)
+	}
+	return out, nil
 }
 func (s *Store) LearningBatch(_ context.Context, limit int) ([]qq.Event, memory.Progress, error) {
 	s.mu.Lock()
@@ -279,14 +398,14 @@ func (s *Store) LearningBatch(_ context.Context, limit int) ([]qq.Event, memory.
 	}
 	return out, p, nil
 }
-func (s *Store) DeferLearning(context.Context, int64) error { return nil }
+func (s *Store) DeferLearning(context.Context, int64, time.Duration) error { return nil }
 func (s *Store) PendingNotes(_ context.Context, version string, limit int) ([]memory.Note, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	out := []memory.Note{}
 	for id, n := range s.notes {
 		p := s.vectors[id]
-		if n.State == "active" && (n.Expires == nil || n.Expires.After(time.Now())) && (p.Version != n.Version || p.Model != version) {
+		if n.State == "active" && (n.Expires == nil || n.Expires.After(time.Now())) && (n.ValidFrom == nil || !n.ValidFrom.After(time.Now())) && (n.ValidTo == nil || n.ValidTo.After(time.Now())) && (p.Version != n.Version || p.Model != version) {
 			out = append(out, n)
 		}
 	}

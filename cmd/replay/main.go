@@ -97,7 +97,7 @@ func run() error {
 	cfg.Chat.Cache = chat.CacheTTL{Recall: cfg.Cache.RecallTTL, Context: cfg.Cache.ContextTTL, Sticker: cfg.Cache.StickerTTL, Image: cfg.Cache.ImageTTL}
 	store := replay.NewStore()
 	sender := &replay.Sender{}
-	memories := &memory.Service{Store: store, Model: generator, Embedding: embedding, TopK: cfg.Memory.TopK, IndexLimit: cfg.Memory.IndexLimit, Cache: hub, IndexTTL: cfg.Cache.IndexTTL}
+	memories := &memory.Service{Store: store, Model: generator, Embedding: embedding, TopK: cfg.Memory.TopK, IndexLimit: cfg.Memory.IndexLimit, DistanceThreshold: cfg.Memory.SemanticDistanceThreshold, PreferenceBudget: cfg.Memory.PreferenceBudget, MemberBudget: cfg.Memory.MemberBudget, EpisodeBudget: cfg.Memory.EpisodeBudget, Cache: hub, IndexTTL: cfg.Cache.IndexTTL}
 	ctx, cancel := context.WithTimeout(context.Background(), *timeout)
 	defer cancel()
 	runtime := chat.New(ctx, &chat.Runtime{Store: store, Model: generator, Embedding: embedding, Cache: hub, Memory: memories, Sender: sender, Persona: cfg.Persona, Config: cfg.Chat, SelfID: 0})
@@ -126,7 +126,7 @@ func run() error {
 			return fmt.Errorf("step %d: wanted %s, got %s (%s)", i+1, s.State, a.State, a.Error)
 		}
 		if mode == "scripted" && s.ActiveNotes != nil {
-			notes, err := store.Notes(ctx, s.Group, 1000)
+			notes, err := store.ActiveNotes(ctx, s.Group, 1000)
 			if err != nil {
 				return err
 			}
