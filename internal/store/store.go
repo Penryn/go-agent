@@ -423,7 +423,7 @@ func (s *Store) SummaryBatch(ctx context.Context, limit int) (conversation.Summa
 	if err != nil {
 		return batch, err
 	}
-	rows, err := s.DB.QueryContext(ctx, `SELECT e.topic_id,COALESCE(t.revision,1),m.seq,m.body FROM groupfriend.conversation_topic_events e JOIN groupfriend.messages m ON m.event_id=e.event_id LEFT JOIN groupfriend.conversation_topics t ON t.group_id=e.group_id AND t.topic_id=e.topic_id WHERE e.group_id=$1 AND m.seq>$2 ORDER BY m.seq,e.topic_id LIMIT $3`, batch.GroupID, batch.AfterSeq, max(1, limit))
+	rows, err := s.DB.QueryContext(ctx, `SELECT topic_id,revision,seq,body FROM (SELECT e.topic_id,COALESCE(t.revision,1) AS revision,m.seq,m.body,DENSE_RANK() OVER (ORDER BY m.seq) AS seq_rank FROM groupfriend.conversation_topic_events e JOIN groupfriend.messages m ON m.event_id=e.event_id LEFT JOIN groupfriend.conversation_topics t ON t.group_id=e.group_id AND t.topic_id=e.topic_id WHERE e.group_id=$1 AND m.seq>$2) ranked WHERE seq_rank<=$3 ORDER BY seq,topic_id`, batch.GroupID, batch.AfterSeq, max(1, limit))
 	if err != nil {
 		return batch, err
 	}

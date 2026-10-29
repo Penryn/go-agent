@@ -389,3 +389,47 @@ func TestStickerRevisionChangesWithMaterialState(t *testing.T) {
 		t.Fatalf("material change did not bump revision: before=%d after=%d err=%v", before, after, err)
 	}
 }
+
+func TestSummaryBatchDoesNotSplitSameSeqAssignments(t *testing.T) {
+	s := testStore(t)
+	ctx := context.Background()
+	first := event(t, s, "ambiguous", 1, 10, "爬山还是火锅")
+	second := event(t, s, "later", 1, 10, "火锅也行")
+	views := []conversation.TopicView{
+		{ID: "topic:1:1", Participants: []int64{10}, FirstSeq: first.Seq, LastSeq: first.Seq, Revision: 1, LastActiveAt: time.Now(), Status: "active"},
+		{ID: "topic:1:2", Participants: []int64{10}, FirstSeq: first.Seq, LastSeq: second.Seq, Revision: 1, LastActiveAt: time.Now(), Status: "active"},
+	}
+	events := []conversation.TopicEventView{
+		{TopicID: "topic:1:1", EventID: first.ID, MessageID: first.MessageID, Seq: first.Seq, AssignedAt: time.Now(), TopicIDs: []string{"topic:1:1", "topic:1:2"}},
+		{TopicID: "topic:1:2", EventID: second.ID, MessageID: second.MessageID, Seq: second.Seq, AssignedAt: time.Now(), TopicIDs: []string{"topic:1:2"}},
+	}
+	if err := s.SaveTopics(ctx, 1, views, events); err != nil {
+		t.Fatal(err)
+	}
+	// A one-event page must return both ownership rows of the ambiguous message.
+	batch, err := s.SummaryBatch(ctx, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(batch.Events) != 2 {
+		t.Fatalf("page split same-seq assignments: %+v", batch.Events)
+	}
+	topics := map[string]bool{}
+	for _, event := range batch.Events {
+		if event.Seq != first.Seq {
+			t.Fatalf("unexpected seq in first page: %+v", batch.Events)
+		}
+		topics[event.TopicID] = true
+	}
+	if !topics["topic:1:1"] || !topics["topic:1:2"] {
+		t.Fatalf("missing ownership row: %+v", topics)
+	}
+	// After the summarizer commits the first seq, the next page continues.
+	if err := s.SaveTopicSummaries(ctx, 1, nil, first.Seq); err != nil {
+		t.Fatal(err)
+	}
+	batch, err = s.SummaryBatch(ctx, 1)
+	if err != nil || len(batch.Events) != 1 || batch.Events[0].EventID != second.ID {
+		t.Fatalf("next page lost events: %+v err=%v", batch.Events, err)
+	}
+}

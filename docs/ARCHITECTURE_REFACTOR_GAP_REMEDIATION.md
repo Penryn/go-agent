@@ -580,7 +580,7 @@ rtk go run ./cmd/replay -fixture tests/replay/memory.json
 
 以上七项缺口已在本分支实现，主要落点如下：
 
-- G1：`conversation_topic_events`、`SummaryRevision`、重启恢复和 `TopicSummarizer.Tick` 已接入 `app` 的后台调度；摘要只按独立游标提交，失败延后重试。
+- G1：`conversation_topic_events`、`SummaryRevision`、重启恢复和 `TopicSummarizer.Tick` 已接入 `app` 的后台调度；摘要只按独立游标提交，失败延后重试。摘要分页以完整 seq 为边界，同一消息的多个话题归属行不会被拆到不同批次。
 - G2：`AdmissionBuilder` 负责轻量准入，`Builder` 负责完整快照；`Runtime.respond` 先读发送预算，再一次性构建快照，memory、meme、图片和聊天模型共享同一批次、历史和查询向量。固定预算与深拷贝在 `internal/context`。
 - G3：新增 index/sticker/image/context TTL；BM25 不可变索引按 memory revision 复用；召回键使用本轮可见成员/话题哈希、查询哈希和模型版本，不再使用每条消息递增的 Actor version；上下文键包含 memory/topic/素材 revision、冷却时间片和同样的查询上下文；revision 读取失败时直接绕过缓存；图片按 URL 缓存处理后的数据 URL。
 - G4：`policy.Input` 接收真实预算，限流在检索和模型调用之前完成；发送前保留一次不影响模型的预算复核。
