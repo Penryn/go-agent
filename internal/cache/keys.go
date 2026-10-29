@@ -24,10 +24,6 @@ func RecallKey(groupID int64, actorVersion uint64, memoryRevision int64, modelVe
 	return fmt.Sprintf("recall:%d:%d:%d:%s:%s", groupID, actorVersion, memoryRevision, modelVersion, TextHash(query))
 }
 
-func TopicSnapshotKey(groupID int64, actorVersion uint64, topicRevision int64) string {
-	return fmt.Sprintf("topic-snapshot:%d:%d:%d", groupID, actorVersion, topicRevision)
-}
-
 func StickerKey(groupID int64, assetRevision, cooldownEpoch int64, modelVersion, query string) string {
 	return fmt.Sprintf("stickers:%d:%d:%d:%s:%s", groupID, assetRevision, cooldownEpoch, modelVersion, TextHash(query))
 }

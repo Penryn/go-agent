@@ -600,4 +600,4 @@ rtk proxy go run ./cmd/replay -fixture tests/replay/memory.json
 rtk git diff --check
 ```
 
-有意保留的简化：话题关系仍以进程内图为准，`topic_ttl` 与 `TopicSnapshotKey` 预留给未来跨进程共享缓存，当前不额外缓存话题快照，避免快照覆盖尚未处理的新事件。
+有意保留的简化：部署固定为单实例，缓存保持进程内 LRU，不引入跨进程共享缓存；话题关系以进程内图为准，不额外缓存话题快照，避免快照覆盖尚未处理的新事件。

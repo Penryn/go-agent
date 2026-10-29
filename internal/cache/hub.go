@@ -8,7 +8,8 @@ import (
 
 // CacheHub is the process-local cache boundary used by application services.
 // Values are encoded when crossing the boundary so callers cannot mutate the
-// cached representation. Implementations may be replaced by Redis later.
+// cached representation. The runtime is deployed as a single instance, so the
+// cache is intentionally in-memory.
 type CacheHub interface {
 	Get(key string, dst any) bool
 	Set(key string, value any, ttl time.Duration)

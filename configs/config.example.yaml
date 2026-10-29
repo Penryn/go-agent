@@ -67,7 +67,6 @@ cache:
   embedding_ttl: 30m
   index_ttl: 10m
   recall_ttl: 20s
-  topic_ttl: 10s
   sticker_ttl: 20s
   image_ttl: 10m
   context_ttl: 10s

@@ -44,7 +44,6 @@ type Config struct {
 		EmbeddingTTL time.Duration `yaml:"embedding_ttl"`
 		IndexTTL     time.Duration `yaml:"index_ttl"`
 		RecallTTL    time.Duration `yaml:"recall_ttl"`
-		TopicTTL     time.Duration `yaml:"topic_ttl"`
 		StickerTTL   time.Duration `yaml:"sticker_ttl"`
 		ImageTTL     time.Duration `yaml:"image_ttl"`
 		ContextTTL   time.Duration `yaml:"context_ttl"`
@@ -133,11 +132,10 @@ func Default() Config {
 		EmbeddingTTL time.Duration `yaml:"embedding_ttl"`
 		IndexTTL     time.Duration `yaml:"index_ttl"`
 		RecallTTL    time.Duration `yaml:"recall_ttl"`
-		TopicTTL     time.Duration `yaml:"topic_ttl"`
 		StickerTTL   time.Duration `yaml:"sticker_ttl"`
 		ImageTTL     time.Duration `yaml:"image_ttl"`
 		ContextTTL   time.Duration `yaml:"context_ttl"`
-	}{MaxItems: 10000, EmbeddingTTL: 30 * time.Minute, IndexTTL: 10 * time.Minute, RecallTTL: 20 * time.Second, TopicTTL: 10 * time.Second, StickerTTL: 20 * time.Second, ImageTTL: 10 * time.Minute, ContextTTL: 10 * time.Second}
+	}{MaxItems: 10000, EmbeddingTTL: 30 * time.Minute, IndexTTL: 10 * time.Minute, RecallTTL: 20 * time.Second, StickerTTL: 20 * time.Second, ImageTTL: 10 * time.Minute, ContextTTL: 10 * time.Second}
 	c.Meme = meme.Config{AutoCollect: true, Path: "./memes", MaxItems: 5000, MaxBytes: 512 << 20, MaxImageBytes: 10 << 20, Cooldown: 10 * time.Minute, TopK: 5}
 	return c
 }
@@ -176,7 +174,7 @@ func (c Config) Validate() error {
 	if c.Memory.TopK < 1 || c.Memory.TopK > 30 || c.Memory.Interval < time.Second || c.Memory.IndexLimit < c.Memory.TopK || c.Memory.IndexLimit > 100000 || c.Memory.SummaryBatch < 1 || c.Memory.SummaryBatch > 100 || c.Memory.SummaryInterval < time.Second || c.Memory.UsageFlushInterval < time.Second {
 		return errors.New("invalid memory limits")
 	}
-	if c.Cache.MaxItems < 1 || c.Cache.MaxItems > 100000 || c.Cache.EmbeddingTTL <= 0 || c.Cache.IndexTTL <= 0 || c.Cache.RecallTTL <= 0 || c.Cache.TopicTTL <= 0 || c.Cache.StickerTTL <= 0 || c.Cache.ImageTTL <= 0 || c.Cache.ContextTTL <= 0 {
+	if c.Cache.MaxItems < 1 || c.Cache.MaxItems > 100000 || c.Cache.EmbeddingTTL <= 0 || c.Cache.IndexTTL <= 0 || c.Cache.RecallTTL <= 0 || c.Cache.StickerTTL <= 0 || c.Cache.ImageTTL <= 0 || c.Cache.ContextTTL <= 0 {
 		return errors.New("invalid cache limits")
 	}
 	if c.Meme.TopK < 1 || c.Meme.TopK > 20 || c.Meme.MaxItems < 1 || c.Meme.MaxItems > 20000 || c.Meme.MaxBytes < c.Meme.MaxImageBytes || c.Meme.MaxImageBytes < 1 || c.Meme.MaxImageBytes > 16<<20 || c.Meme.Cooldown < 0 || c.Meme.Path == "" {
