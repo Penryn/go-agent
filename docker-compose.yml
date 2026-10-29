@@ -22,7 +22,8 @@ services:
       - qqbot-net
 
   napcat:
-    image: mlikiowa/napcat-docker@sha256:85825671fd536e7a46ccf5472fd7efae7053150ec1042ae4c4f1e0fb62f815fd
+    # NapCat v4.18.41 (multi-arch image index)
+    image: mlikiowa/napcat-docker@sha256:b101b8968cc31ae428ec0f8e117386e4ced7773b2d8226ed9f7ddfcec55f1b7e
     container_name: qqbot-napcat
     restart: unless-stopped
     environment:
