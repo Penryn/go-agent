@@ -116,6 +116,7 @@ type Trace struct {
 	Selected        []string `json:"selected,omitempty"`
 	Degraded        []string `json:"degraded,omitempty"`
 	IndexCacheHit   bool     `json:"index_cache_hit,omitempty"`
+	IndexLoadMS     int64    `json:"index_load_ms,omitempty"`
 	RecallCacheHit  bool     `json:"recall_cache_hit,omitempty"`
 	RecallAttempted bool     `json:"recall_attempted,omitempty"`
 	RecallHits      int      `json:"recall_hits,omitempty"`
@@ -181,6 +182,15 @@ type LearningRunStore interface {
 type MemoryEventStore interface {
 	RecordMemoryEvent(context.Context, int64, string) error
 }
+
+// RecallBudgets caps each note category. Zero disables the category; unset
+// configuration is filled by config.Default before reaching this package.
+type RecallBudgets struct {
+	Preference int
+	Member     int
+	Episode    int
+}
+
 type Service struct {
 	Store             Store
 	Model             model.Generator
@@ -188,13 +198,18 @@ type Service struct {
 	TopK              int
 	IndexLimit        int
 	DistanceThreshold float64
-	PreferenceBudget  int
-	MemberBudget      int
-	EpisodeBudget     int
+	Budgets           RecallBudgets
 	Cache             cache.CacheHub
 	IndexTTL          time.Duration
 	IndexCache        *cache.Cache[*bm25.Index]
 }
+
+// NormalizeKey canonicalizes a note attribute name: surrounding whitespace is
+// removed and letters are lowercased.
+func NormalizeKey(key string) string { return strings.ToLower(strings.TrimSpace(key)) }
+
+// NormalizeTopicID trims a topic identifier.
+func NormalizeTopicID(topicID string) string { return strings.TrimSpace(topicID) }
 
 func Explicit(text string) bool {
 	for _, word := range []string{"记住", "记得", "忘掉", "忘了这", "别记", "以后叫", "以后别", "不要叫", "别叫", "叫我", "更正", "说错"} {
@@ -212,24 +227,10 @@ func ids(notes []Note) []string {
 	return out
 }
 
-const (
-	defaultPreferenceBudget  = 6
-	defaultMemberBudget      = 8
-	defaultEpisodeBudget     = 6
-	defaultDistanceThreshold = 0.6
-)
-
-func positiveOr(value, fallback int) int {
-	if value > 0 {
-		return value
-	}
-	return fallback
-}
+const defaultDistanceThreshold = 0.6
 
 func (s *Service) budgets() (preference, member, episode int) {
-	return positiveOr(s.PreferenceBudget, defaultPreferenceBudget),
-		positiveOr(s.MemberBudget, defaultMemberBudget),
-		positiveOr(s.EpisodeBudget, defaultEpisodeBudget)
+	return s.Budgets.Preference, s.Budgets.Member, s.Budgets.Episode
 }
 
 func (s *Service) distanceThreshold() float64 {
@@ -275,6 +276,7 @@ func (s *Service) RecallCached(ctx context.Context, q Query, ttl time.Duration) 
 	var cached RecallResult
 	if s.Cache.Get(key, &cached) {
 		cached.Trace.RecallCacheHit = true
+		cached.Trace.IndexLoadMS = 0
 		return cloneNotes(cached.Notes), cached.Trace, nil
 	}
 	notes, trace, err := s.queryWithRevision(ctx, q, revision)
@@ -316,7 +318,9 @@ func (s *Service) queryWithRevision(ctx context.Context, q Query, revision int64
 	if limit <= 0 {
 		limit = 5000
 	}
+	indexStart := time.Now()
 	all, indexHit, err := s.loadIndex(ctx, q.GroupID, limit, revision)
+	trace.IndexLoadMS = time.Since(indexStart).Milliseconds()
 	if err != nil {
 		return nil, trace, err
 	}
@@ -343,6 +347,20 @@ func (s *Service) queryWithRevision(ctx context.Context, q Query, revision int64
 	// Subject-scoped notes are invisible unless their member is in this batch;
 	// episodes may also stay visible through the current topic or a time hint.
 	visible := func(n Note) bool {
+		switch n.Kind {
+		case "preference", "group":
+			if preferenceBudget == 0 {
+				return false
+			}
+		case "member":
+			if memberBudget == 0 {
+				return false
+			}
+		case "episode":
+			if episodeBudget == 0 {
+				return false
+			}
+		}
 		if n.Subject == 0 || subjects[n.Subject] {
 			return true
 		}
@@ -507,6 +525,10 @@ func (s *Service) Apply(ctx context.Context, group int64, events []qq.Event, cha
 	if len(changes) > 12 {
 		return errors.New("too many memory changes")
 	}
+	for i := range changes {
+		changes[i].Key = NormalizeKey(changes[i].Key)
+		changes[i].TopicID = NormalizeTopicID(changes[i].TopicID)
+	}
 	// Only the notes this batch actually touches are loaded. Forgotten-source
 	// protection for the rest of the group is enforced by the save transaction.
 	ids := []string{}
@@ -549,7 +571,7 @@ func (s *Service) Apply(ctx context.Context, group int64, events []qq.Event, cha
 		if ch.ID != "" && !known {
 			return errors.New("unknown memory id")
 		}
-		if known && (old.Subject != ch.Subject || old.Key != ch.Key || old.Kind != ch.Kind || old.Version != ch.Version || (ch.Kind == "episode" && old.TopicID != ch.TopicID)) {
+		if known && (old.Subject != ch.Subject || NormalizeKey(old.Key) != ch.Key || old.Kind != ch.Kind || old.Version != ch.Version || (ch.Kind == "episode" && NormalizeTopicID(old.TopicID) != ch.TopicID)) {
 			return errors.New("memory revision or owner mismatch")
 		}
 		sourceSeq := int64(0)
@@ -584,7 +606,7 @@ func (s *Service) Apply(ctx context.Context, group int64, events []qq.Event, cha
 			if current, ok := byID[id]; ok {
 				old = current
 				known = true
-				if old.Subject != ch.Subject || old.Key != ch.Key || old.Kind != ch.Kind || (ch.Kind == "episode" && old.TopicID != ch.TopicID) {
+				if old.Subject != ch.Subject || NormalizeKey(old.Key) != ch.Key || old.Kind != ch.Kind || (ch.Kind == "episode" && NormalizeTopicID(old.TopicID) != ch.TopicID) {
 					return errors.New("memory revision or owner mismatch")
 				}
 				if old.State == "forgotten" && (!explicit || sourceSeq <= old.SourceSeq) {
@@ -627,6 +649,8 @@ func (s *Service) Apply(ctx context.Context, group int64, events []qq.Event, cha
 }
 
 func noteID(group, subject int64, kind, key, topicID string) string {
+	key = NormalizeKey(key)
+	topicID = NormalizeTopicID(topicID)
 	identity := fmt.Sprintf("%d:%d:%s:%s", group, subject, kind, key)
 	if kind == "episode" {
 		identity = fmt.Sprintf("%s:%s", identity, topicID)
@@ -826,6 +850,8 @@ func (s *Service) extract(ctx context.Context, p Progress, events []qq.Event, ru
 }
 
 func validateCandidate(c *Candidate, events map[string]qq.Event) error {
+	c.Key = NormalizeKey(c.Key)
+	c.TopicID = NormalizeTopicID(c.TopicID)
 	if !slices.Contains([]string{"group", "member", "episode", "preference"}, c.Kind) || len(c.Key) == 0 || len(c.Key) > 120 || len([]rune(c.Text)) > 600 {
 		return invalidOutputf("invalid memory candidate")
 	}
@@ -869,18 +895,18 @@ func validateCandidate(c *Candidate, events map[string]qq.Event) error {
 }
 
 func candidateIdentity(c Candidate) Identity {
-	identity := Identity{Subject: c.Subject, Kind: c.Kind, Key: c.Key}
+	identity := Identity{Subject: c.Subject, Kind: c.Kind, Key: NormalizeKey(c.Key)}
 	if c.Kind == "episode" {
-		identity.TopicID = c.TopicID
+		identity.TopicID = NormalizeTopicID(c.TopicID)
 	}
 	return identity
 }
 
 // NoteIdentity is the same stable owner key used by Apply's id derivation.
 func NoteIdentity(n Note) Identity {
-	identity := Identity{Subject: n.Subject, Kind: n.Kind, Key: n.Key}
+	identity := Identity{Subject: n.Subject, Kind: n.Kind, Key: NormalizeKey(n.Key)}
 	if n.Kind == "episode" {
-		identity.TopicID = n.TopicID
+		identity.TopicID = NormalizeTopicID(n.TopicID)
 	}
 	return identity
 }

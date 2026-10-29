@@ -180,7 +180,7 @@ func (c Config) Validate() error {
 	if c.Memory.TopK < 1 || c.Memory.TopK > 30 || c.Memory.Interval < time.Second || c.Memory.IndexLimit < c.Memory.TopK || c.Memory.IndexLimit > 100000 || c.Memory.SummaryBatch < 1 || c.Memory.SummaryBatch > 100 || c.Memory.SummaryInterval < time.Second {
 		return errors.New("invalid memory limits")
 	}
-	if c.Memory.SemanticDistanceThreshold <= 0 || c.Memory.SemanticDistanceThreshold > 2 || c.Memory.PreferenceBudget < 0 || c.Memory.PreferenceBudget > 50 || c.Memory.MemberBudget < 0 || c.Memory.MemberBudget > 50 || c.Memory.EpisodeBudget < 0 || c.Memory.EpisodeBudget > 50 {
+	if c.Memory.SemanticDistanceThreshold <= 0 || c.Memory.SemanticDistanceThreshold > 2 || c.Memory.PreferenceBudget < 0 || c.Memory.PreferenceBudget > 50 || c.Memory.MemberBudget < 0 || c.Memory.MemberBudget > 50 || c.Memory.EpisodeBudget < 0 || c.Memory.EpisodeBudget > 50 || c.Memory.PreferenceBudget+c.Memory.MemberBudget+c.Memory.EpisodeBudget > 24 {
 		return errors.New("invalid memory recall limits")
 	}
 	if c.Cache.MaxItems < 1 || c.Cache.MaxItems > 100000 || c.Cache.EmbeddingTTL <= 0 || c.Cache.IndexTTL <= 0 || c.Cache.RecallTTL <= 0 || c.Cache.StickerTTL <= 0 || c.Cache.ImageTTL <= 0 || c.Cache.ContextTTL <= 0 {

@@ -59,7 +59,7 @@ func TestTurnUsesOneQueryEmbeddingAcrossMemoryAndModel(t *testing.T) {
 		return chat.Reply{Action: "silent"}, nil
 	}}, store)
 	r.Embedding = embedder
-	r.Memory = &memory.Service{Store: store, Embedding: embedder, TopK: 3}
+	r.Memory = &memory.Service{Store: store, Embedding: embedder, TopK: 3, Budgets: memory.RecallBudgets{Preference: 6, Member: 8, Episode: 6}}
 	a, err := r.Process(context.Background(), payload(1, 1, 10, "最近怎么样", true))
 	if err != nil || a.State != "silent" {
 		t.Fatal(a, err)

@@ -113,7 +113,7 @@ func TestMemoryEvaluationSet(t *testing.T) {
 	for _, note := range all {
 		stateByID[note.ID] = note.State
 	}
-	service := memory.Service{Store: store, TopK: 8, PreferenceBudget: 6, MemberBudget: 8, EpisodeBudget: 6}
+	service := memory.Service{Store: store, TopK: 8, Budgets: memory.RecallBudgets{Preference: 6, Member: 8, Episode: 6}}
 	totalHits, totalWanted, totalReturned := 0, 0, 0
 	forbiddenViolations, forgottenViolations, negativeUnexpected := 0, 0, 0
 	correctionCases, correctionOK := 0, 0

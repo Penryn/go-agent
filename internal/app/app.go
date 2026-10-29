@@ -78,7 +78,7 @@ func New(ctx context.Context, cfg config.Config) (*App, error) {
 		}
 		slog.Info("model request", attrs...)
 	}
-	a.memories = &memory.Service{Store: db, Model: gateway, Embedding: gateway, TopK: cfg.Memory.TopK, IndexLimit: cfg.Memory.IndexLimit, DistanceThreshold: cfg.Memory.SemanticDistanceThreshold, PreferenceBudget: cfg.Memory.PreferenceBudget, MemberBudget: cfg.Memory.MemberBudget, EpisodeBudget: cfg.Memory.EpisodeBudget, Cache: hub, IndexTTL: cfg.Cache.IndexTTL, IndexCache: cache.New(cfg.Cache.MaxItems, func(index *bm25.Index) *bm25.Index { return index })}
+	a.memories = &memory.Service{Store: db, Model: gateway, Embedding: gateway, TopK: cfg.Memory.TopK, IndexLimit: cfg.Memory.IndexLimit, DistanceThreshold: cfg.Memory.SemanticDistanceThreshold, Budgets: memory.RecallBudgets{Preference: cfg.Memory.PreferenceBudget, Member: cfg.Memory.MemberBudget, Episode: cfg.Memory.EpisodeBudget}, Cache: hub, IndexTTL: cfg.Cache.IndexTTL, IndexCache: cache.New(cfg.Cache.MaxItems, func(index *bm25.Index) *bm25.Index { return index })}
 	a.memes = &meme.Service{Store: db, Model: gateway, Embedding: gateway, Config: cfg.Meme, HTTP: qq.MediaClient(), Cache: hub}
 	a.qq = &qq.Client{URL: cfg.QQ.OutboundURL, Token: cfg.QQ.OutboundToken, WSURL: cfg.QQ.EventWSURL, WSToken: cfg.QQ.EventWSToken}
 	var sender chat.Sender

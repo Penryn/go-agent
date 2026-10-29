@@ -77,6 +77,7 @@ func TestVectorRecallPlanUsesHNSWIndex(t *testing.T) {
 	for _, statement := range []string{
 		`DROP INDEX IF EXISTS groupfriend.friend_notes_scope`,
 		`DROP INDEX IF EXISTS groupfriend.friend_notes_topic`,
+		`DROP INDEX IF EXISTS groupfriend.friend_notes_active_identity`,
 		`ALTER TABLE groupfriend.notes DROP CONSTRAINT IF EXISTS notes_pkey`,
 	} {
 		if _, err := s.DB.ExecContext(ctx, statement); err != nil {

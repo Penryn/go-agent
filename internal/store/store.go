@@ -24,6 +24,13 @@ type Store struct {
 	lease *sql.Conn
 }
 
+// memoryMaintenanceLock is shared by note writers and taken exclusively by the
+// duplicate cleanup command, so normalization and active-identity indexing see
+// a stable table.
+const memoryMaintenanceLock int64 = -7842231567990182
+
+const activeIdentityIndexSQL = `CREATE UNIQUE INDEX IF NOT EXISTS friend_notes_active_identity ON groupfriend.notes (group_id,subject,kind,key,(CASE WHEN kind='episode' THEN topic_id ELSE '' END)) WHERE state='active'`
+
 func Open(ctx context.Context, dsn string, dimensions int) (*Store, error) {
 	db, err := sql.Open("pgx", dsn)
 	if err != nil {
@@ -78,6 +85,9 @@ func (s *Store) Initialize(ctx context.Context, dimensions int) error {
 	case err != nil:
 		return err
 	}
+	if err := ensureActiveIdentityIndex(ctx, tx); err != nil {
+		return err
+	}
 	expected := fmt.Sprint(dimensions)
 	_, err = tx.ExecContext(ctx, `INSERT INTO groupfriend.settings(key,value) VALUES('vector_dimensions',$1) ON CONFLICT DO NOTHING`, expected)
 	if err != nil {
@@ -92,6 +102,37 @@ func (s *Store) Initialize(ctx context.Context, dimensions int) error {
 	}
 	return tx.Commit()
 }
+func ensureActiveIdentityIndex(ctx context.Context, tx *sql.Tx) error {
+	var pending bool
+	err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM groupfriend.notes WHERE key<>lower(btrim(key)) OR topic_id<>btrim(topic_id)) OR EXISTS(SELECT 1 FROM groupfriend.notes WHERE state='active' GROUP BY group_id,subject,kind,lower(btrim(key)),(CASE WHEN kind='episode' THEN btrim(topic_id) ELSE '' END) HAVING COUNT(*)>1)`).Scan(&pending)
+	if err != nil {
+		return err
+	}
+	if pending {
+		// The cleanup command must normalize and archive before the index can be
+		// created; until then the app keeps working without active uniqueness.
+		return nil
+	}
+	_, err = tx.ExecContext(ctx, activeIdentityIndexSQL)
+	return err
+}
+
+// OpenMaintenance connects without applying schema or migrations. Maintenance
+// commands use it so a dry run cannot mutate the database.
+func OpenMaintenance(ctx context.Context, dsn string) (*Store, error) {
+	db, err := sql.Open("pgx", dsn)
+	if err != nil {
+		return nil, err
+	}
+	db.SetMaxOpenConns(2)
+	db.SetMaxIdleConns(1)
+	if err := db.PingContext(ctx); err != nil {
+		db.Close()
+		return nil, err
+	}
+	return &Store{DB: db}, nil
+}
+
 func (s *Store) AcquireSender(ctx context.Context) error {
 	conn, err := s.DB.Conn(ctx)
 	if err != nil {
@@ -315,7 +356,7 @@ func (s *Store) NotesByID(ctx context.Context, group int64, ids []string) ([]mem
 func (s *Store) NotesByIdentity(ctx context.Context, group int64, identities []memory.Identity) ([]memory.Note, error) {
 	out := []memory.Note{}
 	for _, identity := range identities {
-		rows, err := s.DB.QueryContext(ctx, `SELECT `+noteColumns+` FROM groupfriend.notes WHERE group_id=$1 AND subject=$2 AND kind=$3 AND key=$4 AND (kind<>'episode' OR topic_id=$5) ORDER BY updated_at DESC,id`, group, identity.Subject, identity.Kind, identity.Key, identity.TopicID)
+		rows, err := s.DB.QueryContext(ctx, `SELECT `+noteColumns+` FROM groupfriend.notes WHERE group_id=$1 AND subject=$2 AND kind=$3 AND lower(btrim(key))=$4 AND (kind<>'episode' OR btrim(topic_id)=$5) ORDER BY updated_at DESC,id`, group, identity.Subject, identity.Kind, identity.Key, identity.TopicID)
 		if err != nil {
 			return nil, err
 		}
@@ -343,6 +384,9 @@ func (s *Store) SaveNotes(ctx context.Context, group int64, notes []memory.Note,
 		return err
 	}
 	defer tx.Rollback()
+	if _, err := tx.ExecContext(ctx, `SELECT pg_advisory_xact_lock_shared($1)`, memoryMaintenanceLock); err != nil {
+		return err
+	}
 	if _, err := tx.ExecContext(ctx, `SELECT pg_advisory_xact_lock($1)`, group); err != nil {
 		return err
 	}

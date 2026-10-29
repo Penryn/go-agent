@@ -25,6 +25,19 @@
 
 记忆按群过滤，素材按内容哈希全局唯一。素材源群与源事件只作内部追溯。冷却由 `reply_attempts` 中该群、该素材的确认发送记录计算，不采用素材全局最后发送时间。
 
+## 身份与重复清理
+
+笔记写入时统一规范身份：`key` 去除首尾空白并转小写，`topic_id` 去除首尾空白；episode 的身份包含 `topic_id`，其他类型不包含。启动时仅当所有笔记已规范化且 active 身份无重复，才创建只约束 `state='active'` 的 `friend_notes_active_identity` 唯一索引；存在历史重复或未规范化行时跳过，等待人工清理。
+
+默认只读的清理命令：
+
+```bash
+go run ./cmd/replay memory-duplicates --dry-run
+go run ./cmd/replay memory-duplicates --dry-run=false -config configs/config.yaml
+```
+
+dry-run 输出需要规范化的笔记和重复组，包含保留 ID、被归档 ID、证据数量与文本。实际执行在维护锁内规范化全部笔记，把每组 active 重复中除 `updated_at` 最新一条以外的记录改为 `archived`，然后创建唯一索引；`forgotten` 记录不合并、不删除。执行期间笔记写入会等待维护锁，建议在低流量时运行。`-config` 省略时使用本地默认数据库。命令只连接现有表，不执行启动 schema 或基线迁移；先启动一次当前版本应用完成 schema 初始化。
+
 ## 事务与恢复
 
 笔记更新和学习游标推进在同一事务完成，修订冲突时整批回滚。话题视图、事件归属窗口与非空摘要同事务保存；后台摘要先用独立事务提交摘要和覆盖序号，再推进摘要游标，失败只延后重试，不影响聊天。遗忘、纠正和禁用使旧投影失效，乱序到达的旧索引不能覆盖新状态。

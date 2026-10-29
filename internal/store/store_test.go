@@ -380,6 +380,73 @@ func TestConfirmedUsageLedgerIsIdempotent(t *testing.T) {
 	}
 }
 
+func TestMemoryDuplicateCleanupIsDryRunFirst(t *testing.T) {
+	s := testStore(t)
+	ctx := context.Background()
+	if _, err := s.DB.ExecContext(ctx, `DROP INDEX IF EXISTS groupfriend.friend_notes_active_identity`); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now()
+	insert := func(id, key, state, text string, updated time.Time, evidence string) {
+		t.Helper()
+		if _, err := s.DB.ExecContext(ctx, `INSERT INTO groupfriend.notes(id,group_id,subject,kind,key,topic_id,text,evidence,revision,source_seq,state,updated_at,confidence) VALUES($1,1,10,'preference',$2,'',$3,$4::jsonb,1,1,$5,$6,0.7)`, id, key, text, evidence, state, updated); err != nil {
+			t.Fatal(err)
+		}
+	}
+	insert("keep-old", "Nick", "active", "旧称呼", now.Add(-2*time.Hour), `[{"event_id":"e1","quote":"旧"}]`)
+	insert("keep", " nick ", "active", "称呼阿林", now, `[{"event_id":"e2","quote":"阿林"},{"event_id":"e3","quote":"林"}]`)
+	insert("stale", "NICK", "active", "称呼小林", now.Add(-time.Hour), `[]`)
+	insert("forgot", "nick", "forgotten", "遗忘的称呼", now.Add(-time.Minute), `[{"event_id":"e4","quote":"忘"}]`)
+	insert("other", "other", "active", "其他", now, `[]`)
+	// Startup must not create the index while normalization is pending.
+	if err := s.Initialize(ctx, 3); err != nil {
+		t.Fatal(err)
+	}
+	// The reconciler can still find legacy rows through normalized identity.
+	matched, err := s.NotesByIdentity(ctx, 1, []memory.Identity{{Subject: 10, Kind: "preference", Key: "nick"}})
+	if err != nil || len(matched) != 4 {
+		t.Fatalf("normalized identity lookup = %d err=%v", len(matched), err)
+	}
+	var exists bool
+	if err := s.DB.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM pg_indexes WHERE schemaname='groupfriend' AND indexname='friend_notes_active_identity')`).Scan(&exists); err != nil || exists {
+		t.Fatalf("index created before cleanup: exists=%v err=%v", exists, err)
+	}
+	dry, err := s.MemoryDuplicates(ctx, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if dry.Applied || dry.IndexExists || len(dry.Normalized) != 3 || len(dry.Duplicates) != 1 {
+		t.Fatalf("dry run = %+v", dry)
+	}
+	group := dry.Duplicates[0]
+	if group.Keep.ID != "keep" || group.Keep.Evidence != 2 || group.Keep.Text != "称呼阿林" || len(group.Archive) != 2 {
+		t.Fatalf("duplicate group = %+v", group)
+	}
+	var state, key string
+	if err := s.DB.QueryRowContext(ctx, `SELECT state,key FROM groupfriend.notes WHERE id='keep-old'`).Scan(&state, &key); err != nil || state != "active" || key != "Nick" {
+		t.Fatalf("dry run mutated data: state=%s key=%s err=%v", state, key, err)
+	}
+	report, err := s.MemoryDuplicates(ctx, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !report.Applied || !report.IndexCreated || !report.IndexExists {
+		t.Fatalf("apply report = %+v", report)
+	}
+	wantStates := map[string]string{"keep": "active", "keep-old": "archived", "stale": "archived", "forgot": "forgotten", "other": "active"}
+	for id, want := range wantStates {
+		if err := s.DB.QueryRowContext(ctx, `SELECT state FROM groupfriend.notes WHERE id=$1`, id).Scan(&state); err != nil || state != want {
+			t.Fatalf("%s state=%s want=%s err=%v", id, state, want, err)
+		}
+	}
+	if err := s.DB.QueryRowContext(ctx, `SELECT key FROM groupfriend.notes WHERE id='keep'`).Scan(&key); err != nil || key != "nick" {
+		t.Fatalf("normalized key=%s err=%v", key, err)
+	}
+	if _, err := s.DB.ExecContext(ctx, `INSERT INTO groupfriend.notes(id,group_id,subject,kind,key,topic_id,text,evidence,revision,source_seq,state,updated_at,confidence) VALUES('dup',1,10,'preference','nick','','重复','[]'::jsonb,1,1,'active',NOW(),0.7)`); err == nil {
+		t.Fatal("active identity index did not reject a duplicate")
+	}
+}
+
 func TestMemoryStatusAggregatesOperationalMetrics(t *testing.T) {
 	s := testStore(t)
 	ctx := context.Background()
@@ -394,12 +461,16 @@ func TestMemoryStatusAggregatesOperationalMetrics(t *testing.T) {
 	if err := s.RecordMemoryEvent(ctx, 1, "forgotten_blocked"); err != nil {
 		t.Fatal(err)
 	}
+	// This test needs duplicate active identities to exercise the metric.
+	if _, err := s.DB.ExecContext(ctx, `DROP INDEX IF EXISTS groupfriend.friend_notes_active_identity`); err != nil {
+		t.Fatal(err)
+	}
 	for _, id := range []string{"dup-a", "dup-b"} {
 		if _, err := s.DB.ExecContext(ctx, `INSERT INTO groupfriend.notes(id,group_id,subject,kind,key,text,evidence,revision,source_seq,state,updated_at,confidence) VALUES($1,1,10,'preference','nickname','称呼小林','[]',1,1,'active',NOW(),0.7)`, id); err != nil {
 			t.Fatal(err)
 		}
 	}
-	if _, err := s.DB.ExecContext(ctx, `INSERT INTO groupfriend.reply_attempts(id,group_id,input_seq,state,at,body) VALUES('status-recall',1,1,'silent',NOW(),'{"retrieval":{"recall_attempted":true,"recall_hits":1,"recall_cache_hit":true,"degraded":["semantic"]}}')`); err != nil {
+	if _, err := s.DB.ExecContext(ctx, `INSERT INTO groupfriend.reply_attempts(id,group_id,input_seq,state,at,body) VALUES('status-recall',1,1,'silent',NOW(),'{"retrieval":{"recall_attempted":true,"recall_hits":1,"recall_cache_hit":true,"degraded":["semantic"],"index_load_ms":250}}')`); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := s.DB.ExecContext(ctx, `INSERT INTO groupfriend.reply_attempts(id,group_id,input_seq,state,at,body) VALUES('status-fail',1,2,'unknown',NOW(),'{"error":"delivery confirmed but archive failed"}')`); err != nil {
@@ -412,7 +483,7 @@ func TestMemoryStatusAggregatesOperationalMetrics(t *testing.T) {
 	if status.Learning.Runs != 2 || status.Learning.Succeeded != 1 || status.Learning.Failed != 1 || status.Learning.AvgDurationMS != 20 || status.Learning.AvgExtractMS != 10 || status.Learning.AvgReconcileMS != 10 || status.Learning.ExtractTokens != 120 || status.Learning.ReconcileTokens != 50 || status.Learning.ChangeCount != 3 {
 		t.Fatalf("learning stats = %+v", status.Learning)
 	}
-	if status.Recall.Attempted != 1 || status.Recall.Hits != 1 || status.Recall.Empty != 0 || status.Recall.CacheHits != 1 || status.Recall.CacheMisses != 0 || status.Recall.SemanticDegraded != 1 || status.Recall.HitRate != 1 || status.Recall.EmptyRate != 0 || status.Recall.CacheHitRate != 1 {
+	if status.Recall.Attempted != 1 || status.Recall.Hits != 1 || status.Recall.Empty != 0 || status.Recall.CacheHits != 1 || status.Recall.CacheMisses != 0 || status.Recall.SemanticDegraded != 1 || status.Recall.HitRate != 1 || status.Recall.EmptyRate != 0 || status.Recall.CacheHitRate != 1 || status.Recall.MaxIndexLoadMS != 250 {
 		t.Fatalf("recall stats = %+v", status.Recall)
 	}
 	if status.Ledger.WriteFailures != 1 || status.Ledger.WriteRetries != 0 {
@@ -420,6 +491,9 @@ func TestMemoryStatusAggregatesOperationalMetrics(t *testing.T) {
 	}
 	if status.Notes.DuplicateIdentities != 1 || status.Notes.TotalIdentities != 1 || status.Notes.DuplicateRate != 1 || status.Notes.ForgottenRebuilds != 1 || status.Notes.ForgottenRebuildRate != 0.25 {
 		t.Fatalf("note stats = %+v", status.Notes)
+	}
+	if status.Notes.ActiveNotes != 2 || status.Notes.TotalNotes != 2 || status.Notes.ActiveRatio != 1 || status.Notes.ActiveIdentityIndex {
+		t.Fatalf("note counts = %+v", status.Notes)
 	}
 	if status.PendingEmbeddings != 2 || status.UsageProjectionDiff != 0 {
 		t.Fatalf("projection stats = %+v", status)

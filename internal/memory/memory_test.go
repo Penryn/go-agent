@@ -37,7 +37,7 @@ func TestSemanticRecallAndPreferencesSurviveTopK(t *testing.T) {
 			}
 		}
 	}
-	service := memory.Service{Store: s, Embedding: embedder{}, TopK: 1}
+	service := memory.Service{Store: s, Embedding: embedder{}, TopK: 1, Budgets: memory.RecallBudgets{Preference: 6, Member: 8, Episode: 6}}
 	out, trace, err := service.Recall(ctx, 1, []qq.Event{{GroupID: 1, UserID: 42, Text: "宇宙旅途"}}, "宇宙旅途")
 	if err != nil {
 		t.Fatal(err)
@@ -57,7 +57,7 @@ func TestExplicitTimeHintRecallsAnEpisode(t *testing.T) {
 	if err := s.SaveNotes(context.Background(), 1, []memory.Note{n}, nil); err != nil {
 		t.Fatal(err)
 	}
-	service := memory.Service{Store: s, TopK: 1}
+	service := memory.Service{Store: s, TopK: 1, Budgets: memory.RecallBudgets{Preference: 6, Member: 8, Episode: 6}}
 	_, trace, err := service.Recall(context.Background(), 1, []qq.Event{{GroupID: 1, UserID: 42, Text: "昨天那个事情"}}, "昨天那个事情")
 	if err != nil || !slices.Contains(trace.Contextual, n.ID) {
 		t.Fatal(trace, err)
@@ -78,9 +78,34 @@ func newCachedService(store memory.Store) *memory.Service {
 	return &memory.Service{
 		Store:      store,
 		TopK:       3,
+		Budgets:    memory.RecallBudgets{Preference: 6, Member: 8, Episode: 6},
 		Cache:      cache.NewHub(64),
 		IndexTTL:   time.Minute,
 		IndexCache: cache.New(16, func(index *bm25.Index) *bm25.Index { return index }),
+	}
+}
+
+func TestZeroRecallBudgetDisablesCategory(t *testing.T) {
+	ctx := context.Background()
+	s := replay.NewStore()
+	notes := []memory.Note{
+		{ID: "pref", GroupID: 1, Subject: 0, Kind: "preference", Key: "番茄", Text: "偏好记忆番茄", State: "active", Updated: time.Now()},
+		{ID: "member", GroupID: 1, Subject: 10, Kind: "member", Key: "番茄", Text: "成员记忆番茄", State: "active", Updated: time.Now()},
+		{ID: "episode", GroupID: 1, Subject: 10, Kind: "episode", TopicID: "topic:1", Key: "番茄", Text: "经历记忆番茄", State: "active", Updated: time.Now()},
+	}
+	if err := s.SaveNotes(ctx, 1, notes, nil); err != nil {
+		t.Fatal(err)
+	}
+	query := memory.Query{GroupID: 1, Events: []qq.Event{{ID: "eval", GroupID: 1, UserID: 10, Text: "番茄"}}, Text: "番茄", TopicIDs: []string{"topic:1"}}
+	disabled := memory.Service{Store: s, TopK: 5}
+	out, _, err := disabled.RecallCached(ctx, query, 0)
+	if err != nil || len(out) != 0 {
+		t.Fatalf("zero budgets recalled %+v err=%v", out, err)
+	}
+	enabled := memory.Service{Store: s, TopK: 5, Budgets: memory.RecallBudgets{Preference: 1, Member: 1, Episode: 1}}
+	out, _, err = enabled.RecallCached(ctx, query, 0)
+	if err != nil || len(out) != 3 {
+		t.Fatalf("enabled budgets recalled %+v err=%v", out, err)
 	}
 }
 
@@ -133,7 +158,7 @@ func TestValidityWindowAndTopicEpisodeRecall(t *testing.T) {
 	if err := s.SaveNotes(ctx, 1, notes, nil); err != nil {
 		t.Fatal(err)
 	}
-	service := memory.Service{Store: s, TopK: 6}
+	service := memory.Service{Store: s, TopK: 6, Budgets: memory.RecallBudgets{Preference: 6, Member: 8, Episode: 6}}
 	out, _, err := service.RecallCached(ctx, memory.Query{GroupID: 1, Text: "无关话题", TopicIDs: []string{"topic:1:1"}}, 0)
 	if err != nil {
 		t.Fatal(err)

@@ -100,6 +100,7 @@ func (b runtimeContextBuilder) Build(ctx context.Context, admission ctxsnapshot.
 		var stored contextCacheValue
 		if r.Cache.Get(key, &stored) {
 			stored.Trace.RecallCacheHit = true
+			stored.Trace.IndexLoadMS = 0
 			stored.Trace.ImageCacheHit = false
 			resources.Notes = stored.Notes
 			resources.Assets = stored.Assets
@@ -155,6 +156,7 @@ func (r *Runtime) retrieveResources(ctx context.Context, admission ctxsnapshot.A
 		} else {
 			resources.Notes = notes
 			resources.Trace.IndexCacheHit = trace.IndexCacheHit
+			resources.Trace.IndexLoadMS = trace.IndexLoadMS
 			resources.Trace.RecallCacheHit = resources.Trace.RecallCacheHit || trace.RecallCacheHit
 			resources.Trace.Semantic = trace.Semantic
 			resources.Trace.Lexical = trace.Lexical

@@ -61,7 +61,7 @@ func (s *noteStore) FinishAttempt(_ context.Context, _ Attempt, _ qq.Event, ids 
 func TestContextCacheHitKeepsNoteIDs(t *testing.T) {
 	ctx := context.Background()
 	store := &noteStore{notes: memory.Note{ID: "note-cache", GroupID: 1, Kind: "preference", Key: "nickname", Text: "称呼小林", State: "active", Updated: time.Now()}}
-	r := New(ctx, &Runtime{Store: store, Memory: &memory.Service{Store: store, TopK: 3}, Cache: cache.NewHub(16),
+	r := New(ctx, &Runtime{Store: store, Memory: &memory.Service{Store: store, TopK: 3, Budgets: memory.RecallBudgets{Preference: 6, Member: 8, Episode: 6}}, Cache: cache.NewHub(16),
 		Config: Config{History: 10, ContextRunes: 20000, Cache: CacheTTL{Context: time.Minute}}})
 	t.Cleanup(r.Close)
 	builder := runtimeContextBuilder{runtime: r}

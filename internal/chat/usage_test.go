@@ -52,7 +52,7 @@ func TestArchiveFailureIsRecordedAsUnknownAndBookedNowhere(t *testing.T) {
 	seedPreference(t, base, 1, "note-archive")
 	r := chat.New(context.Background(), &chat.Runtime{Store: store, Model: generator{func(context.Context, any) (chat.Reply, error) {
 		return chat.Reply{Action: "text", Text: "好"}, nil
-	}}, Sender: &replay.Sender{}, Memory: &memory.Service{Store: store, TopK: 3}, SelfID: 99, Persona: chat.Persona{Name: "芙芙"},
+	}}, Sender: &replay.Sender{}, Memory: &memory.Service{Store: store, TopK: 3, Budgets: memory.RecallBudgets{Preference: 6, Member: 8, Episode: 6}}, SelfID: 99, Persona: chat.Persona{Name: "芙芙"},
 		Config: chat.Config{Merge: 5 * time.Millisecond, MaxWait: 100 * time.Millisecond, PassiveInterval: time.Millisecond, ActiveWindow: time.Second, Timeout: time.Second, SpontaneousInterval: time.Hour, MaxPerMinute: 20, History: 80, ContextRunes: 20000}})
 	t.Cleanup(r.Close)
 	a, err := r.Process(context.Background(), payload(1, 1, 10, "确认", true))
@@ -84,7 +84,7 @@ func TestUsageLedgerOnlyCountsConfirmedTurns(t *testing.T) {
 			return chat.Reply{Action: "text", Text: "好"}, nil
 		}
 	}}
-	r := chat.New(context.Background(), &chat.Runtime{Store: store, Model: generator, Sender: sender, Memory: &memory.Service{Store: store, TopK: 3}, SelfID: 99, Persona: chat.Persona{Name: "芙芙"},
+	r := chat.New(context.Background(), &chat.Runtime{Store: store, Model: generator, Sender: sender, Memory: &memory.Service{Store: store, TopK: 3, Budgets: memory.RecallBudgets{Preference: 6, Member: 8, Episode: 6}}, SelfID: 99, Persona: chat.Persona{Name: "芙芙"},
 		Config: chat.Config{Merge: 5 * time.Millisecond, MaxWait: 100 * time.Millisecond, PassiveInterval: time.Millisecond, ActiveWindow: time.Second, Timeout: time.Second, SpontaneousInterval: time.Hour, MaxPerMinute: 20, History: 80, ContextRunes: 20000}})
 	t.Cleanup(r.Close)
 

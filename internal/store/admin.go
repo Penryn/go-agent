@@ -33,6 +33,7 @@ type RecallStats struct {
 	CacheHits        int64   `json:"cache_hits"`
 	CacheMisses      int64   `json:"cache_misses"`
 	SemanticDegraded int64   `json:"semantic_degraded"`
+	MaxIndexLoadMS   int64   `json:"max_index_load_ms"`
 	HitRate          float64 `json:"hit_rate"`
 	EmptyRate        float64 `json:"empty_rate"`
 	CacheHitRate     float64 `json:"cache_hit_rate"`
@@ -48,6 +49,10 @@ type LedgerStats struct {
 }
 
 type NoteStats struct {
+	ActiveNotes          int64   `json:"active_notes"`
+	TotalNotes           int64   `json:"total_notes"`
+	ActiveRatio          float64 `json:"active_ratio"`
+	ActiveIdentityIndex  bool    `json:"active_identity_index"`
 	DuplicateIdentities  int64   `json:"duplicate_identities"`
 	TotalIdentities      int64   `json:"total_identities"`
 	DuplicateRate        float64 `json:"duplicate_rate"`
@@ -99,7 +104,7 @@ func (s *Store) MemoryStatus(ctx context.Context) (MemoryStatus, error) {
 	if err := s.DB.QueryRowContext(ctx, `SELECT COUNT(*),COUNT(*) FILTER (WHERE status='succeeded'),COUNT(*) FILTER (WHERE status='failed'),COALESCE(AVG(duration_ms)::float8,0),COALESCE(AVG(extract_ms)::float8,0),COALESCE(AVG(reconcile_ms)::float8,0),COALESCE(SUM(extract_tokens),0)::bigint,COALESCE(SUM(reconcile_tokens),0)::bigint,COALESCE(SUM(change_count),0)::bigint FROM groupfriend.learning_runs WHERE started_at>=NOW()-make_interval(hours=>$1)`, status.WindowHours).Scan(&status.Learning.Runs, &status.Learning.Succeeded, &status.Learning.Failed, &status.Learning.AvgDurationMS, &status.Learning.AvgExtractMS, &status.Learning.AvgReconcileMS, &status.Learning.ExtractTokens, &status.Learning.ReconcileTokens, &status.Learning.ChangeCount); err != nil {
 		return status, err
 	}
-	if err := s.DB.QueryRowContext(ctx, `SELECT COUNT(*) FILTER (WHERE body->'retrieval'->>'recall_attempted'='true'),COUNT(*) FILTER (WHERE body->'retrieval'->>'recall_attempted'='true' AND COALESCE((body->'retrieval'->>'recall_hits')::int,0)>0),COUNT(*) FILTER (WHERE body->'retrieval'->>'recall_attempted'='true' AND COALESCE((body->'retrieval'->>'recall_hits')::int,0)=0),COUNT(*) FILTER (WHERE body->'retrieval'->>'recall_attempted'='true' AND body->'retrieval'->>'recall_cache_hit'='true'),COUNT(*) FILTER (WHERE body->'retrieval'->>'recall_attempted'='true' AND COALESCE(body->'retrieval'->>'recall_cache_hit','false')<>'true'),COUNT(*) FILTER (WHERE body->'retrieval'->'degraded' @> '["semantic"]'::jsonb) FROM groupfriend.reply_attempts WHERE updated_at>=NOW()-make_interval(hours=>$1)`, status.WindowHours).Scan(&status.Recall.Attempted, &status.Recall.Hits, &status.Recall.Empty, &status.Recall.CacheHits, &status.Recall.CacheMisses, &status.Recall.SemanticDegraded); err != nil {
+	if err := s.DB.QueryRowContext(ctx, `SELECT COUNT(*) FILTER (WHERE body->'retrieval'->>'recall_attempted'='true'),COUNT(*) FILTER (WHERE body->'retrieval'->>'recall_attempted'='true' AND COALESCE((body->'retrieval'->>'recall_hits')::int,0)>0),COUNT(*) FILTER (WHERE body->'retrieval'->>'recall_attempted'='true' AND COALESCE((body->'retrieval'->>'recall_hits')::int,0)=0),COUNT(*) FILTER (WHERE body->'retrieval'->>'recall_attempted'='true' AND body->'retrieval'->>'recall_cache_hit'='true'),COUNT(*) FILTER (WHERE body->'retrieval'->>'recall_attempted'='true' AND COALESCE(body->'retrieval'->>'recall_cache_hit','false')<>'true'),COUNT(*) FILTER (WHERE body->'retrieval'->'degraded' @> '["semantic"]'::jsonb),COALESCE(MAX((body->'retrieval'->>'index_load_ms')::int),0) FROM groupfriend.reply_attempts WHERE updated_at>=NOW()-make_interval(hours=>$1)`, status.WindowHours).Scan(&status.Recall.Attempted, &status.Recall.Hits, &status.Recall.Empty, &status.Recall.CacheHits, &status.Recall.CacheMisses, &status.Recall.SemanticDegraded, &status.Recall.MaxIndexLoadMS); err != nil {
 		return status, err
 	}
 	status.Recall.HitRate = rate(status.Recall.Hits, status.Recall.Attempted)
@@ -114,7 +119,14 @@ func (s *Store) MemoryStatus(ctx context.Context) (MemoryStatus, error) {
 	if err := s.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM groupfriend.reply_attempts WHERE state='unknown' AND body->>'error'='delivery confirmed but archive failed' AND updated_at>=NOW()-make_interval(hours=>$1)`, status.WindowHours).Scan(&status.Ledger.WriteFailures); err != nil {
 		return status, err
 	}
-	if err := s.DB.QueryRowContext(ctx, `SELECT COALESCE(SUM(CASE WHEN c>1 THEN 1 ELSE 0 END),0)::bigint,COUNT(*) FROM (SELECT COUNT(*) AS c FROM groupfriend.notes GROUP BY group_id,subject,kind,key,(CASE WHEN kind='episode' THEN topic_id ELSE '' END)) identities`).Scan(&status.Notes.DuplicateIdentities, &status.Notes.TotalIdentities); err != nil {
+	if err := s.DB.QueryRowContext(ctx, `SELECT COUNT(*),COUNT(*) FILTER (WHERE state='active') FROM groupfriend.notes`).Scan(&status.Notes.TotalNotes, &status.Notes.ActiveNotes); err != nil {
+		return status, err
+	}
+	status.Notes.ActiveRatio = rate(status.Notes.ActiveNotes, status.Notes.TotalNotes)
+	if err := s.DB.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM pg_indexes WHERE schemaname='groupfriend' AND indexname='friend_notes_active_identity')`).Scan(&status.Notes.ActiveIdentityIndex); err != nil {
+		return status, err
+	}
+	if err := s.DB.QueryRowContext(ctx, `SELECT COALESCE(SUM(CASE WHEN c>1 THEN 1 ELSE 0 END),0)::bigint,COUNT(*) FROM (SELECT COUNT(*) AS c FROM groupfriend.notes GROUP BY group_id,subject,kind,lower(btrim(key)),(CASE WHEN kind='episode' THEN btrim(topic_id) ELSE '' END)) identities`).Scan(&status.Notes.DuplicateIdentities, &status.Notes.TotalIdentities); err != nil {
 		return status, err
 	}
 	status.Notes.DuplicateRate = rate(status.Notes.DuplicateIdentities, status.Notes.TotalIdentities)
@@ -184,6 +196,9 @@ func (s *Store) EditNote(ctx context.Context, group int64, id string, version in
 		return err
 	}
 	defer tx.Rollback()
+	if _, err := tx.ExecContext(ctx, `SELECT pg_advisory_xact_lock_shared($1)`, memoryMaintenanceLock); err != nil {
+		return err
+	}
 	if _, err := tx.ExecContext(ctx, `SELECT pg_advisory_xact_lock($1)`, group); err != nil {
 		return err
 	}

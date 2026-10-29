@@ -135,7 +135,7 @@ func TestNewDirectMessageInvalidatesOldDraft(t *testing.T) {
 		return chat.Reply{Action: "text", Text: "更新后的回答"}, nil
 	}})
 	seedPreference(t, store, 1, "note-stale")
-	r.Memory = &memory.Service{Store: store, TopK: 3}
+	r.Memory = &memory.Service{Store: store, TopK: 3, Budgets: memory.RecallBudgets{Preference: 6, Member: 8, Episode: 6}}
 	first := make(chan chat.Attempt, 1)
 	go func() {
 		a, _ := r.Process(context.Background(), payload(1, 1, 10, "第一个问题", true))
@@ -248,7 +248,7 @@ func TestExplicitMemoryRequiresOwnEvidence(t *testing.T) {
 		e := input.(map[string]any)["batch"].([]qq.Event)[0]
 		return chat.Reply{Action: "text", Text: "记住了", Memory: []memory.Change{{Kind: "preference", Subject: 999, Key: "nickname", Text: "某人", Evidence: []memory.Evidence{{EventID: e.ID, Quote: e.Text}}}}}, nil
 	}})
-	r.Memory = &memory.Service{Store: store, TopK: 3}
+	r.Memory = &memory.Service{Store: store, TopK: 3, Budgets: memory.RecallBudgets{Preference: 6, Member: 8, Episode: 6}}
 	a, err := r.Process(context.Background(), payload(1, 1, 10, "以后叫我小明", true))
 	if err != nil || a.State != "failed" || !strings.Contains(a.Error, "memory update failed") {
 		t.Fatal(a, err)

@@ -124,8 +124,9 @@ func TestLearningRejectsDuplicateCandidates(t *testing.T) {
 	ctx := context.Background()
 	store := replay.NewStore()
 	ingest(t, store, "e1", 1, 10, "以后叫我小林")
-	candidate := `{"subject":10,"kind":"preference","key":"nickname","text":"称呼小林","evidence":[{"event_id":"e1","quote":"以后叫我小林"}]}`
-	model := &learningModel{extract: []string{`{"candidates":[` + candidate + `,` + candidate + `]}`}}
+	candidateA := `{"subject":10,"kind":"preference","key":" Nick ","text":"称呼小林","evidence":[{"event_id":"e1","quote":"以后叫我小林"}]}`
+	candidateB := `{"subject":10,"kind":"preference","key":"nick","text":"称呼小林","evidence":[{"event_id":"e1","quote":"以后叫我小林"}]}`
+	model := &learningModel{extract: []string{`{"candidates":[` + candidateA + `,` + candidateB + `]}`}}
 	service := memory.Service{Store: store, Model: model, TopK: 3}
 	if err := service.Tick(ctx); err == nil || !strings.Contains(err.Error(), "duplicate") {
 		t.Fatalf("duplicate candidates: %v", err)
@@ -180,6 +181,29 @@ func TestEpisodeRequiresStableTopic(t *testing.T) {
 	learning := memory.Service{Store: store, Model: model, TopK: 3}
 	if err := learning.Tick(ctx); err == nil || !strings.Contains(err.Error(), "topic id") {
 		t.Fatalf("topic-less episode candidate: %v", err)
+	}
+}
+
+func TestApplyNormalizesIdentity(t *testing.T) {
+	ctx := context.Background()
+	store := replay.NewStore()
+	event := ingest(t, store, "e1", 1, 10, "以后叫我阿林")
+	service := memory.Service{Store: store, TopK: 4, Budgets: memory.RecallBudgets{Preference: 6, Member: 8, Episode: 6}}
+	change := memory.Change{Subject: 10, Kind: "preference", Key: "  NickName ", TopicID: "  topic:1  ", Text: "称呼阿林", Evidence: []memory.Evidence{{EventID: event.ID, Quote: "以后叫我阿林"}}}
+	if err := service.Apply(ctx, 1, []qq.Event{event}, []memory.Change{change}, nil); err != nil {
+		t.Fatal(err)
+	}
+	notes, err := store.ActiveNotes(ctx, 1, 10)
+	if err != nil || len(notes) != 1 || notes[0].Key != "nickname" || notes[0].TopicID != "topic:1" {
+		t.Fatalf("stored note = %+v err=%v", notes, err)
+	}
+	update := memory.Change{ID: notes[0].ID, Version: notes[0].Version, Subject: 10, Kind: "preference", Key: "NICKNAME", TopicID: "topic:1", Text: "称呼阿林", Evidence: []memory.Evidence{{EventID: event.ID, Quote: "以后叫我阿林"}}}
+	if err := service.Apply(ctx, 1, []qq.Event{event}, []memory.Change{update}, nil); err != nil {
+		t.Fatal(err)
+	}
+	notes, _ = store.ActiveNotes(ctx, 1, 10)
+	if len(notes) != 1 || notes[0].Version != 2 {
+		t.Fatalf("normalized update forked a note: %+v", notes)
 	}
 }
 

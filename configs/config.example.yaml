@@ -64,7 +64,8 @@ memory:
   summary_interval: 30s
   # 语义召回使用余弦距离，范围 (0,2]，默认 0.6。
   semantic_distance_threshold: 0.6
-  # 0 表示使用内置默认值：偏好 6、成员 8、经历 6。
+  # 0 表示关闭该类别；未配置时使用默认值：偏好 6、成员 8、经历 6。
+  # 三个预算之和不得超过 24。
   preference_budget: 6
   member_budget: 8
   episode_budget: 6

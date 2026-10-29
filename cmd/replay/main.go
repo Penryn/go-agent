@@ -15,6 +15,7 @@ import (
 	"github.com/phlin/go-agent/internal/memory"
 	"github.com/phlin/go-agent/internal/model"
 	"github.com/phlin/go-agent/internal/replay"
+	"github.com/phlin/go-agent/internal/store"
 )
 
 type step struct {
@@ -43,11 +44,53 @@ func (s *script) Generate(context.Context, string, any, []string) (model.Result,
 	return model.Result{Content: string(raw)}, nil
 }
 func main() {
+	if len(os.Args) > 1 && os.Args[1] == "memory-duplicates" {
+		if err := runMemoryDuplicates(os.Args[2:]); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		return
+	}
 	if err := run(); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
 }
+
+func runMemoryDuplicates(args []string) error {
+	flags := flag.NewFlagSet("memory-duplicates", flag.ContinueOnError)
+	configPath := flags.String("config", "", "optional configuration; empty uses local defaults")
+	dryRun := flags.Bool("dry-run", true, "report only; set -dry-run=false to normalize and archive")
+	if err := flags.Parse(args); err != nil {
+		return err
+	}
+	cfg := config.Default()
+	if *configPath != "" {
+		var err error
+		cfg, err = config.Load(*configPath)
+		if err != nil {
+			return err
+		}
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+	db, err := store.OpenMaintenance(ctx, cfg.Storage.DatabaseURL)
+	if err != nil {
+		return err
+	}
+	defer db.Close()
+	report, err := db.MemoryDuplicates(ctx, !*dryRun)
+	if err != nil {
+		return err
+	}
+	encoded, err := json.MarshalIndent(report, "", "  ")
+	if err != nil {
+		return err
+	}
+	fmt.Println(string(encoded))
+	return nil
+}
+
 func run() error {
 	path := flag.String("fixture", "tests/replay/conversation.json", "fixture JSON")
 	configPath := flag.String("config", "", "optional model configuration; empty uses scripted outputs without network")
@@ -97,7 +140,7 @@ func run() error {
 	cfg.Chat.Cache = chat.CacheTTL{Recall: cfg.Cache.RecallTTL, Context: cfg.Cache.ContextTTL, Sticker: cfg.Cache.StickerTTL, Image: cfg.Cache.ImageTTL}
 	store := replay.NewStore()
 	sender := &replay.Sender{}
-	memories := &memory.Service{Store: store, Model: generator, Embedding: embedding, TopK: cfg.Memory.TopK, IndexLimit: cfg.Memory.IndexLimit, DistanceThreshold: cfg.Memory.SemanticDistanceThreshold, PreferenceBudget: cfg.Memory.PreferenceBudget, MemberBudget: cfg.Memory.MemberBudget, EpisodeBudget: cfg.Memory.EpisodeBudget, Cache: hub, IndexTTL: cfg.Cache.IndexTTL}
+	memories := &memory.Service{Store: store, Model: generator, Embedding: embedding, TopK: cfg.Memory.TopK, IndexLimit: cfg.Memory.IndexLimit, DistanceThreshold: cfg.Memory.SemanticDistanceThreshold, Budgets: memory.RecallBudgets{Preference: cfg.Memory.PreferenceBudget, Member: cfg.Memory.MemberBudget, Episode: cfg.Memory.EpisodeBudget}, Cache: hub, IndexTTL: cfg.Cache.IndexTTL}
 	ctx, cancel := context.WithTimeout(context.Background(), *timeout)
 	defer cancel()
 	runtime := chat.New(ctx, &chat.Runtime{Store: store, Model: generator, Embedding: embedding, Cache: hub, Memory: memories, Sender: sender, Persona: cfg.Persona, Config: cfg.Chat, SelfID: 0})
