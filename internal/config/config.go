@@ -61,13 +61,12 @@ type Config struct {
 	} `yaml:"qq"`
 }
 
-// Concurrency accepts the historical scalar form and the split budget form.
-// Scalar values remain the interactive chat budget during migration.
+// Concurrency sets independent in-flight limits per request kind.
 type Concurrency struct {
-	Chat       int `yaml:"chat"`
-	Vision     int `yaml:"vision"`
-	Embedding  int `yaml:"embedding"`
-	Background int `yaml:"background"`
+	Chat       int `yaml:"chat"`       // text chat
+	Vision     int `yaml:"vision"`     // image requests
+	Embedding  int `yaml:"embedding"`  // interactive query embeddings
+	Background int `yaml:"background"` // memory, indexing and summaries
 }
 
 func (c *Concurrency) UnmarshalYAML(value *yaml.Node) error {

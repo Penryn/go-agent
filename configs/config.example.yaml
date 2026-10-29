@@ -8,6 +8,8 @@ server:
 storage:
   # 新运行时使用独立 groupfriend schema，不覆盖旧表。
   database_url: postgres://qqbot:qqbotpass@127.0.0.1:5432/qqbot?sslmode=disable
+# 底层模型并发上限，四个池互相隔离：各自排队，互不占用名额。
+# chat 普通聊天；vision 带图请求；embedding 查询向量；background 后台任务。
 model_concurrency:
   chat: 2
   vision: 1
