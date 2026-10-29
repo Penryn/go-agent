@@ -2,10 +2,11 @@ import { type FormEvent, useCallback, useEffect, useRef, useState } from "react"
 import { AdminApi } from "./api";
 import { EmptyState, LoadingRows } from "./components/EmptyState";
 import { NoticeBanner } from "./components/NoticeBanner";
-import type { AdminNotice, AdminView, Conversation, Sticker } from "./types";
+import type { AdminNotice, AdminView, Conversation, MemoryStatus, Sticker } from "./types";
 import { noticeForError } from "./utils/errors";
 import { AttemptsView } from "./views/AttemptsView";
 import { ConversationView } from "./views/ConversationView";
+import { MemoryView } from "./views/MemoryView";
 import { NotesView } from "./views/NotesView";
 import { StickersView } from "./views/StickersView";
 
@@ -22,8 +23,11 @@ const VIEWS: ViewMeta[] = [
   { id: "conversation", label: "最近对话", shortLabel: "话", description: "消息与上下文" },
   { id: "notes", label: "相处笔记", shortLabel: "记", description: "长期记忆" },
   { id: "attempts", label: "回应记录", shortLabel: "应", description: "检索与决策" },
+  { id: "memory", label: "记忆状态", shortLabel: "态", description: "学习与健康" },
   { id: "stickers", label: "全局表情包", shortLabel: "表", description: "跨群素材库" },
 ];
+
+const GROUP_VIEWS: AdminView[] = ["conversation", "notes", "attempts"];
 
 function App() {
   const [token, setToken] = useState("");
@@ -38,10 +42,13 @@ function App() {
   const [conversationState, setConversationState] = useState<LoadState>("idle");
   const [stickers, setStickers] = useState<Sticker[]>([]);
   const [stickersState, setStickersState] = useState<LoadState>("idle");
+  const [memory, setMemory] = useState<MemoryStatus | null>(null);
+  const [memoryState, setMemoryState] = useState<LoadState>("idle");
   const [notice, setNotice] = useState<AdminNotice | null>(null);
 
   const conversationRequest = useRef<AbortController | null>(null);
   const stickersRequest = useRef<AbortController | null>(null);
+  const memoryRequest = useRef<AbortController | null>(null);
 
   const showError = useCallback((error: unknown, fallback: string) => {
     setNotice(noticeForError(error, fallback));
@@ -108,9 +115,38 @@ function App() {
     }
   }, [showError]);
 
+  const loadMemory = useCallback(async (client: AdminApi, preserve = false) => {
+    memoryRequest.current?.abort();
+    const controller = new AbortController();
+    memoryRequest.current = controller;
+
+    if (!preserve) {
+      setMemory(null);
+      setMemoryState("loading");
+    } else {
+      setMemoryState("refreshing");
+    }
+
+    try {
+      const data = await client.getMemory(controller.signal);
+      if (controller.signal.aborted) {
+        return;
+      }
+      setMemory(data);
+      setMemoryState("ready");
+    } catch (error) {
+      if (controller.signal.aborted) {
+        return;
+      }
+      setMemoryState("error");
+      showError(error, "读取记忆健康状态失败，请稍后重试。");
+    }
+  }, [showError]);
+
   useEffect(() => () => {
     conversationRequest.current?.abort();
     stickersRequest.current?.abort();
+    memoryRequest.current?.abort();
   }, []);
 
   async function handleConnect(event: FormEvent<HTMLFormElement>) {
@@ -140,6 +176,8 @@ function App() {
       }
       if (view === "stickers") {
         tasks.push(loadStickers(nextApi));
+      } else if (view === "memory") {
+        tasks.push(loadMemory(nextApi));
       }
       setNotice({
         tone: "success",
@@ -156,6 +194,7 @@ function App() {
   function disconnect() {
     conversationRequest.current?.abort();
     stickersRequest.current?.abort();
+    memoryRequest.current?.abort();
     setToken("");
     setApi(new AdminApi(""));
     setConnected(false);
@@ -166,6 +205,8 @@ function App() {
     setConversationState("idle");
     setStickers([]);
     setStickersState("idle");
+    setMemory(null);
+    setMemoryState("idle");
     setNotice({ tone: "info", message: "已断开后台连接，访问令牌已从当前页面清除。" });
   }
 
@@ -185,6 +226,8 @@ function App() {
     setView(nextView);
     if (nextView === "stickers" && connected && (stickersState === "idle" || stickersState === "error") && stickers.length === 0) {
       void loadStickers(api);
+    } else if (nextView === "memory" && connected && (memoryState === "idle" || memoryState === "error") && memory === null) {
+      void loadMemory(api);
     }
   }
 
@@ -194,6 +237,8 @@ function App() {
     }
     if (view === "stickers") {
       await loadStickers(api, true);
+    } else if (view === "memory") {
+      await loadMemory(api, true);
     } else if (selectedGroup !== null) {
       await loadConversation(api, selectedGroup, true);
     }
@@ -202,12 +247,15 @@ function App() {
   const refreshing = conversationState === "loading"
     || conversationState === "refreshing"
     || stickersState === "loading"
-    || stickersState === "refreshing";
+    || stickersState === "refreshing"
+    || memoryState === "loading"
+    || memoryState === "refreshing";
 
   const navCounts: Record<AdminView, number | undefined> = {
     conversation: conversationGroup === selectedGroup && conversation ? conversation.messages.length : undefined,
     notes: conversationGroup === selectedGroup && conversation ? conversation.notes.length : undefined,
     attempts: conversationGroup === selectedGroup && conversation ? conversation.attempts.length : undefined,
+    memory: memory ? memory.groups.length : undefined,
     stickers: stickersState === "ready" || stickers.length > 0 ? stickers.length : undefined,
   };
 
@@ -225,7 +273,7 @@ function App() {
       );
     }
 
-    if (view !== "stickers" && selectedGroup === null) {
+    if (GROUP_VIEWS.includes(view) && selectedGroup === null) {
       return (
         <EmptyState
           title="暂无可查看的群"
@@ -266,6 +314,16 @@ function App() {
       );
     }
 
+    if (view === "memory") {
+      return (
+        <MemoryView
+          status={memory}
+          loading={memoryState === "loading" || memoryState === "refreshing"}
+          onReload={() => loadMemory(api, true)}
+        />
+      );
+    }
+
     return (
       <StickersView
         api={api}
@@ -299,7 +357,7 @@ function App() {
           <button
             className="button button-secondary"
             type="button"
-            disabled={!connected || refreshing || (view !== "stickers" && selectedGroup === null)}
+            disabled={!connected || refreshing || (GROUP_VIEWS.includes(view) && selectedGroup === null)}
             onClick={() => void refreshCurrentView()}
           >
             {refreshing ? "刷新中…" : "刷新数据"}
@@ -384,7 +442,7 @@ function App() {
         <main className="main-content">
           <div className="content-context">
             <span>{connected ? `当前视图 · ${currentView.label}` : "等待连接"}</span>
-            {connected && view !== "stickers" && selectedGroup !== null ? <span>群 {selectedGroup}</span> : null}
+            {connected && GROUP_VIEWS.includes(view) && selectedGroup !== null ? <span>群 {selectedGroup}</span> : null}
           </div>
 
           {notice ? <NoticeBanner notice={notice} onDismiss={() => setNotice(null)} /> : null}

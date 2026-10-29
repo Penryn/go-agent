@@ -1,4 +1,4 @@
-import type { Conversation, Sticker, UpdateResponse } from "./types";
+import type { Conversation, MemoryStatus, Sticker, UpdateResponse } from "./types";
 
 const API_ROOT = "/admin/api";
 
@@ -78,6 +78,10 @@ export class AdminApi {
 
   getStickers(signal?: AbortSignal): Promise<Sticker[]> {
     return this.json<Sticker[]>("/stickers", { signal });
+  }
+
+  getMemory(signal?: AbortSignal): Promise<MemoryStatus> {
+    return this.json<MemoryStatus>("/memory", { signal });
   }
 
   saveSticker(

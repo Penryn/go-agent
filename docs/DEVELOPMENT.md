@@ -27,7 +27,7 @@ make admin-dev
 
 Vite 在 `http://127.0.0.1:5173/admin/` 提供热更新，并将 `/admin/api` 代理到 `http://127.0.0.1:8088`。生产环境仍由同一个 Go 进程提供页面和 API，没有独立前端服务。
 
-后台令牌只保存在 React 内存中，刷新页面后需要重新输入。笔记和表情包保存携带版本号；`409` 时应保留当前草稿并重新读取最新版本，`401`/`403` 表示鉴权或来源校验失败。
+后台令牌只保存在 React 内存中，刷新页面后需要重新输入。笔记和表情包保存携带版本号；`409` 时应保留当前草稿并重新读取最新版本，`401`/`403` 表示鉴权或来源校验失败。`/admin/api/memory` 的全局学习 lag、召回命中、账本差异和索引状态在“记忆状态”视图中展示，不依赖当前选中群。
 
 ## 检查与验证
 
@@ -81,7 +81,7 @@ go test -run TestMemoryEvaluationSet -v ./internal/memory
 go test -run TestVectorRecallPlanUsesHNSWIndex -v ./internal/store
 ```
 
-[评测集](../tests/memory/eval_set.json) 使用合成昵称、群号和话题，覆盖正确召回、无关召回、纠错、遗忘保护、过期与未来有效期、话题经历和成员归属。测试输出 precision@k、recall@k、重复笔记率、纠错一致性和 forgotten 违规数，并对阈值做回归断言。它只使用词法、上下文和话题轨道；需要真实 Embedding 的语义评测应另行提供标注样本。
+[评测集](../tests/memory/eval_set.json) 使用合成昵称、群号和话题，覆盖正确召回、无关召回、纠错、遗忘保护、过期与未来有效期、话题经历和成员归属。测试输出 precision@k、recall@k、重复笔记率、纠错一致性和 forgotten 违规数，并对阈值做回归断言。另有使用固定测试向量的语义召回测试，验证向量轨道、降级边界和偏好保留；它不等价于真实 Embedding 模型的标注评测。
 
 向量计划测试先记录默认 `EXPLAIN (ANALYZE, BUFFERS)`，再移除竞争索引并禁用顺序扫描，确认参数化的距离阈值查询仍能使用 HNSW 索引。默认计划取决于表统计和阈值选择性，小数据集上的顺序扫描不代表生产退化结论。
 

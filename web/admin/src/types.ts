@@ -49,6 +49,9 @@ export interface MemoryChange {
   evidence: NoteEvidence[];
   forget: boolean;
   expires?: string;
+  valid_from?: string;
+  valid_to?: string;
+  confidence?: number;
 }
 
 export interface Reply {
@@ -101,11 +104,72 @@ export interface Sticker {
   version: number;
 }
 
+export interface LearningLag {
+  group_id: number;
+  lag: number;
+}
+
+export interface LearningStats {
+  runs: number;
+  succeeded: number;
+  failed: number;
+  avg_duration_ms: number;
+  avg_extract_ms: number;
+  avg_reconcile_ms: number;
+  extract_tokens: number;
+  reconcile_tokens: number;
+  rejected_count: number;
+  change_count: number;
+}
+
+export interface RecallStats {
+  attempted: number;
+  hits: number;
+  empty: number;
+  cache_hits: number;
+  cache_misses: number;
+  semantic_degraded: number;
+  max_index_load_ms: number;
+  hit_rate: number;
+  empty_rate: number;
+  cache_hit_rate: number;
+}
+
+export interface LedgerStats {
+  confirmed_attempts: number;
+  usage_rows: number;
+  write_failures: number;
+  write_retries: number;
+}
+
+export interface NoteStats {
+  active_notes: number;
+  total_notes: number;
+  active_ratio: number;
+  active_identity_index: boolean;
+  duplicate_identities: number;
+  total_identities: number;
+  duplicate_rate: number;
+  forgotten_rebuilds: number;
+  forgotten_rebuild_rate: number;
+}
+
+export interface MemoryStatus {
+  window_hours: number;
+  groups: LearningLag[];
+  learning: LearningStats;
+  recall: RecallStats;
+  ledger: LedgerStats;
+  notes: NoteStats;
+  pending_embeddings: number;
+  usage_projection_diff: number;
+}
+
 export interface UpdateResponse {
   ok: boolean;
 }
 
-export type AdminView = "conversation" | "notes" | "attempts" | "stickers";
+export type AdminView = "conversation" | "notes" | "attempts" | "memory" | "stickers";
 
 export type NoticeTone = "info" | "success" | "error";
 
