@@ -380,6 +380,27 @@ func TestConfirmedUsageLedgerIsIdempotent(t *testing.T) {
 	}
 }
 
+func TestIdlessCorrectionBindsCleanedLegacyIdentity(t *testing.T) {
+	s := testStore(t)
+	ctx := context.Background()
+	// The active identity index exists. The row keeps an ID derived from the
+	// pre-normalization key, so an ID-less correction must bind it, not insert a
+	// new normalized-ID row that collides with the index.
+	if _, err := s.DB.ExecContext(ctx, `INSERT INTO groupfriend.notes(id,group_id,subject,kind,key,text,evidence,revision,source_seq,state,updated_at,confidence) VALUES('legacy-nick',1,10,'preference','nickname','称呼小林','[]',1,1,'active',NOW(),0.7)`); err != nil {
+		t.Fatal(err)
+	}
+	e := event(t, s, "p1-e1", 1, 10, "以后叫我阿林")
+	svc := memory.Service{Store: s, TopK: 4}
+	change := memory.Change{Subject: 10, Kind: "preference", Key: " NICKNAME ", Text: "称呼阿林", Evidence: []memory.Evidence{{EventID: e.ID, Quote: "以后叫我阿林"}}}
+	if err := svc.Apply(ctx, 1, []qq.Event{e}, []memory.Change{change}, nil); err != nil {
+		t.Fatal(err)
+	}
+	notes, err := s.ActiveNotes(ctx, 1, 10)
+	if err != nil || len(notes) != 1 || notes[0].ID != "legacy-nick" || notes[0].Text != "称呼阿林" || notes[0].Version != 2 {
+		t.Fatalf("bound correction = %+v err=%v", notes, err)
+	}
+}
+
 func TestMemoryDuplicateCleanupIsDryRunFirst(t *testing.T) {
 	s := testStore(t)
 	ctx := context.Background()

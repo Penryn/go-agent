@@ -101,7 +101,7 @@ flowchart LR
 | 人物和时间 | 补充相关成员与明确时间线索下的经历；当前识别今天、昨天、前天和 ISO 日期 |
 | 话题归属 | 当前可见话题下的经历记忆直接进入候选，重启后仍按 `topic_id` 召回 |
 
-各路先限制群、有效状态、`expires_at`、`valid_from`、`valid_to`，再使用 RRF 融合并去重。上下文按配置预算组装：明确偏好和群事实、成员资料、相关经历分别受 `preference_budget`、`member_budget`、`episode_budget` 限制，`0` 表示关闭该类别，其余语义结果受 `top_k` 限制。固定排序为先明确偏好、再成员资料、现有话题经历、语义和词法事实；`salience` 和 `confidence` 参与排序，使用次数只做统计，不改变证据规则。未核实的转述保留来源，检索排名不能把它升级为事实。词法轨道只载入当前可用（active 且有效期覆盖当前时间）的笔记，最多扫描本群的 `index_limit` 条，索引按群和 memory revision 缓存并复用；语义召回直接查询数据库向量索引，距离阈值由 `semantic_distance_threshold` 控制。召回范围、排序和降级由 [memory.Recall](../internal/memory/memory.go) 实现。
+各路先限制群、有效状态、`expires_at`、`valid_from`、`valid_to`，再使用 RRF 融合并去重。上下文按配置预算组装：明确偏好和群事实、成员资料、相关经历分别受 `preference_budget`、`member_budget`、`episode_budget` 限制；正数是该类别在所有轨道上的最终上限，优先、词法和语义结果共同消耗，`0` 表示关闭该类别，其余语义结果受 `top_k` 限制。固定排序为先明确偏好、再成员资料、现有话题经历、语义和词法事实；`salience` 和 `confidence` 参与排序，使用次数只做统计，不改变证据规则。未核实的转述保留来源，检索排名不能把它升级为事实。词法轨道只载入当前可用（active 且有效期覆盖当前时间）的笔记，最多扫描本群的 `index_limit` 条，索引按群和 memory revision 缓存并复用；语义召回直接查询数据库向量索引，距离阈值由 `semantic_distance_threshold` 控制。召回范围、排序和降级由 [memory.Recall](../internal/memory/memory.go) 实现。
 
 笔记修订时使旧向量失效，后台仅为同一内容版本提交新索引。遗忘保留必要的失效证据，阻止旧消息被换一个属性名重新抽取。查询和索引写入都检查源状态与版本。Embedding 模型标识变化后，旧投影不参与当前召回，并由后台重新生成。已确认回复的笔记按回复 attempt 幂等写入 `note_usage` 账本，并与 attempt confirmed、出站消息同事务提交；`use_count` 和 `last_used_at` 只是账本投影，重复提交不重复计数，未确认发送不记账。生命周期首期只做查询隔离：只有 `active` 进入热召回，`dormant`、`archived`、`forgotten` 只在精确协调或审计时读取；暂不按时间自动归档。状态接口提供 active 数量与占比、最大索引加载耗时等数据，等 active 超过 3000 条、索引加载超过 200ms 或 active 占比超过 80% 后再评估限量维护。后台状态查询还提供每群学习 lag、每次学习的状态与失败分类、抽取与协调耗时和 token、待建索引数、账本投影差异、召回命中率与空召回率、召回缓存命中、语义降级次数、重复身份率、active 身份索引是否存在和 forgotten 重建拦截数。
 

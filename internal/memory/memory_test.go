@@ -109,6 +109,46 @@ func TestZeroRecallBudgetDisablesCategory(t *testing.T) {
 	}
 }
 
+func TestRecallBudgetsAreFinalCaps(t *testing.T) {
+	ctx := context.Background()
+	makeStore := func(withProfiles bool) *replay.Store {
+		s := replay.NewStore()
+		notes := []memory.Note{}
+		for i := 0; i < 8; i++ {
+			notes = append(notes, memory.Note{ID: fmt.Sprintf("p%d", i), GroupID: 1, Subject: 0, Kind: "preference", Key: fmt.Sprintf("p%d", i), Text: "番茄偏好", State: "active", Updated: time.Now()})
+			if withProfiles {
+				notes = append(notes,
+					memory.Note{ID: fmt.Sprintf("m%d", i), GroupID: 1, Subject: 10, Kind: "member", Key: fmt.Sprintf("m%d", i), Text: "番茄成员", State: "active", Updated: time.Now()},
+					memory.Note{ID: fmt.Sprintf("e%d", i), GroupID: 1, Subject: 10, Kind: "episode", TopicID: "topic:1", Key: fmt.Sprintf("e%d", i), Text: "番茄经历", State: "active", Updated: time.Now()})
+			}
+		}
+		if err := s.SaveNotes(ctx, 1, notes, nil); err != nil {
+			t.Fatal(err)
+		}
+		return s
+	}
+	query := memory.Query{GroupID: 1, Events: []qq.Event{{ID: "eval", GroupID: 1, UserID: 10, Text: "番茄"}}, Text: "番茄", TopicIDs: []string{"topic:1"}}
+	counts := func(notes []memory.Note) map[string]int {
+		out := map[string]int{}
+		for _, n := range notes {
+			out[n.Kind]++
+		}
+		return out
+	}
+
+	onlyPreferences := memory.Service{Store: makeStore(false), TopK: 5, Budgets: memory.RecallBudgets{Preference: 1, Member: 8, Episode: 6}}
+	out, _, err := onlyPreferences.RecallCached(ctx, query, 0)
+	if err != nil || len(out) != 1 || counts(out)["preference"] != 1 {
+		t.Fatalf("preference cap = %+v err=%v", out, err)
+	}
+	mixed := memory.Service{Store: makeStore(true), TopK: 5, Budgets: memory.RecallBudgets{Preference: 1, Member: 1, Episode: 1}}
+	out, _, err = mixed.RecallCached(ctx, query, 0)
+	got := counts(out)
+	if err != nil || len(out) != 3 || got["preference"] != 1 || got["member"] != 1 || got["episode"] != 1 {
+		t.Fatalf("category caps = %+v err=%v", out, err)
+	}
+}
+
 func TestIndexAndRecallCachesReuseOneRevision(t *testing.T) {
 	ctx := context.Background()
 	base := replay.NewStore()

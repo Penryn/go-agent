@@ -421,30 +421,76 @@ func (s *Service) queryWithRevision(ctx context.Context, q Query, revision int64
 	selected := search.Fuse(max(1, s.TopK)+len(required), trace.Lexical, trace.Semantic, trace.Contextual)
 	out := append([]Note(nil), required...)
 	seen := map[string]bool{}
+	counts := map[string]int{}
 	for _, n := range out {
 		seen[n.ID] = true
+		if category := noteCategory(n); category != "" {
+			counts[category]++
+		}
 	}
+	categoryBudget := func(category string) int {
+		switch category {
+		case "preference":
+			return preferenceBudget
+		case "member":
+			return memberBudget
+		case "episode":
+			return episodeBudget
+		}
+		return -1
+	}
+	// Every track — required, prioritized, lexical and semantic — consumes the
+	// same category budget; the fused list cannot add beyond the caps.
+	add := func(n Note) bool {
+		if seen[n.ID] {
+			return false
+		}
+		category := noteCategory(n)
+		if category != "" && counts[category] >= categoryBudget(category) {
+			return false
+		}
+		out = append(out, n)
+		seen[n.ID] = true
+		if category != "" {
+			counts[category]++
+		}
+		return true
+	}
+	total := max(1, s.TopK) + len(required)
 	for _, prioritized := range [][]Note{profiles, episodes} {
 		for _, n := range prioritized {
-			if seen[n.ID] || len(out) >= max(1, s.TopK)+len(required) {
-				continue
+			if len(out) >= total {
+				break
 			}
-			out = append(out, n)
-			seen[n.ID] = true
+			add(n)
 		}
 	}
 	for _, id := range selected {
+		if len(out)-len(required) >= max(1, s.TopK) {
+			break
+		}
 		note, ok := byID[id]
-		if !ok || seen[id] || len(out)-len(required) >= max(1, s.TopK) {
+		if !ok {
 			continue
 		}
-		out = append(out, note)
-		seen[id] = true
+		add(note)
 	}
 	trace.Selected = ids(out)
 	trace.RecallHits = len(out)
 	trace.Millis = time.Since(start).Milliseconds()
 	return out, trace, nil
+}
+
+func noteCategory(n Note) string {
+	switch n.Kind {
+	case "preference", "group":
+		return "preference"
+	case "member":
+		return "member"
+	case "episode":
+		return "episode"
+	}
+	return ""
 }
 
 func validAt(n Note, now time.Time) bool {
@@ -532,12 +578,18 @@ func (s *Service) Apply(ctx context.Context, group int64, events []qq.Event, cha
 	// Only the notes this batch actually touches are loaded. Forgotten-source
 	// protection for the rest of the group is enforced by the save transaction.
 	ids := []string{}
+	identities := []Identity{}
+	seenIdentities := map[Identity]bool{}
 	for _, ch := range changes {
 		if ch.ID != "" {
 			ids = append(ids, ch.ID)
 			continue
 		}
-		ids = append(ids, noteID(group, ch.Subject, ch.Kind, ch.Key, ch.TopicID))
+		identity := changeIdentity(ch)
+		if !seenIdentities[identity] {
+			seenIdentities[identity] = true
+			identities = append(identities, identity)
+		}
 	}
 	byID := map[string]Note{}
 	if len(ids) > 0 {
@@ -547,6 +599,33 @@ func (s *Service) Apply(ctx context.Context, group int64, events []qq.Event, cha
 		}
 		for _, n := range existing {
 			byID[n.ID] = n
+		}
+	}
+	if len(identities) > 0 {
+		existing, err := s.Store.NotesByIdentity(ctx, group, identities)
+		if err != nil {
+			return err
+		}
+		best := map[Identity]Note{}
+		for _, n := range existing {
+			identity := NoteIdentity(n)
+			current, ok := best[identity]
+			if !ok || (current.State != "active" && n.State == "active") {
+				best[identity] = n
+			}
+			byID[n.ID] = n
+		}
+		// A cleaned legacy row keeps its original ID. Bind the normalized
+		// identity to that ID/version so an ID-less correction updates it
+		// instead of inserting a new row that violates the active index.
+		for i := range changes {
+			if changes[i].ID != "" {
+				continue
+			}
+			if note, ok := best[changeIdentity(changes[i])]; ok {
+				changes[i].ID = note.ID
+				changes[i].Version = note.Version
+			}
 		}
 	}
 	eventMap := map[string]qq.Event{}
@@ -894,21 +973,25 @@ func validateCandidate(c *Candidate, events map[string]qq.Event) error {
 	return nil
 }
 
-func candidateIdentity(c Candidate) Identity {
-	identity := Identity{Subject: c.Subject, Kind: c.Kind, Key: NormalizeKey(c.Key)}
-	if c.Kind == "episode" {
-		identity.TopicID = NormalizeTopicID(c.TopicID)
+func identityFor(subject int64, kind, key, topicID string) Identity {
+	identity := Identity{Subject: subject, Kind: kind, Key: NormalizeKey(key)}
+	if kind == "episode" {
+		identity.TopicID = NormalizeTopicID(topicID)
 	}
 	return identity
 }
 
+func changeIdentity(ch Change) Identity {
+	return identityFor(ch.Subject, ch.Kind, ch.Key, ch.TopicID)
+}
+
+func candidateIdentity(c Candidate) Identity {
+	return identityFor(c.Subject, c.Kind, c.Key, c.TopicID)
+}
+
 // NoteIdentity is the same stable owner key used by Apply's id derivation.
 func NoteIdentity(n Note) Identity {
-	identity := Identity{Subject: n.Subject, Kind: n.Kind, Key: NormalizeKey(n.Key)}
-	if n.Kind == "episode" {
-		identity.TopicID = NormalizeTopicID(n.TopicID)
-	}
-	return identity
+	return identityFor(n.Subject, n.Kind, n.Key, n.TopicID)
 }
 
 func candidateIdentities(candidates []Candidate) []Identity {
