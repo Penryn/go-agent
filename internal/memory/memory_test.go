@@ -3,6 +3,7 @@ package memory_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"slices"
 	"sync/atomic"
 	"testing"
@@ -92,15 +93,18 @@ func TestIndexAndRecallCachesReuseOneRevision(t *testing.T) {
 	}
 	store := &countingStore{Store: base}
 	service := newCachedService(store)
-	for _, query := range []string{"星际", "探索"} {
-		if _, _, err := service.RecallCached(ctx, memory.Query{GroupID: 1, Text: query}, 1, time.Minute); err != nil {
+	for i, query := range []string{"星际", "探索"} {
+		q := memory.Query{GroupID: 1, Text: query, Events: []qq.Event{{ID: fmt.Sprint("event-", i), UserID: 10}}}
+		if _, _, err := service.RecallCached(ctx, q, time.Minute); err != nil {
 			t.Fatal(err)
 		}
 	}
 	if store.notesCalls.Load() != 1 {
 		t.Fatalf("note index loads = %d, want 1", store.notesCalls.Load())
 	}
-	if _, _, err := service.RecallCached(ctx, memory.Query{GroupID: 1, Text: "星际"}, 1, time.Minute); err != nil {
+	// A new event with the same visible participants and topics must reuse the
+	// cached result even though the actor version has advanced.
+	if _, _, err := service.RecallCached(ctx, memory.Query{GroupID: 1, Text: "星际", Events: []qq.Event{{ID: "later-event", UserID: 10}}}, time.Minute); err != nil {
 		t.Fatal(err)
 	}
 	if store.notesCalls.Load() != 1 {
@@ -109,7 +113,7 @@ func TestIndexAndRecallCachesReuseOneRevision(t *testing.T) {
 	if err := base.SaveNotes(ctx, 1, []memory.Note{{ID: "n2", GroupID: 1, Kind: "episode", Key: "music", Text: "喜欢音乐", State: "active", Updated: time.Now()}}, nil); err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := service.RecallCached(ctx, memory.Query{GroupID: 1, Text: "星际"}, 1, time.Minute); err != nil {
+	if _, _, err := service.RecallCached(ctx, memory.Query{GroupID: 1, Text: "星际", Events: []qq.Event{{ID: "after-change", UserID: 10}}}, time.Minute); err != nil {
 		t.Fatal(err)
 	}
 	if store.notesCalls.Load() != 2 {
@@ -131,7 +135,7 @@ func TestValidityWindowAndTopicEpisodeRecall(t *testing.T) {
 		t.Fatal(err)
 	}
 	service := memory.Service{Store: s, TopK: 6}
-	out, _, err := service.RecallCached(ctx, memory.Query{GroupID: 1, Text: "无关话题", TopicIDs: []string{"topic:1:1"}}, 0, 0)
+	out, _, err := service.RecallCached(ctx, memory.Query{GroupID: 1, Text: "无关话题", TopicIDs: []string{"topic:1:1"}}, 0)
 	if err != nil {
 		t.Fatal(err)
 	}

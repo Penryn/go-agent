@@ -10,14 +10,31 @@ import (
 func TestHubIsolatesValuesAndUsesVersionedKeys(t *testing.T) {
 	h := NewHub(4)
 	original := map[string]any{"items": []string{"a"}}
-	h.Set(RecallKey(7, 2, 3, "v1", " Hello "), original, time.Minute)
+	h.Set(RecallKey(7, 3, "v1", " Hello ", "ctx"), original, time.Minute)
 	original["items"].([]string)[0] = "changed"
 	var got map[string]any
-	if !h.Get(RecallKey(7, 2, 3, "v1", "hello"), &got) || got["items"].([]any)[0] != "a" {
+	if !h.Get(RecallKey(7, 3, "v1", "hello", "ctx"), &got) || got["items"].([]any)[0] != "a" {
 		t.Fatalf("cached value was not isolated: %#v", got)
 	}
-	if h.Get(RecallKey(8, 2, 3, "v1", "hello"), &got) {
+	if h.Get(RecallKey(8, 3, "v1", "hello", "ctx"), &got) {
 		t.Fatal("cache key crossed group boundary")
+	}
+	if h.Get(RecallKey(7, 3, "v1", "hello", "other"), &got) {
+		t.Fatal("cache key crossed event context boundary")
+	}
+}
+
+func TestEventContextHashIsOrderAndDuplicateInsensitive(t *testing.T) {
+	left := EventContextHash([]int64{2, 1, 1}, []string{"topic:1:2", "topic:1:1", "topic:1:2"})
+	right := EventContextHash([]int64{1, 2}, []string{"topic:1:1", "topic:1:2"})
+	if left != right {
+		t.Fatalf("hash depends on order or duplicates: %s != %s", left, right)
+	}
+	if left == EventContextHash([]int64{1}, []string{"topic:1:1", "topic:1:2"}) {
+		t.Fatal("hash ignored the visible speakers")
+	}
+	if left == EventContextHash([]int64{1, 2}, []string{"topic:1:1"}) {
+		t.Fatal("hash ignored the visible topics")
 	}
 }
 

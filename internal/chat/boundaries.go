@@ -92,7 +92,8 @@ func (b runtimeContextBuilder) Build(ctx context.Context, admission ctxsnapshot.
 		}
 	}
 
-	key := r.contextCacheKey(ctx, admission.GroupID, admission.ActorVersion)
+	cooldownEpoch := r.cooldownEpoch()
+	key := r.contextCacheKey(ctx, admission, modelVersion, cooldownEpoch)
 	cached := false
 	embeddingDegraded := slices.Contains(resources.Trace.Degraded, "embedding")
 	if key != "" {
@@ -110,7 +111,7 @@ func (b runtimeContextBuilder) Build(ctx context.Context, admission ctxsnapshot.
 		}
 	}
 	if !cached {
-		resources = r.retrieveResources(ctx, admission, vector, modelVersion, resources)
+		resources = r.retrieveResources(ctx, admission, vector, modelVersion, cooldownEpoch, resources)
 		if key != "" && !slices.Contains(resources.Trace.Degraded, "memory") && !slices.Contains(resources.Trace.Degraded, "stickers") {
 			r.Cache.Set(key, contextCacheValue{Notes: resources.Notes, Assets: resources.Assets, Trace: resources.Trace}, r.Config.Cache.Context)
 		}
@@ -138,7 +139,7 @@ func (b runtimeContextBuilder) Build(ctx context.Context, admission ctxsnapshot.
 	}, nil
 }
 
-func (r *Runtime) retrieveResources(ctx context.Context, admission ctxsnapshot.AdmissionSnapshot, vector []float32, modelVersion string, resources turnResources) turnResources {
+func (r *Runtime) retrieveResources(ctx context.Context, admission ctxsnapshot.AdmissionSnapshot, vector []float32, modelVersion string, cooldownEpoch int64, resources turnResources) turnResources {
 	if r.Memory != nil {
 		notes, trace, err := r.Memory.RecallCached(ctx, memory.Query{
 			GroupID:      admission.GroupID,
@@ -147,7 +148,7 @@ func (r *Runtime) retrieveResources(ctx context.Context, admission ctxsnapshot.A
 			Vector:       vector,
 			ModelVersion: modelVersion,
 			TopicIDs:     visibleTopicIDs(admission.Conversation),
-		}, admission.ActorVersion, r.Config.Cache.Recall)
+		}, r.Config.Cache.Recall)
 		if err != nil {
 			resources.Trace.Degraded = append(resources.Trace.Degraded, "memory")
 		} else {
@@ -163,7 +164,7 @@ func (r *Runtime) retrieveResources(ctx context.Context, admission ctxsnapshot.A
 		}
 	}
 	if r.Memes != nil {
-		assets, err := r.Memes.CandidatesCached(ctx, admission.GroupID, admission.Query, vector, modelVersion, time.Now().Unix()/max(1, int64(r.Memes.Config.Cooldown.Seconds())), r.Config.Cache.Sticker)
+		assets, err := r.Memes.CandidatesCached(ctx, admission.GroupID, admission.Query, vector, modelVersion, cooldownEpoch, r.Config.Cache.Sticker)
 		if err != nil {
 			resources.Trace.Degraded = append(resources.Trace.Degraded, "stickers")
 		} else {
@@ -222,7 +223,7 @@ func (r *Runtime) fetchImages(ctx context.Context, batch []qq.Event) ([]string, 
 	return images, hit, failed
 }
 
-func (r *Runtime) contextCacheKey(ctx context.Context, groupID int64, actorVersion uint64) string {
+func (r *Runtime) contextCacheKey(ctx context.Context, admission ctxsnapshot.AdmissionSnapshot, modelVersion string, cooldownEpoch int64) string {
 	if r.Cache == nil || r.Config.Cache.Context <= 0 {
 		return ""
 	}
@@ -230,17 +231,38 @@ func (r *Runtime) contextCacheKey(ctx context.Context, groupID int64, actorVersi
 	if !ok {
 		return ""
 	}
-	memoryRevision, err := store.MemoryRevision(ctx, groupID)
+	memoryRevision, err := store.MemoryRevision(ctx, admission.GroupID)
 	if err != nil {
 		return ""
 	}
 	assetRevision := int64(0)
-	if assets, ok := r.Store.(meme.RevisionStore); ok {
-		if revision, err := assets.StickerRevision(ctx); err == nil {
-			assetRevision = revision
+	if r.Memes != nil {
+		assets, ok := r.Store.(meme.RevisionStore)
+		if !ok {
+			return ""
 		}
+		revision, err := assets.StickerRevision(ctx)
+		if err != nil {
+			return ""
+		}
+		assetRevision = revision
 	}
-	return cache.ContextKey(groupID, actorVersion, memoryRevision, r.topics.Revision(groupID), assetRevision)
+	return cache.ContextKey(admission.GroupID, memoryRevision, r.topics.Revision(admission.GroupID), assetRevision, cooldownEpoch, modelVersion, admission.Query, admissionContextHash(admission))
+}
+
+func (r *Runtime) cooldownEpoch() int64 {
+	if r.Memes == nil {
+		return 0
+	}
+	return time.Now().Unix() / max(1, int64(r.Memes.Config.Cooldown.Seconds()))
+}
+
+func admissionContextHash(admission ctxsnapshot.AdmissionSnapshot) string {
+	users := make([]int64, 0, len(admission.Batch))
+	for _, event := range admission.Batch {
+		users = append(users, event.UserID)
+	}
+	return cache.EventContextHash(users, visibleTopicIDs(admission.Conversation))
 }
 
 func visibleTopicIDs(contextView conversation.Context) []string {

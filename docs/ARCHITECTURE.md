@@ -119,7 +119,7 @@ flowchart LR
 
 ## 缓存与观测
 
-缓存使用有界 LRU，读取失败按 miss 处理，写入失败只影响收益。Embedding 按模型版本和规范化文本哈希缓存；笔记索引和 BM25 不可变索引按群与 memory revision 缓存；召回结果再叠加 Actor version、Embedding 模型版本和查询哈希；完整上下文按群、Actor version、memory revision、topic revision 和素材 revision 缓存；图片按 URL 和媒体处理版本缓存规范化数据 URL。所有 TTL 来自配置，服务和回放不写死默认值。
+缓存使用有界 LRU，读取失败按 miss 处理，写入失败只影响收益。Embedding 按模型版本和规范化文本哈希缓存；笔记索引和 BM25 不可变索引按群与 memory revision 缓存；召回结果再叠加本轮可见成员/话题哈希、Embedding 模型版本和查询哈希；完整上下文按群、memory revision、topic revision、素材 revision、冷却时间片、模型版本、查询哈希和可见成员/话题哈希缓存；图片按 URL 和媒体处理版本缓存规范化数据 URL。所有 TTL 来自配置，服务和回放不写死默认值；任何 revision 读取失败都直接绕过缓存。
 
 模型 Gateway 保留请求结构、Embedding 缓存和统一观测出口。每次聊天、视觉和 Embedding 请求输出 `operation`、`group_id`、`attempt_id`、`prompt_version`、`model_version`、`cache_hit`、`duration_ms`、输入输出 token 和 `error_class`，不记录消息正文、Embedding 内容、密钥或图片数据。回合记录同时保存各路检索标识、索引/召回/图片缓存命中、`stale_reason` 和 `policy_reason`。
 

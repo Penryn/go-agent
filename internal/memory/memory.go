@@ -211,9 +211,10 @@ func (s *Service) RecallWithEmbedding(ctx context.Context, group int64, events [
 	return s.query(ctx, Query{GroupID: group, Events: events, Text: query, Vector: vector, ModelVersion: version})
 }
 
-// RecallCached caches the fused result under the actual memory revision and
-// embedding model version. A non-positive TTL computes without retaining.
-func (s *Service) RecallCached(ctx context.Context, q Query, actorVersion uint64, ttl time.Duration) ([]Note, Trace, error) {
+// RecallCached caches the fused result under the actual memory revision,
+// embedding model version and the visible event context. A non-positive TTL
+// computes without retaining.
+func (s *Service) RecallCached(ctx context.Context, q Query, ttl time.Duration) ([]Note, Trace, error) {
 	if s.Cache == nil || ttl <= 0 {
 		return s.query(ctx, q)
 	}
@@ -221,7 +222,7 @@ func (s *Service) RecallCached(ctx context.Context, q Query, actorVersion uint64
 	if err != nil {
 		return s.query(ctx, q)
 	}
-	key := cache.RecallKey(q.GroupID, actorVersion, revision, q.ModelVersion, q.Text)
+	key := cache.RecallKey(q.GroupID, revision, q.ModelVersion, q.Text, recallContextHash(q))
 	var cached RecallResult
 	if s.Cache.Get(key, &cached) {
 		cached.Trace.RecallCacheHit = true
@@ -233,6 +234,14 @@ func (s *Service) RecallCached(ctx context.Context, q Query, actorVersion uint64
 	}
 	s.Cache.Set(key, RecallResult{Notes: notes, Trace: trace}, ttl)
 	return notes, trace, nil
+}
+
+func recallContextHash(q Query) string {
+	users := make([]int64, 0, len(q.Events))
+	for _, event := range q.Events {
+		users = append(users, event.UserID)
+	}
+	return cache.EventContextHash(users, q.TopicIDs)
 }
 
 func (s *Service) query(ctx context.Context, q Query) ([]Note, Trace, error) {

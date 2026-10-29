@@ -109,11 +109,9 @@ func (s *Service) CandidatesCached(ctx context.Context, group int64, query strin
 	if s.Cache == nil || ttl <= 0 {
 		return s.candidates(ctx, group, query, vector, version)
 	}
-	revision := int64(0)
-	if store, ok := s.Store.(RevisionStore); ok {
-		if current, err := store.StickerRevision(ctx); err == nil {
-			revision = current
-		}
+	revision, ok := assetRevision(ctx, s.Store)
+	if !ok {
+		return s.candidates(ctx, group, query, vector, version)
 	}
 	key := cache.StickerKey(group, revision, cooldownEpoch, version, query)
 	var assets []Asset
@@ -126,6 +124,21 @@ func (s *Service) CandidatesCached(ctx context.Context, group int64, query strin
 	}
 	s.Cache.Set(key, assets, ttl)
 	return assets, nil
+}
+
+// assetRevision reports the current asset revision. ok is false when the store
+// cannot provide one; in that case callers must bypass the cache rather than
+// reuse candidates that may predate a material change.
+func assetRevision(ctx context.Context, store any) (int64, bool) {
+	revisions, ok := store.(RevisionStore)
+	if !ok {
+		return 0, false
+	}
+	revision, err := revisions.StickerRevision(ctx)
+	if err != nil {
+		return 0, false
+	}
+	return revision, true
 }
 
 func (s *Service) candidates(ctx context.Context, group int64, query string, vector []float32, version string) ([]Asset, error) {

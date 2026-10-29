@@ -71,36 +71,47 @@ func (s *TopicSummarizer) Tick(ctx context.Context) error {
 func (s *TopicSummarizer) summarize(ctx context.Context, batch SummaryBatch, batchSize int) error {
 	ctx = model.Background(ctx)
 	type topicInput struct {
-		TopicID  string   `json:"topic_id"`
-		Revision int64    `json:"revision"`
-		Events   []string `json:"events"`
+		TopicID   string   `json:"topic_id"`
+		Revision  int64    `json:"revision"`
+		Events    []string `json:"events"`
+		Evidence  []string `json:"-"`
+		SourceSeq int64    `json:"-"`
 	}
-	inputs := []topicInput{}
-	index := map[string]topicInput{}
-	evidence := map[string]map[string]bool{}
-	throughSeq := batch.AfterSeq
+	inputs := []*topicInput{}
+	index := map[string]*topicInput{}
+	omitted := map[string]int64{}
+	maxSeq := batch.AfterSeq
 	for _, event := range batch.Events {
-		throughSeq = max(throughSeq, event.Seq)
+		maxSeq = max(maxSeq, event.Seq)
 		if event.Outbound || strings.TrimSpace(event.Text) == "" {
 			continue
 		}
 		in, ok := index[event.TopicID]
 		if !ok {
-			in = topicInput{TopicID: event.TopicID, Revision: event.Revision}
-			evidence[event.TopicID] = map[string]bool{}
+			in = &topicInput{TopicID: event.TopicID, Revision: event.Revision}
+			index[event.TopicID] = in
+			inputs = append(inputs, in)
+		}
+		// Keep the oldest window per topic and remember the first skipped
+		// event. The cursor stops before it so skipped content is summarized
+		// by a later tick instead of being silently lost.
+		if len(in.Events) >= batchSize {
+			if first, seen := omitted[event.TopicID]; !seen || event.Seq < first {
+				omitted[event.TopicID] = event.Seq
+			}
+			continue
 		}
 		in.Events = append(in.Events, event.EventID+": "+event.Text)
-		if len(in.Events) > batchSize {
-			in.Events = in.Events[len(in.Events)-batchSize:]
-		}
-		index[event.TopicID] = in
-		evidence[event.TopicID][event.EventID] = true
+		in.Evidence = append(in.Evidence, event.EventID)
+		in.SourceSeq = max(in.SourceSeq, event.Seq)
 	}
-	for _, in := range index {
-		inputs = append(inputs, in)
+	cursor := maxSeq
+	for _, seq := range omitted {
+		cursor = min(cursor, seq-1)
 	}
+	cursor = max(cursor, batch.AfterSeq)
 	if len(inputs) == 0 {
-		return s.Store.SaveTopicSummaries(ctx, batch.GroupID, nil, throughSeq)
+		return s.Store.SaveTopicSummaries(ctx, batch.GroupID, nil, cursor)
 	}
 	result, err := s.Model.Generate(ctx, SummaryPrompt, map[string]any{"topics": inputs}, nil)
 	if err != nil {
@@ -123,24 +134,22 @@ func (s *TopicSummarizer) summarize(ctx context.Context, batch SummaryBatch, bat
 		if !ok || strings.TrimSpace(item.Summary) == "" || utf8.RuneCountInString(item.Summary) > 400 {
 			continue
 		}
+		allowed := make(map[string]bool, len(in.Evidence))
+		for _, id := range in.Evidence {
+			allowed[id] = true
+		}
 		ids := []string{}
 		for _, id := range item.Evidence {
-			if evidence[item.TopicID][id] {
+			if allowed[id] {
 				ids = append(ids, id)
 			}
 		}
 		if len(ids) == 0 {
 			continue
 		}
-		sourceSeq := int64(0)
-		for _, event := range batch.Events {
-			if event.TopicID == item.TopicID {
-				sourceSeq = max(sourceSeq, event.Seq)
-			}
-		}
-		summaries = append(summaries, TopicSummary{GroupID: batch.GroupID, TopicID: item.TopicID, Revision: in.Revision, Summary: strings.TrimSpace(item.Summary), EvidenceIDs: ids, SourceSeq: sourceSeq, UpdatedAt: now})
+		summaries = append(summaries, TopicSummary{GroupID: batch.GroupID, TopicID: item.TopicID, Revision: in.Revision, Summary: strings.TrimSpace(item.Summary), EvidenceIDs: ids, SourceSeq: in.SourceSeq, UpdatedAt: now})
 	}
-	if err := s.Store.SaveTopicSummaries(ctx, batch.GroupID, summaries, throughSeq); err != nil {
+	if err := s.Store.SaveTopicSummaries(ctx, batch.GroupID, summaries, cursor); err != nil {
 		return err
 	}
 	if s.Apply != nil {
