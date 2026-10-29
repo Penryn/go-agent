@@ -2,6 +2,7 @@ package model
 
 import (
 	"context"
+	"errors"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -54,6 +55,24 @@ func TestGatewayCachesEmbeddingAndObservesRequests(t *testing.T) {
 	if observed.Load() != 2 {
 		t.Fatalf("missing observations: %d", observed.Load())
 	}
+}
+
+func TestGatewayObservationsCarryIdentityAndErrorClass(t *testing.T) {
+	g := Gateway{Generator: failingGenerator{}, Embedder: gatewayEmbedder{}}
+	var got Observation
+	g.Observe = func(o Observation) { got = o }
+	if _, err := g.GenerateRequest(context.Background(), GenerateRequest{PromptVersion: "chat-v1", GroupID: 7, AttemptID: "turn:7:1", System: "s"}); err == nil {
+		t.Fatal("expected the generator failure")
+	}
+	if got.Operation != "generate" || got.GroupID != 7 || got.AttemptID != "turn:7:1" || got.PromptVersion != "chat-v1" || got.ErrorClass != "provider" {
+		t.Fatalf("observation lost identity or error class: %+v", got)
+	}
+}
+
+type failingGenerator struct{}
+
+func (failingGenerator) Generate(context.Context, string, any, []string) (Result, error) {
+	return Result{}, errors.New("provider rejected")
 }
 
 type countingEmbedderAdapter struct {

@@ -29,11 +29,12 @@ type Store struct {
 	vectors        map[string]projection
 	cursors        map[int64]int64
 	topics         map[int64][]conversation.TopicView
+	topicEvents    map[int64][]conversation.TopicEventView
 	summaryCursors map[int64]int64
 }
 
 func NewStore() *Store {
-	return &Store{attempts: map[string]chat.Attempt{}, notes: map[string]memory.Note{}, vectors: map[string]projection{}, cursors: map[int64]int64{}, topics: map[int64][]conversation.TopicView{}, summaryCursors: map[int64]int64{}}
+	return &Store{attempts: map[string]chat.Attempt{}, notes: map[string]memory.Note{}, vectors: map[string]projection{}, cursors: map[int64]int64{}, topics: map[int64][]conversation.TopicView{}, topicEvents: map[int64][]conversation.TopicEventView{}, summaryCursors: map[int64]int64{}}
 }
 func (s *Store) Ingest(_ context.Context, e *qq.Event) (bool, error) {
 	s.mu.Lock()
@@ -164,19 +165,30 @@ func (s *Store) FlushNoteUsage(_ context.Context, usage map[string]int64, at tim
 	}
 	return nil
 }
-func (s *Store) SaveTopics(_ context.Context, g int64, topics []conversation.TopicView, summaryAfterSeq int64) error {
+func (s *Store) SaveTopics(_ context.Context, g int64, topics []conversation.TopicView, events []conversation.TopicEventView) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.topics[g] = append([]conversation.TopicView(nil), topics...)
-	if summaryAfterSeq > s.summaryCursors[g] {
-		s.summaryCursors[g] = summaryAfterSeq
-	}
+	s.topicEvents[g] = append([]conversation.TopicEventView(nil), events...)
 	return nil
 }
 func (s *Store) LoadTopics(_ context.Context, g int64) ([]conversation.TopicView, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return append([]conversation.TopicView(nil), s.topics[g]...), nil
+}
+func (s *Store) LoadTopicEvents(_ context.Context, g int64, limit int) ([]conversation.TopicEventView, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	events := s.topicEvents[g]
+	if len(events) > limit {
+		events = events[len(events)-limit:]
+	}
+	out := append([]conversation.TopicEventView(nil), events...)
+	for i := range out {
+		out[i].TopicIDs = append([]string(nil), out[i].TopicIDs...)
+	}
+	return out, nil
 }
 func (s *Store) SummaryProgress(_ context.Context, g int64) (int64, error) {
 	s.mu.Lock()
@@ -193,7 +205,7 @@ func (s *Store) VectorNotes(_ context.Context, g int64, v []float32, version str
 	out := []scored{}
 	for id, p := range s.vectors {
 		n := s.notes[id]
-		if n.GroupID == g && n.State == "active" && (n.Expires == nil || n.Expires.After(time.Now())) && p.Version == n.Version && p.Model == version {
+		if n.GroupID == g && n.State == "active" && (n.Expires == nil || n.Expires.After(time.Now())) && (n.ValidFrom == nil || !n.ValidFrom.After(time.Now())) && (n.ValidTo == nil || n.ValidTo.After(time.Now())) && p.Version == n.Version && p.Model == version {
 			if score := cosine(v, p.Vector); score > 0.4 {
 				out = append(out, scored{n, score})
 			}

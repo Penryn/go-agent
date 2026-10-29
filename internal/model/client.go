@@ -9,7 +9,6 @@ import (
 	"net/http"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	arkemb "github.com/cloudwego/eino-ext/components/embedding/ark"
@@ -60,58 +59,73 @@ func Background(ctx context.Context) context.Context {
 	return context.WithValue(ctx, backgroundKey{}, true)
 }
 
+// requestKind selects the bottom-layer capacity pool. Background work can
+// never occupy interactive chat, vision or embedding capacity.
+type requestKind uint8
+
+const (
+	requestChat requestKind = iota
+	requestVision
+	requestEmbedding
+	requestBackground
+)
+
 type Client struct {
-	cfg          Config
-	mu           sync.Mutex
-	main, vision cm.BaseChatModel
-	embedding    embedding.Embedder
-	slots        chan struct{}
-	background   chan struct{}
-	waiting      atomic.Int64
+	cfg                             Config
+	mu                              sync.Mutex
+	main, vision                    cm.BaseChatModel
+	embedding                       embedding.Embedder
+	chatSlots, visionSlots          chan struct{}
+	embeddingSlots, backgroundSlots chan struct{}
 }
 
-func New(cfg Config, concurrency int) *Client {
-	return &Client{cfg: cfg, slots: make(chan struct{}, max(1, concurrency)), background: make(chan struct{}, 1)}
+func New(cfg Config, chat, vision, embeddingSlots, background int) *Client {
+	return &Client{
+		cfg:             cfg,
+		chatSlots:       make(chan struct{}, max(1, chat)),
+		visionSlots:     make(chan struct{}, max(1, vision)),
+		embeddingSlots:  make(chan struct{}, max(1, embeddingSlots)),
+		backgroundSlots: make(chan struct{}, max(1, background)),
+	}
 }
-func (c *Client) acquire(ctx context.Context) (func(), error) {
-	bg, _ := ctx.Value(backgroundKey{}).(bool)
-	if bg {
-		select {
-		case c.background <- struct{}{}:
-		case <-ctx.Done():
-			return nil, ctx.Err()
-		}
-		for c.waiting.Load() > 0 {
-			timer := time.NewTimer(10 * time.Millisecond)
-			select {
-			case <-ctx.Done():
-				timer.Stop()
-				<-c.background
-				return nil, ctx.Err()
-			case <-timer.C:
-			}
-		}
-	} else {
-		c.waiting.Add(1)
-		defer c.waiting.Add(-1)
+
+func (c *Client) acquire(ctx context.Context, kind requestKind) (func(), error) {
+	slots := c.chatSlots
+	switch kind {
+	case requestVision:
+		slots = c.visionSlots
+	case requestEmbedding:
+		slots = c.embeddingSlots
+	case requestBackground:
+		slots = c.backgroundSlots
 	}
 	select {
-	case c.slots <- struct{}{}:
-		return func() {
-			<-c.slots
-			if bg {
-				<-c.background
-			}
-		}, nil
+	case slots <- struct{}{}:
+		return func() { <-slots }, nil
 	case <-ctx.Done():
-		if bg {
-			<-c.background
-		}
 		return nil, ctx.Err()
 	}
 }
+
+func (c *Client) generateKind(ctx context.Context, images []string) requestKind {
+	if _, ok := ctx.Value(backgroundKey{}).(bool); ok {
+		return requestBackground
+	}
+	if len(images) > 0 && c.cfg.Vision.Model != "" {
+		return requestVision
+	}
+	return requestChat
+}
+
+func (c *Client) embedKind(ctx context.Context) requestKind {
+	if _, ok := ctx.Value(backgroundKey{}).(bool); ok {
+		return requestBackground
+	}
+	return requestEmbedding
+}
+
 func (c *Client) Generate(ctx context.Context, system string, input any, images []string) (Result, error) {
-	release, err := c.acquire(ctx)
+	release, err := c.acquire(ctx, c.generateKind(ctx, images))
 	if err != nil {
 		return Result{}, err
 	}
@@ -189,7 +203,7 @@ func (c *Client) Embed(ctx context.Context, text string) ([]float32, error) {
 	if cfg.APIKey == "" || cfg.Model == "" {
 		return nil, ErrUnavailable
 	}
-	release, err := c.acquire(ctx)
+	release, err := c.acquire(ctx, c.embedKind(ctx))
 	if err != nil {
 		return nil, err
 	}

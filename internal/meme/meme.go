@@ -56,14 +56,20 @@ type Config struct {
 	Cooldown      time.Duration `yaml:"cooldown"`
 	TopK          int           `yaml:"top_k"`
 }
+
+// RevisionStore reports the global asset revision. Any staging, description,
+// disable or eviction bumps it so recall keys cannot outlive asset state.
+type RevisionStore interface {
+	StickerRevision(context.Context) (int64, error)
+}
+
 type Service struct {
-	Store         Store
-	Model         model.Generator
-	Embedding     model.Embedder
-	Config        Config
-	HTTP          *http.Client
-	Cache         cache.CacheHub
-	AssetRevision int64
+	Store     Store
+	Model     model.Generator
+	Embedding model.Embedder
+	Config    Config
+	HTTP      *http.Client
+	Cache     cache.CacheHub
 }
 
 func (s *Service) Observe(ctx context.Context, e qq.Event) error {
@@ -100,20 +106,23 @@ func (s *Service) CandidatesWithEmbedding(ctx context.Context, group int64, quer
 }
 
 func (s *Service) CandidatesCached(ctx context.Context, group int64, query string, vector []float32, version string, cooldownEpoch int64, ttl time.Duration) ([]Asset, error) {
-	if s.Cache == nil {
+	if s.Cache == nil || ttl <= 0 {
 		return s.candidates(ctx, group, query, vector, version)
 	}
-	key := cache.StickerKey(group, s.AssetRevision, cooldownEpoch, query)
+	revision := int64(0)
+	if store, ok := s.Store.(RevisionStore); ok {
+		if current, err := store.StickerRevision(ctx); err == nil {
+			revision = current
+		}
+	}
+	key := cache.StickerKey(group, revision, cooldownEpoch, version, query)
 	var assets []Asset
 	if s.Cache.Get(key, &assets) {
-		return append([]Asset(nil), assets...), nil
+		return assets, nil
 	}
 	assets, err := s.candidates(ctx, group, query, vector, version)
 	if err != nil {
 		return nil, err
-	}
-	if ttl <= 0 {
-		ttl = 20 * time.Second
 	}
 	s.Cache.Set(key, assets, ttl)
 	return assets, nil
@@ -201,7 +210,7 @@ func (s *Service) Tick(ctx context.Context) error {
 			return err
 		}
 		for _, a := range pending {
-			v, err := s.Embedding.Embed(ctx, a.Description+" "+strings.Join(a.Tags, " "))
+			v, err := s.embed(ctx, a)
 			if err != nil {
 				return err
 			}
@@ -212,6 +221,14 @@ func (s *Service) Tick(ctx context.Context) error {
 	}
 
 	return nil
+}
+
+func (s *Service) embed(ctx context.Context, a Asset) ([]float32, error) {
+	text := a.Description + " " + strings.Join(a.Tags, " ")
+	if gateway, ok := s.Embedding.(model.ModelGateway); ok {
+		return gateway.EmbedRequest(ctx, model.EmbedRequest{Text: text, ModelVersion: s.Embedding.EmbeddingVersion(), Priority: model.PriorityBackground, GroupID: a.SourceGroup, AttemptID: "sticker-index:" + a.ID})
+	}
+	return s.Embedding.Embed(ctx, text)
 }
 func (s *Service) collect(ctx context.Context, a Asset) error {
 	var b []byte
@@ -275,7 +292,13 @@ func (s *Service) collect(ctx context.Context, a Asset) error {
 	if s.Model == nil {
 		return model.ErrUnavailable
 	}
-	result, err := s.Model.Generate(ctx, CollectPrompt, map[string]any{"platform_sticker": a.Sticker}, []string{data})
+	input := map[string]any{"platform_sticker": a.Sticker}
+	var result model.Result
+	if gateway, ok := s.Model.(model.ModelGateway); ok {
+		result, err = gateway.GenerateRequest(ctx, model.GenerateRequest{PromptVersion: "sticker-collect-v1", System: CollectPrompt, Input: input, Images: []string{data}, Priority: model.PriorityBackground, GroupID: a.SourceGroup, AttemptID: "sticker:" + a.ID})
+	} else {
+		result, err = s.Model.Generate(ctx, CollectPrompt, input, []string{data})
+	}
 	if err != nil {
 		return err
 	}

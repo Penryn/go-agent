@@ -12,10 +12,12 @@ import (
 	"github.com/phlin/go-agent/internal/cache"
 	"github.com/phlin/go-agent/internal/chat"
 	"github.com/phlin/go-agent/internal/config"
+	"github.com/phlin/go-agent/internal/conversation"
 	"github.com/phlin/go-agent/internal/meme"
 	"github.com/phlin/go-agent/internal/memory"
 	"github.com/phlin/go-agent/internal/model"
 	"github.com/phlin/go-agent/internal/qq"
+	"github.com/phlin/go-agent/internal/search/bm25"
 	"github.com/phlin/go-agent/internal/store"
 )
 
@@ -25,6 +27,7 @@ type App struct {
 	runtime  *chat.Runtime
 	memories *memory.Service
 	memes    *meme.Service
+	topics   *conversation.TopicSummarizer
 	qq       *qq.Client
 	server   *http.Server
 	ctx      context.Context
@@ -48,10 +51,34 @@ func New(ctx context.Context, cfg config.Config) (*App, error) {
 	if err := os.MkdirAll(cfg.Meme.Path, 0700); err != nil {
 		return fail(err)
 	}
-	models := model.New(cfg.Models, cfg.ModelConcurrency.ChatSlots())
+	chatSlots, visionSlots, embeddingSlots, backgroundSlots := cfg.ModelConcurrency.Budgets()
+	models := model.New(cfg.Models, chatSlots, visionSlots, embeddingSlots, backgroundSlots)
 	hub := cache.NewHub(cfg.Cache.MaxItems)
 	gateway := model.NewGateway(models, models, hub, cfg.Cache.EmbeddingTTL, cfg.ModelConcurrency.Chat, cfg.ModelConcurrency.Vision, cfg.ModelConcurrency.Embedding, cfg.ModelConcurrency.Background)
-	a.memories = &memory.Service{Store: db, Model: gateway, Embedding: gateway, TopK: cfg.Memory.TopK, IndexLimit: cfg.Memory.IndexLimit, Cache: hub}
+	gateway.ModelVersion = func(images []string) string {
+		if len(images) > 0 && cfg.Models.Vision.Model != "" {
+			return cfg.Models.Vision.Model
+		}
+		return cfg.Models.Main.Model
+	}
+	gateway.Observe = func(o model.Observation) {
+		attrs := []any{
+			"operation", o.Operation,
+			"group_id", o.GroupID,
+			"attempt_id", o.AttemptID,
+			"prompt_version", o.PromptVersion,
+			"model_version", o.ModelVersion,
+			"cache_hit", o.CacheHit,
+			"duration_ms", o.Duration.Milliseconds(),
+			"input_tokens", o.Usage.Input,
+			"output_tokens", o.Usage.Output,
+		}
+		if o.ErrorClass != "" {
+			attrs = append(attrs, "error_class", o.ErrorClass)
+		}
+		slog.Info("model request", attrs...)
+	}
+	a.memories = &memory.Service{Store: db, Model: gateway, Embedding: gateway, TopK: cfg.Memory.TopK, IndexLimit: cfg.Memory.IndexLimit, Cache: hub, IndexTTL: cfg.Cache.IndexTTL, IndexCache: cache.New(cfg.Cache.MaxItems, func(index *bm25.Index) *bm25.Index { return index })}
 	a.memes = &meme.Service{Store: db, Model: gateway, Embedding: gateway, Config: cfg.Meme, HTTP: qq.MediaClient(), Cache: hub}
 	a.qq = &qq.Client{URL: cfg.QQ.OutboundURL, Token: cfg.QQ.OutboundToken, WSURL: cfg.QQ.EventWSURL, WSToken: cfg.QQ.EventWSToken}
 	var sender chat.Sender
@@ -61,7 +88,10 @@ func New(ctx context.Context, cfg config.Config) (*App, error) {
 		}
 		sender = ownedSender{a.qq, db}
 	}
-	a.runtime = chat.New(child, &chat.Runtime{Store: db, Model: gateway, Embedding: gateway, Cache: hub, Memory: a.memories, Memes: a.memes, Sender: sender, Persona: cfg.Persona, Config: cfg.Chat, SelfID: cfg.QQ.SelfID, Groups: cfg.QQ.GroupWhitelist})
+	chatConfig := cfg.Chat
+	chatConfig.Cache = chat.CacheTTL{Recall: cfg.Cache.RecallTTL, Context: cfg.Cache.ContextTTL, Sticker: cfg.Cache.StickerTTL, Image: cfg.Cache.ImageTTL}
+	a.runtime = chat.New(child, &chat.Runtime{Store: db, Model: gateway, Embedding: gateway, Cache: hub, Memory: a.memories, Memes: a.memes, Sender: sender, Persona: cfg.Persona, Config: chatConfig, SelfID: cfg.QQ.SelfID, Groups: cfg.QQ.GroupWhitelist})
+	a.topics = &conversation.TopicSummarizer{Store: db, Model: gateway, Batch: cfg.Memory.SummaryBatch, Apply: a.runtime.ApplyTopicSummary}
 	a.server = &http.Server{Addr: cfg.Server.HTTPListen, Handler: a.routes(), ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 10 * time.Second, WriteTimeout: 15 * time.Second, IdleTimeout: 60 * time.Second}
 	return a, nil
 }
@@ -99,6 +129,7 @@ func (a *App) Run(ctx context.Context) error {
 		}()
 	}
 	runBackground(a.ctx, &a.wg, a.cfg.Memory.Interval, a.memories.Tick)
+	runBackground(a.ctx, &a.wg, a.cfg.Memory.SummaryInterval, a.topics.Tick)
 	runBackground(a.ctx, &a.wg, a.cfg.Memory.UsageFlushInterval, a.memories.FlushUsage)
 	runBackground(a.ctx, &a.wg, 3*time.Second, a.memes.Tick)
 	slog.Info("QQ group friend started", "listen", a.cfg.Server.HTTPListen, "qq_enabled", a.cfg.QQ.Enabled, "global_sticker_pool", true)

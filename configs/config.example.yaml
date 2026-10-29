@@ -8,7 +8,11 @@ server:
 storage:
   # 新运行时使用独立 groupfriend schema，不覆盖旧表。
   database_url: postgres://qqbot:qqbotpass@127.0.0.1:5432/qqbot?sslmode=disable
-model_concurrency: 2
+model_concurrency:
+  chat: 2
+  vision: 1
+  embedding: 2
+  background: 1
 models:
   main:
     provider: ark
@@ -53,6 +57,18 @@ chat:
 memory:
   top_k: 6
   interval: 20s
+  summary_batch: 8
+  summary_interval: 30s
+  usage_flush_interval: 30s
+cache:
+  max_items: 10000
+  embedding_ttl: 30m
+  index_ttl: 10m
+  recall_ttl: 20s
+  topic_ttl: 10s
+  sticker_ttl: 20s
+  image_ttl: 10m
+  context_ttl: 10s
 meme:
   auto_collect: true
   path: ./memes

@@ -9,135 +9,14 @@ import (
 	"strings"
 	"time"
 
+	ctxsnapshot "github.com/phlin/go-agent/internal/context"
 	"github.com/phlin/go-agent/internal/delivery"
-	"github.com/phlin/go-agent/internal/meme"
 	"github.com/phlin/go-agent/internal/memory"
 	"github.com/phlin/go-agent/internal/model"
 	"github.com/phlin/go-agent/internal/qq"
 )
 
-// turnContext contains the immutable conversation material for one model turn.
-// It is materialized once so retrieval, generation, validation, and delivery
-// all observe the same batch, history, topics, and query text.
-type turnContext struct {
-	batch        []qq.Event
-	history      []qq.Event
-	visible      []qq.Event
-	topics       topicObservation
-	conversation ConversationContext
-	query        string
-}
-
-type turnResources struct {
-	notes  []memory.Note
-	assets []meme.Asset
-	images []string
-}
-
-func (r *Runtime) prepareTurn(ctx context.Context, groupID int64, source []qq.Event) (turnContext, error) {
-	batch := make([]qq.Event, 0, len(source))
-	for _, event := range source {
-		if !event.Recalled {
-			batch = append(batch, event)
-		}
-	}
-	if len(batch) == 0 {
-		return turnContext{batch: batch}, nil
-	}
-
-	history, err := r.Store.Recent(ctx, groupID, r.Config.History)
-	if err != nil {
-		return turnContext{}, err
-	}
-	history = priorConversation(history, batch)
-	// A bounded chronological tail keeps author and quotation identity intact.
-	runes := 0
-	for i := len(history) - 1; i >= 0; i-- {
-		runes += len([]rune(history[i].Text))
-		if runes > r.Config.ContextRunes {
-			history = history[i+1:]
-			break
-		}
-	}
-
-	topics := r.topics.observe(groupID, history, batch, r.Config.ActiveWindow)
-	visible := combineEvents(history, batch)
-	return turnContext{
-		batch:        batch,
-		history:      history,
-		visible:      visible,
-		topics:       topics,
-		conversation: buildConversationContextFromVisible(batch, history, visible, topics),
-		query:        queryText(batch),
-	}, nil
-}
-
-func (r *Runtime) retrieveTurn(ctx context.Context, groupID int64, turn turnContext, actorVersion uint64, attempt *Attempt) turnResources {
-	resources := turnResources{notes: []memory.Note{}, assets: []meme.Asset{}, images: []string{}}
-	var queryEmbedding []float32
-	embeddingVersion := ""
-	if r.Embedding != nil && strings.TrimSpace(turn.query) != "" {
-		call, cancel := context.WithTimeout(ctx, 3*time.Second)
-		var err error
-		if gateway, ok := r.Embedding.(model.ModelGateway); ok {
-			queryEmbedding, err = gateway.EmbedRequest(call, model.EmbedRequest{Text: turn.query, ModelVersion: r.Embedding.EmbeddingVersion(), Priority: model.PriorityInteractive, GroupID: groupID, AttemptID: attempt.ID})
-		} else {
-			queryEmbedding, err = r.Embedding.Embed(call, turn.query)
-		}
-		cancel()
-		if err != nil {
-			attempt.Retrieval.Degraded = append(attempt.Retrieval.Degraded, "embedding")
-		} else {
-			embeddingVersion = r.Embedding.EmbeddingVersion()
-		}
-	}
-	if r.Memory != nil {
-		var err error
-		if r.Memory.Cache != nil {
-			resources.notes, attempt.Retrieval, err = r.Memory.RecallCached(ctx, groupID, actorVersion, 0, turn.batch, turn.query, queryEmbedding, embeddingVersion, 20*time.Second)
-		} else {
-			resources.notes, attempt.Retrieval, err = r.Memory.RecallWithEmbedding(ctx, groupID, turn.batch, turn.query, queryEmbedding, embeddingVersion)
-		}
-		if err != nil {
-			attempt.Retrieval.Degraded = append(attempt.Retrieval.Degraded, "memory")
-		} else {
-			r.Memory.RecordUsage(resources.notes)
-		}
-	}
-	if r.Memes != nil {
-		var err error
-		if r.Memes.Cache != nil {
-			resources.assets, err = r.Memes.CandidatesCached(ctx, groupID, turn.query, queryEmbedding, embeddingVersion, time.Now().Unix()/max(1, int64(r.Memes.Config.Cooldown.Seconds())), 20*time.Second)
-		} else {
-			resources.assets, err = r.Memes.CandidatesWithEmbedding(ctx, groupID, turn.query, queryEmbedding, embeddingVersion)
-		}
-		if err != nil {
-			attempt.Retrieval.Degraded = append(attempt.Retrieval.Degraded, "stickers")
-		}
-	}
-	for _, event := range turn.batch {
-		if len(resources.images) >= 2 {
-			break
-		}
-		for _, image := range event.Images {
-			if len(resources.images) >= 2 {
-				break
-			}
-			call, cancel := context.WithTimeout(ctx, 3*time.Second)
-			body, mime, fetchErr := qq.FetchImage(call, nil, image.URL, 8<<20)
-			cancel()
-			if fetchErr == nil {
-				data, err := qq.ImageData(body, mime)
-				if err == nil {
-					resources.images = append(resources.images, data)
-				}
-			}
-		}
-	}
-	return resources
-}
-
-func (r *Runtime) generateTurn(ctx context.Context, attempt Attempt, turn turnContext, resources turnResources) Attempt {
+func (r *Runtime) generateTurn(ctx context.Context, attempt Attempt, snapshot ctxsnapshot.ContextSnapshot) Attempt {
 	if r.Model == nil {
 		attempt.State = "silent"
 		attempt.Reply.Reason = "model_unavailable"
@@ -146,19 +25,19 @@ func (r *Runtime) generateTurn(ctx context.Context, attempt Attempt, turn turnCo
 	input := map[string]any{
 		"persona":              r.Persona,
 		"now":                  time.Now().Format(time.RFC3339),
-		"history":              turn.history,
-		"batch":                turn.batch,
-		"conversation_context": turn.conversation,
-		"notes":                resources.notes,
-		"sticker_candidates":   resources.assets,
-		"loaded_image_count":   len(resources.images),
+		"history":              snapshot.History,
+		"batch":                snapshot.Batch,
+		"conversation_context": snapshot.Conversation,
+		"notes":                snapshot.Notes,
+		"sticker_candidates":   snapshot.StickerAssets,
+		"loaded_image_count":   len(snapshot.Images),
 	}
 	var result model.Result
 	var err error
 	if gateway, ok := r.Model.(model.ModelGateway); ok {
-		result, err = gateway.GenerateRequest(ctx, model.GenerateRequest{PromptVersion: "chat-v1", System: Prompt, Input: input, Images: resources.images, Priority: model.PriorityInteractive, GroupID: attempt.GroupID, AttemptID: attempt.ID})
+		result, err = gateway.GenerateRequest(ctx, model.GenerateRequest{PromptVersion: "chat-v1", System: Prompt, Input: input, Images: snapshot.Images, Priority: model.PriorityInteractive, GroupID: attempt.GroupID, AttemptID: attempt.ID})
 	} else {
-		result, err = r.Model.Generate(ctx, Prompt, input, resources.images)
+		result, err = r.Model.Generate(ctx, Prompt, input, snapshot.Images)
 	}
 	if err != nil {
 		attempt.State = "failed"
@@ -172,7 +51,8 @@ func (r *Runtime) generateTurn(ctx context.Context, attempt Attempt, turn turnCo
 		return attempt
 	}
 	normalizeReply(&attempt.Reply)
-	if err := validate(attempt.Reply, turn.visible, resources.assets, turn.topics); err != nil {
+	visible := combineEvents(snapshot.History, snapshot.Batch)
+	if err := validate(attempt.Reply, visible, snapshot.StickerAssets, observationFromSnapshot(snapshot)); err != nil {
 		attempt.State = "failed"
 		attempt.Error = err.Error()
 		return attempt
@@ -180,14 +60,18 @@ func (r *Runtime) generateTurn(ctx context.Context, attempt Attempt, turn turnCo
 	return attempt
 }
 
-func (r *Runtime) applyAndDeliver(parent, ctx context.Context, groupID int64, attempt Attempt, turn turnContext, resources turnResources, stale func() bool) Attempt {
+func (r *Runtime) applyAndDeliver(parent, ctx context.Context, groupID int64, attempt Attempt, snapshot ctxsnapshot.ContextSnapshot, stale func() bool) Attempt {
 	if stale() || ctx.Err() != nil {
 		attempt.State = "stale"
+		attempt.Retrieval.StaleReason = "new_interaction"
+		if ctx.Err() != nil {
+			attempt.Retrieval.StaleReason = "cancelled"
+		}
 		return attempt
 	}
 	if len(attempt.Reply.Memory) > 0 {
 		explicit := false
-		for _, event := range turn.batch {
+		for _, event := range snapshot.Batch {
 			explicit = explicit || memory.Explicit(event.Text)
 		}
 		if r.Memory == nil || !explicit {
@@ -195,7 +79,7 @@ func (r *Runtime) applyAndDeliver(parent, ctx context.Context, groupID int64, at
 			attempt.Error = "memory changes require an explicit request"
 			return attempt
 		}
-		if err := r.Memory.Apply(ctx, groupID, turn.batch, attempt.Reply.Memory, nil); err != nil {
+		if err := r.Memory.Apply(ctx, groupID, snapshot.Batch, attempt.Reply.Memory, nil); err != nil {
 			attempt.State = "failed"
 			attempt.Error = "memory update failed: " + err.Error()
 			return attempt
@@ -206,6 +90,8 @@ func (r *Runtime) applyAndDeliver(parent, ctx context.Context, groupID int64, at
 		return attempt
 	}
 
+	// Re-check the budget before sending: another turn may have consumed the
+	// window while the model was generating. This only limits sending.
 	count, lastSent, err := r.Store.RepliesSince(ctx, groupID, time.Now().Add(-time.Minute))
 	if err != nil {
 		attempt.State = "failed"
@@ -213,10 +99,10 @@ func (r *Runtime) applyAndDeliver(parent, ctx context.Context, groupID int64, at
 		return attempt
 	}
 	directed := false
-	for _, event := range turn.batch {
+	for _, event := range snapshot.Batch {
 		directed = directed || event.Directed
 	}
-	directed = directed || turn.conversation.Continuing
+	directed = directed || snapshot.Conversation.Continuing
 	if count >= r.Config.MaxPerMinute || (!directed && !lastSent.IsZero() && time.Since(lastSent) < r.Config.SpontaneousInterval) {
 		attempt.State = "limited"
 		return attempt
@@ -224,6 +110,11 @@ func (r *Runtime) applyAndDeliver(parent, ctx context.Context, groupID int64, at
 
 	path := ""
 	if attempt.Reply.Action == "sticker" {
+		if r.Memes == nil {
+			attempt.State = "failed"
+			attempt.Error = "sticker service unavailable"
+			return attempt
+		}
 		asset, err := r.Memes.Resolve(ctx, attempt.Reply.StickerID)
 		if err != nil {
 			attempt.State = "failed"
@@ -238,6 +129,7 @@ func (r *Runtime) applyAndDeliver(parent, ctx context.Context, groupID int64, at
 	}
 	if stale() || ctx.Err() != nil {
 		attempt.State = "stale"
+		attempt.Retrieval.StaleReason = "new_interaction"
 		return attempt
 	}
 	attempt.State = "sending"
@@ -274,7 +166,7 @@ func (r *Runtime) applyAndDeliver(parent, ctx context.Context, groupID int64, at
 	text := attempt.Reply.Text
 	if attempt.Reply.Action == "sticker" {
 		text = "[表情包] "
-		for _, asset := range resources.assets {
+		for _, asset := range snapshot.StickerAssets {
 			if asset.ID == attempt.Reply.StickerID {
 				text += asset.Description
 			}
@@ -290,6 +182,18 @@ func (r *Runtime) applyAndDeliver(parent, ctx context.Context, groupID int64, at
 	}
 	r.topics.markBotReply(groupID, attempt.Reply.Plan.TopicID, out)
 	return attempt
+}
+
+func observationFromSnapshot(snapshot ctxsnapshot.ContextSnapshot) topicObservation {
+	assignments := map[string][]string{}
+	for _, events := range [][]ConversationEvent{snapshot.Conversation.History, snapshot.Conversation.Batch} {
+		for _, event := range events {
+			if _, exists := assignments[event.EventID]; !exists {
+				assignments[event.EventID] = append([]string(nil), event.TopicIDs...)
+			}
+		}
+	}
+	return topicObservation{Assignments: assignments}
 }
 
 func queryText(events []qq.Event) string {

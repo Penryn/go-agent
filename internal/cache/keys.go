@@ -20,14 +20,23 @@ func NotesIndexKey(groupID, memoryRevision int64) string {
 	return fmt.Sprintf("notes-index:%d:%d", groupID, memoryRevision)
 }
 
-func RecallKey(groupID int64, actorVersion, memoryRevision uint64, query string) string {
-	return fmt.Sprintf("recall:%d:%d:%d:%s", groupID, actorVersion, memoryRevision, TextHash(query))
+func RecallKey(groupID int64, actorVersion uint64, memoryRevision int64, modelVersion, query string) string {
+	return fmt.Sprintf("recall:%d:%d:%d:%s:%s", groupID, actorVersion, memoryRevision, modelVersion, TextHash(query))
 }
 
-func TopicSnapshotKey(groupID int64, actorVersion uint64) string {
-	return fmt.Sprintf("topic-snapshot:%d:%d", groupID, actorVersion)
+func TopicSnapshotKey(groupID int64, actorVersion uint64, topicRevision int64) string {
+	return fmt.Sprintf("topic-snapshot:%d:%d:%d", groupID, actorVersion, topicRevision)
 }
 
-func StickerKey(groupID, assetRevision int64, cooldownEpoch int64, query string) string {
-	return fmt.Sprintf("stickers:%d:%d:%d:%s", groupID, assetRevision, cooldownEpoch, TextHash(query))
+func StickerKey(groupID int64, assetRevision, cooldownEpoch int64, modelVersion, query string) string {
+	return fmt.Sprintf("stickers:%d:%d:%d:%s:%s", groupID, assetRevision, cooldownEpoch, modelVersion, TextHash(query))
+}
+
+func ContextKey(groupID int64, actorVersion uint64, memoryRevision, topicRevision, assetRevision int64) string {
+	return fmt.Sprintf("context:%d:%d:%d:%d:%d", groupID, actorVersion, memoryRevision, topicRevision, assetRevision)
+}
+
+// ImageKey caches the normalized data URL, not the raw download response.
+func ImageKey(url, mediaVersion string) string {
+	return fmt.Sprintf("image:%s:%s", mediaVersion, TextHash(url))
 }

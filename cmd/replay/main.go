@@ -77,8 +77,14 @@ func run() error {
 			return err
 		}
 		hub = cache.NewHub(cfg.Cache.MaxItems)
-		client := model.New(cfg.Models, cfg.ModelConcurrency.ChatSlots())
+		client := model.New(cfg.Models, cfg.ModelConcurrency.Chat, cfg.ModelConcurrency.Vision, cfg.ModelConcurrency.Embedding, cfg.ModelConcurrency.Background)
 		gateway := model.NewGateway(client, client, hub, cfg.Cache.EmbeddingTTL, cfg.ModelConcurrency.Chat, cfg.ModelConcurrency.Vision, cfg.ModelConcurrency.Embedding, cfg.ModelConcurrency.Background)
+		gateway.ModelVersion = func(images []string) string {
+			if len(images) > 0 && cfg.Models.Vision.Model != "" {
+				return cfg.Models.Vision.Model
+			}
+			return cfg.Models.Main.Model
+		}
 		generator = gateway
 		embedding = gateway
 		mode = "live-model"
@@ -88,9 +94,10 @@ func run() error {
 	cfg.Chat.MaxWait = 20 * time.Millisecond
 	cfg.Chat.PassiveInterval = 0
 	cfg.Chat.SpontaneousInterval = 0
+	cfg.Chat.Cache = chat.CacheTTL{Recall: cfg.Cache.RecallTTL, Context: cfg.Cache.ContextTTL, Sticker: cfg.Cache.StickerTTL, Image: cfg.Cache.ImageTTL}
 	store := replay.NewStore()
 	sender := &replay.Sender{}
-	memories := &memory.Service{Store: store, Model: generator, Embedding: embedding, TopK: cfg.Memory.TopK, IndexLimit: cfg.Memory.IndexLimit, Cache: hub}
+	memories := &memory.Service{Store: store, Model: generator, Embedding: embedding, TopK: cfg.Memory.TopK, IndexLimit: cfg.Memory.IndexLimit, Cache: hub, IndexTTL: cfg.Cache.IndexTTL}
 	ctx, cancel := context.WithTimeout(context.Background(), *timeout)
 	defer cancel()
 	runtime := chat.New(ctx, &chat.Runtime{Store: store, Model: generator, Embedding: embedding, Cache: hub, Memory: memories, Sender: sender, Persona: cfg.Persona, Config: cfg.Chat, SelfID: 0})

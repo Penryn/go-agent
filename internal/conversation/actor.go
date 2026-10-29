@@ -30,6 +30,7 @@ type TopicView struct {
 	FirstSeq, LastSeq int64
 	Status            string
 	Revision          int64
+	SummaryRevision   int64
 	LastActiveAt      time.Time
 }
 type PendingQuestion struct {

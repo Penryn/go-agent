@@ -182,3 +182,11 @@ func (s *Store) DisableSticker(ctx context.Context, id string) error {
 	_, err := s.DB.ExecContext(ctx, `UPDATE groupfriend.stickers SET state='blocked',embedding=NULL,indexed_revision=0,revision=revision+1 WHERE id=$1`, id)
 	return err
 }
+
+// StickerRevision changes whenever any asset is staged, described, disabled or
+// evicted, so recall cache keys cannot survive a material state change.
+func (s *Store) StickerRevision(ctx context.Context) (int64, error) {
+	var revision sql.NullInt64
+	err := s.DB.QueryRowContext(ctx, `SELECT COALESCE(SUM(revision),0) FROM groupfriend.stickers`).Scan(&revision)
+	return revision.Int64, err
+}

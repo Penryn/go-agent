@@ -12,6 +12,7 @@ CREATE TABLE IF NOT EXISTS groupfriend.group_progress (
  group_id BIGINT PRIMARY KEY,after_seq BIGINT NOT NULL DEFAULT 0,summary_after_seq BIGINT NOT NULL DEFAULT 0,retry_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 ALTER TABLE groupfriend.group_progress ADD COLUMN IF NOT EXISTS summary_after_seq BIGINT NOT NULL DEFAULT 0;
+ALTER TABLE groupfriend.group_progress ADD COLUMN IF NOT EXISTS summary_retry_at TIMESTAMPTZ NOT NULL DEFAULT NOW();
 CREATE TABLE IF NOT EXISTS groupfriend.notes (
  id TEXT PRIMARY KEY,group_id BIGINT NOT NULL,subject BIGINT NOT NULL,kind TEXT NOT NULL,key TEXT NOT NULL,
  text TEXT NOT NULL,evidence JSONB NOT NULL,revision BIGINT NOT NULL,source_seq BIGINT NOT NULL,
@@ -25,7 +26,9 @@ ALTER TABLE groupfriend.notes ADD COLUMN IF NOT EXISTS use_count BIGINT NOT NULL
 ALTER TABLE groupfriend.notes ADD COLUMN IF NOT EXISTS valid_from TIMESTAMPTZ;
 ALTER TABLE groupfriend.notes ADD COLUMN IF NOT EXISTS valid_to TIMESTAMPTZ;
 ALTER TABLE groupfriend.notes ADD COLUMN IF NOT EXISTS memory_revision BIGINT NOT NULL DEFAULT 1;
+ALTER TABLE groupfriend.notes ADD COLUMN IF NOT EXISTS topic_id TEXT NOT NULL DEFAULT '';
 CREATE INDEX IF NOT EXISTS friend_notes_scope ON groupfriend.notes(group_id,subject,state);
+CREATE INDEX IF NOT EXISTS friend_notes_topic ON groupfriend.notes(group_id,topic_id,kind,state);
 CREATE INDEX IF NOT EXISTS friend_notes_vector ON groupfriend.notes USING hnsw(embedding halfvec_cosine_ops);
 CREATE TABLE IF NOT EXISTS groupfriend.conversation_topics (
  group_id BIGINT NOT NULL,topic_id TEXT NOT NULL,status TEXT NOT NULL,
@@ -40,6 +43,14 @@ CREATE TABLE IF NOT EXISTS groupfriend.topic_summaries (
  PRIMARY KEY(group_id,topic_id,revision)
 );
 CREATE INDEX IF NOT EXISTS friend_topic_summary_scope ON groupfriend.topic_summaries(group_id,topic_id,revision DESC);
+-- Older builds advanced the summary cursor without generating summaries.
+UPDATE groupfriend.group_progress p SET summary_after_seq=0 WHERE summary_after_seq>0 AND NOT EXISTS (SELECT 1 FROM groupfriend.topic_summaries s WHERE s.group_id=p.group_id);
+CREATE TABLE IF NOT EXISTS groupfriend.conversation_topic_events (
+ group_id BIGINT NOT NULL,topic_id TEXT NOT NULL,event_id TEXT NOT NULL,
+ message_id TEXT NOT NULL DEFAULT '',seq BIGINT NOT NULL,assigned_at TIMESTAMPTZ NOT NULL,
+ PRIMARY KEY(group_id,topic_id,event_id)
+);
+CREATE INDEX IF NOT EXISTS friend_topic_events_recent ON groupfriend.conversation_topic_events(group_id,seq DESC);
 CREATE TABLE IF NOT EXISTS groupfriend.stickers (
  id TEXT PRIMARY KEY,content_hash TEXT UNIQUE,source_event TEXT NOT NULL,source_group BIGINT NOT NULL,
  url TEXT NOT NULL,path TEXT NOT NULL DEFAULT '',mime TEXT NOT NULL DEFAULT '',size BIGINT NOT NULL DEFAULT 0,

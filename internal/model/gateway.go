@@ -2,6 +2,7 @@ package model
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -46,6 +47,7 @@ type Observation struct {
 	CacheHit      bool
 	Duration      time.Duration
 	Usage         Usage
+	ErrorClass    string
 	Err           error
 }
 
@@ -70,7 +72,9 @@ type Gateway struct {
 	EmbeddingMisses atomic.Uint64
 	GenerateCalls   atomic.Uint64
 	EmbeddingCalls  atomic.Uint64
-	Observe         func(Observation)
+	// ModelVersion reports the chat/vision model name for observations.
+	ModelVersion func(images []string) string
+	Observe      func(Observation)
 }
 
 func NewGateway(generator Generator, embedder Embedder, hub cache.CacheHub, embeddingTTL time.Duration, chat, vision, embedding, background int) *Gateway {
@@ -88,7 +92,7 @@ func slots(n int) chan struct{} {
 	return make(chan struct{}, n)
 }
 
-func (g *Gateway) acquire(ctx context.Context, ch chan struct{}, priority Priority) (func(), error) {
+func (g *Gateway) acquire(ctx context.Context, ch chan struct{}) (func(), error) {
 	if ch == nil {
 		return func() {}, nil
 	}
@@ -109,31 +113,51 @@ func (g *Gateway) generate(ctx context.Context, req GenerateRequest) (Result, er
 	if g == nil || g.Generator == nil {
 		return Result{}, ErrUnavailable
 	}
-	priority := PriorityInteractive
 	slots := g.ChatSlots
 	if len(req.Images) > 0 {
 		slots = g.VisionSlots
 	}
 	if _, ok := ctx.Value(backgroundKey{}).(bool); ok {
-		priority = PriorityBackground
 		slots = g.BackgroundSlots
 	}
-	release, err := g.acquire(ctx, slots, priority)
+	modelVersion := ""
+	if g.ModelVersion != nil {
+		modelVersion = g.ModelVersion(req.Images)
+	}
+	release, err := g.acquire(ctx, slots)
 	if err != nil {
-		if g != nil && g.Observe != nil {
-			g.Observe(Observation{Operation: "generate", GroupID: req.GroupID, AttemptID: req.AttemptID, PromptVersion: req.PromptVersion, Duration: time.Since(start), Err: err})
-		}
+		g.observe(Observation{Operation: "generate", GroupID: req.GroupID, AttemptID: req.AttemptID, PromptVersion: req.PromptVersion, ModelVersion: modelVersion, Duration: time.Since(start), Err: err})
 		return Result{}, err
 	}
 	defer release()
 	result, err := g.Generator.Generate(ctx, req.System, req.Input, req.Images)
-	if g != nil {
-		g.GenerateCalls.Add(1)
-		if g.Observe != nil {
-			g.Observe(Observation{Operation: "generate", GroupID: req.GroupID, AttemptID: req.AttemptID, PromptVersion: req.PromptVersion, Duration: time.Since(start), Usage: result.Usage, Err: err})
-		}
-	}
+	g.GenerateCalls.Add(1)
+	g.observe(Observation{Operation: "generate", GroupID: req.GroupID, AttemptID: req.AttemptID, PromptVersion: req.PromptVersion, ModelVersion: modelVersion, Duration: time.Since(start), Usage: result.Usage, Err: err})
 	return result, err
+}
+
+func (g *Gateway) observe(o Observation) {
+	if g == nil || g.Observe == nil {
+		return
+	}
+	o.ErrorClass = errorClass(o.Err)
+	g.Observe(o)
+}
+
+// errorClass is a bounded label; raw provider messages are never emitted.
+func errorClass(err error) string {
+	switch {
+	case err == nil:
+		return ""
+	case errors.Is(err, ErrUnavailable):
+		return "unavailable"
+	case errors.Is(err, context.DeadlineExceeded):
+		return "timeout"
+	case errors.Is(err, context.Canceled):
+		return "canceled"
+	default:
+		return "provider"
+	}
 }
 
 func (g *Gateway) EmbeddingVersion() string {
@@ -166,7 +190,7 @@ func (g *Gateway) embed(ctx context.Context, req EmbedRequest) ([]float32, error
 		if _, ok := call.Value(backgroundKey{}).(bool); ok {
 			slots = g.BackgroundSlots
 		}
-		release, err := g.acquire(call, slots, PriorityInteractive)
+		release, err := g.acquire(call, slots)
 		if err != nil {
 			return nil, err
 		}
@@ -184,18 +208,14 @@ func (g *Gateway) embed(ctx context.Context, req EmbedRequest) ([]float32, error
 		}
 		vector := append([]float32(nil), value.([]float32)...)
 		g.EmbeddingCalls.Add(1)
-		if g.Observe != nil {
-			g.Observe(Observation{Operation: "embedding", GroupID: req.GroupID, AttemptID: req.AttemptID, ModelVersion: modelVersion, Duration: time.Since(start), CacheHit: false, Err: err})
-		}
+		g.observe(Observation{Operation: "embedding", GroupID: req.GroupID, AttemptID: req.AttemptID, ModelVersion: modelVersion, Duration: time.Since(start), CacheHit: false, Err: err})
 		return vector, nil
 	}
 	if h, ok := g.Cache.(*cache.Hub); ok {
 		var cached []float32
 		if h.Get(key, &cached) {
 			g.EmbeddingHits.Add(1)
-			if g.Observe != nil {
-				g.Observe(Observation{Operation: "embedding", GroupID: req.GroupID, AttemptID: req.AttemptID, ModelVersion: modelVersion, Duration: time.Since(start), CacheHit: true})
-			}
+			g.observe(Observation{Operation: "embedding", GroupID: req.GroupID, AttemptID: req.AttemptID, ModelVersion: modelVersion, Duration: time.Since(start), CacheHit: true})
 			return cached, nil
 		}
 		g.EmbeddingMisses.Add(1)
@@ -207,9 +227,7 @@ func (g *Gateway) embed(ctx context.Context, req EmbedRequest) ([]float32, error
 			return loaded.([]float32), nil
 		})
 		g.EmbeddingCalls.Add(1)
-		if g.Observe != nil {
-			g.Observe(Observation{Operation: "embedding", GroupID: req.GroupID, AttemptID: req.AttemptID, ModelVersion: modelVersion, Duration: time.Since(start), CacheHit: false, Err: typedErr})
-		}
+		g.observe(Observation{Operation: "embedding", GroupID: req.GroupID, AttemptID: req.AttemptID, ModelVersion: modelVersion, Duration: time.Since(start), CacheHit: false, Err: typedErr})
 		if typedErr != nil {
 			return nil, typedErr
 		}
@@ -225,9 +243,7 @@ func (g *Gateway) embed(ctx context.Context, req EmbedRequest) ([]float32, error
 	}
 	if err != nil {
 		g.EmbeddingCalls.Add(1)
-		if g.Observe != nil {
-			g.Observe(Observation{Operation: "embedding", GroupID: req.GroupID, AttemptID: req.AttemptID, ModelVersion: modelVersion, Duration: time.Since(start), CacheHit: false, Err: err})
-		}
+		g.observe(Observation{Operation: "embedding", GroupID: req.GroupID, AttemptID: req.AttemptID, ModelVersion: modelVersion, Duration: time.Since(start), CacheHit: false, Err: err})
 		return nil, err
 	}
 	vector, ok := value.([]float32)
@@ -235,9 +251,7 @@ func (g *Gateway) embed(ctx context.Context, req EmbedRequest) ([]float32, error
 		return nil, ErrUnavailable
 	}
 	g.EmbeddingCalls.Add(1)
-	if g.Observe != nil {
-		g.Observe(Observation{Operation: "embedding", GroupID: req.GroupID, AttemptID: req.AttemptID, ModelVersion: modelVersion, Duration: time.Since(start), CacheHit: false})
-	}
+	g.observe(Observation{Operation: "embedding", GroupID: req.GroupID, AttemptID: req.AttemptID, ModelVersion: modelVersion, Duration: time.Since(start), CacheHit: false})
 	return append([]float32(nil), vector...), nil
 }
 

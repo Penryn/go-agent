@@ -10,13 +10,13 @@ import (
 func TestHubIsolatesValuesAndUsesVersionedKeys(t *testing.T) {
 	h := NewHub(4)
 	original := map[string]any{"items": []string{"a"}}
-	h.Set(RecallKey(7, 2, 3, " Hello "), original, time.Minute)
+	h.Set(RecallKey(7, 2, 3, "v1", " Hello "), original, time.Minute)
 	original["items"].([]string)[0] = "changed"
 	var got map[string]any
-	if !h.Get(RecallKey(7, 2, 3, "hello"), &got) || got["items"].([]any)[0] != "a" {
+	if !h.Get(RecallKey(7, 2, 3, "v1", "hello"), &got) || got["items"].([]any)[0] != "a" {
 		t.Fatalf("cached value was not isolated: %#v", got)
 	}
-	if h.Get(RecallKey(8, 2, 3, "hello"), &got) {
+	if h.Get(RecallKey(8, 2, 3, "v1", "hello"), &got) {
 		t.Fatal("cache key crossed group boundary")
 	}
 }

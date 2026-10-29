@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/phlin/go-agent/internal/chat"
+	"github.com/phlin/go-agent/internal/conversation"
 	"github.com/phlin/go-agent/internal/meme"
 	"github.com/phlin/go-agent/internal/memory"
 	"github.com/phlin/go-agent/internal/model"
@@ -331,5 +332,60 @@ func TestSenderOwnershipAndCrashRecovery(t *testing.T) {
 	}
 	if ok, err := s.BeginAttempt(ctx, a); err != nil || ok {
 		t.Fatal("duplicate send attempt admitted", err)
+	}
+}
+
+func TestTopicEventsAndSummaryCursor(t *testing.T) {
+	s := testStore(t)
+	ctx := context.Background()
+	e := event(t, s, "topic-event", 1, 10, "周末去爬山")
+	views := []conversation.TopicView{{ID: "topic:1:1", Participants: []int64{10}, FirstSeq: e.Seq, LastSeq: e.Seq, Revision: 2, LastActiveAt: time.Now(), Status: "active"}}
+	events := []conversation.TopicEventView{{TopicID: "topic:1:1", EventID: e.ID, MessageID: e.MessageID, Seq: e.Seq, AssignedAt: time.Now(), TopicIDs: []string{"topic:1:1"}}}
+	if err := s.SaveTopics(ctx, 1, views, events); err != nil {
+		t.Fatal(err)
+	}
+	loadedViews, err := s.LoadTopics(ctx, 1)
+	if err != nil || len(loadedViews) != 1 || loadedViews[0].ID != "topic:1:1" || loadedViews[0].Revision != 2 {
+		t.Fatalf("restored topics = %+v err=%v", loadedViews, err)
+	}
+	loadedEvents, err := s.LoadTopicEvents(ctx, 1, 100)
+	if err != nil || len(loadedEvents) != 1 || loadedEvents[0].EventID != e.ID || len(loadedEvents[0].TopicIDs) != 1 {
+		t.Fatalf("restored events = %+v err=%v", loadedEvents, err)
+	}
+	batch, err := s.SummaryBatch(ctx, 50)
+	if err != nil || len(batch.Events) != 1 || batch.Events[0].EventID != e.ID || batch.GroupID != 1 {
+		t.Fatalf("summary batch = %+v err=%v", batch, err)
+	}
+	summary := conversation.TopicSummary{GroupID: 1, TopicID: "topic:1:1", Revision: 2, Summary: "讨论周末爬山", EvidenceIDs: []string{e.ID}, SourceSeq: e.Seq, UpdatedAt: time.Now()}
+	if err := s.SaveTopicSummaries(ctx, 1, []conversation.TopicSummary{summary}, e.Seq); err != nil {
+		t.Fatal(err)
+	}
+	batch, err = s.SummaryBatch(ctx, 50)
+	if err != nil || len(batch.Events) != 0 {
+		t.Fatalf("summary cursor did not advance: %+v err=%v", batch, err)
+	}
+	loadedViews, err = s.LoadTopics(ctx, 1)
+	if err != nil || len(loadedViews) != 1 || loadedViews[0].Summary != "讨论周末爬山" {
+		t.Fatalf("summary was not attached: %+v err=%v", loadedViews, err)
+	}
+}
+
+func TestStickerRevisionChangesWithMaterialState(t *testing.T) {
+	s := testStore(t)
+	ctx := context.Background()
+	a := meme.Asset{ID: "revision-a", SourceID: "e1", SourceGroup: 1, URL: "https://example.com/a", State: "pending", LastSeen: time.Now()}
+	if err := s.StageSticker(ctx, a); err != nil {
+		t.Fatal(err)
+	}
+	before, err := s.StickerRevision(ctx)
+	if err != nil || before < 1 {
+		t.Fatalf("initial revision = %d err=%v", before, err)
+	}
+	if err := s.DisableSticker(ctx, a.ID); err != nil {
+		t.Fatal(err)
+	}
+	after, err := s.StickerRevision(ctx)
+	if err != nil || after <= before {
+		t.Fatalf("material change did not bump revision: before=%d after=%d err=%v", before, after, err)
 	}
 }

@@ -3,6 +3,7 @@ package chat
 import (
 	"fmt"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -37,6 +38,8 @@ type topicGraph struct {
 	topics          map[string]*topicState
 	eventTopics     map[string][]string
 	eventMessageIDs map[string]string
+	eventSeqs       map[string]int64
+	eventTimes      map[string]time.Time
 	messageEvents   map[string]int
 	messageTopics   map[string][]string
 	eventOrder      []string
@@ -55,6 +58,7 @@ type topicState struct {
 	lastAt           time.Time
 	firstSeq         int64
 	summary          string
+	summaryRevision  int64
 	revision         int64
 	botParticipated  bool
 	botAt            time.Time
@@ -76,7 +80,7 @@ func newTopicTracker() *topicTracker {
 	return &topicTracker{groups: map[int64]*topicGraph{}}
 }
 
-func (t *topicTracker) Snapshot(groupID int64) []conversation.TopicView {
+func (t *topicTracker) Snapshot(groupID int64, activeWindow time.Duration) []conversation.TopicView {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	g := t.groups[groupID]
@@ -85,34 +89,117 @@ func (t *topicTracker) Snapshot(groupID int64) []conversation.TopicView {
 	}
 	out := make([]conversation.TopicView, 0, len(g.topics))
 	for _, topic := range g.topics {
-		out = append(out, conversation.TopicView{ID: topic.id, Summary: topic.summary, Participants: sortedTopicParticipants(topic), FirstSeq: topic.firstSeq, LastSeq: topic.lastSeq, Revision: topic.revision, LastActiveAt: topic.lastAt, Status: topicStateAt(topic, time.Now(), 90*time.Second)})
+		out = append(out, conversation.TopicView{ID: topic.id, Summary: topic.summary, SummaryRevision: topic.summaryRevision, Participants: sortedTopicParticipants(topic), FirstSeq: topic.firstSeq, LastSeq: topic.lastSeq, Revision: topic.revision, LastActiveAt: topic.lastAt, Status: topicStateAt(topic, time.Now(), activeWindow)})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].LastActiveAt.After(out[j].LastActiveAt) })
 	return out
 }
 
-func (t *topicTracker) Restore(groupID int64, views []conversation.TopicView) {
+// EventSnapshot exports the bounded event ownership window for persistence.
+func (t *topicTracker) EventSnapshot(groupID int64, limit int) []conversation.TopicEventView {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	g := t.groups[groupID]
+	if g == nil || limit <= 0 {
+		return nil
+	}
+	start := max(0, len(g.eventOrder)-limit)
+	out := make([]conversation.TopicEventView, 0, len(g.eventOrder)-start)
+	for _, eventID := range g.eventOrder[start:] {
+		ids := g.eventTopics[eventID]
+		if len(ids) == 0 {
+			continue
+		}
+		out = append(out, conversation.TopicEventView{TopicID: ids[0], EventID: eventID, MessageID: g.eventMessageIDs[eventID], Seq: g.eventSeqs[eventID], AssignedAt: g.eventTimes[eventID], TopicIDs: append([]string(nil), ids...)})
+	}
+	return out
+}
+
+func (t *topicTracker) Revision(groupID int64) int64 {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	g := t.groups[groupID]
 	if g == nil {
-		g = &topicGraph{groupID: groupID, topics: map[string]*topicState{}, eventTopics: map[string][]string{}, eventMessageIDs: map[string]string{}, messageEvents: map[string]int{}, messageTopics: map[string][]string{}}
+		return 0
+	}
+	var revision int64
+	for _, topic := range g.topics {
+		revision += topic.revision
+	}
+	return revision
+}
+
+// Restore rebuilds stored ownership rows and topic IDs. In-memory topics win
+// when the same ID already exists in this process.
+func (t *topicTracker) Restore(groupID int64, views []conversation.TopicView, events []conversation.TopicEventView) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	g := t.groups[groupID]
+	if g == nil {
+		g = &topicGraph{groupID: groupID, topics: map[string]*topicState{}, eventTopics: map[string][]string{}, eventMessageIDs: map[string]string{}, eventSeqs: map[string]int64{}, eventTimes: map[string]time.Time{}, messageEvents: map[string]int{}, messageTopics: map[string][]string{}}
 		t.groups[groupID] = g
 	}
 	for _, view := range views {
-		if view.ID == "" {
+		if view.ID == "" || g.topics[view.ID] != nil {
 			continue
 		}
-		topic := &topicState{id: view.ID, participants: map[int64]bool{}, textEventIDs: map[string]bool{}, firstSeq: view.FirstSeq, lastSeq: view.LastSeq, lastAt: view.LastActiveAt, summary: view.Summary, revision: view.Revision}
+		topic := &topicState{id: view.ID, participants: map[int64]bool{}, textEventIDs: map[string]bool{}, firstSeq: view.FirstSeq, lastSeq: view.LastSeq, lastAt: view.LastActiveAt, summary: view.Summary, summaryRevision: max(view.SummaryRevision, view.Revision), revision: max(view.Revision, 1)}
 		for _, id := range view.Participants {
 			topic.addParticipant(id)
 		}
-		if topic.revision < 1 {
-			topic.revision = 1
-		}
 		g.topics[topic.id] = topic
+		if suffix := topicSuffix(topic.id); suffix > g.nextID {
+			g.nextID = suffix
+		}
+	}
+	for _, event := range events {
+		if event.EventID == "" || len(event.TopicIDs) == 0 {
+			continue
+		}
+		ids := uniqueTopicIDs(event.TopicIDs)
+		if _, exists := g.eventTopics[event.EventID]; exists {
+			continue
+		}
+		g.eventTopics[event.EventID] = ids
+		g.eventSeqAt(event.EventID, event.Seq, event.AssignedAt)
+		if event.MessageID != "" {
+			g.eventMessageIDs[event.EventID] = event.MessageID
+			g.messageEvents[event.MessageID]++
+			g.messageTopics[event.MessageID] = append([]string(nil), ids...)
+		}
+		g.eventOrder = append(g.eventOrder, event.EventID)
 	}
 	g.lastActive = time.Now()
+}
+
+func topicSuffix(id string) int {
+	index := strings.LastIndexByte(id, ':')
+	if index < 0 {
+		return 0
+	}
+	n, err := strconv.Atoi(id[index+1:])
+	if err != nil || n < 0 {
+		return 0
+	}
+	return n
+}
+
+func (g *topicGraph) eventSeqAt(eventID string, seq int64, at time.Time) {
+	g.eventSeqs[eventID] = seq
+	g.eventTimes[eventID] = at
+}
+
+// ApplySummary installs a committed summary without resetting topic state.
+func (t *topicTracker) ApplySummary(groupID int64, summary conversation.TopicSummary) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	graph := t.groups[groupID]
+	if graph == nil || graph.topics[summary.TopicID] == nil {
+		return
+	}
+	topic := graph.topics[summary.TopicID]
+	topic.summary = summary.Summary
+	topic.summaryRevision = summary.Revision
 }
 
 // observe incrementally updates a bounded group topic graph. The graph is
@@ -134,6 +221,8 @@ func (t *topicTracker) observe(groupID int64, history, batch []qq.Event, activeW
 			topics:          map[string]*topicState{},
 			eventTopics:     map[string][]string{},
 			eventMessageIDs: map[string]string{},
+			eventSeqs:       map[string]int64{},
+			eventTimes:      map[string]time.Time{},
 			messageEvents:   map[string]int{},
 			messageTopics:   map[string][]string{},
 		}
@@ -185,6 +274,7 @@ func (t *topicTracker) observe(groupID int64, history, batch []qq.Event, activeW
 			Participants:    sortedTopicParticipants(topic),
 			EventIDs:        eventIDs,
 			BotParticipated: topic.botParticipated,
+			Summary:         topic.summary,
 		})
 	}
 	sort.Slice(observation.Topics, func(i, j int) bool {
@@ -227,7 +317,7 @@ func (t *topicTracker) markBotReply(groupID int64, topicID string, event qq.Even
 	if topic.botAt.IsZero() {
 		topic.botAt = time.Now()
 	}
-	graph.record(event.ID, []string{topicID}, event.MessageID)
+	graph.record(event, []string{topicID})
 	graph.touch(topic, event)
 }
 
@@ -288,7 +378,7 @@ func (g *topicGraph) assign(event qq.Event) []string {
 			g.touch(topic, event)
 		}
 	}
-	g.record(event.ID, ids, event.MessageID)
+	g.record(event, ids)
 	return append([]string(nil), ids...)
 }
 
@@ -401,9 +491,6 @@ func (g *topicGraph) touch(topic *topicState, event qq.Event) {
 	if topic.firstSeq == 0 && event.Seq > 0 {
 		topic.firstSeq = event.Seq
 	}
-	if topic.revision == 0 {
-		topic.revision = 1
-	}
 	if event.At.After(topic.lastAt) {
 		topic.lastAt = event.At
 	}
@@ -428,20 +515,29 @@ func (topic *topicState) addParticipant(userID int64) {
 	topic.participantOrder = topic.participantOrder[retired:]
 }
 
-func (g *topicGraph) record(eventID string, topicIDs []string, messageID string) {
-	if eventID == "" {
+func (g *topicGraph) record(event qq.Event, topicIDs []string) {
+	if event.ID == "" {
 		return
 	}
 	topicIDs = uniqueTopicIDs(topicIDs)
 	if len(topicIDs) == 0 {
-		g.removeEventAssignment(eventID)
+		g.removeEventAssignment(event.ID)
 		return
 	}
-	if _, exists := g.eventTopics[eventID]; !exists {
-		g.eventOrder = append(g.eventOrder, eventID)
+	_, known := g.eventTopics[event.ID]
+	if !known {
+		g.eventOrder = append(g.eventOrder, event.ID)
 	}
-	g.eventTopics[eventID] = topicIDs
-	g.updateMessageAssignment(eventID, messageID, topicIDs)
+	g.eventTopics[event.ID] = topicIDs
+	g.eventSeqAt(event.ID, event.Seq, event.At)
+	g.updateMessageAssignment(event.ID, event.MessageID, topicIDs)
+	if !known {
+		for _, id := range topicIDs {
+			if topic := g.topics[id]; topic != nil {
+				topic.revision = max(topic.revision, 1) + 1
+			}
+		}
+	}
 	for len(g.eventOrder) > maxTopicAssignments {
 		g.removeEventAssignment(g.eventOrder[0])
 	}
@@ -469,6 +565,8 @@ func (g *topicGraph) removeEventAssignment(eventID string) {
 		delete(g.eventMessageIDs, eventID)
 	}
 	delete(g.eventTopics, eventID)
+	delete(g.eventSeqs, eventID)
+	delete(g.eventTimes, eventID)
 	for i, existing := range g.eventOrder {
 		if existing == eventID {
 			g.eventOrder = append(g.eventOrder[:i], g.eventOrder[i+1:]...)

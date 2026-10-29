@@ -3,6 +3,7 @@ package chat
 import (
 	"errors"
 
+	"github.com/phlin/go-agent/internal/conversation"
 	"github.com/phlin/go-agent/internal/qq"
 )
 
@@ -21,36 +22,13 @@ type ReplyPlan struct {
 	ResponseMode  string `json:"response_mode,omitempty"`
 }
 
-// ConversationEvent is a compact relation hint for an event already present
-// in the history or current batch. The event text remains in the normal
-// history and batch inputs.
-type ConversationEvent struct {
-	EventID   string   `json:"event_id"`
-	MessageID string   `json:"message_id,omitempty"`
-	UserID    int64    `json:"user_id"`
-	Relation  string   `json:"relation"`
-	TopicIDs  []string `json:"topic_ids,omitempty"`
-}
-
-// ConversationTopic is a bounded, runtime-local view of one parallel thread.
-// Event text remains in history and batch; this object only carries grouping
-// signals the model needs to decide whether and where to participate.
-type ConversationTopic struct {
-	ID              string   `json:"topic_id"`
-	State           string   `json:"state"`
-	Participants    []int64  `json:"participants"`
-	EventIDs        []string `json:"event_ids"`
-	BotParticipated bool     `json:"bot_participated"`
-}
-
-// ConversationContext gives the model explicit participation cues without
-// introducing a second model call or a persistent topic graph.
-type ConversationContext struct {
-	Continuing bool                `json:"continuing"`
-	Topics     []ConversationTopic `json:"topics,omitempty"`
-	Batch      []ConversationEvent `json:"batch"`
-	History    []ConversationEvent `json:"history"`
-}
+// Relation types live in conversation so package context can build snapshots
+// without importing chat.
+type (
+	ConversationEvent   = conversation.Event
+	ConversationTopic   = conversation.Topic
+	ConversationContext = conversation.Context
+)
 
 func buildConversationContext(batch, history []qq.Event, topics topicObservation) ConversationContext {
 	history = priorConversation(history, batch)
