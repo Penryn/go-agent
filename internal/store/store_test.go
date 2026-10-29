@@ -152,6 +152,27 @@ func TestMessageIdentityAndRecall(t *testing.T) {
 		t.Fatalf("wrong history: %+v %v", all, err)
 	}
 }
+
+func TestTopicIDsReturnsPersistedActionableAssignments(t *testing.T) {
+	s := testStore(t)
+	ctx := context.Background()
+	e := event(t, s, "topic-event", 1, 10, "周末去爬山吗")
+	err := s.SaveTopics(ctx, 1, nil, []conversation.TopicEventView{{
+		TopicID:   "topic:1",
+		EventID:   e.ID,
+		MessageID: e.MessageID,
+		Seq:       e.Seq,
+		TopicIDs:  []string{"topic:1", "topic:2"},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	topics, err := s.TopicIDs(ctx, 1, []string{e.ID, "unknown"})
+	if err != nil || len(topics[e.ID]) != 2 || topics[e.ID][0] != "topic:1" || topics[e.ID][1] != "topic:2" {
+		t.Fatalf("topic assignments = %+v err=%v", topics, err)
+	}
+}
+
 func TestMemoryEvidenceVersionsAndIndexInvalidation(t *testing.T) {
 	s := testStore(t)
 	ctx := context.Background()
@@ -238,6 +259,39 @@ func TestLearningCursorCommitsWithNotes(t *testing.T) {
 	events, _, err = s.LearningBatch(ctx, 40)
 	if err != nil || len(events) != 0 {
 		t.Fatal("cursor not advanced", events, err)
+	}
+}
+
+func TestEditNoteAdvancesMemoryRevision(t *testing.T) {
+	s := testStore(t)
+	ctx := context.Background()
+	e := event(t, s, "edit-e1", 1, 10, "记住我喜欢咖啡")
+	svc := memory.Service{Store: s, TopK: 4}
+	change := memory.Change{Subject: 10, Kind: "preference", Key: "drink", Text: "喜欢咖啡", Evidence: []memory.Evidence{{EventID: e.ID, Quote: "喜欢咖啡"}}}
+	if err := svc.Apply(ctx, 1, []qq.Event{e}, []memory.Change{change}, nil); err != nil {
+		t.Fatal(err)
+	}
+	before, err := s.MemoryRevision(ctx, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	notes, err := s.ActiveNotes(ctx, 1, 10)
+	if err != nil || len(notes) != 1 {
+		t.Fatalf("notes = %+v err=%v", notes, err)
+	}
+	if err := s.EditNote(ctx, 1, notes[0].ID, notes[0].Version, "现在喜欢茶", false); err != nil {
+		t.Fatal(err)
+	}
+	after, err := s.MemoryRevision(ctx, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after <= before {
+		t.Fatalf("memory revision did not advance: before=%d after=%d", before, after)
+	}
+	edited, err := s.ActiveNotes(ctx, 1, 10)
+	if err != nil || len(edited) != 1 || edited[0].Text != "现在喜欢茶" {
+		t.Fatalf("edited note = %+v err=%v", edited, err)
 	}
 }
 func TestMemoryReworkMigrationRunsOnce(t *testing.T) {
@@ -472,7 +526,7 @@ func TestMemoryStatusAggregatesOperationalMetrics(t *testing.T) {
 	s := testStore(t)
 	ctx := context.Background()
 	for _, run := range []memory.LearningRun{
-		{GroupID: 1, UntilSeq: 5, StartedAt: time.Now(), DurationMS: 30, ExtractMS: 10, ReconcileMS: 20, ExtractTokens: 100, ReconcileTokens: 50, CandidateCount: 1, ChangeCount: 3, Status: "succeeded"},
+		{GroupID: 1, UntilSeq: 5, StartedAt: time.Now(), DurationMS: 30, ExtractMS: 10, ReconcileMS: 20, ExtractTokens: 100, ReconcileTokens: 50, CandidateCount: 1, RejectedCount: 2, ChangeCount: 3, Status: "succeeded"},
 		{GroupID: 1, UntilSeq: 6, StartedAt: time.Now(), DurationMS: 10, ExtractMS: 10, ExtractTokens: 20, Status: "failed", ErrorClass: "invalid_output"},
 	} {
 		if err := s.RecordLearningRun(ctx, run); err != nil {
@@ -501,7 +555,7 @@ func TestMemoryStatusAggregatesOperationalMetrics(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if status.Learning.Runs != 2 || status.Learning.Succeeded != 1 || status.Learning.Failed != 1 || status.Learning.AvgDurationMS != 20 || status.Learning.AvgExtractMS != 10 || status.Learning.AvgReconcileMS != 10 || status.Learning.ExtractTokens != 120 || status.Learning.ReconcileTokens != 50 || status.Learning.ChangeCount != 3 {
+	if status.Learning.Runs != 2 || status.Learning.Succeeded != 1 || status.Learning.Failed != 1 || status.Learning.AvgDurationMS != 20 || status.Learning.AvgExtractMS != 10 || status.Learning.AvgReconcileMS != 10 || status.Learning.ExtractTokens != 120 || status.Learning.ReconcileTokens != 50 || status.Learning.RejectedCount != 2 || status.Learning.ChangeCount != 3 {
 		t.Fatalf("learning stats = %+v", status.Learning)
 	}
 	if status.Recall.Attempted != 1 || status.Recall.Hits != 1 || status.Recall.Empty != 0 || status.Recall.CacheHits != 1 || status.Recall.CacheMisses != 0 || status.Recall.SemanticDegraded != 1 || status.Recall.HitRate != 1 || status.Recall.EmptyRate != 0 || status.Recall.CacheHitRate != 1 || status.Recall.MaxIndexLoadMS != 250 {

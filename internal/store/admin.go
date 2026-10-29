@@ -23,6 +23,7 @@ type LearningStats struct {
 	AvgReconcileMS  float64 `json:"avg_reconcile_ms"`
 	ExtractTokens   int64   `json:"extract_tokens"`
 	ReconcileTokens int64   `json:"reconcile_tokens"`
+	RejectedCount   int64   `json:"rejected_count"`
 	ChangeCount     int64   `json:"change_count"`
 }
 
@@ -101,7 +102,7 @@ func (s *Store) MemoryStatus(ctx context.Context) (MemoryStatus, error) {
 	if err := rows.Err(); err != nil {
 		return status, err
 	}
-	if err := s.DB.QueryRowContext(ctx, `SELECT COUNT(*),COUNT(*) FILTER (WHERE status='succeeded'),COUNT(*) FILTER (WHERE status='failed'),COALESCE(AVG(duration_ms)::float8,0),COALESCE(AVG(extract_ms)::float8,0),COALESCE(AVG(reconcile_ms)::float8,0),COALESCE(SUM(extract_tokens),0)::bigint,COALESCE(SUM(reconcile_tokens),0)::bigint,COALESCE(SUM(change_count),0)::bigint FROM groupfriend.learning_runs WHERE started_at>=NOW()-make_interval(hours=>$1)`, status.WindowHours).Scan(&status.Learning.Runs, &status.Learning.Succeeded, &status.Learning.Failed, &status.Learning.AvgDurationMS, &status.Learning.AvgExtractMS, &status.Learning.AvgReconcileMS, &status.Learning.ExtractTokens, &status.Learning.ReconcileTokens, &status.Learning.ChangeCount); err != nil {
+	if err := s.DB.QueryRowContext(ctx, `SELECT COUNT(*),COUNT(*) FILTER (WHERE status='succeeded'),COUNT(*) FILTER (WHERE status='failed'),COALESCE(AVG(duration_ms)::float8,0),COALESCE(AVG(extract_ms)::float8,0),COALESCE(AVG(reconcile_ms)::float8,0),COALESCE(SUM(extract_tokens),0)::bigint,COALESCE(SUM(reconcile_tokens),0)::bigint,COALESCE(SUM(rejected_candidates),0)::bigint,COALESCE(SUM(change_count),0)::bigint FROM groupfriend.learning_runs WHERE started_at>=NOW()-make_interval(hours=>$1)`, status.WindowHours).Scan(&status.Learning.Runs, &status.Learning.Succeeded, &status.Learning.Failed, &status.Learning.AvgDurationMS, &status.Learning.AvgExtractMS, &status.Learning.AvgReconcileMS, &status.Learning.ExtractTokens, &status.Learning.ReconcileTokens, &status.Learning.RejectedCount, &status.Learning.ChangeCount); err != nil {
 		return status, err
 	}
 	if err := s.DB.QueryRowContext(ctx, `SELECT COUNT(*) FILTER (WHERE body->'retrieval'->>'recall_attempted'='true'),COUNT(*) FILTER (WHERE body->'retrieval'->>'recall_attempted'='true' AND COALESCE((body->'retrieval'->>'recall_hits')::int,0)>0),COUNT(*) FILTER (WHERE body->'retrieval'->>'recall_attempted'='true' AND COALESCE((body->'retrieval'->>'recall_hits')::int,0)=0),COUNT(*) FILTER (WHERE body->'retrieval'->>'recall_attempted'='true' AND body->'retrieval'->>'recall_cache_hit'='true'),COUNT(*) FILTER (WHERE body->'retrieval'->>'recall_attempted'='true' AND COALESCE(body->'retrieval'->>'recall_cache_hit','false')<>'true'),COUNT(*) FILTER (WHERE body->'retrieval'->'degraded' @> '["semantic"]'::jsonb),COALESCE(MAX((body->'retrieval'->>'index_load_ms')::int),0) FROM groupfriend.reply_attempts WHERE updated_at>=NOW()-make_interval(hours=>$1)`, status.WindowHours).Scan(&status.Recall.Attempted, &status.Recall.Hits, &status.Recall.Empty, &status.Recall.CacheHits, &status.Recall.CacheMisses, &status.Recall.SemanticDegraded, &status.Recall.MaxIndexLoadMS); err != nil {
@@ -207,7 +208,7 @@ func (s *Store) EditNote(ctx context.Context, group int64, id string, version in
 		state = "forgotten"
 		text = ""
 	}
-	result, err := tx.ExecContext(ctx, `UPDATE groupfriend.notes SET text=$4,state=$5,revision=revision+1,embedding=NULL,indexed_revision=0,updated_at=NOW(),source_seq=GREATEST(source_seq,COALESCE((SELECT MAX(seq) FROM groupfriend.messages WHERE group_id=$1),0)) WHERE group_id=$1 AND id=$2 AND revision=$3`, group, id, version, text, state)
+	result, err := tx.ExecContext(ctx, `UPDATE groupfriend.notes SET text=$4,state=$5,revision=revision+1,memory_revision=memory_revision+1,embedding=NULL,indexed_revision=0,updated_at=NOW(),source_seq=GREATEST(source_seq,COALESCE((SELECT MAX(seq) FROM groupfriend.messages WHERE group_id=$1),0)) WHERE group_id=$1 AND id=$2 AND revision=$3`, group, id, version, text, state)
 	if err != nil {
 		return err
 	}

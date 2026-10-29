@@ -91,6 +91,7 @@ func New(ctx context.Context, cfg config.Config) (*App, error) {
 	chatConfig := cfg.Chat
 	chatConfig.Cache = chat.CacheTTL{Recall: cfg.Cache.RecallTTL, Context: cfg.Cache.ContextTTL, Sticker: cfg.Cache.StickerTTL, Image: cfg.Cache.ImageTTL}
 	a.runtime = chat.New(child, &chat.Runtime{Store: db, Model: gateway, Embedding: gateway, Cache: hub, Memory: a.memories, Memes: a.memes, Sender: sender, Persona: cfg.Persona, Config: chatConfig, SelfID: cfg.QQ.SelfID, Groups: cfg.QQ.GroupWhitelist})
+	a.memories.TopicResolver = a.runtime
 	a.topics = &conversation.TopicSummarizer{Store: db, Model: gateway, Batch: cfg.Memory.SummaryBatch, Apply: a.runtime.ApplyTopicSummary}
 	a.server = &http.Server{Addr: cfg.Server.HTTPListen, Handler: a.routes(), ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 10 * time.Second, WriteTimeout: 15 * time.Second, IdleTimeout: 60 * time.Second}
 	return a, nil

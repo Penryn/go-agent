@@ -255,6 +255,38 @@ func (s *Store) LoadTopicEvents(_ context.Context, g int64, limit int) ([]conver
 	}
 	return out, nil
 }
+
+func (s *Store) TopicIDs(_ context.Context, group int64, eventIDs []string) (map[string][]string, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	wanted := map[string]bool{}
+	for _, id := range eventIDs {
+		wanted[id] = true
+	}
+	out := map[string][]string{}
+	seen := map[string]map[string]bool{}
+	for _, event := range s.topicEvents[group] {
+		if !wanted[event.EventID] {
+			continue
+		}
+		if seen[event.EventID] == nil {
+			seen[event.EventID] = map[string]bool{}
+		}
+		topicIDs := event.TopicIDs
+		if len(topicIDs) == 0 && event.TopicID != "" {
+			topicIDs = []string{event.TopicID}
+		}
+		for _, topicID := range topicIDs {
+			if topicID == "" || seen[event.EventID][topicID] {
+				continue
+			}
+			seen[event.EventID][topicID] = true
+			out[event.EventID] = append(out[event.EventID], topicID)
+		}
+	}
+	return out, nil
+}
+
 func (s *Store) SummaryProgress(_ context.Context, g int64) (int64, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

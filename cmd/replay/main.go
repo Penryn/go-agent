@@ -140,7 +140,7 @@ func run() error {
 	cfg.Chat.Cache = chat.CacheTTL{Recall: cfg.Cache.RecallTTL, Context: cfg.Cache.ContextTTL, Sticker: cfg.Cache.StickerTTL, Image: cfg.Cache.ImageTTL}
 	store := replay.NewStore()
 	sender := &replay.Sender{}
-	memories := &memory.Service{Store: store, Model: generator, Embedding: embedding, TopK: cfg.Memory.TopK, IndexLimit: cfg.Memory.IndexLimit, DistanceThreshold: cfg.Memory.SemanticDistanceThreshold, Budgets: memory.RecallBudgets{Preference: cfg.Memory.PreferenceBudget, Member: cfg.Memory.MemberBudget, Episode: cfg.Memory.EpisodeBudget}, Cache: hub, IndexTTL: cfg.Cache.IndexTTL}
+	memories := &memory.Service{Store: store, Model: generator, Embedding: embedding, TopicResolver: store, TopK: cfg.Memory.TopK, IndexLimit: cfg.Memory.IndexLimit, DistanceThreshold: cfg.Memory.SemanticDistanceThreshold, Budgets: memory.RecallBudgets{Preference: cfg.Memory.PreferenceBudget, Member: cfg.Memory.MemberBudget, Episode: cfg.Memory.EpisodeBudget}, Cache: hub, IndexTTL: cfg.Cache.IndexTTL}
 	ctx, cancel := context.WithTimeout(context.Background(), *timeout)
 	defer cancel()
 	runtime := chat.New(ctx, &chat.Runtime{Store: store, Model: generator, Embedding: embedding, Cache: hub, Memory: memories, Sender: sender, Persona: cfg.Persona, Config: cfg.Chat, SelfID: 0})

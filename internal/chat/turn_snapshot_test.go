@@ -231,3 +231,17 @@ func TestTopicIDsSurviveRestartThroughReplyChain(t *testing.T) {
 		t.Fatalf("new topic reused a restored id: %q", fresh)
 	}
 }
+
+func TestTopicIDsObserveRecentMessagesForBackgroundLearning(t *testing.T) {
+	store := replay.NewStore()
+	event := qq.Event{ID: "topic-learn", MessageID: "topic-learn", GroupID: 1, UserID: 10, Text: "周末去爬山吗", At: time.Now()}
+	if ok, err := store.Ingest(context.Background(), &event); err != nil || !ok {
+		t.Fatalf("ingest: ok=%v err=%v", ok, err)
+	}
+	runtime := chat.New(context.Background(), &chat.Runtime{Store: store, Config: chat.Config{ActiveWindow: time.Minute}})
+	t.Cleanup(runtime.Close)
+	topics, err := runtime.TopicIDs(context.Background(), 1, []string{event.ID})
+	if err != nil || len(topics[event.ID]) == 0 {
+		t.Fatalf("topic IDs = %+v err=%v", topics, err)
+	}
+}

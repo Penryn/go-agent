@@ -7,7 +7,7 @@
 | `messages` | 去重后的入站事件、撤回状态与确认送达的出站消息 |
 | `notes` | 有来源的群内笔记、明确偏好、经历话题、修订、有效期、遗忘状态与向量投影 |
 | `note_usage` | 已确认回复使用过的笔记账本，按 `(attempt_id, note_id)` 幂等去重 |
-| `learning_runs` | 每次后台学习的状态、失败分类、阶段耗时、token、候选与变更数 |
+| `learning_runs` | 每次后台学习的状态、失败分类、阶段耗时、token、候选数、被拒绝候选与变更数 |
 | `memory_events` | 运维事件，例如被遗忘证据拦截的重建尝试 |
 | `conversation_topics` | 每群话题状态、参与者、序号范围、版本与最后活跃时间 |
 | `conversation_topic_events` | 最近事件的话题归属窗口，用于重启恢复引用链和词面索引 |

@@ -26,6 +26,18 @@ type learningModel struct {
 	calls          int
 }
 
+type staticTopics map[string][]string
+
+func (s staticTopics) TopicIDs(_ context.Context, _ int64, eventIDs []string) (map[string][]string, error) {
+	out := map[string][]string{}
+	for _, eventID := range eventIDs {
+		if topicIDs, ok := s[eventID]; ok {
+			out[eventID] = append([]string(nil), topicIDs...)
+		}
+	}
+	return out, nil
+}
+
 func (m *learningModel) Generate(_ context.Context, system string, input any, _ []string) (model.Result, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -84,7 +96,7 @@ func TestLearningExtractsThenReconcilesOnlyMatchedIdentities(t *testing.T) {
 	if err := service.Tick(ctx); err != nil {
 		t.Fatal(err)
 	}
-	if len(model.extractInputs) != 1 || len(model.extractInputs[0]) != 1 || model.extractInputs[0]["events"] == nil {
+	if len(model.extractInputs) != 1 || len(model.extractInputs[0]) != 3 || model.extractInputs[0]["events"] == nil || model.extractInputs[0]["event_topics"] == nil {
 		t.Fatalf("extraction saw more than this batch: %+v", model.extractInputs)
 	}
 	existing, _ := model.reconcileInput[0]["existing"].([]memory.Note)
@@ -110,6 +122,10 @@ func TestLearningExtractsThenReconcilesOnlyMatchedIdentities(t *testing.T) {
 	if len(model.reconcileInput) != 1 {
 		t.Fatal("reconciler ran without candidates")
 	}
+	history, _ := model.extractInputs[1]["history"].([]qq.Event)
+	if len(history) != 1 || history[0].ID != first.ID {
+		t.Fatalf("learning history = %+v", history)
+	}
 	batch, _, err := store.LearningBatch(ctx, 40)
 	if err != nil || len(batch) != 0 {
 		t.Fatalf("learning cursor did not advance: %+v err=%v", batch, err)
@@ -120,26 +136,29 @@ func TestLearningExtractsThenReconcilesOnlyMatchedIdentities(t *testing.T) {
 	}
 }
 
-func TestLearningRejectsDuplicateCandidates(t *testing.T) {
+func TestLearningDropsDuplicateCandidatesWithoutBlockingBatch(t *testing.T) {
 	ctx := context.Background()
 	store := replay.NewStore()
 	ingest(t, store, "e1", 1, 10, "以后叫我小林")
 	candidateA := `{"subject":10,"kind":"preference","key":" Nick ","text":"称呼小林","evidence":[{"event_id":"e1","quote":"以后叫我小林"}]}`
 	candidateB := `{"subject":10,"kind":"preference","key":"nick","text":"称呼小林","evidence":[{"event_id":"e1","quote":"以后叫我小林"}]}`
-	model := &learningModel{extract: []string{`{"candidates":[` + candidateA + `,` + candidateB + `]}`}}
-	service := memory.Service{Store: store, Model: model, TopK: 3}
-	if err := service.Tick(ctx); err == nil || !strings.Contains(err.Error(), "duplicate") {
-		t.Fatalf("duplicate candidates: %v", err)
+	model := &learningModel{
+		extract:   []string{`{"candidates":[` + candidateA + `,` + candidateB + `]}`},
+		reconcile: []string{`{"decisions":[{"candidate":0,"action":"create","text":"称呼小林"}]}`},
 	}
-	if notes, _ := store.ActiveNotes(ctx, 1, 10); len(notes) != 0 {
-		t.Fatalf("duplicate candidates wrote notes: %+v", notes)
+	service := memory.Service{Store: store, Model: model, TopK: 3}
+	if err := service.Tick(ctx); err != nil {
+		t.Fatalf("duplicate candidates blocked batch: %v", err)
+	}
+	if notes, _ := store.ActiveNotes(ctx, 1, 10); len(notes) != 1 {
+		t.Fatalf("duplicate candidates should leave one accepted note: %+v", notes)
 	}
 	batch, _, err := store.LearningBatch(ctx, 40)
-	if err != nil || len(batch) != 1 {
-		t.Fatalf("failed batch advanced the cursor: %+v err=%v", batch, err)
+	if err != nil || len(batch) != 0 {
+		t.Fatalf("successful partial batch did not advance the cursor: %+v err=%v", batch, err)
 	}
 	runs := store.LearningRuns()
-	if len(runs) != 1 || runs[0].Status != "failed" || runs[0].ErrorClass != "invalid_output" {
+	if len(runs) != 1 || runs[0].Status != "succeeded" || runs[0].RejectedCount != 1 || runs[0].CandidateCount != 1 || runs[0].ChangeCount != 1 {
 		t.Fatalf("learning run = %+v", runs)
 	}
 }
@@ -148,7 +167,7 @@ func TestEpisodeRequiresStableTopic(t *testing.T) {
 	ctx := context.Background()
 	store := replay.NewStore()
 	e := ingest(t, store, "e1", 1, 10, "记住周末去爬山")
-	service := memory.Service{Store: store, TopK: 3}
+	service := memory.Service{Store: store, TopicResolver: staticTopics{}, TopK: 3}
 	base := memory.Change{Subject: 10, Kind: "episode", Key: "climb", Text: "周末爬山", Evidence: []memory.Evidence{{EventID: e.ID, Quote: "周末去爬山"}}}
 	if err := service.Apply(ctx, 1, []qq.Event{e}, []memory.Change{base}, nil); err == nil {
 		t.Fatal("topic-less episode was accepted")
@@ -158,7 +177,7 @@ func TestEpisodeRequiresStableTopic(t *testing.T) {
 	if err := service.Apply(ctx, 1, []qq.Event{e}, []memory.Change{base}, &progress); err == nil {
 		t.Fatal("background learning accepted a topic-less episode")
 	}
-	base.TopicID = "topic:1"
+	service.TopicResolver = staticTopics{e.ID: []string{"topic:1"}}
 	if err := service.Apply(ctx, 1, []qq.Event{e}, []memory.Change{base}, nil); err != nil {
 		t.Fatal(err)
 	}
@@ -170,17 +189,38 @@ func TestEpisodeRequiresStableTopic(t *testing.T) {
 	wrongTopic := base
 	wrongTopic.ID, wrongTopic.Version = notes[0].ID, notes[0].Version
 	wrongTopic.TopicID = "topic:2"
-	if err := service.Apply(ctx, 1, []qq.Event{e}, []memory.Change{wrongTopic}, nil); err == nil || !strings.Contains(err.Error(), "owner") {
+	if err := service.Apply(ctx, 1, []qq.Event{e}, []memory.Change{wrongTopic}, nil); err == nil {
 		t.Fatalf("episode topic was rewritten: %v", err)
 	}
 	if notes, _ := store.ActiveNotes(ctx, 1, 10); notes[0].TopicID != "topic:1" {
 		t.Fatalf("stored episode topic changed: %+v", notes[0])
 	}
+	// An ID-less update must bind the server topic before looking up the
+	// existing identity, otherwise it would try to create a second episode.
+	second := ingest(t, store, "e2", 1, 10, "记住周末去爬山，改成山顶集合")
+	service.TopicResolver = staticTopics{e.ID: []string{"topic:1"}, second.ID: []string{"topic:1"}}
+	idless := memory.Change{Subject: 10, Kind: "episode", Key: "climb", Text: "周末去山顶集合", Evidence: []memory.Evidence{{EventID: second.ID, Quote: "改成山顶集合"}}}
+	if err := service.Apply(ctx, 1, []qq.Event{second}, []memory.Change{idless}, nil); err != nil {
+		t.Fatalf("ID-less episode update: %v", err)
+	}
+	notes, _ = store.ActiveNotes(ctx, 1, 10)
+	if len(notes) != 1 || notes[0].TopicID != "topic:1" || notes[0].Version != 2 || notes[0].Text != "周末去山顶集合" {
+		t.Fatalf("ID-less episode update created a duplicate: %+v", notes)
+	}
 	// Extraction must reject a topic-less episode before reconciliation.
-	model := &learningModel{extract: []string{`{"candidates":[{"subject":10,"kind":"episode","key":"climb","text":"周末爬山","evidence":[{"event_id":"e1","quote":"周末去爬山"}]}]}`}}
-	learning := memory.Service{Store: store, Model: model, TopK: 3}
-	if err := learning.Tick(ctx); err == nil || !strings.Contains(err.Error(), "topic id") {
-		t.Fatalf("topic-less episode candidate: %v", err)
+	other := replay.NewStore()
+	otherEvent := ingest(t, other, "e2", 1, 10, "记住周末去爬山")
+	model := &learningModel{
+		extract:   []string{`{"candidates":[{"subject":10,"kind":"episode","key":"climb","text":"周末爬山","evidence":[{"event_id":"e2","quote":"周末去爬山"}]}]}`},
+		reconcile: []string{`{"decisions":[{"candidate":0,"action":"create","text":"周末爬山"}]}`},
+	}
+	learning := memory.Service{Store: other, Model: model, TopicResolver: staticTopics{otherEvent.ID: []string{"topic:1"}}, TopK: 3}
+	if err := learning.Tick(ctx); err != nil {
+		t.Fatalf("background episode topic binding failed: %v", err)
+	}
+	notes, err = other.ActiveNotes(ctx, 1, 10)
+	if err != nil || len(notes) != 1 || notes[0].TopicID != "topic:1" {
+		t.Fatalf("background episode topic = %+v err=%v", notes, err)
 	}
 }
 

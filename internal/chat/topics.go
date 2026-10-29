@@ -115,6 +115,22 @@ func (t *topicTracker) EventSnapshot(groupID int64, limit int) []conversation.To
 	return out
 }
 
+func (t *topicTracker) TopicIDs(groupID int64, eventIDs []string) map[string][]string {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	out := map[string][]string{}
+	graph := t.groups[groupID]
+	if graph == nil {
+		return out
+	}
+	for _, eventID := range eventIDs {
+		if ids := uniqueTopicIDs(graph.eventTopics[eventID]); len(ids) > 0 {
+			out[eventID] = ids
+		}
+	}
+	return out
+}
+
 func (t *topicTracker) Revision(groupID int64) int64 {
 	t.mu.Lock()
 	defer t.mu.Unlock()

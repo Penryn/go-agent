@@ -440,7 +440,7 @@ func (s *Store) MemoryRevision(ctx context.Context, group int64) (int64, error) 
 }
 
 func (s *Store) RecordLearningRun(ctx context.Context, run memory.LearningRun) error {
-	_, err := s.DB.ExecContext(ctx, `INSERT INTO groupfriend.learning_runs(group_id,after_seq,until_seq,started_at,duration_ms,extract_ms,reconcile_ms,extract_tokens,reconcile_tokens,candidate_count,change_count,status,error_class) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)`, run.GroupID, run.AfterSeq, run.UntilSeq, run.StartedAt, run.DurationMS, run.ExtractMS, run.ReconcileMS, run.ExtractTokens, run.ReconcileTokens, run.CandidateCount, run.ChangeCount, run.Status, run.ErrorClass)
+	_, err := s.DB.ExecContext(ctx, `INSERT INTO groupfriend.learning_runs(group_id,after_seq,until_seq,started_at,duration_ms,extract_ms,reconcile_ms,extract_tokens,reconcile_tokens,candidate_count,rejected_candidates,change_count,status,error_class) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)`, run.GroupID, run.AfterSeq, run.UntilSeq, run.StartedAt, run.DurationMS, run.ExtractMS, run.ReconcileMS, run.ExtractTokens, run.ReconcileTokens, run.CandidateCount, run.RejectedCount, run.ChangeCount, run.Status, run.ErrorClass)
 	if err != nil {
 		return err
 	}
@@ -501,6 +501,36 @@ func (s *Store) SaveTopics(ctx context.Context, group int64, topics []conversati
 		}
 	}
 	return tx.Commit()
+}
+
+// TopicIDs returns persisted topic ownership for the requested messages. The
+// learning pipeline uses this to bind episode topics server-side rather than
+// trusting a model-generated string.
+func (s *Store) TopicIDs(ctx context.Context, group int64, eventIDs []string) (map[string][]string, error) {
+	out := map[string][]string{}
+	if len(eventIDs) == 0 {
+		return out, nil
+	}
+	rows, err := s.DB.QueryContext(ctx, `SELECT event_id,topic_id FROM groupfriend.conversation_topic_events WHERE group_id=$1 AND event_id=ANY($2) ORDER BY event_id,seq,topic_id`, group, eventIDs)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	seen := map[string]map[string]bool{}
+	for rows.Next() {
+		var eventID, topicID string
+		if err := rows.Scan(&eventID, &topicID); err != nil {
+			return nil, err
+		}
+		if seen[eventID] == nil {
+			seen[eventID] = map[string]bool{}
+		}
+		if !seen[eventID][topicID] {
+			seen[eventID][topicID] = true
+			out[eventID] = append(out[eventID], topicID)
+		}
+	}
+	return out, rows.Err()
 }
 
 func (s *Store) LoadTopics(ctx context.Context, group int64) ([]conversation.TopicView, error) {

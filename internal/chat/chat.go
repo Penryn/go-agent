@@ -500,6 +500,41 @@ func (r *Runtime) restoreTopics(ctx context.Context, groupID int64) error {
 	return nil
 }
 
+// TopicIDs resolves live topic ownership first and falls back to persisted
+// assignments for messages that have not yet been observed by this process.
+func (r *Runtime) TopicIDs(ctx context.Context, groupID int64, eventIDs []string) (map[string][]string, error) {
+	out := r.topics.TopicIDs(groupID, eventIDs)
+	missing := false
+	for _, eventID := range eventIDs {
+		if len(out[eventID]) == 0 {
+			missing = true
+			break
+		}
+	}
+	if missing && r.Store != nil {
+		recent, err := r.Store.Recent(ctx, groupID, maxTopicAssignments)
+		if err == nil && len(recent) > 0 {
+			r.topics.observe(groupID, recent, nil, r.Config.ActiveWindow)
+			out = r.topics.TopicIDs(groupID, eventIDs)
+		}
+	}
+	store, ok := r.Store.(memory.TopicResolver)
+	if !ok {
+		return out, nil
+	}
+	persisted, err := store.TopicIDs(ctx, groupID, eventIDs)
+	if err != nil {
+		if len(out) == 0 {
+			return nil, err
+		}
+		return out, nil
+	}
+	for eventID, topicIDs := range persisted {
+		out[eventID] = uniqueTopicIDs(append(out[eventID], topicIDs...))
+	}
+	return out, nil
+}
+
 func (r *Runtime) respond(parent context.Context, groupID int64, batch []qq.Event, actorVersion uint64, degraded []string, stale func() bool) (a Attempt) {
 	if len(batch) == 0 {
 		return Attempt{State: "ignored"}
@@ -632,5 +667,5 @@ const Prompt = `你是长期在 QQ 群里相处的虚拟群友。persona 是稳�
 	notes 只辅助当前交流，相关时自然使用，不炫耀记忆；不能把转述当作确定事实或自己亲历。没有图片成功加载时不声称看到了细节。sticker_candidates 是全局可用素材，只在含义适合时发图，不把语义相似当作群内梗背景相同。
 	没有外部工具、电脑控制、文件任务或实时查询能力，不声称已执行这些操作。
 	只返回一个 JSON 对象：{"action":"silent|text|sticker","plan":{"target_event_id":"可选的事件id","topic_id":"与该目标对应的话题id","response_mode":"silent|ack|short|answer|sticker"},"text":"正文，silent或sticker时为空","quote":"可选的历史message_id","sticker_id":"仅sticker动作填写候选id","reason":"简短结果码","memory":[]}。target_event_id 必须来自 history 或 batch 中可见事件的 id，不是 message_id；topic_id 必须是该目标消息 topic_ids 中的一个。silent 可以填写目标消息，但不发送内容。
-	明确请求记住、改称呼、纠正或遗忘时，memory 可附修改：{id(已有笔记ID),version(已有版本，新建0),subject(本人QQ),kind("preference"或"member"或"episode"),key(稳定属性名),topic_id(episode 必填，来自目标消息的话题),text,evidence:[{event_id,quote(逐字原话)}],forget,expires(ISO时间或null)}。仅在 notes 中已有笔记的修订要带 id/version；不要创建与原笔记矛盾的副本。日常聊天不要附 memory。对保存/遗忘的成功确认只有程序实际写入成功才会发送。
+	明确请求记住、改称呼、纠正或遗忘时，memory 可附修改：{id(已有笔记ID),version(已有版本，新建0),subject(本人QQ),kind("preference"或"member"或"episode"),key(稳定属性名),topic_id(episode 必填，来自目标消息的话题),text,evidence:[{event_id,quote(逐字原话)}],forget,expires(ISO时间或null),valid_from(事实开始时间或null),valid_to(事实结束时间或null),confidence(0到1之间的小数)}。仅在 notes 中已有笔记的修订要带 id/version；不要创建与原笔记矛盾的副本。日常聊天不要附 memory。对保存/遗忘的成功确认只有程序实际写入成功才会发送。
 	不输出推理过程、内部标记、工具协议或人设解释。`

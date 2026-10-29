@@ -42,9 +42,10 @@ CREATE INDEX IF NOT EXISTS friend_note_usage_note_time ON groupfriend.note_usage
 CREATE TABLE IF NOT EXISTS groupfriend.learning_runs (
  id BIGSERIAL PRIMARY KEY,group_id BIGINT NOT NULL,after_seq BIGINT NOT NULL,until_seq BIGINT NOT NULL,
  started_at TIMESTAMPTZ NOT NULL,duration_ms BIGINT NOT NULL,extract_ms BIGINT NOT NULL,reconcile_ms BIGINT NOT NULL,
- extract_tokens BIGINT NOT NULL,reconcile_tokens BIGINT NOT NULL,candidate_count INTEGER NOT NULL,change_count INTEGER NOT NULL,
+ extract_tokens BIGINT NOT NULL,reconcile_tokens BIGINT NOT NULL,candidate_count INTEGER NOT NULL,rejected_candidates INTEGER NOT NULL DEFAULT 0,change_count INTEGER NOT NULL,
  status TEXT NOT NULL,error_class TEXT NOT NULL DEFAULT ''
 );
+ALTER TABLE groupfriend.learning_runs ADD COLUMN IF NOT EXISTS rejected_candidates INTEGER NOT NULL DEFAULT 0;
 CREATE INDEX IF NOT EXISTS friend_learning_runs_time ON groupfriend.learning_runs(started_at DESC);
 CREATE TABLE IF NOT EXISTS groupfriend.memory_events (
  id BIGSERIAL PRIMARY KEY,group_id BIGINT NOT NULL,kind TEXT NOT NULL,at TIMESTAMPTZ NOT NULL DEFAULT NOW()
