@@ -575,3 +575,29 @@ rtk go run ./cmd/replay -fixture tests/replay/memory.json
 ```
 
 这些结果证明当前边界和已有状态流转可运行。它们尚未证明本文列出的整改目标已经实现，尤其是重启恢复、后台摘要、缓存命中率、模型池隔离和真实模型表现。
+
+## 实施状态
+
+以上七项缺口已在本分支实现，主要落点如下：
+
+- G1：`conversation_topic_events`、`SummaryRevision`、重启恢复和 `TopicSummarizer.Tick` 已接入 `app` 的后台调度；摘要只按独立游标提交，失败延后重试。
+- G2：`AdmissionBuilder` 负责轻量准入，`Builder` 负责完整快照；`Runtime.respond` 先读发送预算，再一次性构建快照，memory、meme、图片和聊天模型共享同一批次、历史和查询向量。固定预算与深拷贝在 `internal/context`。
+- G3：新增 index/sticker/image/context TTL；BM25 不可变索引按 memory revision 复用；召回、素材和上下文键包含实际 revision 与模型版本；图片按 URL 缓存处理后的数据 URL。
+- G4：`policy.Input` 接收真实预算，限流在检索和模型调用之前完成；发送前保留一次不影响模型的预算复核。
+- G5：`model.Client` 拆成聊天、视觉、Embedding 和后台四组底层槽位，后台不能占用直接互动容量。
+- G6：notes 增加 `topic_id`，召回过滤 `valid_from`、`valid_to`、`expires_at` 和群范围；偏好、成员、经历按固定预算组装；使用统计失败保留批次。
+- G7：应用组装注入 `Gateway.Observe`，聊天、视觉、Embedding 和后台请求都携带 operation、group、attempt、prompt/model 版本、缓存命中、耗时、token 和错误分类；回合保存缓存命中、`stale_reason` 和 `policy_reason`。
+
+验证命令：
+
+```bash
+rtk proxy go test ./...
+rtk proxy go test -race ./...
+rtk proxy go vet ./...
+rtk proxy go build ./...
+rtk proxy go run ./cmd/replay -fixture tests/replay/conversation.json
+rtk proxy go run ./cmd/replay -fixture tests/replay/memory.json
+rtk git diff --check
+```
+
+有意保留的简化：话题关系仍以进程内图为准，`topic_ttl` 与 `TopicSnapshotKey` 预留给未来跨进程共享缓存，当前不额外缓存话题快照，避免快照覆盖尚未处理的新事件。
