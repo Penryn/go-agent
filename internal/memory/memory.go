@@ -334,11 +334,31 @@ func uniqueStrings(values []string) []string {
 }
 
 func evidenceTopicIDs(evidence []Evidence, topics map[string][]string) []string {
-	values := []string{}
-	for _, proof := range evidence {
-		values = append(values, topics[proof.EventID]...)
+	if len(evidence) == 0 {
+		return nil
 	}
-	return uniqueStrings(values)
+	var allowed []string
+	for _, proof := range evidence {
+		current := uniqueStrings(topics[proof.EventID])
+		if len(current) == 0 {
+			return nil
+		}
+		if allowed == nil {
+			allowed = current
+			continue
+		}
+		intersection := make([]string, 0, len(allowed))
+		for _, topicID := range allowed {
+			if slices.Contains(current, topicID) {
+				intersection = append(intersection, topicID)
+			}
+		}
+		allowed = intersection
+		if len(allowed) == 0 {
+			return nil
+		}
+	}
+	return allowed
 }
 
 func (s *Service) Recall(ctx context.Context, group int64, events []qq.Event, query string) ([]Note, Trace, error) {
@@ -689,7 +709,7 @@ func (s *Service) Apply(ctx context.Context, group int64, events []qq.Event, cha
 		return err
 	}
 	bindTopic := func(change *Change) error {
-		if change.Kind != "episode" || s.topicResolver() == nil {
+		if change.Kind != "episode" {
 			return nil
 		}
 		allowed := evidenceTopicIDs(change.Evidence, topicMap)

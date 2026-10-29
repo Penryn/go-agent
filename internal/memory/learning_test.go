@@ -207,6 +207,12 @@ func TestEpisodeRequiresStableTopic(t *testing.T) {
 	if len(notes) != 1 || notes[0].TopicID != "topic:1" || notes[0].Version != 2 || notes[0].Text != "周末去山顶集合" {
 		t.Fatalf("ID-less episode update created a duplicate: %+v", notes)
 	}
+	crossTopicEvent := ingest(t, store, "e3", 1, 10, "记住另一件爬山的事")
+	service.TopicResolver = staticTopics{e.ID: []string{"topic:1"}, second.ID: []string{"topic:1"}, crossTopicEvent.ID: []string{"topic:2"}}
+	crossTopic := memory.Change{Subject: 10, Kind: "episode", Key: "climb-cross", TopicID: "topic:1", Text: "跨话题经历", Evidence: []memory.Evidence{{EventID: e.ID, Quote: "周末去爬山"}, {EventID: crossTopicEvent.ID, Quote: "另一件爬山的事"}}}
+	if err := service.Apply(ctx, 1, []qq.Event{e, crossTopicEvent}, []memory.Change{crossTopic}, nil); err == nil {
+		t.Fatal("episode with evidence from different topics was accepted")
+	}
 	// Extraction must reject a topic-less episode before reconciliation.
 	other := replay.NewStore()
 	otherEvent := ingest(t, other, "e2", 1, 10, "记住周末去爬山")

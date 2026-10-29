@@ -6,7 +6,7 @@
 
 本文面向负责 `internal/memory`、`internal/chat`、`internal/store`、`internal/config` 和 `schema` 的开发与测试人员，目标是据此实现并验收改造。本文不规定模型供应商、群聊策略、表情包流程或部署环境变更。
 
-现状描述来自当前工作区源码，工作区分支为 `main`，读取时 `git status` 显示干净，HEAD 与 `origin/main` 一致。文中的表结构、接口和行为变更均为提案，尚未实现或线上验证。
+> 实施状态：使用账本、分阶段学习、active 热查询、服务端 topic 绑定、配置和离线评测已落地；文中仍保留最初的提案结构和验收思路，当前行为以 [架构说明](ARCHITECTURE.md) 和源码为准。真实模型质量和线上 QQ 行为未由本文验证。
 
 ## 现状与目标
 

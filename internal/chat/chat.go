@@ -530,7 +530,9 @@ func (r *Runtime) TopicIDs(ctx context.Context, groupID int64, eventIDs []string
 		return out, nil
 	}
 	for eventID, topicIDs := range persisted {
-		out[eventID] = uniqueTopicIDs(append(out[eventID], topicIDs...))
+		if len(out[eventID]) == 0 {
+			out[eventID] = uniqueTopicIDs(topicIDs)
+		}
 	}
 	return out, nil
 }
