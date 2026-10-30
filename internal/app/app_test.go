@@ -11,9 +11,11 @@ import (
 	"net/url"
 	"os"
 	"slices"
+	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/phlin/go-agent/internal/chat"
 	"github.com/phlin/go-agent/internal/config"
 	"github.com/phlin/go-agent/internal/qq"
 	"github.com/phlin/go-agent/internal/store"
@@ -327,6 +329,145 @@ func TestOwnedSenderReactionAndPokeBoundaries(t *testing.T) {
 		}
 		if got := drain(actions); len(got) != 0 {
 			t.Fatal("platform actions ran without send ownership", got)
+		}
+	})
+}
+
+func TestReconcilerClosesUnknownSends(t *testing.T) {
+	dsn := createTempDatabase(t)
+	db, err := store.Open(context.Background(), dsn, 3)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if err := db.AcquireSender(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	var queries atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		queries.Add(1)
+		if r.URL.Path != "/get_msg" {
+			t.Error("unexpected platform action during reconcile", r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"status":"ok","retcode":0,"data":{"message_id":77,"message_type":"group","group_id":1,"user_id":99}}`))
+	}))
+	t.Cleanup(server.Close)
+	runtime := chat.New(context.Background(), &chat.Runtime{})
+	t.Cleanup(runtime.Close)
+	rec := &reconciler{qq: &qq.Client{URL: server.URL}, store: db, runtime: runtime, self: 99}
+	ctx := context.Background()
+
+	seed := func(id string, group int64, messageID string, reply chat.Reply) chat.Attempt {
+		t.Helper()
+		attempt := chat.Attempt{ID: id, GroupID: group, State: "planning", At: time.Now(), Reply: reply}
+		if ok, err := db.BeginAttempt(ctx, attempt); err != nil || !ok {
+			t.Fatal(ok, err)
+		}
+		attempt.State = "sending"
+		if err := db.UpdateAttempt(ctx, attempt); err != nil {
+			t.Fatal(err)
+		}
+		if err := db.SaveDelivery(ctx, attempt.ID, messageID, "message"); err != nil {
+			t.Fatal(err)
+		}
+		attempt.State = "unknown"
+		attempt.Error = "delivery confirmed but archive failed"
+		if err := db.UpdateAttempt(ctx, attempt); err != nil {
+			t.Fatal(err)
+		}
+		return attempt
+	}
+
+	t.Run("unique match archives once", func(t *testing.T) {
+		attempt := seed("turn:1:1", 1, "77", chat.Reply{Action: "text", Text: "记住了"})
+		if err := rec.Tick(ctx); err != nil {
+			t.Fatal(err)
+		}
+		var state, reconcileState string
+		if err := db.DB.QueryRowContext(ctx, `SELECT state,reconcile_state FROM groupfriend.reply_attempts WHERE id=$1`, attempt.ID).Scan(&state, &reconcileState); err != nil {
+			t.Fatal(err)
+		}
+		if state != "confirmed" || reconcileState != "resolved" {
+			t.Fatal("reconciler did not close the attempt", state, reconcileState)
+		}
+		reply, err := db.IsBotReply(ctx, 1, "77")
+		if err != nil || !reply {
+			t.Fatal("reconciled message invisible to repliesToBot", reply, err)
+		}
+		// The resolved attempt is not picked up again; no extra query ran.
+		before := queries.Load()
+		if err := rec.Tick(ctx); err != nil {
+			t.Fatal(err)
+		}
+		if queries.Load() != before {
+			t.Fatal("resolved attempt was queried again")
+		}
+	})
+	t.Run("foreign sender is unresolvable", func(t *testing.T) {
+		foreign := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			_, _ = w.Write([]byte(`{"status":"ok","retcode":0,"data":{"message_id":78,"message_type":"group","group_id":1,"user_id":10}}`))
+		}))
+		t.Cleanup(foreign.Close)
+		bot := &reconciler{qq: &qq.Client{URL: foreign.URL}, store: db, runtime: runtime, self: 99}
+		attempt := seed("turn:1:2", 1, "78", chat.Reply{Action: "text", Text: "不是我的"})
+		if err := bot.Tick(ctx); err != nil {
+			t.Fatal(err)
+		}
+		var reconcileState string
+		if err := db.DB.QueryRowContext(ctx, `SELECT reconcile_state FROM groupfriend.reply_attempts WHERE id=$1`, attempt.ID).Scan(&reconcileState); err != nil {
+			t.Fatal(err)
+		}
+		if reconcileState != "unresolvable" {
+			t.Fatal("foreign message should be unresolvable", reconcileState)
+		}
+		if reply, err := db.IsBotReply(ctx, 1, "78"); err == nil && reply {
+			t.Fatal("foreign sender archived as bot reply")
+		}
+	})
+	t.Run("uncertain answer defers without closing", func(t *testing.T) {
+		flaky := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusBadGateway)
+			_, _ = w.Write([]byte("gateway failed"))
+		}))
+		t.Cleanup(flaky.Close)
+		bot := &reconciler{qq: &qq.Client{URL: flaky.URL}, store: db, runtime: runtime, self: 99}
+		attempt := seed("turn:1:3", 1, "79", chat.Reply{Action: "text", Text: "不确定"})
+		if err := bot.Tick(ctx); err != nil {
+			t.Fatal(err)
+		}
+		var state, reconcileState string
+		var due sql.NullTime
+		if err := db.DB.QueryRowContext(ctx, `SELECT state,reconcile_state,reconcile_at FROM groupfriend.reply_attempts WHERE id=$1`, attempt.ID).Scan(&state, &reconcileState, &due); err != nil {
+			t.Fatal(err)
+		}
+		if state != "unknown" || !due.Valid || !due.Time.After(time.Now()) {
+			t.Fatal("uncertain reconcile closed or did not back off", state, reconcileState, due)
+		}
+		dueAttempts, err := db.ReconcileDue(ctx, 10)
+		if err != nil || len(dueAttempts) != 0 {
+			t.Fatal("deferred candidate surfaced too early", dueAttempts, err)
+		}
+	})
+	t.Run("action retry never calls the platform", func(t *testing.T) {
+		attempt := seed("turn:2:1", 2, "80", chat.Reply{Action: "reaction", Quote: "55", EmojiID: "76"})
+		if err := db.MarkReconcile(ctx, attempt.ID, "action confirmed but archive failed"); err != nil {
+			t.Fatal(err)
+		}
+		before := queries.Load()
+		if err := rec.Tick(ctx); err != nil {
+			t.Fatal(err)
+		}
+		if queries.Load() != before {
+			t.Fatal("action reconciliation touched the platform API")
+		}
+		var state string
+		if err := db.DB.QueryRowContext(ctx, `SELECT state FROM groupfriend.reply_attempts WHERE id=$1`, attempt.ID).Scan(&state); err != nil || state != "confirmed" {
+			t.Fatal("action attempt not confirmed by retry", state, err)
+		}
+		var actions int
+		if err := db.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM groupfriend.conversation_topic_actions WHERE attempt_id=$1`, attempt.ID).Scan(&actions); err != nil || actions != 0 {
+			t.Fatal("topic action recorded without a topic", actions, err)
 		}
 	})
 }

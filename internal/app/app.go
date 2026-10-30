@@ -165,6 +165,10 @@ func (a *App) Run(ctx context.Context) error {
 				errorsCh <- err
 			}
 		}()
+		// Unknown sends close locally against the platform receipt; no
+		// compensation ever re-sends.
+		rec := &reconciler{qq: a.qq, store: a.store, runtime: a.runtime, self: a.cfg.QQ.SelfID}
+		runBackground(a.ctx, &a.wg, reconcileInterval, rec.Tick)
 	}
 	runBackground(a.ctx, &a.wg, a.cfg.Memory.Interval, a.memories.Tick)
 	runBackground(a.ctx, &a.wg, a.cfg.Memory.SummaryInterval, a.topics.Tick)

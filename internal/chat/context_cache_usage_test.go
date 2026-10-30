@@ -103,3 +103,4 @@ func TestContextCacheHitKeepsNoteIDs(t *testing.T) {
 		t.Fatalf("booked note ids = %v", store.used)
 	}
 }
+func (s *noteStore) MarkReconcile(context.Context, string, string) error { return nil }

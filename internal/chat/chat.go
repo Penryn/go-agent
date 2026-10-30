@@ -85,6 +85,9 @@ type Store interface {
 	SavePendingMemory(context.Context, string, int64, []memory.NoteSnapshot) error
 	// DiscardPendingMemory abandons staged memory for unconfirmed attempts.
 	DiscardPendingMemory(context.Context, string, string) error
+	// MarkReconcile opts an unknown action attempt into local reconciliation
+	// after the platform confirmed it but the local archive failed.
+	MarkReconcile(context.Context, string, string) error
 	RepliesSince(context.Context, int64, time.Time) (int, time.Time, error)
 }
 

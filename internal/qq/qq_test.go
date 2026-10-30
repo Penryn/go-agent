@@ -520,3 +520,43 @@ func TestReceiveOrdersEventsReconnectsAndCancels(t *testing.T) {
 		t.Fatal("receive did not stop after cancellation")
 	}
 }
+
+func TestFetchMessageReturnsIdentity(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		raw, _ := io.ReadAll(r.Body)
+		if r.URL.Path != "/get_msg" || !strings.Contains(string(raw), `"message_id":9007199254740993`) {
+			t.Errorf("unexpected fetch request %s %s", r.URL.Path, raw)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"status":"ok","retcode":0,"data":{"message_id":9007199254740993,"message_type":"group","group_id":"10","user_id":"99"}}`))
+	}))
+	defer server.Close()
+	facts, err := (&Client{URL: server.URL}).FetchMessage(context.Background(), "9007199254740993")
+	if err != nil || facts.MessageID != "9007199254740993" || facts.GroupID != 10 || facts.SenderID != 99 {
+		t.Fatal("identity not fetched", facts, err)
+	}
+	for _, tc := range []struct {
+		name, response string
+		status         int
+		definite       bool
+	}{
+		{name: "no such message", response: `{"status":"failed","retcode":1200,"message":"msg not found"}`, definite: true},
+		{name: "gateway failure", status: http.StatusBadGateway, response: `gateway failed`},
+		{name: "identity mismatch", response: `{"status":"ok","retcode":0,"data":{"message_id":1,"message_type":"group","group_id":10,"user_id":99}}`, definite: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if tc.status != 0 {
+					w.WriteHeader(tc.status)
+				}
+				_, _ = w.Write([]byte(tc.response))
+			}))
+			defer srv.Close()
+			_, err := (&Client{URL: srv.URL}).FetchMessage(context.Background(), "9007199254740993")
+			var sendErr *SendError
+			if !errors.As(err, &sendErr) || sendErr.Definite != tc.definite {
+				t.Fatalf("error=%+v definite=%v", err, tc.definite)
+			}
+		})
+	}
+}

@@ -38,10 +38,11 @@ type Store struct {
 	actions        []chat.ActionRecord
 	consultations  map[string][]string
 	pendingMemory  map[string]*pendingMemory
+	reconcileMarks map[string]string
 }
 
 func NewStore() *Store {
-	return &Store{attempts: map[string]chat.Attempt{}, usage: map[string]map[string]bool{}, notes: map[string]memory.Note{}, vectors: map[string]projection{}, cursors: map[int64]int64{}, topics: map[int64][]conversation.TopicView{}, topicEvents: map[int64][]conversation.TopicEventView{}, summaryCursors: map[int64]int64{}, deliveries: map[string][2]string{}, consultations: map[string][]string{}, pendingMemory: map[string]*pendingMemory{}}
+	return &Store{attempts: map[string]chat.Attempt{}, usage: map[string]map[string]bool{}, notes: map[string]memory.Note{}, vectors: map[string]projection{}, cursors: map[int64]int64{}, topics: map[int64][]conversation.TopicView{}, topicEvents: map[int64][]conversation.TopicEventView{}, summaryCursors: map[int64]int64{}, deliveries: map[string][2]string{}, consultations: map[string][]string{}, pendingMemory: map[string]*pendingMemory{}, reconcileMarks: map[string]string{}}
 }
 func (s *Store) Ingest(_ context.Context, e *qq.Event) (bool, error) {
 	s.mu.Lock()
@@ -190,6 +191,26 @@ func (s *Store) DiscardPendingMemory(_ context.Context, attemptID, reason string
 		p.reason = reason
 	}
 	return nil
+}
+
+// MarkReconcile records the reconcile marker; the store picks unknown action
+// attempts back up on the next reconcile pass.
+func (s *Store) MarkReconcile(_ context.Context, attemptID, reason string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.reconcileMarks[attemptID] = reason
+	return nil
+}
+
+// ReconcileMarks exposes which attempts were marked for local reconciliation.
+func (s *Store) ReconcileMarks() map[string]string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make(map[string]string, len(s.reconcileMarks))
+	for id, reason := range s.reconcileMarks {
+		out[id] = reason
+	}
+	return out
 }
 
 // commitPendingMemory applies staged notes with SaveNotes' local semantics and

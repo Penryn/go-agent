@@ -6,9 +6,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/phlin/go-agent/internal/chat"
 	"github.com/phlin/go-agent/internal/memory"
+	"github.com/phlin/go-agent/internal/qq"
 )
 
 // SaveDelivery persists the platform receipt before local archiving, so an
@@ -33,6 +35,121 @@ func (s *Store) SavePendingMemory(ctx context.Context, attemptID string, group i
 // platform confirmation; the reason is kept for audit.
 func (s *Store) DiscardPendingMemory(ctx context.Context, attemptID, reason string) error {
 	_, err := s.DB.ExecContext(ctx, `UPDATE groupfriend.reply_memory_pending SET state='discarded',last_error=$2,updated_at=NOW() WHERE attempt_id=$1 AND state='pending'`, attemptID, reason)
+	return err
+}
+
+// MarkReconcile opts an unknown action attempt into local reconciliation: the
+// platform already confirmed the action and only the local archive failed. It
+// also stamps the delivery kind, because the failed confirmation transaction
+// rolled back before it could.
+func (s *Store) MarkReconcile(ctx context.Context, attemptID, reason string) error {
+	_, err := s.DB.ExecContext(ctx, `UPDATE groupfriend.reply_attempts SET delivery_kind='action',reconcile_state='pending',reconcile_error=$2,reconcile_at=NOW() WHERE id=$1 AND state='unknown'`, attemptID, reason)
+	return err
+}
+
+// ReconcileCandidate is one unknown attempt due for local reconciliation.
+// Message-kind candidates always carry the persisted platform receipt.
+type ReconcileCandidate struct {
+	Attempt   chat.Attempt
+	Kind      string
+	MessageID string
+}
+
+// ReconcileDue lists unknown attempts ready for local closure: message sends
+// with a persisted receipt, and action attempts explicitly marked pending.
+// Uncertain sends without a receipt stay unknown — there is no reliable query.
+func (s *Store) ReconcileDue(ctx context.Context, limit int) ([]ReconcileCandidate, error) {
+	rows, err := s.DB.QueryContext(ctx, `SELECT body,delivery_kind,delivery_message_id FROM groupfriend.reply_attempts WHERE state='unknown' AND ((delivery_kind='message' AND delivery_message_id<>'' AND reconcile_state IN ('none','pending')) OR (delivery_kind='action' AND reconcile_state='pending')) AND (reconcile_at IS NULL OR reconcile_at<=NOW()) ORDER BY updated_at LIMIT $1`, max(1, limit))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []ReconcileCandidate{}
+	for rows.Next() {
+		var body []byte
+		var candidate ReconcileCandidate
+		if err := rows.Scan(&body, &candidate.Kind, &candidate.MessageID); err != nil {
+			return nil, err
+		}
+		if err := json.Unmarshal(body, &candidate.Attempt); err != nil {
+			return nil, fmt.Errorf("reconcile attempt %s: %w", candidate.Attempt.ID, err)
+		}
+		out = append(out, candidate)
+	}
+	return out, rows.Err()
+}
+
+// ReconcileOutbound closes a reconciled message attempt: the outbound event is
+// archived idempotently, the attempt turns confirmed, usage is booked and
+// staged memory commits — all in one transaction, with no platform call.
+func (s *Store) ReconcileOutbound(ctx context.Context, attempt chat.Attempt, e qq.Event, noteIDs []string) error {
+	tx, err := s.DB.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	result, err := tx.ExecContext(ctx, `UPDATE groupfriend.reply_attempts SET state='confirmed',reconcile_state='resolved',reconcile_error='',updated_at=NOW() WHERE id=$1 AND state='unknown'`, attempt.ID)
+	if err != nil {
+		return err
+	}
+	if n, _ := result.RowsAffected(); n != 1 {
+		return errors.New("reconcile attempt is no longer unknown")
+	}
+	eb, err := json.Marshal(e)
+	if err != nil {
+		return err
+	}
+	// ON CONFLICT DO NOTHING covers both the event_id uniqueness and the
+	// outbound (group_id, message_id) partial index.
+	if _, err := tx.ExecContext(ctx, `INSERT INTO groupfriend.messages(event_id,group_id,user_id,message_id,outbound,event_at,body) VALUES($1,$2,$3,$4,TRUE,$5,$6) ON CONFLICT DO NOTHING`, e.ID, e.GroupID, e.UserID, e.MessageID, e.At, eb); err != nil {
+		return err
+	}
+	inserted := []string{}
+	if len(noteIDs) > 0 {
+		rows, err := tx.QueryContext(ctx, `INSERT INTO groupfriend.note_usage(attempt_id,note_id,group_id,confirmed_at) SELECT $1,n.id,n.group_id,$3 FROM groupfriend.notes n WHERE n.group_id=$2 AND n.id=ANY($4) ON CONFLICT DO NOTHING RETURNING note_id`, attempt.ID, attempt.GroupID, e.At, noteIDs)
+		if err != nil {
+			return err
+		}
+		for rows.Next() {
+			var id string
+			if err := rows.Scan(&id); err != nil {
+				rows.Close()
+				return err
+			}
+			inserted = append(inserted, id)
+		}
+		if err := rows.Err(); err != nil {
+			rows.Close()
+			return err
+		}
+		if err := rows.Close(); err != nil {
+			return err
+		}
+	}
+	if len(inserted) > 0 {
+		if _, err := tx.ExecContext(ctx, `UPDATE groupfriend.notes SET use_count=CASE WHEN usage_version=1 THEN use_count+1 ELSE 1 END,usage_version=1,last_used_at=$2 WHERE id=ANY($1)`, inserted, e.At); err != nil {
+			return err
+		}
+	}
+	if err := s.commitPending(ctx, tx, attempt.ID); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+// DeferReconcile keeps an unknown attempt pending with a delayed retry. The
+// platform could not be uniquely confirmed; text or time similarity is never
+// used to guess the outcome. Message candidates surface with state 'none',
+// so both entry states can be deferred.
+func (s *Store) DeferReconcile(ctx context.Context, attemptID, reason string, next time.Time) error {
+	_, err := s.DB.ExecContext(ctx, `UPDATE groupfriend.reply_attempts SET reconcile_state='pending',reconcile_at=$3,reconcile_error=$2 WHERE id=$1 AND state='unknown' AND reconcile_state IN ('none','pending')`, attemptID, reason, next)
+	return err
+}
+
+// FailReconcile marks an attempt unresolvable: the platform definitively
+// contradicts the stored send (no such message, or a foreign identity).
+func (s *Store) FailReconcile(ctx context.Context, attemptID, reason string) error {
+	_, err := s.DB.ExecContext(ctx, `UPDATE groupfriend.reply_attempts SET reconcile_state='unresolvable',reconcile_error=$2 WHERE id=$1 AND state='unknown'`, attemptID, reason)
 	return err
 }
 

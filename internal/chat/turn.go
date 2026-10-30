@@ -203,23 +203,19 @@ func (r *Runtime) applyAndDeliver(parent, ctx context.Context, groupID int64, at
 	if attempt.Reply.Action == "reaction" || attempt.Reply.Action == "poke" {
 		// Reactions and pokes are visible platform actions, not messages:
 		// confirm the attempt with the action fact, topic projection and
-		// consultations instead of archiving an outbound event. A reaction
-		// binds to the topic of its quoted message, a poke to the topic of
-		// its target event; no determinable topic confirms the action alone.
-		record := ActionRecord{GroupID: groupID, Kind: attempt.Reply.Action, ConfirmedAt: time.Now()}
-		if attempt.Reply.Action == "reaction" {
-			record.TargetMessageID = attempt.Reply.Quote
-			record.TopicID = r.topics.topicIDForMessage(groupID, attempt.Reply.Quote)
-		} else if attempt.Reply.Plan != nil {
-			record.TargetEventID = attempt.Reply.Plan.TargetEventID
-			record.TopicID = r.topics.topicIDForEvent(groupID, attempt.Reply.Plan.TargetEventID)
-		}
+		// consultations instead of archiving an outbound event.
+		record := r.ActionRecordFor(attempt.Reply, groupID)
 		if err := r.Store.ConfirmAction(finish, attempt, record, snapshotNoteIDs(snapshot.Notes)); err != nil {
 			attempt.State = "unknown"
 			attempt.Error = "action confirmed but archive failed"
 			recordCtx, cancelRecord := context.WithTimeout(context.WithoutCancel(parent), 3*time.Second)
 			if updateErr := r.Store.UpdateAttempt(recordCtx, attempt); updateErr != nil {
 				slog.Error("record archive failure", "attempt", attempt.ID, "error", updateErr)
+			}
+			// The platform action already happened; only the local archive is
+			// missing, so the reconciler retries it without another send.
+			if markErr := r.Store.MarkReconcile(recordCtx, attempt.ID, err.Error()); markErr != nil {
+				slog.Error("mark action reconcile", "attempt", attempt.ID, "error", markErr)
 			}
 			cancelRecord()
 			slog.Error(attempt.Error, "attempt", attempt.ID, "error", err)
@@ -254,6 +250,34 @@ func (r *Runtime) applyAndDeliver(parent, ctx context.Context, groupID int64, at
 	}
 	r.topics.markBotReply(groupID, attempt.Reply.Plan.TopicID, out)
 	return attempt
+}
+
+// ActionRecordFor rebuilds the projection record of a reaction or poke reply.
+// A reaction binds to the topic of its quoted message, a poke to the topic of
+// its target event; no determinable topic confirms the action alone. The
+// reconciler reuses it to retry a failed local archive.
+func (r *Runtime) ActionRecordFor(reply Reply, groupID int64) ActionRecord {
+	record := ActionRecord{GroupID: groupID, Kind: reply.Action, ConfirmedAt: time.Now()}
+	if reply.Action == "reaction" {
+		record.TargetMessageID = reply.Quote
+		record.TopicID = r.topics.topicIDForMessage(groupID, reply.Quote)
+	} else if reply.Plan != nil {
+		record.TargetEventID = reply.Plan.TargetEventID
+		record.TopicID = r.topics.topicIDForEvent(groupID, reply.Plan.TargetEventID)
+	}
+	return record
+}
+
+// ApplyReconciledMessage finishes the in-memory projections after the
+// reconciler archives an outbound message.
+func (r *Runtime) ApplyReconciledMessage(e qq.Event, topicID string) {
+	r.topics.markBotReply(e.GroupID, topicID, e)
+}
+
+// ApplyReconciledAction finishes the in-memory topic projection after the
+// reconciler confirms an action archive.
+func (r *Runtime) ApplyReconciledAction(record ActionRecord) {
+	r.topics.markBotAction(record.GroupID, record.TopicID, record.ConfirmedAt)
 }
 
 // pokeAllowed reports whether the per-target poke cooldown has elapsed,

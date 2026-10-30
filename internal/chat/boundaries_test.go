@@ -54,3 +54,4 @@ func TestContextCacheKeyRequiresStickerRevision(t *testing.T) {
 		t.Fatal("context cache key used a failed asset revision")
 	}
 }
+func (s *revisionStub) MarkReconcile(context.Context, string, string) error { return nil }

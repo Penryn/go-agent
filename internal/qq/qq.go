@@ -206,6 +206,19 @@ func parseMessageID(messageID string) (int64, error) {
 	return id, nil
 }
 
+// unionID decodes an optional OneBot ID union (number or decimal string) into
+// an int64. Unparseable or absent values report zero.
+func unionID(raw json.RawMessage) int64 {
+	if len(raw) == 0 {
+		return 0
+	}
+	var id message.ID
+	if json.Unmarshal(raw, &id) == nil {
+		return id.Int64()
+	}
+	return 0
+}
+
 // RefreshMessage re-fetches a quote target with get_msg and confirms it still
 // exists in the conversation the reply is destined for. It is a read-only
 // refresh: the returned message must match the requested ID, and the reported
@@ -223,13 +236,11 @@ func (c *Client) RefreshMessage(ctx context.Context, messageID string, group int
 	if result.MessageID.Int64() != id {
 		return &SendError{errors.New("refreshed message does not match quote"), true}
 	}
-	reported := int64(0)
+	var groupRaw json.RawMessage
 	if result.GroupID != nil {
-		var gid message.ID
-		if json.Unmarshal(result.GroupID.Raw, &gid) == nil {
-			reported = gid.Int64()
-		}
+		groupRaw = result.GroupID.Bytes()
 	}
+	reported := unionID(groupRaw)
 	// group_id is optional in get_msg responses; when the platform reports a
 	// session it must be this one, and a private target never belongs to a
 	// group reply.
@@ -237,6 +248,38 @@ func (c *Client) RefreshMessage(ctx context.Context, messageID string, group int
 		return &SendError{errors.New("quote target is not in this conversation"), true}
 	}
 	return nil
+}
+
+// MessageFacts is the platform-verified identity of one message. The outbound
+// reconciler uses it to prove an unknown send belongs to this bot in this
+// group. ponytail: OneBot get_msg exposes no recalled flag, so recall state
+// stays a local fact only.
+type MessageFacts struct {
+	MessageID string
+	GroupID   int64
+	SenderID  int64
+}
+
+// FetchMessage fetches a message identity with get_msg. An explicit platform
+// rejection is definite (the message is not there); transport failures stay
+// indefinite so the reconciler can back off.
+func (c *Client) FetchMessage(ctx context.Context, messageID string) (MessageFacts, error) {
+	id, err := parseMessageID(messageID)
+	if err != nil {
+		return MessageFacts{}, err
+	}
+	result, err := c.api().GetMsg(ctx, api.GetMsgRequest{MessageID: api.GetMsgRequestMessageIDUnion{Raw: []byte(strconv.FormatInt(id, 10))}})
+	if err != nil {
+		return MessageFacts{}, &SendError{err, definiteRejection(err)}
+	}
+	if result.MessageID.Int64() != id {
+		return MessageFacts{}, &SendError{errors.New("message identity mismatch"), true}
+	}
+	var groupRaw json.RawMessage
+	if result.GroupID != nil {
+		groupRaw = result.GroupID.Bytes()
+	}
+	return MessageFacts{MessageID: strconv.FormatInt(id, 10), GroupID: unionID(groupRaw), SenderID: unionID(result.UserID.Bytes())}, nil
 }
 
 // MarkMessageRead marks a single message read with mark_msg_as_read before a

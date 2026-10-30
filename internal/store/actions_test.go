@@ -243,3 +243,115 @@ func TestOutboundUniqueIndexSkipsDuplicates(t *testing.T) {
 func qqEvent(group int64, messageID string) qq.Event {
 	return qq.Event{ID: "out:" + messageID, MessageID: messageID, GroupID: group, UserID: 99, Outbound: true, At: time.Now()}
 }
+
+func TestReconcileOutboundClosesUnknownAttempt(t *testing.T) {
+	s := testStore(t)
+	ctx := context.Background()
+	group := int64(4)
+	if err := s.SaveNotes(ctx, group, []memory.Note{{ID: "note-7", GroupID: group, Subject: 10, Kind: "preference", Key: "nickname", Text: "称呼小林", State: "active", Updated: time.Now(), Version: 1, Evidence: []memory.Evidence{}}}, nil); err != nil {
+		t.Fatal(err)
+	}
+	attempt := chat.Attempt{ID: "turn:4:1", GroupID: group, State: "planning", At: time.Now(), Reply: chat.Reply{Action: "text", Text: "记住了"}, Retrieval: memory.Trace{Selected: []string{"note-7"}}}
+	if ok, err := s.BeginAttempt(ctx, attempt); err != nil || !ok {
+		t.Fatal(ok, err)
+	}
+	attempt.State = "sending"
+	if err := s.UpdateAttempt(ctx, attempt); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SaveDelivery(ctx, attempt.ID, "77", "message"); err != nil {
+		t.Fatal(err)
+	}
+	// Simulate an archive failure after a confirmed platform send.
+	attempt.State = "unknown"
+	attempt.Error = "delivery confirmed but archive failed"
+	if err := s.UpdateAttempt(ctx, attempt); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SavePendingMemory(ctx, attempt.ID, group, memory.NoteSnapshots([]memory.Note{{ID: "note-reconcile", GroupID: group, Subject: 10, Kind: "preference", Key: "habit", Text: "喜欢夜跑", State: "active", Updated: time.Now(), Version: 0, Evidence: []memory.Evidence{}}})); err != nil {
+		t.Fatal(err)
+	}
+	due, err := s.ReconcileDue(ctx, 10)
+	if err != nil || len(due) != 1 || due[0].Kind != "message" || due[0].MessageID != "77" {
+		t.Fatal("candidate not surfaced", due, err)
+	}
+	if err := s.ReconcileOutbound(ctx, due[0].Attempt, qqEvent(group, "77"), []string{"note-7"}); err != nil {
+		t.Fatal(err)
+	}
+	var state, reconcileState string
+	if err := s.DB.QueryRowContext(ctx, `SELECT state,reconcile_state FROM groupfriend.reply_attempts WHERE id=$1`, attempt.ID).Scan(&state, &reconcileState); err != nil {
+		t.Fatal(err)
+	}
+	if state != "confirmed" || reconcileState != "resolved" {
+		t.Fatal("attempt not resolved", state, reconcileState)
+	}
+	reply, err := s.IsBotReply(ctx, group, "77")
+	if err != nil || !reply {
+		t.Fatal("reconciled message is not an archived bot reply", reply, err)
+	}
+	var useCount int64
+	var pendingState string
+	if err := s.DB.QueryRowContext(ctx, `SELECT use_count FROM groupfriend.notes WHERE id='note-7'`).Scan(&useCount); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.DB.QueryRowContext(ctx, `SELECT state FROM groupfriend.reply_memory_pending WHERE attempt_id=$1`, attempt.ID).Scan(&pendingState); err != nil {
+		t.Fatal(err)
+	}
+	if useCount != 1 || pendingState != "committed" {
+		t.Fatal("reconcile did not finish projections", useCount, pendingState)
+	}
+	// The closure is single-shot: an already resolved attempt no longer closes.
+	if err := s.ReconcileOutbound(ctx, due[0].Attempt, qqEvent(group, "77"), nil); err == nil {
+		t.Fatal("resolved attempt was closed twice")
+	}
+	if due, err = s.ReconcileDue(ctx, 10); err != nil || len(due) != 0 {
+		t.Fatal("resolved attempt still due", due, err)
+	}
+}
+
+func TestReconcileDeferAndFailCursor(t *testing.T) {
+	s := testStore(t)
+	ctx := context.Background()
+	group := int64(5)
+	attempt := chat.Attempt{ID: "turn:5:1", GroupID: group, State: "unknown", At: time.Now()}
+	if ok, err := s.BeginAttempt(ctx, attempt); err != nil || !ok {
+		t.Fatal(ok, err)
+	}
+	if err := s.UpdateAttempt(ctx, attempt); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.MarkReconcile(ctx, attempt.ID, "action confirmed but archive failed"); err != nil {
+		t.Fatal(err)
+	}
+	due, err := s.ReconcileDue(ctx, 10)
+	if err != nil || len(due) != 1 || due[0].Kind != "action" {
+		t.Fatal("action candidate not surfaced", due, err)
+	}
+	if err := s.DeferReconcile(ctx, attempt.ID, "query uncertain", time.Now().Add(time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	if due, err = s.ReconcileDue(ctx, 10); err != nil || len(due) != 0 {
+		t.Fatal("deferred candidate still due", due, err)
+	}
+	if err := s.FailReconcile(ctx, attempt.ID, "identity mismatch"); err != nil {
+		t.Fatal(err)
+	}
+	var reconcileState, reason string
+	if err := s.DB.QueryRowContext(ctx, `SELECT reconcile_state,reconcile_error FROM groupfriend.reply_attempts WHERE id=$1`, attempt.ID).Scan(&reconcileState, &reason); err != nil {
+		t.Fatal(err)
+	}
+	if reconcileState != "unresolvable" || reason != "identity mismatch" {
+		t.Fatal("unresolvable state wrong", reconcileState, reason)
+	}
+	// Uncertain sends without a receipt never surface: there is no query.
+	bare := chat.Attempt{ID: "turn:5:2", GroupID: group, State: "unknown", At: time.Now()}
+	if ok, err := s.BeginAttempt(ctx, bare); err != nil || !ok {
+		t.Fatal(ok, err)
+	}
+	if err := s.UpdateAttempt(ctx, bare); err != nil {
+		t.Fatal(err)
+	}
+	if due, err = s.ReconcileDue(ctx, 10); err != nil || len(due) != 0 {
+		t.Fatal("receipt-less unknown surfaced", due, err)
+	}
+}
