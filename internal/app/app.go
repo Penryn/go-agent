@@ -106,7 +106,44 @@ func (s ownedSender) Send(ctx context.Context, g int64, text, quote, path string
 	if err := s.store.CheckSender(ctx); err != nil {
 		return qq.Receipt{}, &qq.SendError{Err: err, Definite: true}
 	}
+	if quote != "" {
+		// Quote preconditions mirror a human using the client: refresh the
+		// target, mark it read, and only then let the reply become visible.
+		// Any failure ends the turn; degrading to an unquoted reply would
+		// change the action the model chose.
+		if err := s.qq.RefreshMessage(ctx, quote, g); err != nil {
+			return qq.Receipt{}, err
+		}
+		if err := s.qq.MarkMessageRead(ctx, quote); err != nil {
+			return qq.Receipt{}, err
+		}
+	}
 	return s.qq.Send(ctx, g, text, quote, path)
+}
+
+// React runs the same quote preconditions before the emoji becomes visible,
+// in the fixed order refresh → mark read → set_msg_emoji_like. A failure
+// never falls back to a text substitute.
+func (s ownedSender) React(ctx context.Context, g int64, messageID, emojiID string) error {
+	if err := s.store.CheckSender(ctx); err != nil {
+		return &qq.SendError{Err: err, Definite: true}
+	}
+	if err := s.qq.RefreshMessage(ctx, messageID, g); err != nil {
+		return err
+	}
+	if err := s.qq.MarkMessageRead(ctx, messageID); err != nil {
+		return err
+	}
+	return s.qq.React(ctx, messageID, emojiID)
+}
+
+// Poke checks send ownership, then delegates; the client refreshes membership
+// before poking. Pokes never quote or mark messages read.
+func (s ownedSender) Poke(ctx context.Context, g, user int64) error {
+	if err := s.store.CheckSender(ctx); err != nil {
+		return &qq.SendError{Err: err, Definite: true}
+	}
+	return s.qq.Poke(ctx, g, user)
 }
 func (a *App) Run(ctx context.Context) error {
 	stop := context.AfterFunc(ctx, a.cancel)
