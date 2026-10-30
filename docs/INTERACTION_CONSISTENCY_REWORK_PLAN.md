@@ -8,16 +8,16 @@
 
 出站发送仍然不自动补发。`unknown` 只进入可重试的本地对账流程。只有平台查询能够唯一确认原消息时，程序才补写出站归档并完成后续投影。
 
-## 现状依据
+## 实现依据
 
-以下结论来自当前工作区源码，属于改造前事实：
+以下结论来自当前已提交源码，说明本方案的设计约束和实现落点：
 
-- reaction 和 poke 在平台调用成功后只更新 attempt 状态，不写 `messages`、topic participation 或 `note_usage`。[`internal/chat/turn.go:187-203`](../internal/chat/turn.go#L187-L203)
-- 普通文字和表情包通过 `FinishAttempt` 同时确认 attempt、写出站消息和写笔记 usage。[`internal/chat/turn.go:205-227`](../internal/chat/turn.go#L205-L227)、[`internal/store/store.go:241-297`](../internal/store/store.go#L241-L297)
+- reaction 和 poke 在平台调用成功后通过 `ConfirmAction` 提交动作事实、topic projection、咨询账本和 pending memory，不写 outbound `messages`。[`internal/chat/turn.go:202-227`](../internal/chat/turn.go#L202-L227)、[`internal/store/actions.go:156-225`](../internal/store/actions.go#L156-L225)
+- 普通文字和表情包通过 `FinishAttempt` 同时确认 attempt、写出站消息和写笔记 usage。[`internal/chat/turn.go:238-251`](../internal/chat/turn.go#L238-L251)、[`internal/store/store.go:268-330`](../internal/store/store.go#L268-L330)
 - `repliesToBot` 只通过已归档的 outbound 消息判断引用关系。[`internal/chat/social.go:143-153`](../internal/chat/social.go#L143-L153)
-- `botParticipated` 和 `botAt` 目前只存在内存 topic 图。`TopicView`、`conversation_topics` 和 topic restore 流程没有保存这两个字段。[`internal/chat/topics.go:49-65`](../internal/chat/topics.go#L49-L65)、[`internal/chat/topics.go:148-189`](../internal/chat/topics.go#L148-L189)、[`schema/schema.sql:54-58`](../schema/schema.sql#L54-L58)
-- `Decode` 目前只接收群消息和群撤回，其他 notice 会被忽略。[`internal/qq/qq.go:66-114`](../internal/qq/qq.go#L66-L114)
-- 记忆变更在发送前调用 `memory.Service.Apply`，`Apply` 最终直接提交 `SaveNotes`。[`internal/chat/turn.go:73-87`](../internal/chat/turn.go#L73-L87)、[`internal/memory/memory.go:682-885`](../internal/memory/memory.go#L682-L885)
+- topic participation 已拆分为 `bot_message_at` 和 `bot_action_at`，并在 topic tracker、`TopicView` 与数据库之间恢复。[`internal/chat/topics.go:49-85`](../internal/chat/topics.go#L49-L85)、[`internal/store/store.go:576-597`](../internal/store/store.go#L576-L597)、[`schema/schema.sql:54-61`](../schema/schema.sql#L54-L61)
+- `Decode` 已接收群 poke 和 `group_msg_emoji_like` reaction notice，action-only 事件没有文本。[`internal/qq/qq.go:80-142`](../internal/qq/qq.go#L80-L142)
+- 记忆变更先由 `memory.Service.Prepare` 校验并写入 pending，确认平台动作或出站归档时再由 store 事务提交。[`internal/chat/turn.go:73-95`](../internal/chat/turn.go#L73-L95)、[`internal/memory/memory.go:732-736`](../internal/memory/memory.go#L732-L736)、[`internal/store/actions.go:194-225`](../internal/store/actions.go#L194-L225)
 
 ## 目标与边界
 
@@ -190,7 +190,7 @@ updated_at
 ```text
 Prepare memory
 → 写入 pending memory
-→ 发送平台动作
+→ 发送平台消息或动作
 → confirmed 后归档消息或动作
 → 在同一数据库事务中 Commit memory
 ```
@@ -211,20 +211,21 @@ Prepare memory
 Kind              message、recall、poke、reaction
 TargetUserID      poke 的目标用户
 TargetMessageID   reaction 的目标消息
-TargetEventID     解析后绑定的目标事件，可为空
 EmojiID           reaction 的表情 ID
 ActionSet         reaction 的设置或取消状态
 ```
 
 `Text` 对 poke 和 reaction 保持为空。事件 ID使用平台提供的通知 ID；平台没有通知 ID时使用完整原始 payload 的哈希，并把动作类型加入哈希输入，避免同一消息的不同 reaction 冲突。
 
-`Decode` 接受群级 notify notice，并继续过滤机器人自己作为动作发起人的通知。入站事件仍经过现有 `Ingest` 去重和群范围过滤。
+出站动作在运行时解析目标事件后，使用 `ActionRecord.TargetEventID` 保存 topic 绑定所需的事件 ID。入站 poke 没有目标事件时不猜 topic，入站 reaction 通过目标消息 ID查找消息归属。
+
+`Decode` 接受 `notify/poke` 和 `group_msg_emoji_like` notice，并继续过滤机器人自己作为动作发起人的通知。入站事件仍经过现有 `Ingest` 去重和群范围过滤。
 
 ### Topic 与策略
 
 - reaction 通过 `TargetMessageID` 查找消息 topic。
-- poke 优先通过 `TargetEventID` 绑定 topic；没有目标事件时不猜 topic。
-- 入站 action 只更新 topic 的参与者和活动时间，不参与词法聚类。
+- 出站 poke 通过 `ActionRecord.TargetEventID` 绑定 topic；入站 poke 没有目标事件时不猜 topic。
+- 能确定目标 topic 的入站 action 更新 topic 的参与者和活动时间，不参与词法聚类；没有目标 topic 的 poke 只作为无文本事件保留。
 - reaction 到机器人 outbound 消息或 poke 到机器人时设置 `Directed=true`。
 - 事件进入策略层时使用独立 relation，例如 `reaction_to_bot` 和 `poke_to_bot`。
 - 策略可以选择回复或保持 silent，动作事件本身不强制生成文字。
@@ -238,22 +239,22 @@ ActionSet         reaction 的设置或取消状态
 - 普通消息的记忆证据抽取；
 - `note_usage`。
 
-`SummaryBatch` 和学习批次需要按 `event_kind` 过滤 action-only 事件。它们仍可以作为 topic 的时间和参与事实保留。
+`SummaryBatch` 和学习批次已经按 `event_kind` 过滤 action-only 事件。它们仍可以作为 topic 的时间和参与事实保留。
 
-## Schema 与接口改造
+## Schema 与接口约束
 
-建议按以下顺序改造：
+当前实现采用以下 schema 和接口边界：
 
 1. 为 `messages` 增加 `event_kind`，默认值为 `message`。
 2. 为 `conversation_topics` 增加 `bot_message_at` 和 `bot_action_at`，同步扩展 `TopicView`、restore 和 save。
 3. 新增 `conversation_topic_actions` 和 `note_consultation`。
 4. 扩展 `reply_attempts` 的发送凭据和对账字段。
-5. 在 `Store` 增加 `ConfirmAction`、`ReconcileOutbound`、`PrepareMemory` 和 `CommitMemory` 对应的最小接口。
+5. `Store` 使用 `SaveDelivery` 保存平台回执，使用 `SavePendingMemory` 和 `DiscardPendingMemory` 管理待提交记忆，使用 `ConfirmAction` 和 `ReconcileOutbound` 在事务内完成确认与提交。
 6. 扩展 `qq.Decode` 和 `qq.Event`，再调整 topic assignment、上下文 relation、摘要和学习过滤。
 
 `FinishAttempt` 保持普通出站消息的专用语义。动作使用 `ConfirmAction`，对账使用 `ReconcileOutbound`，记忆提交使用 attempt 幂等接口，避免一个方法同时处理三种不同的外部事实。
 
-`Prepare` 阶段只做校验和生成待提交快照，不打开数据库写事务。`ConfirmAction` 和 `ReconcileOutbound` 接收这个快照，在 store 层的同一个数据库事务中提交 attempt、动作或出站消息、咨询账本和 notes。数据库事务成功后，运行时再更新内存 topic tracker；内存更新失败只触发重新加载，不改变已经提交的数据库事实。
+`Prepare` 阶段只做校验和生成待提交快照，不打开数据库写事务。`ConfirmAction` 和 `ReconcileOutbound` 读取这个 pending 快照，在 store 层的同一个数据库事务中提交 attempt、动作或出站消息、咨询账本和 notes。数据库事务成功后，运行时再更新内存 topic tracker；内存更新失败只触发重新加载，不改变已经提交的数据库事实。
 
 ## 失败与补偿
 
@@ -305,4 +306,4 @@ ActionSet         reaction 的设置或取消状态
 
 建议先完成数据库字段、事件类型和存储幂等接口，再接入运行时流程。随后实现出站对账和记忆提交，最后接入入站 notice 与策略行为。每个阶段都应保留 replay 的本地语义：replay 可以产生确认结果，但不调用真实 QQ API。
 
-本方案是实施设计，未执行代码修改、数据库迁移或真实 NapCat 验证。平台 notice 的字段名称和同步查询能力需要在目标 NapCat 实例上用实际 payload 验证后再固定为协议测试样例。
+当前分支已落地本方案对应的代码和 schema 变更，`go test ./...` 已通过 195 个测试，`go vet ./...` 已通过。真实 NapCat notice payload、消息查询和动作渲染仍未在外部 QQ 环境验证，平台字段和同步查询能力需要在目标实例上确认后再固定为协议测试样例。
