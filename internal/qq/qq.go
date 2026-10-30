@@ -183,12 +183,126 @@ type Client struct {
 	Connected                  atomic.Bool
 }
 
+// definiteRejection reports whether a OneBot API error is an explicit platform
+// rejection. OneBot retcode 1 with status "async" means the request was
+// accepted for asynchronous processing; only real rejections are definite.
+func definiteRejection(err error) bool {
+	var rejection *onebot.APIError
+	return errors.As(err, &rejection) && (rejection.Status == "failed" || (rejection.RetCode != 0 && rejection.RetCode != 1))
+}
+
+// api returns the synchronous HTTP API client used for platform actions.
+func (c *Client) api() *api.Client {
+	return onebot.NewHTTPClient(c.URL, onebot.WithToken(c.Token), onebot.WithHTTPTimeout(5*time.Second), onebot.WithHTTPClient(c.HTTP)).API()
+}
+
+// parseMessageID applies the decimal int64 validation shared by every
+// message-id boundary: empty, zero, and overflowing IDs are definite errors.
+func parseMessageID(messageID string) (int64, error) {
+	id, err := strconv.ParseInt(messageID, 10, 64)
+	if err != nil || id == 0 {
+		return 0, &SendError{errors.New("invalid reply id"), true}
+	}
+	return id, nil
+}
+
+// RefreshMessage re-fetches a quote target with get_msg and confirms it still
+// exists in the conversation the reply is destined for. It is a read-only
+// refresh: the returned message must match the requested ID, and the reported
+// group (when the platform reports one) must match. A missing, recalled, or
+// foreign target is a definite failure; transport uncertainty is not.
+func (c *Client) RefreshMessage(ctx context.Context, messageID string, group int64) error {
+	id, err := parseMessageID(messageID)
+	if err != nil {
+		return err
+	}
+	result, err := c.api().GetMsg(ctx, api.GetMsgRequest{MessageID: api.GetMsgRequestMessageIDUnion{Raw: []byte(strconv.FormatInt(id, 10))}})
+	if err != nil {
+		return &SendError{err, definiteRejection(err)}
+	}
+	if result.MessageID.Int64() != id {
+		return &SendError{errors.New("refreshed message does not match quote"), true}
+	}
+	reported := int64(0)
+	if result.GroupID != nil {
+		var gid message.ID
+		if json.Unmarshal(result.GroupID.Raw, &gid) == nil {
+			reported = gid.Int64()
+		}
+	}
+	// group_id is optional in get_msg responses; when the platform reports a
+	// session it must be this one, and a private target never belongs to a
+	// group reply.
+	if group > 0 && (result.MessageType == "private" || (reported != 0 && reported != group)) {
+		return &SendError{errors.New("quote target is not in this conversation"), true}
+	}
+	return nil
+}
+
+// MarkMessageRead marks a single message read with mark_msg_as_read before a
+// quoted reply becomes visible. Only a synchronous ok envelope satisfies the
+// precondition: async submissions and uncertain transport failures both
+// return errors, and the reply must not be sent in either case.
+func (c *Client) MarkMessageRead(ctx context.Context, messageID string) error {
+	id, err := parseMessageID(messageID)
+	if err != nil {
+		return err
+	}
+	if _, err := c.api().MarkMsgAsRead(ctx, api.MarkMsgAsReadRequest{MessageID: message.ID(id)}); err != nil {
+		return &SendError{err, definiteRejection(err)}
+	}
+	return nil
+}
+
+// React adds an emoji reaction to a message with set_msg_emoji_like. The
+// emoji must be a decimal face index; the caller (chat layer) decides which
+// values are offered. A failed reaction never falls back to text.
+func (c *Client) React(ctx context.Context, messageID, emojiID string) error {
+	id, err := parseMessageID(messageID)
+	if err != nil {
+		return err
+	}
+	if _, err := strconv.ParseInt(emojiID, 10, 64); err != nil {
+		return &SendError{errors.New("invalid emoji id"), true}
+	}
+	if _, err := c.api().SetMsgEmojiLike(ctx, api.SetMsgEmojiLikeRequest{
+		MessageID: api.SetMsgEmojiLikeRequestMessageIDUnion{Raw: []byte(strconv.FormatInt(id, 10))},
+		EmojiID:   api.SetMsgEmojiLikeRequestEmojiIDUnion{Raw: []byte(emojiID)},
+	}); err != nil {
+		return &SendError{err, definiteRejection(err)}
+	}
+	return nil
+}
+
+// Poke pokes a group member with group_poke after refreshing their membership
+// with get_group_member_info(no_cache=true). The refresh failure ends the
+// poke; pokes never quote or mark messages read. ponytail: the OpenAPI marks
+// user_id as "用户QQ" and target_id as "目标QQ"; we follow the OneBot
+// convention of user_id being the poked member — confirm on the target
+// instance during manual acceptance.
+func (c *Client) Poke(ctx context.Context, group, user int64) error {
+	if group <= 0 || user <= 0 {
+		return &SendError{errors.New("invalid poke target"), true}
+	}
+	if _, err := c.api().GetGroupMemberInfo(ctx, api.GetGroupMemberInfoRequest{
+		GroupID: message.ID(group),
+		UserID:  message.ID(user),
+		NoCache: &api.GetGroupMemberInfoRequestNoCacheUnion{Raw: []byte("true")},
+	}); err != nil {
+		return &SendError{err, definiteRejection(err)}
+	}
+	if _, err := c.api().GroupPoke(ctx, api.GroupPokeRequest{GroupID: message.ID(group), UserID: message.ID(user)}); err != nil {
+		return &SendError{err, definiteRejection(err)}
+	}
+	return nil
+}
+
 func (c *Client) Send(ctx context.Context, group int64, text, quote, path string) (Receipt, error) {
 	segments := message.Chain{}
 	if quote != "" {
-		id, err := strconv.ParseInt(quote, 10, 64)
-		if err != nil || id == 0 {
-			return Receipt{}, &SendError{errors.New("invalid reply id"), true}
+		id, err := parseMessageID(quote)
+		if err != nil {
+			return Receipt{}, err
 		}
 		segments = append(segments, message.Reply(id))
 	}
@@ -214,14 +328,9 @@ func (c *Client) Send(ctx context.Context, group int64, text, quote, path string
 	if err != nil {
 		return Receipt{}, &SendError{err, true}
 	}
-	client := onebot.NewHTTPClient(c.URL, onebot.WithToken(c.Token), onebot.WithHTTPTimeout(5*time.Second), onebot.WithHTTPClient(c.HTTP))
-	result, err := client.API().SendGroupMsg(ctx, api.SendGroupMsgRequest{GroupID: message.ID(group), Message: body})
+	result, err := c.api().SendGroupMsg(ctx, api.SendGroupMsgRequest{GroupID: message.ID(group), Message: body})
 	if err != nil {
-		var rejection *onebot.APIError
-		// OneBot retcode 1 with status "async" means the request was accepted
-		// for asynchronous processing; only real rejections are definite.
-		definite := errors.As(err, &rejection) && (rejection.Status == "failed" || (rejection.RetCode != 0 && rejection.RetCode != 1))
-		return Receipt{}, &SendError{err, definite}
+		return Receipt{}, &SendError{err, definiteRejection(err)}
 	}
 	if result.MessageID == 0 {
 		return Receipt{}, &SendError{errors.New("OneBot returned no message id"), false}
