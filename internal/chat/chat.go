@@ -37,6 +37,7 @@ type Config struct {
 	Timeout             time.Duration `yaml:"timeout"`
 	SpontaneousInterval time.Duration `yaml:"spontaneous_interval"`
 	MaxPerMinute        int           `yaml:"max_per_minute"`
+	PokeCooldown        time.Duration `yaml:"poke_cooldown"`
 	History             int           `yaml:"history"`
 	ContextRunes        int           `yaml:"context_runes"`
 	Cache               CacheTTL      `yaml:"-"`
@@ -52,6 +53,7 @@ type Reply struct {
 	Text      string          `json:"text"`
 	Quote     string          `json:"quote,omitempty"`
 	StickerID string          `json:"sticker_id,omitempty"`
+	EmojiID   string          `json:"emoji_id,omitempty"`
 	Reason    string          `json:"reason"`
 	Plan      *ReplyPlan      `json:"plan,omitempty"`
 	Memory    []memory.Change `json:"memory,omitempty"`
@@ -78,6 +80,11 @@ type Store interface {
 }
 type Sender interface {
 	Send(context.Context, int64, string, string, string) (qq.Receipt, error)
+	// React adds an emoji reaction to a quoted message in the group.
+	React(context.Context, int64, string, string) error
+	// Poke pokes a group member; the target must come from the visible
+	// conversation, not from model-invented user IDs.
+	Poke(context.Context, int64, int64) error
 }
 type topicStore interface {
 	LoadTopics(context.Context, int64) ([]conversation.TopicView, error)
@@ -106,6 +113,7 @@ type Runtime struct {
 	mu             sync.Mutex
 	groups         map[int64]*group
 	actors         map[int64]conversation.GroupActor
+	pokes          map[int64]map[int64]time.Time
 	topics         *topicTracker
 	wg             sync.WaitGroup
 	closed         bool
@@ -136,6 +144,7 @@ func New(ctx context.Context, r *Runtime) *Runtime {
 	}
 	r.groups = map[int64]*group{}
 	r.actors = map[int64]conversation.GroupActor{}
+	r.pokes = map[int64]map[int64]time.Time{}
 	if r.Policy == nil {
 		r.Policy = policy.DeterministicPolicy{}
 	}
@@ -625,7 +634,7 @@ func (r *Runtime) respond(parent context.Context, groupID int64, batch []qq.Even
 }
 
 func validate(reply Reply, history []qq.Event, assets []meme.Asset, topics topicObservation) error {
-	if !slices.Contains([]string{"silent", "text", "sticker"}, reply.Action) || len([]rune(reply.Text)) > 2000 || len(reply.Reason) > 120 {
+	if !slices.Contains([]string{"silent", "text", "sticker", "reaction", "poke"}, reply.Action) || len([]rune(reply.Text)) > 2000 || len(reply.Reason) > 120 {
 		return errors.New("invalid reply action or length")
 	}
 	if err := validateReplyPlan(reply, history, topics); err != nil {
@@ -633,11 +642,11 @@ func validate(reply Reply, history []qq.Event, assets []meme.Asset, topics topic
 	}
 	switch reply.Action {
 	case "silent":
-		if reply.Text != "" || reply.StickerID != "" {
+		if reply.Text != "" || reply.StickerID != "" || reply.EmojiID != "" {
 			return errors.New("silent reply contains output")
 		}
 	case "text":
-		if strings.TrimSpace(reply.Text) == "" || reply.StickerID != "" {
+		if strings.TrimSpace(reply.Text) == "" || reply.StickerID != "" || reply.EmojiID != "" {
 			return errors.New("invalid text reply")
 		}
 	case "sticker":
@@ -645,8 +654,22 @@ func validate(reply Reply, history []qq.Event, assets []meme.Asset, topics topic
 		for _, a := range assets {
 			found = found || a.ID == reply.StickerID
 		}
-		if !found || reply.Text != "" {
+		if !found || reply.Text != "" || reply.EmojiID != "" {
 			return errors.New("sticker was not offered")
+		}
+	case "reaction":
+		if strings.TrimSpace(reply.Text) != "" || reply.StickerID != "" || reply.Quote == "" || reply.EmojiID == "" {
+			return errors.New("invalid reaction reply")
+		}
+		if _, ok := ReactionEmojis[reply.EmojiID]; !ok {
+			return errors.New("emoji was not offered")
+		}
+	case "poke":
+		if reply.Text != "" || reply.StickerID != "" || reply.EmojiID != "" || reply.Quote != "" {
+			return errors.New("invalid poke reply")
+		}
+		if reply.Plan == nil || reply.Plan.TargetEventID == "" {
+			return errors.New("poke requires a target event")
 		}
 	}
 	if reply.Quote != "" {
@@ -666,8 +689,9 @@ const Prompt = `你是长期在 QQ 群里相处的虚拟群友。persona 是稳�
 	topics 是程序按引用链、词面和近期参与维护的动态话题；events 的 topic_ids 表示候选归属，偶尔会有两个候选，topic_ids 不改变消息原文。先判断本人是否在该话题里说过话、当前是谁在接谁，再选择一个明确的目标消息和对应 topic_id。目标不清楚、群友只是在彼此聊天、或你只能重复已有内容时，选择 silent。被叫到、被引用或在你参与过的同一话题里继续聊时优先接住，但仍允许沉默。合并理解 batch 的分条消息，保留每个作者和引用目标；不要在无关的并行话题里凑热闹。
 	回复计划中的 response_mode 说明表达节奏：silent 表示不发言，ack 表示一句很短的自然接话，short 表示一到两句且只保留必要内容，answer 表示认真回答时说完整，sticker 表示只发送候选表情包。闲聊优先 ack 或 short，认真求助才使用 answer。
 	闲聊自然、有自己的口吻，不复述题目，不固定追问、总结或给建议。先看别人和自己是否已经说过相同意思。熟络有证据才调侃，倾诉时收起玩笑。不故意打错字、装忙、假装睡觉或编造线下生活。直接被问到自身性质时如实说明是虚拟群友。
+reaction 表示在目标消息上加表情回应：只在低打扰的确认、感谢或轻量反馈时用，目标必须是对话里明确值得回应的那条消息，不逐条回应，也不附文字。emoji_id 只能取 reaction_emoji_candidates 里的 id。poke 表示戳一戳 target_event_id 对应的作者：只在近期确实在互相交流、想轻量引起对方注意时偶尔用，不作为固定开场，不戳自己，被戳的人必须还在说话的语境里。
 	notes 只辅助当前交流，相关时自然使用，不炫耀记忆；不能把转述当作确定事实或自己亲历。没有图片成功加载时不声称看到了细节。sticker_candidates 是全局可用素材，只在含义适合时发图，不把语义相似当作群内梗背景相同。
 	没有外部工具、电脑控制、文件任务或实时查询能力，不声称已执行这些操作。
-	只返回一个 JSON 对象：{"action":"silent|text|sticker","plan":{"target_event_id":"可选的事件id","topic_id":"与该目标对应的话题id","response_mode":"silent|ack|short|answer|sticker"},"text":"正文，silent或sticker时为空","quote":"可选的历史message_id","sticker_id":"仅sticker动作填写候选id","reason":"简短结果码","memory":[]}。target_event_id 必须来自 history 或 batch 中可见事件的 id，不是 message_id；topic_id 必须是该目标消息 topic_ids 中的一个。silent 可以填写目标消息，但不发送内容。
+	只返回一个 JSON 对象：{"action":"silent|text|sticker|reaction|poke","plan":{"target_event_id":"可选的事件id","topic_id":"与该目标对应的话题id","response_mode":"silent|ack|short|answer|sticker"},"text":"正文，silent、sticker、reaction或poke时为空","quote":"可选的历史message_id，reaction时必填目标消息","sticker_id":"仅sticker动作填写候选id","emoji_id":"仅reaction动作填写reaction_emoji_candidates中的id","reason":"简短结果码","memory":[]}。target_event_id 必须来自 history 或 batch 中可见事件的 id，不是 message_id；topic_id 必须是该目标消息 topic_ids 中的一个。silent 可以填写目标消息，但不发送内容。poke 的目标是 target_event_id 的作者。
 	明确请求记住、改称呼、纠正或遗忘时，memory 可附修改：{id(已有笔记ID),version(已有版本，新建0),subject(本人QQ),kind("preference"或"member"或"episode"),key(稳定属性名),topic_id(episode 必填，来自目标消息的话题),text,evidence:[{event_id,quote(逐字原话)}],forget,expires(ISO时间或null),valid_from(事实开始时间或null),valid_to(事实结束时间或null),confidence(0到1之间的小数)}。仅在 notes 中已有笔记的修订要带 id/version；不要创建与原笔记矛盾的副本。日常聊天不要附 memory。对保存/遗忘的成功确认只有程序实际写入成功才会发送。
 	不输出推理过程、内部标记、工具协议或人设解释。`

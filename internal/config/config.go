@@ -120,7 +120,7 @@ func Default() Config {
 	c.Storage.DatabaseURL = "postgres://qqbot:qqbotpass@127.0.0.1:5432/qqbot?sslmode=disable"
 	c.ModelConcurrency = Concurrency{Chat: 2, Vision: 1, Embedding: 2, Background: 1}
 	c.Persona = chat.Persona{Name: "芙芙", Aliases: []string{"芙芙", "Fufu"}, Description: "开朗、有一点小骄傲的虚拟群友，喜欢游戏、数码和日常闲聊。", Style: "自然口语，先接住当下的话，不客服腔，不固定总结或反问。", Interests: []string{"游戏", "数码", "日常生活"}, Examples: []string{"群友说今天好累，可以回：那先歇会儿", "群友彼此约时间，你没有参与时可以沉默"}}
-	c.Chat = chat.Config{Merge: time.Second, MaxWait: 3 * time.Second, PassiveInterval: 15 * time.Second, ActiveWindow: 90 * time.Second, Timeout: 15 * time.Second, SpontaneousInterval: 20 * time.Second, MaxPerMinute: 8, History: 80, ContextRunes: 16000}
+	c.Chat = chat.Config{Merge: time.Second, MaxWait: 3 * time.Second, PassiveInterval: 15 * time.Second, ActiveWindow: 90 * time.Second, Timeout: 15 * time.Second, SpontaneousInterval: 20 * time.Second, MaxPerMinute: 8, PokeCooldown: 6 * time.Hour, History: 80, ContextRunes: 16000}
 	c.Models.Main = model.Provider{Provider: "ark", Timeout: 20 * time.Second}
 	c.Models.Vision = model.Provider{Provider: "ark", Timeout: 15 * time.Second}
 	c.Models.Embedding = model.Provider{Provider: "ark", Timeout: 10 * time.Second, Dimensions: 2048}
@@ -174,7 +174,7 @@ func (c Config) Validate() error {
 	if c.ModelConcurrency.Chat < 1 || c.ModelConcurrency.Chat > 16 || c.ModelConcurrency.Vision < 1 || c.ModelConcurrency.Vision > 16 || c.ModelConcurrency.Embedding < 1 || c.ModelConcurrency.Embedding > 16 || c.ModelConcurrency.Background < 1 || c.ModelConcurrency.Background > 16 {
 		return errors.New("model_concurrency budgets must be 1..16")
 	}
-	if c.Chat.Merge < 0 || c.Chat.MaxWait <= 0 || c.Chat.MaxWait < c.Chat.Merge || c.Chat.Timeout <= 0 || c.Chat.ActiveWindow < 0 || c.Chat.PassiveInterval < 0 || c.Chat.SpontaneousInterval < 0 || c.Chat.MaxPerMinute < 1 || c.Chat.MaxPerMinute > 60 || c.Chat.History < 1 || c.Chat.History > 500 || c.Chat.ContextRunes < 1000 || c.Chat.ContextRunes > 100000 {
+	if c.Chat.Merge < 0 || c.Chat.MaxWait <= 0 || c.Chat.MaxWait < c.Chat.Merge || c.Chat.Timeout <= 0 || c.Chat.ActiveWindow < 0 || c.Chat.PassiveInterval < 0 || c.Chat.SpontaneousInterval < 0 || c.Chat.MaxPerMinute < 1 || c.Chat.MaxPerMinute > 60 || c.Chat.PokeCooldown < 0 || c.Chat.History < 1 || c.Chat.History > 500 || c.Chat.ContextRunes < 1000 || c.Chat.ContextRunes > 100000 {
 		return errors.New("invalid chat limits")
 	}
 	if c.Memory.TopK < 1 || c.Memory.TopK > 30 || c.Memory.Interval < time.Second || c.Memory.IndexLimit < c.Memory.TopK || c.Memory.IndexLimit > 100000 || c.Memory.SummaryBatch < 1 || c.Memory.SummaryBatch > 100 || c.Memory.SummaryInterval < time.Second {

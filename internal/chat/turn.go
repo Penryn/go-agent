@@ -23,19 +23,20 @@ func (r *Runtime) generateTurn(ctx context.Context, attempt Attempt, snapshot ct
 		return attempt
 	}
 	input := map[string]any{
-		"persona":              r.Persona,
-		"now":                  time.Now().Format(time.RFC3339),
-		"history":              snapshot.History,
-		"batch":                snapshot.Batch,
-		"conversation_context": snapshot.Conversation,
-		"notes":                snapshot.Notes,
-		"sticker_candidates":   snapshot.StickerAssets,
-		"loaded_image_count":   len(snapshot.Images),
+		"persona":                   r.Persona,
+		"now":                       time.Now().Format(time.RFC3339),
+		"history":                   snapshot.History,
+		"batch":                     snapshot.Batch,
+		"conversation_context":      snapshot.Conversation,
+		"notes":                     snapshot.Notes,
+		"sticker_candidates":        snapshot.StickerAssets,
+		"reaction_emoji_candidates": ReactionEmojis,
+		"loaded_image_count":        len(snapshot.Images),
 	}
 	var result model.Result
 	var err error
 	if gateway, ok := r.Model.(model.ModelGateway); ok {
-		result, err = gateway.GenerateRequest(ctx, model.GenerateRequest{PromptVersion: "chat-v1", System: Prompt, Input: input, Images: snapshot.Images, Priority: model.PriorityInteractive, GroupID: attempt.GroupID, AttemptID: attempt.ID})
+		result, err = gateway.GenerateRequest(ctx, model.GenerateRequest{PromptVersion: "chat-v2", System: Prompt, Input: input, Images: snapshot.Images, Priority: model.PriorityInteractive, GroupID: attempt.GroupID, AttemptID: attempt.ID})
 	} else {
 		result, err = r.Model.Generate(ctx, Prompt, input, snapshot.Images)
 	}
@@ -132,6 +133,22 @@ func (r *Runtime) applyAndDeliver(parent, ctx context.Context, groupID int64, at
 		attempt.Retrieval.StaleReason = "new_interaction"
 		return attempt
 	}
+	// Pokes are rate limited per target before the sending transition; a
+	// limited poke ends the turn like any other policy rejection.
+	pokeUser := int64(0)
+	if attempt.Reply.Action == "poke" {
+		user, err := pokeTarget(attempt.Reply, snapshot.History, snapshot.Batch)
+		if err != nil {
+			attempt.State = "failed"
+			attempt.Error = err.Error()
+			return attempt
+		}
+		if !r.pokeAllowed(groupID, user) {
+			attempt.State = "limited"
+			return attempt
+		}
+		pokeUser = user
+	}
 	attempt.State = "sending"
 	if err := r.Store.UpdateAttempt(ctx, attempt); err != nil {
 		attempt.State = "failed"
@@ -140,12 +157,17 @@ func (r *Runtime) applyAndDeliver(parent, ctx context.Context, groupID int64, at
 	}
 
 	var receipt qq.Receipt
-	if r.Delivery != nil {
-		receipt, err = r.Delivery.Deliver(ctx, delivery.Request{GroupID: groupID, Text: attempt.Reply.Text, Quote: attempt.Reply.Quote, Path: path})
-	} else if r.Sender != nil {
-		receipt, err = r.Sender.Send(ctx, groupID, attempt.Reply.Text, attempt.Reply.Quote, path)
-	} else {
-		err = errors.New("delivery sender unavailable")
+	switch attempt.Reply.Action {
+	case "reaction":
+		err = r.Sender.React(ctx, groupID, attempt.Reply.Quote, attempt.Reply.EmojiID)
+	case "poke":
+		err = r.Sender.Poke(ctx, groupID, pokeUser)
+	default:
+		if r.Delivery != nil {
+			receipt, err = r.Delivery.Deliver(ctx, delivery.Request{GroupID: groupID, Text: attempt.Reply.Text, Quote: attempt.Reply.Quote, Path: path})
+		} else {
+			receipt, err = r.Sender.Send(ctx, groupID, attempt.Reply.Text, attempt.Reply.Quote, path)
+		}
 	}
 	finish, cancelFinish := context.WithTimeout(context.WithoutCancel(parent), 5*time.Second)
 	defer cancelFinish()
@@ -163,6 +185,23 @@ func (r *Runtime) applyAndDeliver(parent, ctx context.Context, groupID int64, at
 	}
 
 	attempt.State = "confirmed"
+	if attempt.Reply.Action == "reaction" || attempt.Reply.Action == "poke" {
+		// Reactions and pokes are visible platform actions, not messages:
+		// close the attempt without archiving a chat event or moving topic
+		// participation. A confirmed attempt still counts toward the send
+		// budget through RepliesSince.
+		if err := r.Store.UpdateAttempt(finish, attempt); err != nil {
+			attempt.State = "unknown"
+			attempt.Error = "action confirmed but archive failed"
+			record, cancelRecord := context.WithTimeout(context.WithoutCancel(parent), 3*time.Second)
+			if updateErr := r.Store.UpdateAttempt(record, attempt); updateErr != nil {
+				slog.Error("record archive failure", "attempt", attempt.ID, "error", updateErr)
+			}
+			cancelRecord()
+			slog.Error(attempt.Error, "attempt", attempt.ID, "error", err)
+		}
+		return attempt
+	}
 	text := attempt.Reply.Text
 	if attempt.Reply.Action == "sticker" {
 		text = "[表情包] "
@@ -187,6 +226,28 @@ func (r *Runtime) applyAndDeliver(parent, ctx context.Context, groupID int64, at
 	}
 	r.topics.markBotReply(groupID, attempt.Reply.Plan.TopicID, out)
 	return attempt
+}
+
+// pokeAllowed reports whether the per-target poke cooldown has elapsed,
+// consuming the slot either way: a failed poke still blocks the next attempt,
+// so repeated failures cannot probe the target.
+// ponytail: the cooldown map never shrinks; entries cost a few bytes per
+// (group, user) ever poked, bounded by the group whitelist — prune expired
+// entries if a long-lived instance ever makes that measurable.
+func (r *Runtime) pokeAllowed(groupID, userID int64) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.pokes == nil {
+		r.pokes = map[int64]map[int64]time.Time{}
+	}
+	if last, ok := r.pokes[groupID][userID]; ok && r.Config.PokeCooldown > 0 && time.Since(last) < r.Config.PokeCooldown {
+		return false
+	}
+	if r.pokes[groupID] == nil {
+		r.pokes[groupID] = map[int64]time.Time{}
+	}
+	r.pokes[groupID][userID] = time.Now()
+	return true
 }
 
 // snapshotNoteIDs freezes the recalled note identities for the usage ledger.

@@ -54,6 +54,7 @@ chat:
   timeout: 15s
   spontaneous_interval: 20s
   max_per_minute: 8
+  poke_cooldown: 6h
   history: 80
   context_runes: 16000
 memory:

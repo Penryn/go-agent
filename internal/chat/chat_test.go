@@ -371,3 +371,76 @@ func TestReplyPlanRejectsInvisibleTarget(t *testing.T) {
 		t.Fatal(sender.Messages)
 	}
 }
+
+func TestReactionDeliveryConfirmsWithoutMessage(t *testing.T) {
+	r, _, sender := setup(t, generator{func(_ context.Context, input any) (chat.Reply, error) {
+		batch := input.(map[string]any)["batch"].([]qq.Event)
+		if len(batch) == 0 {
+			return chat.Reply{Action: "silent"}, nil
+		}
+		candidates, ok := input.(map[string]any)["reaction_emoji_candidates"].(map[string]string)
+		if !ok {
+			t.Error("reaction_emoji_candidates missing from model input")
+		} else if _, offered := candidates["76"]; !offered {
+			t.Error("reaction_emoji_candidates lacks the default emoji", candidates)
+		}
+		return chat.Reply{Action: "reaction", Quote: batch[0].MessageID, EmojiID: "76", Reason: "ack"}, nil
+	}})
+	a, err := r.Process(context.Background(), payload(55, 1, 10, "搞定啦", true))
+	if err != nil || a.State != "confirmed" {
+		t.Fatal("reaction was not delivered", a, err)
+	}
+	if len(sender.Messages) != 0 {
+		t.Fatal("reaction produced a phantom message", sender.Messages)
+	}
+}
+
+func TestPokeDeliveryTargetAndCooldown(t *testing.T) {
+	r, _, sender := setup(t, generator{func(_ context.Context, input any) (chat.Reply, error) {
+		batch := input.(map[string]any)["batch"].([]qq.Event)
+		if len(batch) == 0 {
+			return chat.Reply{Action: "silent"}, nil
+		}
+		return chat.Reply{Action: "poke", Plan: &chat.ReplyPlan{TargetEventID: batch[0].ID}, Reason: "poke"}, nil
+	}})
+	r.Config.PokeCooldown = time.Hour
+	a, err := r.Process(context.Background(), payload(55, 1, 10, "在吗", true))
+	if err != nil || a.State != "confirmed" {
+		t.Fatal("poke was not delivered", a, err)
+	}
+	// The same target stays inside the cooldown window, so the second poke
+	// is a policy rejection, not a platform call.
+	a, err = r.Process(context.Background(), payload(56, 1, 10, "还在吗", true))
+	if err != nil || a.State != "limited" {
+		t.Fatal("poke cooldown was bypassed", a, err)
+	}
+	if len(sender.Messages) != 0 {
+		t.Fatal("poke produced a phantom message", sender.Messages)
+	}
+}
+
+func TestInvalidReactionAndPokeRepliesFailValidation(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		reply chat.Reply
+	}{
+		{name: "emoji not offered", reply: chat.Reply{Action: "reaction", Quote: "55", EmojiID: "999"}},
+		{name: "reaction without quote", reply: chat.Reply{Action: "reaction", EmojiID: "76"}},
+		{name: "reaction with text", reply: chat.Reply{Action: "reaction", Quote: "55", EmojiID: "76", Text: "哈哈"}},
+		{name: "poke without target", reply: chat.Reply{Action: "poke"}},
+		{name: "poke with quote", reply: chat.Reply{Action: "poke", Quote: "55", Plan: &chat.ReplyPlan{TargetEventID: "message:1:55"}}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r, _, sender := setup(t, generator{func(_ context.Context, _ any) (chat.Reply, error) {
+				return tc.reply, nil
+			}})
+			a, err := r.Process(context.Background(), payload(55, 1, 10, "测试动作校验", true))
+			if err != nil || a.State != "failed" {
+				t.Fatal("invalid action reply was accepted", a, err)
+			}
+			if len(sender.Messages) != 0 {
+				t.Fatal("invalid action reply sent something", sender.Messages)
+			}
+		})
+	}
+}

@@ -468,3 +468,8 @@ func (s *Sender) Send(_ context.Context, g int64, text, quote, path string) (qq.
 	s.Messages = append(s.Messages, text+path)
 	return qq.Receipt{MessageID: fmt.Sprintf("simulated-%d", len(s.Messages))}, nil
 }
+
+// React and Poke are platform-only actions: replay has no local effect, so
+// they succeed without recording a message.
+func (s *Sender) React(context.Context, int64, string, string) error { return nil }
+func (s *Sender) Poke(context.Context, int64, int64) error           { return nil }

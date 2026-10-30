@@ -14,6 +14,34 @@ var (
 	errTopicTargetMismatch  = errors.New("target event is not part of the topic")
 )
 
+// ReactionEmojis is the fixed reaction candidate set offered to the model as
+// reaction_emoji_candidates; validation rejects anything outside it.
+// ponytail: QQ face indexes are not documented in the OneBot/NapCat OpenAPI
+// (the spec only shows "123" as an example); confirm these on the target
+// NapCat instance during manual acceptance and edit this single map.
+var ReactionEmojis = map[string]string{
+	"76": "赞",
+	"66": "爱心",
+}
+
+// pokeTarget resolves the poke target from the plan's target event author.
+// Routing pokes through a visible event structurally guarantees the target
+// belongs to the current group conversation.
+func pokeTarget(reply Reply, history, batch []qq.Event) (int64, error) {
+	if reply.Plan == nil || reply.Plan.TargetEventID == "" {
+		return 0, errors.New("poke requires a target event")
+	}
+	for _, e := range combineEvents(history, batch) {
+		if e.ID == reply.Plan.TargetEventID {
+			if e.Outbound || e.UserID == 0 {
+				return 0, errors.New("poke target must be a group member")
+			}
+			return e.UserID, nil
+		}
+	}
+	return 0, errInvisibleReplyTarget
+}
+
 // ReplyPlan records the model's participation target and expression shape.
 // The runtime validates the target before any message is sent.
 type ReplyPlan struct {
