@@ -66,6 +66,33 @@ type Change struct {
 	Confidence    *float32   `json:"confidence,omitempty"`
 }
 
+// NoteSnapshot is the persistence form of a prepared note. Note's JSON is
+// model-facing and deliberately omits storage fields (json:"-"), so the
+// pending-memory ledger stores this extended form and restores the omitted
+// fields explicitly.
+type NoteSnapshot struct {
+	Note
+	GroupID   int64 `json:"group_id"`
+	SourceSeq int64 `json:"source_seq"`
+}
+
+// Expanded restores the full note with the fields Note's JSON omits.
+func (n NoteSnapshot) Expanded() Note {
+	out := n.Note
+	out.GroupID = n.GroupID
+	out.SourceSeq = n.SourceSeq
+	return out
+}
+
+// NoteSnapshots converts prepared notes to their persistence form.
+func NoteSnapshots(notes []Note) []NoteSnapshot {
+	out := make([]NoteSnapshot, 0, len(notes))
+	for _, n := range notes {
+		out = append(out, NoteSnapshot{Note: n, GroupID: n.GroupID, SourceSeq: n.SourceSeq})
+	}
+	return out
+}
+
 // Candidate is the extraction stage output. It deliberately has no ID: the
 // reconciler binds identities and versions from the database, never the model.
 type Candidate struct {
@@ -679,18 +706,43 @@ func cloneNotes(in []Note) []Note {
 	}
 	return out
 }
+// recordForgottenBlock keeps the diagnostic event for every rejection that
+// mentions forgotten-source protection, whether it comes from validation or
+// from the save transaction itself.
+func (s *Service) recordForgottenBlock(ctx context.Context, group int64, err *error) {
+	if *err == nil || !strings.Contains((*err).Error(), "forgotten") {
+		return
+	}
+	if events, ok := s.Store.(MemoryEventStore); ok {
+		record, cancel := context.WithTimeout(context.WithoutCancel(ctx), 3*time.Second)
+		_ = events.RecordMemoryEvent(record, group, "forgotten_blocked")
+		cancel()
+	}
+}
+
 func (s *Service) Apply(ctx context.Context, group int64, events []qq.Event, changes []Change, progress *Progress) (err error) {
-	defer func() {
-		if err != nil && strings.Contains(err.Error(), "forgotten") {
-			if events, ok := s.Store.(MemoryEventStore); ok {
-				record, cancel := context.WithTimeout(context.WithoutCancel(ctx), 3*time.Second)
-				_ = events.RecordMemoryEvent(record, group, "forgotten_blocked")
-				cancel()
-			}
-		}
-	}()
+	defer s.recordForgottenBlock(ctx, group, &err)
+	notes, err := s.prepare(ctx, group, events, changes, progress != nil)
+	if err != nil {
+		return err
+	}
+	return s.Store.SaveNotes(ctx, group, notes, progress)
+}
+
+// Prepare validates interactive memory changes and returns the note snapshot
+// a confirmed turn will commit. It performs no writes: the snapshot is staged
+// as pending memory and only committed by the transaction that confirms the
+// platform action, so failed and unknown turns never advance memory.
+func (s *Service) Prepare(ctx context.Context, group int64, events []qq.Event, changes []Change) ([]Note, error) {
+	return s.prepare(ctx, group, events, changes, false)
+}
+
+// prepare is the shared validator. Learning batches apply without an explicit
+// request; interactive changes always require one.
+func (s *Service) prepare(ctx context.Context, group int64, events []qq.Event, changes []Change, learning bool) (notes []Note, err error) {
+	defer s.recordForgottenBlock(ctx, group, &err)
 	if len(changes) > 12 {
-		return errors.New("too many memory changes")
+		return nil, errors.New("too many memory changes")
 	}
 	for i := range changes {
 		changes[i].Key = NormalizeKey(changes[i].Key)
@@ -706,7 +758,7 @@ func (s *Service) Apply(ctx context.Context, group int64, events []qq.Event, cha
 	}
 	topicMap, err := s.topicIDs(ctx, group, uniqueStrings(topicEventIDs))
 	if err != nil {
-		return err
+		return nil, err
 	}
 	bindTopic := func(change *Change) error {
 		if change.Kind != "episode" {
@@ -729,7 +781,7 @@ func (s *Service) Apply(ctx context.Context, group int64, events []qq.Event, cha
 	}
 	for i := range changes {
 		if err := bindTopic(&changes[i]); err != nil {
-			return err
+			return nil, err
 		}
 	}
 	// Only the notes this batch actually touches are loaded. Forgotten-source
@@ -752,7 +804,7 @@ func (s *Service) Apply(ctx context.Context, group int64, events []qq.Event, cha
 	if len(ids) > 0 {
 		existing, err := s.Store.NotesByID(ctx, group, ids)
 		if err != nil {
-			return err
+			return nil, err
 		}
 		for _, n := range existing {
 			byID[n.ID] = n
@@ -761,7 +813,7 @@ func (s *Service) Apply(ctx context.Context, group int64, events []qq.Event, cha
 	if len(identities) > 0 {
 		existing, err := s.Store.NotesByIdentity(ctx, group, identities)
 		if err != nil {
-			return err
+			return nil, err
 		}
 		best := map[Identity]Note{}
 		for _, n := range existing {
@@ -791,24 +843,24 @@ func (s *Service) Apply(ctx context.Context, group int64, events []qq.Event, cha
 			eventMap[e.ID] = e
 		}
 	}
-	notes := []Note{}
+	notes = []Note{}
 	seen := map[string]bool{}
 	for _, ch := range changes {
 		if !slices.Contains([]string{"group", "member", "episode", "preference"}, ch.Kind) || len(ch.Key) == 0 || len(ch.Key) > 120 || len([]rune(ch.Text)) > 600 || len(ch.Evidence) == 0 {
-			return errors.New("invalid memory change")
+			return nil, errors.New("invalid memory change")
 		}
 		if (ch.Kind == "member" || ch.Kind == "preference") && ch.Subject <= 0 {
-			return errors.New("member memory requires a subject")
+			return nil, errors.New("member memory requires a subject")
 		}
 		if ch.Kind == "episode" && strings.TrimSpace(ch.TopicID) == "" {
-			return errors.New("episode memory requires a topic id")
+			return nil, errors.New("episode memory requires a topic id")
 		}
 		old, known := byID[ch.ID]
 		if ch.ID != "" && !known {
-			return errors.New("unknown memory id")
+			return nil, errors.New("unknown memory id")
 		}
 		if known && (old.Subject != ch.Subject || NormalizeKey(old.Key) != ch.Key || old.Kind != ch.Kind || old.Version != ch.Version || (ch.Kind == "episode" && NormalizeTopicID(old.TopicID) != ch.TopicID)) {
-			return errors.New("memory revision or owner mismatch")
+			return nil, errors.New("memory revision or owner mismatch")
 		}
 		sourceSeq := int64(0)
 		evidenceAt := time.Time{}
@@ -816,10 +868,10 @@ func (s *Service) Apply(ctx context.Context, group int64, events []qq.Event, cha
 		for _, proof := range ch.Evidence {
 			e, ok := eventMap[proof.EventID]
 			if !ok || len(strings.TrimSpace(proof.Quote)) < 2 || !strings.Contains(e.Text, proof.Quote) {
-				return errors.New("memory evidence is not in the source event")
+				return nil, errors.New("memory evidence is not in the source event")
 			}
 			if ch.Subject > 0 && e.UserID != ch.Subject {
-				return errors.New("member memory must be supported by the member's own message")
+				return nil, errors.New("member memory must be supported by the member's own message")
 			}
 			sourceSeq = max(sourceSeq, e.Seq)
 			if e.At.After(evidenceAt) {
@@ -827,14 +879,16 @@ func (s *Service) Apply(ctx context.Context, group int64, events []qq.Event, cha
 			}
 			explicit = explicit || Explicit(e.Text)
 		}
-		if progress == nil && !explicit {
-			return errors.New("interactive memory changes require an explicit request")
+		// Interactive changes always require an explicit request; learning
+		// batches pass their own gating before reaching this validator.
+		if !learning && !explicit {
+			return nil, errors.New("interactive memory changes require an explicit request")
 		}
 		if ch.Forget && !explicit {
-			return errors.New("forgetting requires an explicit request")
+			return nil, errors.New("forgetting requires an explicit request")
 		}
 		if known && old.State == "forgotten" && (!explicit || sourceSeq <= old.SourceSeq) {
-			return errors.New("forgotten memory requires new explicit evidence")
+			return nil, errors.New("forgotten memory requires new explicit evidence")
 		}
 		id := ch.ID
 		if id == "" {
@@ -843,26 +897,26 @@ func (s *Service) Apply(ctx context.Context, group int64, events []qq.Event, cha
 				old = current
 				known = true
 				if old.Subject != ch.Subject || NormalizeKey(old.Key) != ch.Key || old.Kind != ch.Kind || (ch.Kind == "episode" && NormalizeTopicID(old.TopicID) != ch.TopicID) {
-					return errors.New("memory revision or owner mismatch")
+					return nil, errors.New("memory revision or owner mismatch")
 				}
 				if old.State == "forgotten" && (!explicit || sourceSeq <= old.SourceSeq) {
-					return errors.New("forgotten memory")
+					return nil, errors.New("forgotten memory")
 				}
 				if ch.Version != old.Version {
-					return errors.New("memory revision mismatch")
+					return nil, errors.New("memory revision mismatch")
 				}
 			}
 		}
 		if seen[id] {
-			return errors.New("duplicate memory change")
+			return nil, errors.New("duplicate memory change")
 		}
 		seen[id] = true
 		confidence, err := confidenceOf(ch.Confidence)
 		if err != nil {
-			return err
+			return nil, err
 		}
 		if ch.ValidFrom != nil && ch.ValidTo != nil && !ch.ValidFrom.Before(*ch.ValidTo) {
-			return errors.New("invalid memory validity interval")
+			return nil, errors.New("invalid memory validity interval")
 		}
 		state := "active"
 		evidence := append([]Evidence(nil), ch.Evidence...)
@@ -877,11 +931,11 @@ func (s *Service) Apply(ctx context.Context, group int64, events []qq.Event, cha
 		}
 		n := Note{ID: id, GroupID: group, Subject: ch.Subject, Kind: ch.Kind, Key: ch.Key, TopicID: ch.TopicID, Text: strings.TrimSpace(ch.Text), Evidence: evidence, Version: ch.Version, State: state, SourceSeq: sourceSeq, Explicit: explicit, Updated: evidenceAt, Expires: ch.Expires, Salience: salienceFor(explicit), Confidence: confidence, ValidFrom: ch.ValidFrom, ValidTo: ch.ValidTo, MemoryRevision: 1}
 		if state == "active" && n.Text == "" {
-			return errors.New("empty memory")
+			return nil, errors.New("empty memory")
 		}
 		notes = append(notes, n)
 	}
-	return s.Store.SaveNotes(ctx, group, notes, progress)
+	return notes, nil
 }
 
 func noteID(group, subject int64, kind, key, topicID string) string {

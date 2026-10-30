@@ -80,9 +80,17 @@ func (r *Runtime) applyAndDeliver(parent, ctx context.Context, groupID int64, at
 			attempt.Error = "memory changes require an explicit request"
 			return attempt
 		}
-		if err := r.Memory.Apply(ctx, groupID, snapshot.Batch, attempt.Reply.Memory, nil); err != nil {
+		// Memory is validated and staged here, but only the transaction that
+		// confirms the platform action commits it.
+		prepared, err := r.Memory.Prepare(ctx, groupID, snapshot.Batch, attempt.Reply.Memory)
+		if err != nil {
 			attempt.State = "failed"
 			attempt.Error = "memory update failed: " + err.Error()
+			return attempt
+		}
+		if err := r.Store.SavePendingMemory(ctx, attempt.ID, groupID, memory.NoteSnapshots(prepared)); err != nil {
+			attempt.State = "failed"
+			attempt.Error = err.Error()
 			return attempt
 		}
 	}
@@ -168,6 +176,13 @@ func (r *Runtime) applyAndDeliver(parent, ctx context.Context, groupID int64, at
 		} else {
 			receipt, err = r.Sender.Send(ctx, groupID, attempt.Reply.Text, attempt.Reply.Quote, path)
 		}
+		if err == nil && receipt.MessageID != "" {
+			// The platform receipt is persisted before local archiving so the
+			// reconciler can still identify the message if archiving fails.
+			if saveErr := r.Store.SaveDelivery(ctx, attempt.ID, receipt.MessageID, "message"); saveErr != nil {
+				slog.Warn("save delivery receipt", "attempt", attempt.ID, "error", saveErr)
+			}
+		}
 	}
 	finish, cancelFinish := context.WithTimeout(context.WithoutCancel(parent), 5*time.Second)
 	defer cancelFinish()
@@ -187,19 +202,32 @@ func (r *Runtime) applyAndDeliver(parent, ctx context.Context, groupID int64, at
 	attempt.State = "confirmed"
 	if attempt.Reply.Action == "reaction" || attempt.Reply.Action == "poke" {
 		// Reactions and pokes are visible platform actions, not messages:
-		// close the attempt without archiving a chat event or moving topic
-		// participation. A confirmed attempt still counts toward the send
-		// budget through RepliesSince.
-		if err := r.Store.UpdateAttempt(finish, attempt); err != nil {
+		// confirm the attempt with the action fact, topic projection and
+		// consultations instead of archiving an outbound event. A reaction
+		// binds to the topic of its quoted message, a poke to the topic of
+		// its target event; no determinable topic confirms the action alone.
+		record := ActionRecord{GroupID: groupID, Kind: attempt.Reply.Action, ConfirmedAt: time.Now()}
+		if attempt.Reply.Action == "reaction" {
+			record.TargetMessageID = attempt.Reply.Quote
+			record.TopicID = r.topics.topicIDForMessage(groupID, attempt.Reply.Quote)
+		} else if attempt.Reply.Plan != nil {
+			record.TargetEventID = attempt.Reply.Plan.TargetEventID
+			record.TopicID = r.topics.topicIDForEvent(groupID, attempt.Reply.Plan.TargetEventID)
+		}
+		if err := r.Store.ConfirmAction(finish, attempt, record, snapshotNoteIDs(snapshot.Notes)); err != nil {
 			attempt.State = "unknown"
 			attempt.Error = "action confirmed but archive failed"
-			record, cancelRecord := context.WithTimeout(context.WithoutCancel(parent), 3*time.Second)
-			if updateErr := r.Store.UpdateAttempt(record, attempt); updateErr != nil {
+			recordCtx, cancelRecord := context.WithTimeout(context.WithoutCancel(parent), 3*time.Second)
+			if updateErr := r.Store.UpdateAttempt(recordCtx, attempt); updateErr != nil {
 				slog.Error("record archive failure", "attempt", attempt.ID, "error", updateErr)
 			}
 			cancelRecord()
 			slog.Error(attempt.Error, "attempt", attempt.ID, "error", err)
+			return attempt
 		}
+		// Staged memory committed with the action; the tracker learns the
+		// participation so continuation includes it.
+		r.topics.markBotAction(groupID, record.TopicID, record.ConfirmedAt)
 		return attempt
 	}
 	text := attempt.Reply.Text

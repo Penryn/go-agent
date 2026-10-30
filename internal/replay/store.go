@@ -34,10 +34,14 @@ type Store struct {
 	summaryCursors map[int64]int64
 	runs           []memory.LearningRun
 	memoryEvents   []string
+	deliveries     map[string][2]string
+	actions        []chat.ActionRecord
+	consultations  map[string][]string
+	pendingMemory  map[string]*pendingMemory
 }
 
 func NewStore() *Store {
-	return &Store{attempts: map[string]chat.Attempt{}, usage: map[string]map[string]bool{}, notes: map[string]memory.Note{}, vectors: map[string]projection{}, cursors: map[int64]int64{}, topics: map[int64][]conversation.TopicView{}, topicEvents: map[int64][]conversation.TopicEventView{}, summaryCursors: map[int64]int64{}}
+	return &Store{attempts: map[string]chat.Attempt{}, usage: map[string]map[string]bool{}, notes: map[string]memory.Note{}, vectors: map[string]projection{}, cursors: map[int64]int64{}, topics: map[int64][]conversation.TopicView{}, topicEvents: map[int64][]conversation.TopicEventView{}, summaryCursors: map[int64]int64{}, deliveries: map[string][2]string{}, consultations: map[string][]string{}, pendingMemory: map[string]*pendingMemory{}}
 }
 func (s *Store) Ingest(_ context.Context, e *qq.Event) (bool, error) {
 	s.mu.Lock()
@@ -130,7 +134,132 @@ func (s *Store) FinishAttempt(_ context.Context, a chat.Attempt, e qq.Event, not
 		n.LastUsedAt = &at
 		s.notes[id] = n
 	}
+	s.commitPendingMemory(a.ID)
 	return nil
+}
+
+func (s *Store) SaveDelivery(_ context.Context, attemptID, messageID, kind string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, ok := s.attempts[attemptID]; ok {
+		s.deliveries[attemptID] = [2]string{messageID, kind}
+	}
+	return nil
+}
+
+// ConfirmAction mirrors the store semantics locally: the attempt turns
+// confirmed, the action fact is recorded, consultations book the recalled
+// notes of this group, and staged memory commits. No message is archived.
+func (s *Store) ConfirmAction(_ context.Context, a chat.Attempt, rec chat.ActionRecord, noteIDs []string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	current, ok := s.attempts[a.ID]
+	if !ok || current.State == "confirmed" {
+		return errors.New("action attempt is no longer pending")
+	}
+	a.State = "confirmed"
+	s.attempts[a.ID] = a
+	if rec.TopicID != "" {
+		s.actions = append(s.actions, rec)
+	}
+	consulted := []string{}
+	for _, id := range noteIDs {
+		if n, ok := s.notes[id]; ok && n.GroupID == a.GroupID {
+			consulted = append(consulted, id)
+		}
+	}
+	s.consultations[a.ID] = consulted
+	s.commitPendingMemory(a.ID)
+	return nil
+}
+
+func (s *Store) SavePendingMemory(_ context.Context, attemptID string, group int64, notes []memory.NoteSnapshot) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, ok := s.pendingMemory[attemptID]; !ok {
+		s.pendingMemory[attemptID] = &pendingMemory{group: group, notes: notes, state: "pending"}
+	}
+	return nil
+}
+
+func (s *Store) DiscardPendingMemory(_ context.Context, attemptID, reason string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if p, ok := s.pendingMemory[attemptID]; ok && p.state == "pending" {
+		p.state = "discarded"
+		p.reason = reason
+	}
+	return nil
+}
+
+// commitPendingMemory applies staged notes with SaveNotes' local semantics and
+// marks the attempt's snapshot committed. Callers hold s.mu.
+func (s *Store) commitPendingMemory(attemptID string) {
+	p, ok := s.pendingMemory[attemptID]
+	if !ok || p.state != "pending" {
+		return
+	}
+	for _, snapshot := range p.notes {
+		n := snapshot.Expanded()
+		if n.GroupID != p.group || s.notes[n.ID].Version != n.Version {
+			return // revision conflict leaves the snapshot pending, like the store
+		}
+	}
+	for _, snapshot := range p.notes {
+		n := snapshot.Expanded()
+		n.Version++
+		if old, ok := s.notes[n.ID]; ok {
+			n.UseCount = old.UseCount
+			n.UsageVersion = old.UsageVersion
+			n.LastUsedAt = old.LastUsedAt
+		}
+		if n.MemoryRevision < 1 {
+			n.MemoryRevision = 1
+		} else {
+			n.MemoryRevision++
+		}
+		s.notes[n.ID] = n
+	}
+	p.state = "committed"
+}
+
+// Actions returns the recorded confirmed action projections.
+func (s *Store) Actions() []chat.ActionRecord {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]chat.ActionRecord(nil), s.actions...)
+}
+
+// Consultations returns the notes consulted by one confirmed action.
+func (s *Store) Consultations(attemptID string) []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]string(nil), s.consultations[attemptID]...)
+}
+
+// Delivery returns the recorded platform receipt for one attempt.
+func (s *Store) Delivery(attemptID string) (string, string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	d := s.deliveries[attemptID]
+	return d[0], d[1]
+}
+
+// PendingMemory reports the staged memory state for one attempt.
+func (s *Store) PendingMemory(attemptID string) (state, reason string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if p, ok := s.pendingMemory[attemptID]; ok {
+		return p.state, p.reason
+	}
+	return "", ""
+}
+
+type pendingMemory struct {
+	group  int64
+	notes  []memory.NoteSnapshot
+	state  string
+	reason string
 }
 
 // Usage lists the note IDs booked by one confirmed attempt. Replays use it to

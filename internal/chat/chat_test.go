@@ -444,3 +444,138 @@ func TestInvalidReactionAndPokeRepliesFailValidation(t *testing.T) {
 		})
 	}
 }
+
+func actionMemoryRuntime(t *testing.T, store *replay.Store, sender *replay.Sender, fn func(map[string]any) chat.Reply) *chat.Runtime {
+	t.Helper()
+	r := chat.New(context.Background(), &chat.Runtime{Store: store, Model: generator{func(_ context.Context, input any) (chat.Reply, error) {
+		return fn(input.(map[string]any)), nil
+	}}, Sender: sender, Memory: &memory.Service{Store: store, TopK: 3, Budgets: memory.RecallBudgets{Preference: 6, Member: 8, Episode: 6}}, SelfID: 99, Persona: chat.Persona{Name: "芙芙"},
+		Config: chat.Config{Merge: 5 * time.Millisecond, MaxWait: 100 * time.Millisecond, PassiveInterval: time.Millisecond, ActiveWindow: time.Second, Timeout: time.Second, SpontaneousInterval: time.Hour, MaxPerMinute: 20, History: 80, ContextRunes: 20000}})
+	t.Cleanup(r.Close)
+	return r
+}
+
+func memoryChange(eventID, quote string) []memory.Change {
+	return []memory.Change{{Kind: "preference", Subject: 10, Key: "habit", Text: "喜欢晚起", Evidence: []memory.Evidence{{EventID: eventID, Quote: quote}}}}
+}
+
+// TestReactionProjectsActionFactsAndCommitsMemory covers the confirmed action
+// path: the attempt closes with an action record bound to the quoted message's
+// topic, consulted notes are booked, staged memory commits, and no outbound
+// message is archived.
+func TestReactionProjectsActionFactsAndCommitsMemory(t *testing.T) {
+	store := replay.NewStore()
+	if err := store.SaveNotes(context.Background(), 1, []memory.Note{{ID: "note-recall", GroupID: 1, Kind: "preference", Key: "nickname", Text: "称呼小林", State: "active", Updated: time.Now()}}, nil); err != nil {
+		t.Fatal(err)
+	}
+	sender := &replay.Sender{}
+	r := actionMemoryRuntime(t, store, sender, func(input map[string]any) chat.Reply {
+		batch := input["batch"].([]qq.Event)
+		if len(batch) == 0 {
+			return chat.Reply{Action: "silent"}
+		}
+		return chat.Reply{Action: "reaction", Quote: batch[0].MessageID, EmojiID: "76", Reason: "ack", Memory: memoryChange(batch[0].ID, batch[0].Text)}
+	})
+	a, err := r.Process(context.Background(), payload(55, 1, 10, "记住我喜欢晚起", true))
+	if err != nil || a.State != "confirmed" {
+		t.Fatal("reaction was not confirmed", a, err)
+	}
+	actions := store.Actions()
+	if len(actions) != 1 || actions[0].Kind != "reaction" || actions[0].TargetMessageID != "55" || actions[0].TopicID == "" {
+		t.Fatal("action record incomplete", actions)
+	}
+	if state, _ := store.PendingMemory(a.ID); state != "committed" {
+		t.Fatal("staged memory did not commit", state)
+	}
+	consulted := store.Consultations(a.ID)
+	if len(consulted) != 1 || consulted[0] != "note-recall" {
+		t.Fatal("consultation ledger wrong", consulted)
+	}
+	notes, err := store.ActiveNotes(context.Background(), 1, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var committed, seeded int
+	for _, n := range notes {
+		if n.ID == "note-recall" {
+			seeded++
+			if n.UseCount != 0 {
+				t.Fatal("consultation bumped text-reply usage")
+			}
+		}
+		if n.ID != "" && n.Text == "喜欢晚起" {
+			committed++
+		}
+	}
+	if seeded != 1 || committed != 1 {
+		t.Fatal("memory projections wrong", seeded, committed)
+	}
+	if len(sender.Messages) != 0 {
+		t.Fatal("reaction produced a phantom message", sender.Messages)
+	}
+}
+
+// TestMemoryCommitFollowsConfirmation exercises the pending memory lifecycle:
+// confirmed commits, failed discards, unknown stays staged, silent discards.
+func TestMemoryCommitFollowsConfirmation(t *testing.T) {
+	store := replay.NewStore()
+	sender := &replay.Sender{}
+	r := actionMemoryRuntime(t, store, sender, func(input map[string]any) chat.Reply {
+		batch := input["batch"].([]qq.Event)
+		if len(batch) == 0 {
+			return chat.Reply{Action: "silent"}
+		}
+		text := batch[0].Text
+		switch {
+		case strings.Contains(text, "沉默"):
+			return chat.Reply{Action: "silent", Reason: "quiet", Memory: memoryChange(batch[0].ID, batch[0].Text)}
+		default:
+			return chat.Reply{Action: "text", Text: "记住了", Reason: "memory", Memory: memoryChange(batch[0].ID, batch[0].Text)}
+		}
+	})
+	seed := func(group int64, id string) {
+		t.Helper()
+		if err := store.SaveNotes(context.Background(), group, []memory.Note{{ID: id, GroupID: group, Kind: "preference", Key: "nickname", Text: "称呼小林", State: "active", Updated: time.Now()}}, nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// Confirmed: memory commits once.
+	seed(1, "note-1")
+	a, err := r.Process(context.Background(), payload(1, 1, 10, "记住我喜欢晚起", true))
+	if err != nil || a.State != "confirmed" {
+		t.Fatal(a, err)
+	}
+	if state, _ := store.PendingMemory(a.ID); state != "committed" {
+		t.Fatal("confirmed turn did not commit memory", state)
+	}
+	// Definite rejection: pending is discarded.
+	seed(2, "note-2")
+	sender.Error = &qq.SendError{Err: errors.New("rejected"), Definite: true}
+	a, err = r.Process(context.Background(), payload(2, 2, 10, "记住我喜欢晚起", true))
+	if err != nil || a.State != "failed" {
+		t.Fatal(a, err)
+	}
+	if state, _ := store.PendingMemory(a.ID); state != "discarded" {
+		t.Fatal("failed turn kept staged memory", state)
+	}
+	// Uncertain send: pending stays for reconciliation.
+	seed(3, "note-3")
+	sender.Error = &qq.SendError{Err: context.DeadlineExceeded, Definite: false}
+	a, err = r.Process(context.Background(), payload(3, 3, 10, "记住我喜欢晚起", true))
+	if err != nil || a.State != "unknown" {
+		t.Fatal(a, err)
+	}
+	if state, _ := store.PendingMemory(a.ID); state != "pending" {
+		t.Fatal("unknown turn lost staged memory", state)
+	}
+	// Silent: staged memory is abandoned with the outcome.
+	seed(4, "note-4")
+	a, err = r.Process(context.Background(), payload(4, 4, 10, "别记了，沉默就好", true))
+	if err != nil || a.State != "silent" {
+		t.Fatal(a, err)
+	}
+	if state, reason := store.PendingMemory(a.ID); state != "discarded" || reason != "silent" {
+		t.Fatal("silent turn did not discard staged memory", state, reason)
+	}
+}

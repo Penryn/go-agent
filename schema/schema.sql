@@ -6,6 +6,9 @@ CREATE TABLE IF NOT EXISTS groupfriend.messages (
  message_id TEXT NOT NULL DEFAULT '',outbound BOOLEAN NOT NULL DEFAULT FALSE,recalled BOOLEAN NOT NULL DEFAULT FALSE,
  event_at TIMESTAMPTZ NOT NULL,body JSONB NOT NULL
 );
+-- Actions (poke/reaction notices) share the inbound archive with their own
+-- kind, while 'message' keeps the default for every pre-existing row.
+ALTER TABLE groupfriend.messages ADD COLUMN IF NOT EXISTS event_kind TEXT NOT NULL DEFAULT 'message';
 CREATE INDEX IF NOT EXISTS friend_messages_group_seq ON groupfriend.messages(group_id,seq DESC);
 CREATE INDEX IF NOT EXISTS friend_messages_platform ON groupfriend.messages(group_id,message_id);
 CREATE TABLE IF NOT EXISTS groupfriend.group_progress (
@@ -57,6 +60,29 @@ CREATE TABLE IF NOT EXISTS groupfriend.conversation_topics (
  revision BIGINT NOT NULL DEFAULT 1,last_active_at TIMESTAMPTZ NOT NULL,
  PRIMARY KEY(group_id,topic_id)
 );
+-- Bot participation splits by source: the last confirmed outbound message and
+-- the last confirmed platform action (reaction or poke) each drive continuation.
+ALTER TABLE groupfriend.conversation_topics ADD COLUMN IF NOT EXISTS bot_message_at TIMESTAMPTZ;
+ALTER TABLE groupfriend.conversation_topics ADD COLUMN IF NOT EXISTS bot_action_at TIMESTAMPTZ;
+-- Confirmed platform actions are facts, not messages: they never enter
+-- groupfriend.messages and are idempotent per attempt and topic.
+CREATE TABLE IF NOT EXISTS groupfriend.conversation_topic_actions (
+ attempt_id TEXT NOT NULL,group_id BIGINT NOT NULL,topic_id TEXT NOT NULL,action_kind TEXT NOT NULL,
+ target_event_id TEXT NOT NULL DEFAULT '',target_message_id TEXT NOT NULL DEFAULT '',confirmed_at TIMESTAMPTZ NOT NULL,
+ PRIMARY KEY(attempt_id,topic_id,action_kind)
+);
+-- Consultations record which notes informed a confirmed action, without
+-- touching the text-reply semantics of note_usage and notes.use_count.
+CREATE TABLE IF NOT EXISTS groupfriend.note_consultation (
+ attempt_id TEXT NOT NULL,note_id TEXT NOT NULL,group_id BIGINT NOT NULL,action_kind TEXT NOT NULL,confirmed_at TIMESTAMPTZ NOT NULL,
+ PRIMARY KEY(attempt_id,note_id)
+);
+-- Pending memory is prepared before the platform action and committed in the
+-- transaction that confirms it. attempt_id is the idempotency key.
+CREATE TABLE IF NOT EXISTS groupfriend.reply_memory_pending (
+ attempt_id TEXT PRIMARY KEY,group_id BIGINT NOT NULL,changes JSONB NOT NULL,
+ state TEXT NOT NULL CHECK(state IN ('pending','committed','discarded')),last_error TEXT NOT NULL DEFAULT '',updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
 CREATE TABLE IF NOT EXISTS groupfriend.topic_summaries (
  group_id BIGINT NOT NULL,topic_id TEXT NOT NULL,revision BIGINT NOT NULL,
  summary TEXT NOT NULL,evidence JSONB NOT NULL DEFAULT '[]',source_seq BIGINT NOT NULL,
@@ -86,5 +112,12 @@ CREATE TABLE IF NOT EXISTS groupfriend.reply_attempts (
  id TEXT PRIMARY KEY,group_id BIGINT NOT NULL,input_seq BIGINT NOT NULL,state TEXT NOT NULL,
  sticker_id TEXT NOT NULL DEFAULT '',at TIMESTAMPTZ NOT NULL,updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),body JSONB NOT NULL
 );
+-- Delivery credentials and the reconcile cursor let an unknown send be
+-- reconciled against the platform without re-sending.
+ALTER TABLE groupfriend.reply_attempts ADD COLUMN IF NOT EXISTS delivery_message_id TEXT NOT NULL DEFAULT '';
+ALTER TABLE groupfriend.reply_attempts ADD COLUMN IF NOT EXISTS delivery_kind TEXT NOT NULL DEFAULT 'message';
+ALTER TABLE groupfriend.reply_attempts ADD COLUMN IF NOT EXISTS reconcile_state TEXT NOT NULL DEFAULT 'none';
+ALTER TABLE groupfriend.reply_attempts ADD COLUMN IF NOT EXISTS reconcile_at TIMESTAMPTZ;
+ALTER TABLE groupfriend.reply_attempts ADD COLUMN IF NOT EXISTS reconcile_error TEXT NOT NULL DEFAULT '';
 CREATE INDEX IF NOT EXISTS friend_attempt_group_time ON groupfriend.reply_attempts(group_id,updated_at DESC);
 CREATE INDEX IF NOT EXISTS friend_attempt_sticker ON groupfriend.reply_attempts(group_id,sticker_id,updated_at DESC) WHERE state='confirmed';

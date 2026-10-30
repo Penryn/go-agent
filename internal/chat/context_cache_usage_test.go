@@ -55,6 +55,14 @@ func (s *noteStore) FinishAttempt(_ context.Context, _ Attempt, _ qq.Event, ids 
 	s.used = append(s.used, ids...)
 	return nil
 }
+func (s *noteStore) SaveDelivery(context.Context, string, string, string) error { return nil }
+func (s *noteStore) ConfirmAction(context.Context, Attempt, ActionRecord, []string) error {
+	return nil
+}
+func (s *noteStore) SavePendingMemory(context.Context, string, int64, []memory.NoteSnapshot) error {
+	return nil
+}
+func (s *noteStore) DiscardPendingMemory(context.Context, string, string) error { return nil }
 
 // TestContextCacheHitKeepsNoteIDs proves a cache hit hands the usage ledger the
 // same frozen note identities as the retrieval that populated the cache.

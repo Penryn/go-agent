@@ -32,6 +32,10 @@ type TopicView struct {
 	Revision          int64
 	SummaryRevision   int64
 	LastActiveAt      time.Time
+	// BotMessageAt and BotActionAt split bot participation by source so
+	// continuation can be closed per source without losing the action facts.
+	BotMessageAt time.Time
+	BotActionAt  time.Time
 }
 type PendingQuestion struct {
 	EventID, Text string

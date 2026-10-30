@@ -60,8 +60,29 @@ type topicState struct {
 	summary          string
 	summaryRevision  int64
 	revision         int64
-	botParticipated  bool
-	botAt            time.Time
+	botMessageAt     time.Time
+	botActionAt      time.Time
+}
+
+// botParticipated reports whether any confirmed message or action marks the
+// bot as part of this topic.
+func (topic *topicState) botParticipated() bool {
+	return !topic.botMessageAt.IsZero() || !topic.botActionAt.IsZero()
+}
+
+// botLatestAt returns the most recent bot participation time of either kind.
+func (topic *topicState) botLatestAt() time.Time {
+	if topic.botMessageAt.After(topic.botActionAt) {
+		return topic.botMessageAt
+	}
+	return topic.botActionAt
+}
+
+// botActiveWithin reports whether bot participation of either kind falls
+// inside the active window.
+func (topic *topicState) botActiveWithin(now time.Time, window time.Duration) bool {
+	return (!topic.botMessageAt.IsZero() && now.Sub(topic.botMessageAt) <= window) ||
+		(!topic.botActionAt.IsZero() && now.Sub(topic.botActionAt) <= window)
 }
 
 type topicObservation struct {
@@ -89,7 +110,7 @@ func (t *topicTracker) Snapshot(groupID int64, activeWindow time.Duration) []con
 	}
 	out := make([]conversation.TopicView, 0, len(g.topics))
 	for _, topic := range g.topics {
-		out = append(out, conversation.TopicView{ID: topic.id, Summary: topic.summary, SummaryRevision: topic.summaryRevision, Participants: sortedTopicParticipants(topic), FirstSeq: topic.firstSeq, LastSeq: topic.lastSeq, Revision: topic.revision, LastActiveAt: topic.lastAt, Status: topicStateAt(topic, time.Now(), activeWindow)})
+		out = append(out, conversation.TopicView{ID: topic.id, Summary: topic.summary, SummaryRevision: topic.summaryRevision, Participants: sortedTopicParticipants(topic), FirstSeq: topic.firstSeq, LastSeq: topic.lastSeq, Revision: topic.revision, LastActiveAt: topic.lastAt, BotMessageAt: topic.botMessageAt, BotActionAt: topic.botActionAt, Status: topicStateAt(topic, time.Now(), activeWindow)})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].LastActiveAt.After(out[j].LastActiveAt) })
 	return out
@@ -159,7 +180,7 @@ func (t *topicTracker) Restore(groupID int64, views []conversation.TopicView, ev
 		if view.ID == "" || g.topics[view.ID] != nil {
 			continue
 		}
-		topic := &topicState{id: view.ID, participants: map[int64]bool{}, textEventIDs: map[string]bool{}, firstSeq: view.FirstSeq, lastSeq: view.LastSeq, lastAt: view.LastActiveAt, summary: view.Summary, summaryRevision: max(view.SummaryRevision, view.Revision), revision: max(view.Revision, 1)}
+		topic := &topicState{id: view.ID, participants: map[int64]bool{}, textEventIDs: map[string]bool{}, firstSeq: view.FirstSeq, lastSeq: view.LastSeq, lastAt: view.LastActiveAt, botMessageAt: view.BotMessageAt, botActionAt: view.BotActionAt, summary: view.Summary, summaryRevision: max(view.SummaryRevision, view.Revision), revision: max(view.Revision, 1)}
 		for _, id := range view.Participants {
 			topic.addParticipant(id)
 		}
@@ -280,17 +301,18 @@ func (t *topicTracker) observe(groupID int64, history, batch []qq.Event, activeW
 		if topic == nil {
 			continue
 		}
-		if topic.botParticipated && activeWindow > 0 && now.Sub(topic.botAt) <= activeWindow {
+		if topic.botActiveWithin(now, activeWindow) {
 			observation.ActiveBotTopics[topicID] = true
 		}
 		eventIDs := graph.visibleTopicEvents(topic, visibleTopics, visibleOrder)
 		observation.Topics = append(observation.Topics, ConversationTopic{
-			ID:              topic.id,
-			State:           topicStateAt(topic, now, activeWindow),
-			Participants:    sortedTopicParticipants(topic),
-			EventIDs:        eventIDs,
-			BotParticipated: topic.botParticipated,
-			Summary:         topic.summary,
+			ID:                     topic.id,
+			State:                  topicStateAt(topic, now, activeWindow),
+			Participants:           sortedTopicParticipants(topic),
+			EventIDs:               eventIDs,
+			BotParticipated:        topic.botParticipated(),
+			BotActionParticipated:  !topic.botActionAt.IsZero(),
+			Summary:                topic.summary,
 		})
 	}
 	sort.Slice(observation.Topics, func(i, j int) bool {
@@ -313,6 +335,71 @@ func (t *topicTracker) observe(groupID int64, history, batch []qq.Event, activeW
 	return observation
 }
 
+// markBotAction records a confirmed platform action on a topic: the action
+// updates bot_action_at and topic activity but is never archived as a message
+// event and does not participate in lexical clustering.
+func (t *topicTracker) markBotAction(groupID int64, topicID string, at time.Time) {
+	if topicID == "" {
+		return
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	graph := t.groups[groupID]
+	if graph == nil {
+		return
+	}
+	topic := graph.topics[topicID]
+	if topic == nil {
+		return
+	}
+	graph.lastActive = time.Now()
+	if at.IsZero() {
+		at = time.Now()
+	}
+	if at.After(topic.botActionAt) {
+		topic.botActionAt = at
+	}
+	if at.After(topic.lastAt) {
+		topic.lastAt = at
+	}
+}
+
+// topicIDForMessage resolves the primary topic of an archived message, used
+// to bind a reaction to the topic of its target message.
+func (t *topicTracker) topicIDForMessage(groupID int64, messageID string) string {
+	if messageID == "" {
+		return ""
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	graph := t.groups[groupID]
+	if graph == nil {
+		return ""
+	}
+	if ids := graph.messageTopics[messageID]; len(ids) > 0 {
+		return ids[0]
+	}
+	return ""
+}
+
+// topicIDForEvent resolves the primary topic of a visible event, used to bind
+// a poke to the topic of its target event.
+func (t *topicTracker) topicIDForEvent(groupID int64, eventID string) string {
+	if eventID == "" {
+		return ""
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	graph := t.groups[groupID]
+	if graph == nil {
+		return ""
+	}
+	if ids := graph.eventTopics[eventID]; len(ids) > 0 {
+		return ids[0]
+	}
+	return ""
+}
+
 func (t *topicTracker) markBotReply(groupID int64, topicID string, event qq.Event) {
 	if topicID == "" {
 		return
@@ -328,10 +415,9 @@ func (t *topicTracker) markBotReply(groupID int64, topicID string, event qq.Even
 		return
 	}
 	graph.lastActive = time.Now()
-	topic.botParticipated = true
-	topic.botAt = event.At
-	if topic.botAt.IsZero() {
-		topic.botAt = time.Now()
+	topic.botMessageAt = event.At
+	if topic.botMessageAt.IsZero() {
+		topic.botMessageAt = time.Now()
 	}
 	graph.record(event, []string{topicID})
 	graph.touch(topic, event)
@@ -460,10 +546,10 @@ func (g *topicGraph) isSameLiveTurn(event qq.Event) bool {
 func (g *topicGraph) latestBotTopic() []string {
 	var latest *topicState
 	for _, topic := range g.topics {
-		if !topic.botParticipated {
+		if !topic.botParticipated() {
 			continue
 		}
-		if latest != nil && (topic.botAt.Before(latest.botAt) || topic.botAt.Equal(latest.botAt) && topic.id > latest.id) {
+		if latest != nil && (topic.botLatestAt().Before(latest.botLatestAt()) || topic.botLatestAt().Equal(latest.botLatestAt()) && topic.id > latest.id) {
 			continue
 		}
 		latest = topic

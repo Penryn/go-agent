@@ -8,6 +8,7 @@ import (
 
 	ctxsnapshot "github.com/phlin/go-agent/internal/context"
 	"github.com/phlin/go-agent/internal/meme"
+	"github.com/phlin/go-agent/internal/memory"
 	"github.com/phlin/go-agent/internal/qq"
 )
 
@@ -26,6 +27,14 @@ func (s *revisionStub) UpdateAttempt(context.Context, Attempt) error        { re
 func (s *revisionStub) FinishAttempt(context.Context, Attempt, qq.Event, []string) error {
 	return nil
 }
+func (s *revisionStub) SaveDelivery(context.Context, string, string, string) error { return nil }
+func (s *revisionStub) ConfirmAction(context.Context, Attempt, ActionRecord, []string) error {
+	return nil
+}
+func (s *revisionStub) SavePendingMemory(context.Context, string, int64, []memory.NoteSnapshot) error {
+	return nil
+}
+func (s *revisionStub) DiscardPendingMemory(context.Context, string, string) error { return nil }
 func (s *revisionStub) RepliesSince(context.Context, int64, time.Time) (int, time.Time, error) {
 	return 0, time.Time{}, nil
 }

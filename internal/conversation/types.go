@@ -20,7 +20,10 @@ type Topic struct {
 	Participants    []int64  `json:"participants"`
 	EventIDs        []string `json:"event_ids"`
 	BotParticipated bool     `json:"bot_participated"`
-	Summary         string   `json:"summary,omitempty"`
+	// BotActionParticipated distinguishes participation that came from a
+	// confirmed reaction or poke rather than an outbound message.
+	BotActionParticipated bool   `json:"bot_action_participated,omitempty"`
+	Summary               string `json:"summary,omitempty"`
 }
 
 // Context gives the model explicit participation cues without a second model

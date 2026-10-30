@@ -88,6 +88,9 @@ func (s *Store) Initialize(ctx context.Context, dimensions int) error {
 	if err := ensureActiveIdentityIndex(ctx, tx); err != nil {
 		return err
 	}
+	if err := ensureOutboundUniqueIndex(ctx, tx); err != nil {
+		return err
+	}
 	expected := fmt.Sprint(dimensions)
 	_, err = tx.ExecContext(ctx, `INSERT INTO groupfriend.settings(key,value) VALUES('vector_dimensions',$1) ON CONFLICT DO NOTHING`, expected)
 	if err != nil {
@@ -114,6 +117,26 @@ func ensureActiveIdentityIndex(ctx context.Context, tx *sql.Tx) error {
 		return nil
 	}
 	_, err = tx.ExecContext(ctx, activeIdentityIndexSQL)
+	return err
+}
+
+const outboundUniqueIndexSQL = `CREATE UNIQUE INDEX IF NOT EXISTS friend_messages_outbound_unique ON groupfriend.messages (group_id,message_id) WHERE outbound AND message_id<>''`
+
+// ensureOutboundUniqueIndex guards idempotent outbound archiving for the
+// reconciler. Pre-existing duplicate rows skip the index (recorded in settings)
+// instead of failing startup; reconciliation then relies on the attempt state
+// guard alone.
+func ensureOutboundUniqueIndex(ctx context.Context, tx *sql.Tx) error {
+	var duplicates bool
+	err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM groupfriend.messages WHERE outbound AND message_id<>'' GROUP BY group_id,message_id HAVING COUNT(*)>1)`).Scan(&duplicates)
+	if err != nil {
+		return err
+	}
+	if duplicates {
+		_, err = tx.ExecContext(ctx, `INSERT INTO groupfriend.settings(key,value) VALUES('outbound_unique_index','skipped_duplicates') ON CONFLICT(key) DO NOTHING`)
+		return err
+	}
+	_, err = tx.ExecContext(ctx, outboundUniqueIndexSQL)
 	return err
 }
 
@@ -294,6 +317,9 @@ func (s *Store) FinishAttempt(ctx context.Context, a chat.Attempt, e qq.Event, n
 			return err
 		}
 	}
+	if err := s.commitPending(ctx, tx, a.ID); err != nil {
+		return err
+	}
 	return tx.Commit()
 }
 func (s *Store) RepliesSince(ctx context.Context, group int64, since time.Time) (int, time.Time, error) {
@@ -384,6 +410,16 @@ func (s *Store) SaveNotes(ctx context.Context, group int64, notes []memory.Note,
 		return err
 	}
 	defer tx.Rollback()
+	if err := s.saveNotesTx(ctx, tx, group, notes, p); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+// saveNotesTx is the note save transaction body, shared by the standalone
+// SaveNotes and the confirm paths that commit staged memory in the same
+// transaction as the attempt.
+func (s *Store) saveNotesTx(ctx context.Context, tx *sql.Tx, group int64, notes []memory.Note, p *memory.Progress) error {
 	if _, err := tx.ExecContext(ctx, `SELECT pg_advisory_xact_lock_shared($1)`, memoryMaintenanceLock); err != nil {
 		return err
 	}
@@ -430,7 +466,7 @@ func (s *Store) SaveNotes(ctx context.Context, group int64, notes []memory.Note,
 			return errors.New("learning cursor changed")
 		}
 	}
-	return tx.Commit()
+	return nil
 }
 
 func (s *Store) MemoryRevision(ctx context.Context, group int64) (int64, error) {
@@ -469,7 +505,7 @@ func (s *Store) SaveTopics(ctx context.Context, group int64, topics []conversati
 		if err != nil {
 			return err
 		}
-		_, err = tx.ExecContext(ctx, `INSERT INTO groupfriend.conversation_topics(group_id,topic_id,status,participants,first_seq,last_seq,revision,last_active_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8) ON CONFLICT(group_id,topic_id) DO UPDATE SET status=EXCLUDED.status,participants=EXCLUDED.participants,first_seq=EXCLUDED.first_seq,last_seq=EXCLUDED.last_seq,revision=GREATEST(groupfriend.conversation_topics.revision,EXCLUDED.revision),last_active_at=GREATEST(groupfriend.conversation_topics.last_active_at,EXCLUDED.last_active_at)`, group, topic.ID, topic.Status, participants, topic.FirstSeq, topic.LastSeq, max64(topic.Revision, 1), topic.LastActiveAt)
+		_, err = tx.ExecContext(ctx, `INSERT INTO groupfriend.conversation_topics(group_id,topic_id,status,participants,first_seq,last_seq,revision,last_active_at,bot_message_at,bot_action_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) ON CONFLICT(group_id,topic_id) DO UPDATE SET status=EXCLUDED.status,participants=EXCLUDED.participants,first_seq=EXCLUDED.first_seq,last_seq=EXCLUDED.last_seq,revision=GREATEST(groupfriend.conversation_topics.revision,EXCLUDED.revision),last_active_at=GREATEST(groupfriend.conversation_topics.last_active_at,EXCLUDED.last_active_at),bot_message_at=GREATEST(COALESCE(groupfriend.conversation_topics.bot_message_at,to_timestamp(0)),EXCLUDED.bot_message_at),bot_action_at=GREATEST(COALESCE(groupfriend.conversation_topics.bot_action_at,to_timestamp(0)),EXCLUDED.bot_action_at)`, group, topic.ID, topic.Status, participants, topic.FirstSeq, topic.LastSeq, max64(topic.Revision, 1), topic.LastActiveAt, nullTime(topic.BotMessageAt), nullTime(topic.BotActionAt))
 		if err != nil {
 			return err
 		}
@@ -534,7 +570,7 @@ func (s *Store) TopicIDs(ctx context.Context, group int64, eventIDs []string) (m
 }
 
 func (s *Store) LoadTopics(ctx context.Context, group int64) ([]conversation.TopicView, error) {
-	rows, err := s.DB.QueryContext(ctx, `SELECT t.topic_id,t.status,t.participants,t.first_seq,t.last_seq,t.revision,t.last_active_at,COALESCE((SELECT summary FROM groupfriend.topic_summaries x WHERE x.group_id=t.group_id AND x.topic_id=t.topic_id ORDER BY revision DESC LIMIT 1),''),COALESCE((SELECT revision FROM groupfriend.topic_summaries x WHERE x.group_id=t.group_id AND x.topic_id=t.topic_id ORDER BY revision DESC LIMIT 1),0) FROM groupfriend.conversation_topics t WHERE t.group_id=$1 ORDER BY t.last_active_at DESC LIMIT 64`, group)
+	rows, err := s.DB.QueryContext(ctx, `SELECT t.topic_id,t.status,t.participants,t.first_seq,t.last_seq,t.revision,t.last_active_at,COALESCE((SELECT summary FROM groupfriend.topic_summaries x WHERE x.group_id=t.group_id AND x.topic_id=t.topic_id ORDER BY revision DESC LIMIT 1),''),COALESCE((SELECT revision FROM groupfriend.topic_summaries x WHERE x.group_id=t.group_id AND x.topic_id=t.topic_id ORDER BY revision DESC LIMIT 1),0),t.bot_message_at,t.bot_action_at FROM groupfriend.conversation_topics t WHERE t.group_id=$1 ORDER BY t.last_active_at DESC LIMIT 64`, group)
 	if err != nil {
 		return nil, err
 	}
@@ -543,9 +579,11 @@ func (s *Store) LoadTopics(ctx context.Context, group int64) ([]conversation.Top
 	for rows.Next() {
 		var t conversation.TopicView
 		var participants []byte
-		if err := rows.Scan(&t.ID, &t.Status, &participants, &t.FirstSeq, &t.LastSeq, &t.Revision, &t.LastActiveAt, &t.Summary, &t.SummaryRevision); err != nil {
+		var botMessageAt, botActionAt sql.NullTime
+		if err := rows.Scan(&t.ID, &t.Status, &participants, &t.FirstSeq, &t.LastSeq, &t.Revision, &t.LastActiveAt, &t.Summary, &t.SummaryRevision, &botMessageAt, &botActionAt); err != nil {
 			return nil, err
 		}
+		t.BotMessageAt, t.BotActionAt = botMessageAt.Time, botActionAt.Time
 		if err := json.Unmarshal(participants, &t.Participants); err != nil {
 			return nil, err
 		}
@@ -639,6 +677,15 @@ func (s *Store) SaveTopicSummaries(ctx context.Context, group int64, summaries [
 func (s *Store) DeferTopicSummary(ctx context.Context, group int64) error {
 	_, err := s.DB.ExecContext(ctx, `UPDATE groupfriend.group_progress SET summary_retry_at=NOW()+INTERVAL '1 minute' WHERE group_id=$1`, group)
 	return err
+}
+
+// nullTime maps the zero time to NULL so a topic without a participation
+// source of one kind keeps that column empty.
+func nullTime(t time.Time) any {
+	if t.IsZero() {
+		return nil
+	}
+	return t
 }
 
 func max64(a, b int64) int64 {

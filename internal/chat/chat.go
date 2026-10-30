@@ -76,7 +76,28 @@ type Store interface {
 	BeginAttempt(context.Context, Attempt) (bool, error)
 	UpdateAttempt(context.Context, Attempt) error
 	FinishAttempt(context.Context, Attempt, qq.Event, []string) error
+	// SaveDelivery records the platform receipt before local archiving.
+	SaveDelivery(context.Context, string, string, string) error
+	// ConfirmAction commits a confirmed reaction or poke without archiving a
+	// message: action fact, topic projection, consultations and staged memory.
+	ConfirmAction(context.Context, Attempt, ActionRecord, []string) error
+	// SavePendingMemory stages the prepared note snapshot for one attempt.
+	SavePendingMemory(context.Context, string, int64, []memory.NoteSnapshot) error
+	// DiscardPendingMemory abandons staged memory for unconfirmed attempts.
+	DiscardPendingMemory(context.Context, string, string) error
 	RepliesSince(context.Context, int64, time.Time) (int, time.Time, error)
+}
+
+// ActionRecord is the confirmed platform action projection handed to the
+// store. Kind is "reaction" or "poke"; TopicID may stay empty when the action
+// has no determinable topic, in which case only the attempt is confirmed.
+type ActionRecord struct {
+	GroupID         int64
+	TopicID         string
+	Kind            string
+	TargetEventID   string
+	TargetMessageID string
+	ConfirmedAt     time.Time
 }
 type Sender interface {
 	Send(context.Context, int64, string, string, string) (qq.Receipt, error)
@@ -567,6 +588,11 @@ func (r *Runtime) respond(parent context.Context, groupID int64, batch []qq.Even
 			defer cancel()
 			if err := r.Store.UpdateAttempt(finish, a); err != nil {
 				slog.Error("record turn outcome", "attempt", a.ID, "error", err)
+			}
+			// Staged memory only commits together with a platform
+			// confirmation; every other terminal state abandons it.
+			if err := r.Store.DiscardPendingMemory(finish, a.ID, a.State); err != nil {
+				slog.Error("discard pending memory", "attempt", a.ID, "error", err)
 			}
 		}
 	}()
