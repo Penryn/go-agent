@@ -2,7 +2,7 @@
 
 ## 目标与范围
 
-本次改造模拟机器人在 QQ 客户端中的操作顺序，而不是修改语言风格。第一阶段只处理一个明确规则：机器人准备引用一条消息时，必须先通过平台接口将该消息标记为已读，成功后才能发送引用消息。
+本次改造模拟机器人在 QQ 客户端中的操作顺序，而不是修改语言风格。文档覆盖三类动作：引用消息刷新、表情回应和群内戳一戳。第一阶段先落地引用链路；表情回应和戳一戳定义为后续最小改造，沿用同一套前置条件和发送边界。
 
 本方案不增加动作审计表、不引入通用工作流引擎、不改变模型输出协议，也不修改 replay 的本地发送语义。
 
@@ -14,6 +14,10 @@ NapCat 提供了扩展接口：
 
 - `mark_msg_as_read`：按 `message_id` 标记单条消息已读，适合引用前置条件。[NapCat 接口文档](https://napcat.apifox.cn/226657389e0)
 - `mark_group_msg_as_read`：按群会话标记已读。不同文档版本对参数有 `group_id` 与 `group_id + time` 的差异，不用于单条消息的严格前置检查。[NapCat API 列表](https://napneko.github.io/onebot/api)
+- `get_msg`：按 `message_id` 重新获取消息，适合在引用或回应前刷新消息状态。[NapCat API 列表](https://napneko.github.io/onebot/api)
+- `set_msg_emoji_like`：按 `message_id` 和 `emoji_id` 添加表情回应，属于 NapCat 扩展动作。[NapCat API 文档](https://napneko.github.io/develop/api/doc)
+- `group_poke`：按 `group_id` 和 `user_id` 在群内戳一戳，属于 NapCat 扩展动作。[NapCat API 列表](https://napneko.github.io/onebot/api)
+- `get_group_member_info`：刷新目标成员在当前群的成员信息，可用于戳一戳前确认目标仍在群内。[NapCat API 列表](https://napneko.github.io/onebot/api)
 - `set_input_status`：设置输入状态，参数是 `user_id` 和 `event_type`，当前文档没有群号参数，第一阶段不接入群聊行为。[NapCat API 列表](https://napneko.github.io/onebot/api)
 
 项目依赖的 `github.com/zjutjh/onebot-sdk v1.1.0` 已包含 `MarkMsgAsRead`、`MarkGroupMsgAsRead` 和 `SetInputStatus` 的生成客户端方法。项目自己的 [qq.Client](/Users/phlin/Public/code/go/go-agent/internal/qq/qq.go:186) 尚未封装这些方法。
@@ -25,21 +29,74 @@ OneBot HTTP API 的同步调用返回 `status=ok` 才能确认请求被接受；
 模型只返回回复意图，不能决定平台 API 的调用顺序。运行时负责执行以下顺序：
 
 ```text
-模型生成回复意图
-→ 本地确认引用目标可见且未撤回
+引用：模型生成回复意图
+→ 本地确认引用目标可见
+→ get_msg(message_id) 刷新并确认目标仍存在
 → 检查发送权仍属于当前进程
 → mark_msg_as_read(message_id)
 → 收到同步成功响应
 → send_group_msg
 → 收到发送回执
 → 归档出站消息并更新话题参与状态
+
+表情回应：模型或策略生成回应意图
+→ 本地确认目标消息属于当前可见对话
+→ get_msg(message_id)
+→ 检查发送权仍属于当前进程
+→ mark_msg_as_read(message_id)
+→ set_msg_emoji_like(message_id, emoji_id)
+→ 收到同步成功响应
+→ 归档动作结果
+
+戳一戳：模型或策略生成互动意图
+→ 本地确认目标用户来自当前群上下文
+→ 检查发送权仍属于当前进程
+→ get_group_member_info(group_id, user_id, no_cache=true)
+→ 确认目标仍在群内
+→ group_poke(group_id, user_id)
+→ 收到同步成功响应
+→ 归档动作结果
 ```
 
-没有引用时不调用已读接口。引用目标校验失败、已读接口失败或已读状态未知时，不发送该回复，也不自动降级成无引用消息；降级会改变模型选择的动作语义。
+没有引用时不调用消息刷新或已读接口。引用目标刷新失败、已读接口失败或已读状态未知时，不发送该回复，也不自动降级成无引用消息；降级会改变模型选择的动作语义。表情回应和戳一戳属于独立可见动作，失败时不自动改发文字。
+
+表情回应只用于低打扰的确认、感谢或轻量反馈，不对每条消息自动回应。戳一戳必须同时满足近期互动、目标成员仍在群内和冷却时间条件；不能把它当作普通回复的固定前缀。具体频率控制属于策略约束，不增加动作审计表。
 
 “收到事件”或“消息已经写入本地数据库”不等于平台已读。平台已读只能由显式 API 调用确认。由于已读接口没有返回 QQ 客户端界面状态的查询结果，程序将 `status=ok` 视为平台已接受该操作，不声称已经验证客户端 UI 状态。
 
-## 代码改造
+## 三类动作的最小改造
+
+### 引用消息刷新
+
+在发送引用前先调用 `get_msg`，使用返回结果确认消息仍存在，并在需要时校验返回的 `message_id`、`group_id` 与当前会话一致。刷新失败、消息已撤回或目标不属于当前会话时，直接结束本次引用回复。刷新成功后再按现有方案调用 `mark_msg_as_read`，最后发送 `send_group_msg`。
+
+`get_msg` 是只读刷新，`mark_msg_as_read` 才是平台状态前置动作。两者都使用同步调用；不能用异步提交结果作为后续发送许可。
+
+### 表情回应
+
+新增一个内部动作，至少包含 `message_id` 和 `emoji_id`。动作边界放在 `ownedSender` 或同等真实发送边界，不放在模型层直接调用 QQ API。发送顺序固定为：刷新目标消息、确认发送权、标记已读、调用 `set_msg_emoji_like`。
+
+表情回应可以单独完成一次轻量确认，也可以作为未来文字回复的附加动作。第一版建议只支持单独回应，避免同时扩展模型协议、文字发送和动作回执；如果以后支持组合，顺序固定为“已读 → 表情 → 文字”，每一步都必须等待同步成功响应。
+
+表情接口失败时不自动发送文字替代物。接口返回 `status=ok` 只代表平台接受了动作，不代表客户端已经渲染表情。
+
+### 戳一戳
+
+新增一个内部动作，至少包含 `group_id` 和 `user_id`。目标用户必须来自当前群事件或当前可见对话；在没有可靠成员缓存时，调用 `get_group_member_info(no_cache=true)` 刷新成员状态，确认成员仍在群内后再调用 `group_poke`。
+
+戳一戳不需要引用消息，因此不调用 `get_msg` 或 `mark_msg_as_read`。它必须经过发送权检查，并受近期互动和冷却条件约束。目标不在群内、权限不足、接口失败或返回状态未知时，不补发文字。
+
+## 动作选择与落地顺序
+
+| 动作 | 优先级 | 是否阻断后续可见动作 | 首个落地点 |
+| --- | --- | --- | --- |
+| 引用消息刷新 + 已读 | P0 | 是，失败不发送引用 | `qq.Client` 与 `ownedSender.Send` |
+| 表情回应 | P1 | 是，失败不发该动作的文字替代物 | `ReplyPlan` 增加内部 reaction 动作，再接 `qq.Client` |
+| 戳一戳 | P1 | 是，失败不补发文字 | 增加内部 poke 动作，再接 `qq.Client` |
+
+三类动作都遵守同一个边界：本地校验 → 发送权检查 → 平台前置动作 → 一个可见平台动作 → 同步回执 → 本地提交。当前不为每个动作增加数据库审计记录，也不把这些动作抽象成通用工作流。
+
+## 第一阶段代码改造：引用链路
 
 ### 1. 封装单条已读接口
 
