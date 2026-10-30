@@ -188,11 +188,15 @@ func (s *Store) Ingest(ctx context.Context, e *qq.Event) (bool, error) {
 		return false, err
 	}
 	defer tx.Rollback()
+	kind := e.Kind
+	if kind == "" {
+		kind = "message"
+	}
 	body, err := json.Marshal(e)
 	if err != nil {
 		return false, err
 	}
-	err = tx.QueryRowContext(ctx, `INSERT INTO groupfriend.messages(event_id,group_id,user_id,message_id,outbound,recalled,event_at,body) VALUES($1,$2,$3,$4,$5,$6,$7,$8) ON CONFLICT(event_id) DO NOTHING RETURNING seq`, e.ID, e.GroupID, e.UserID, e.MessageID, e.Outbound, e.Recalled, e.At, body).Scan(&e.Seq)
+	err = tx.QueryRowContext(ctx, `INSERT INTO groupfriend.messages(event_id,group_id,user_id,message_id,outbound,recalled,event_at,event_kind,body) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9) ON CONFLICT(event_id) DO NOTHING RETURNING seq`, e.ID, e.GroupID, e.UserID, e.MessageID, e.Outbound, e.Recalled, e.At, kind, body).Scan(&e.Seq)
 	if errors.Is(err, sql.ErrNoRows) {
 		return false, nil
 	}
@@ -618,14 +622,14 @@ func (s *Store) LoadTopicEvents(ctx context.Context, group int64, limit int) ([]
 
 func (s *Store) SummaryBatch(ctx context.Context, limit int) (conversation.SummaryBatch, error) {
 	var batch conversation.SummaryBatch
-	err := s.DB.QueryRowContext(ctx, `SELECT p.group_id,p.summary_after_seq FROM groupfriend.group_progress p WHERE p.summary_retry_at<=NOW() AND EXISTS(SELECT 1 FROM groupfriend.conversation_topic_events e JOIN groupfriend.messages m ON m.event_id=e.event_id WHERE e.group_id=p.group_id AND m.seq>p.summary_after_seq) ORDER BY p.summary_retry_at,p.group_id LIMIT 1`).Scan(&batch.GroupID, &batch.AfterSeq)
+	err := s.DB.QueryRowContext(ctx, `SELECT p.group_id,p.summary_after_seq FROM groupfriend.group_progress p WHERE p.summary_retry_at<=NOW() AND EXISTS(SELECT 1 FROM groupfriend.conversation_topic_events e JOIN groupfriend.messages m ON m.event_id=e.event_id WHERE e.group_id=p.group_id AND m.seq>p.summary_after_seq AND m.event_kind='message') ORDER BY p.summary_retry_at,p.group_id LIMIT 1`).Scan(&batch.GroupID, &batch.AfterSeq)
 	if errors.Is(err, sql.ErrNoRows) {
 		return batch, nil
 	}
 	if err != nil {
 		return batch, err
 	}
-	rows, err := s.DB.QueryContext(ctx, `SELECT topic_id,revision,seq,body FROM (SELECT e.topic_id,COALESCE(t.revision,1) AS revision,m.seq,m.body,DENSE_RANK() OVER (ORDER BY m.seq) AS seq_rank FROM groupfriend.conversation_topic_events e JOIN groupfriend.messages m ON m.event_id=e.event_id LEFT JOIN groupfriend.conversation_topics t ON t.group_id=e.group_id AND t.topic_id=e.topic_id WHERE e.group_id=$1 AND m.seq>$2) ranked WHERE seq_rank<=$3 ORDER BY seq,topic_id`, batch.GroupID, batch.AfterSeq, max(1, limit))
+	rows, err := s.DB.QueryContext(ctx, `SELECT topic_id,revision,seq,body FROM (SELECT e.topic_id,COALESCE(t.revision,1) AS revision,m.seq,m.body,DENSE_RANK() OVER (ORDER BY m.seq) AS seq_rank FROM groupfriend.conversation_topic_events e JOIN groupfriend.messages m ON m.event_id=e.event_id LEFT JOIN groupfriend.conversation_topics t ON t.group_id=e.group_id AND t.topic_id=e.topic_id WHERE e.group_id=$1 AND m.seq>$2 AND m.event_kind='message') ranked WHERE seq_rank<=$3 ORDER BY seq,topic_id`, batch.GroupID, batch.AfterSeq, max(1, limit))
 	if err != nil {
 		return batch, err
 	}
@@ -696,14 +700,14 @@ func max64(a, b int64) int64 {
 }
 func (s *Store) LearningBatch(ctx context.Context, limit int) ([]qq.Event, memory.Progress, error) {
 	var p memory.Progress
-	err := s.DB.QueryRowContext(ctx, `SELECT p.group_id,p.after_seq FROM groupfriend.group_progress p WHERE retry_at<=NOW() AND EXISTS(SELECT 1 FROM groupfriend.messages m WHERE m.group_id=p.group_id AND m.seq>p.after_seq) ORDER BY retry_at,p.group_id LIMIT 1`).Scan(&p.GroupID, &p.After)
+	err := s.DB.QueryRowContext(ctx, `SELECT p.group_id,p.after_seq FROM groupfriend.group_progress p WHERE retry_at<=NOW() AND EXISTS(SELECT 1 FROM groupfriend.messages m WHERE m.group_id=p.group_id AND m.seq>p.after_seq AND m.event_kind='message') ORDER BY retry_at,p.group_id LIMIT 1`).Scan(&p.GroupID, &p.After)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, p, nil
 	}
 	if err != nil {
 		return nil, p, err
 	}
-	rows, err := s.DB.QueryContext(ctx, `SELECT seq,body,recalled FROM groupfriend.messages WHERE group_id=$1 AND seq>$2 ORDER BY seq LIMIT $3`, p.GroupID, p.After, limit)
+	rows, err := s.DB.QueryContext(ctx, `SELECT seq,body,recalled FROM groupfriend.messages WHERE group_id=$1 AND seq>$2 AND event_kind='message' ORDER BY seq LIMIT $3`, p.GroupID, p.After, limit)
 	if err != nil {
 		return nil, p, err
 	}

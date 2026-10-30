@@ -42,6 +42,20 @@ type Event struct {
 	Recalled  bool         `json:"recalled"`
 	At        time.Time    `json:"at"`
 	Images    []Attachment `json:"images,omitempty"`
+	// Kind separates archived event types: message, recall and the inbound
+	// platform actions poke and reaction. Empty means message, matching every
+	// pre-existing archived body. Action events carry no text.
+	Kind            string `json:"kind,omitempty"`
+	TargetUserID    int64  `json:"target_user_id,omitempty"`
+	TargetMessageID string `json:"target_message_id,omitempty"`
+	EmojiID         string `json:"emoji_id,omitempty"`
+	ActionSet       bool   `json:"action_set,omitempty"`
+}
+
+// IsAction reports whether the event is an action-only notice (poke or
+// reaction) rather than a message or recall.
+func (e Event) IsAction() bool {
+	return e.Kind == "poke" || e.Kind == "reaction"
 }
 type Receipt struct {
 	MessageID string `json:"message_id"`
@@ -68,11 +82,15 @@ func Decode(payload []byte, self int64, aliases []string) (Event, bool, error) {
 		Post      string          `json:"post_type"`
 		Kind      string          `json:"message_type"`
 		Notice    string          `json:"notice_type"`
+		Sub       string          `json:"sub_type"`
 		Group     message.ID      `json:"group_id"`
 		User      message.ID      `json:"user_id"`
+		Target    message.ID      `json:"target_id"`
 		Self      message.ID      `json:"self_id"`
 		Time      int64           `json:"time"`
 		MessageID message.ID      `json:"message_id"`
+		EmojiID   json.RawMessage `json:"emoji_id"`
+		Set       *bool           `json:"is_set"`
 		Message   json.RawMessage `json:"message"`
 		Sender    struct {
 			Nickname string `json:"nickname"`
@@ -88,9 +106,40 @@ func Decode(payload []byte, self int64, aliases []string) (Event, bool, error) {
 	if raw.Group <= 0 || raw.User.Int64() == self {
 		return Event{}, false, nil
 	}
+	// ponytail: notice field names follow the OneBot 11 notify/poke shape and
+	// NapCat's group_msg_emoji_like extension; verify the exact payloads on
+	// the target NapCat instance before freezing protocol test samples.
+	poke := raw.Post == "notice" && raw.Notice == "notify" && raw.Sub == "poke"
+	reaction := raw.Post == "notice" && raw.Notice == "group_msg_emoji_like"
 	recall := raw.Post == "notice" && raw.Notice == "group_recall"
-	if !recall && (raw.Post != "message" || raw.Kind != "group") {
+	if !recall && !poke && !reaction && (raw.Post != "message" || raw.Kind != "group") {
 		return Event{}, false, nil
+	}
+	if poke || reaction {
+		// Inbound action notices carry no text; the actor is user_id, and the
+		// bot's own actions are filtered by the self check above. Reactions
+		// target a message, pokes target a member.
+		e := Event{GroupID: raw.Group.Int64(), UserID: raw.User.Int64(), SelfID: self, At: time.Unix(raw.Time, 0)}
+		if poke {
+			e.Kind = "poke"
+			e.TargetUserID = raw.Target.Int64()
+			e.Directed = e.TargetUserID == self
+		} else {
+			e.Kind = "reaction"
+			e.TargetMessageID = strconv.FormatInt(raw.MessageID.Int64(), 10)
+			e.EmojiID = scalar(raw.EmojiID)
+			if raw.Set != nil {
+				e.ActionSet = *raw.Set
+			}
+		}
+		if raw.Time == 0 {
+			e.At = time.Now()
+		}
+		// No platform notice id exists, so the full payload hashes into the
+		// event id; the kind prefix keeps pokes and reactions distinct.
+		h := sha256.Sum256(payload)
+		e.ID = fmt.Sprintf("notice:%d:%s:%x", e.GroupID, e.Kind, h[:12])
+		return e, true, nil
 	}
 	e := Event{GroupID: raw.Group.Int64(), UserID: raw.User.Int64(), SelfID: self, Name: raw.Sender.Card, At: time.Unix(raw.Time, 0), Recalled: recall}
 	// IDs are opaque locators; negative values are valid and must not be ordered.

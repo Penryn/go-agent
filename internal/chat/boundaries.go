@@ -40,6 +40,13 @@ func (b runtimeAdmissionBuilder) Build(ctx context.Context, groupID int64, versi
 		return ctxsnapshot.AdmissionSnapshot{}, err
 	}
 	history = priorConversation(history, live)
+	// A reaction to one of the bot's archived messages is an address, not
+	// ambient activity; Decode cannot know archive state, so admission marks it.
+	for i := range live {
+		if reactionToBot(live[i], history) {
+			live[i].Directed = true
+		}
+	}
 	// A bounded chronological tail keeps author and quotation identity intact.
 	runes := 0
 	for i := len(history) - 1; i >= 0; i-- {

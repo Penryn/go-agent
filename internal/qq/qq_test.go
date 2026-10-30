@@ -560,3 +560,45 @@ func TestFetchMessageReturnsIdentity(t *testing.T) {
 		})
 	}
 }
+
+func TestDecodePokeAndReactionNotices(t *testing.T) {
+	poke := func(target int) string {
+		return fmt.Sprintf(`{"post_type":"notice","notice_type":"notify","sub_type":"poke","group_id":10,"user_id":11,"target_id":%d,"self_id":99,"time":123}`, target)
+	}
+	e, ok, err := Decode([]byte(poke(99)), 99, nil)
+	if err != nil || !ok || e.Kind != "poke" || e.GroupID != 10 || e.UserID != 11 || e.TargetUserID != 99 || !e.Directed || e.Text != "" || e.ID == "" {
+		t.Fatalf("%+v ok=%v err=%v", e, ok, err)
+	}
+	e, ok, err = Decode([]byte(poke(12)), 99, nil)
+	if err != nil || !ok || e.Kind != "poke" || e.Directed {
+		t.Fatalf("poke to another member must not be directed: %+v ok=%v err=%v", e, ok, err)
+	}
+	// The bot's own poke echoes back as its own notice and is filtered.
+	if _, ok, err = Decode([]byte(`{"post_type":"notice","notice_type":"notify","sub_type":"poke","group_id":10,"user_id":99,"target_id":11,"self_id":99,"time":123}`), 99, nil); ok || err != nil {
+		t.Fatalf("self poke was consumed: ok=%v err=%v", ok, err)
+	}
+	reaction := func(user int, emoji string) string {
+		return fmt.Sprintf(`{"post_type":"notice","notice_type":"group_msg_emoji_like","group_id":10,"user_id":%d,"message_id":55,"emoji_id":%s,"is_set":true,"self_id":99,"time":123}`, user, emoji)
+	}
+	e, ok, err = Decode([]byte(reaction(11, `76`)), 99, nil)
+	if err != nil || !ok || e.Kind != "reaction" || e.TargetMessageID != "55" || e.EmojiID != "76" || !e.ActionSet || e.Directed || e.Text != "" {
+		t.Fatalf("%+v ok=%v err=%v", e, ok, err)
+	}
+	first := e.ID
+	e, ok, err = Decode([]byte(reaction(12, `"66"`)), 99, nil)
+	if err != nil || !ok || e.ID == first {
+		t.Fatal("different reactions collapsed into one event id", e.ID, first)
+	}
+	if _, ok, err = Decode([]byte(reaction(99, `76`)), 99, nil); ok || err != nil {
+		t.Fatalf("self reaction was consumed: ok=%v err=%v", ok, err)
+	}
+	// Non-group and unrelated notices stay ignored.
+	for _, raw := range []string{
+		`{"post_type":"notice","notice_type":"notify","sub_type":"poke","user_id":11,"target_id":99,"self_id":99}`,
+		`{"post_type":"notice","notice_type":"group_increase","group_id":10,"user_id":11,"self_id":99}`,
+	} {
+		if _, ok, err := Decode([]byte(raw), 99, nil); ok || err != nil {
+			t.Fatalf("unrelated notice consumed: ok=%v err=%v", ok, err)
+		}
+	}
+}

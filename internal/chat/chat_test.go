@@ -579,3 +579,73 @@ func TestMemoryCommitFollowsConfirmation(t *testing.T) {
 		t.Fatal("silent turn did not discard staged memory", state, reason)
 	}
 }
+
+func noticePayload(kind string, group, user, target int, messageID, emoji string) []byte {
+	if kind == "poke" {
+		b, _ := json.Marshal(map[string]any{"post_type": "notice", "notice_type": "notify", "sub_type": "poke", "group_id": group, "user_id": user, "target_id": target, "self_id": 99, "time": 200})
+		return b
+	}
+	body := map[string]any{"post_type": "notice", "notice_type": "group_msg_emoji_like", "group_id": group, "user_id": user, "message_id": messageID, "self_id": 99, "time": 200}
+	if emoji != "" {
+		body["emoji_id"] = emoji
+	}
+	b, _ := json.Marshal(body)
+	return b
+}
+
+// TestInboundActionsReachTheModel covers inbound poke and reaction notices:
+// targeting the bot makes the turn directed with a dedicated relation, and
+// reactions bind to the topic of the message they target.
+func TestInboundActionsReachTheModel(t *testing.T) {
+	var relations []string
+	var reactionTopics []string
+	r, _, sender := setup(t, generator{func(_ context.Context, input any) (chat.Reply, error) {
+		values := input.(map[string]any)
+		context := values["conversation_context"].(chat.ConversationContext)
+		for _, event := range context.Batch {
+			relations = append(relations, event.Relation)
+			if event.EventID != "" && len(event.TopicIDs) > 0 {
+				reactionTopics = append(reactionTopics, event.TopicIDs...)
+			}
+		}
+		batch := values["batch"].([]qq.Event)
+		if len(batch) == 0 {
+			return chat.Reply{Action: "silent"}, nil
+		}
+		return chat.Reply{Action: "text", Text: "在的", Reason: "poke"}, nil
+	}})
+	// A normal message creates a topic; the bot's reply becomes an archived
+	// outbound message the reaction can target.
+	if _, err := r.Process(context.Background(), payload(60, 1, 10, "这个问题谁懂", true)); err != nil {
+		t.Fatal(err)
+	}
+	outbound := sender.Messages
+	if len(outbound) == 0 {
+		t.Fatal("no archived outbound message to react to")
+	}
+	// The replay sender's first receipt is deterministic; the archived
+	// outbound message the reaction targets carries that platform id.
+	reply := "7000001"
+	// The poke targets the bot itself.
+	a, err := r.Process(context.Background(), noticePayload("poke", 1, 10, 99, "", ""))
+	if err != nil || a.State != "confirmed" {
+		t.Fatal("poke to bot did not generate a reply", a, err)
+	}
+	// The reaction targets the bot's archived message.
+	a, err = r.Process(context.Background(), noticePayload("reaction", 1, 10, 0, reply, "76"))
+	if err != nil || a.State != "confirmed" {
+		t.Fatal("reaction to bot message did not generate a reply", a, err)
+	}
+	foundPoke, foundReaction := false, false
+	for _, relation := range relations {
+		switch relation {
+		case "poke_to_bot":
+			foundPoke = true
+		case "reaction_to_bot":
+			foundReaction = true
+		}
+	}
+	if !foundPoke || !foundReaction {
+		t.Fatal("dedicated relations missing", relations)
+	}
+}

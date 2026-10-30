@@ -130,6 +130,16 @@ func describeConversationEvent(e qq.Event, history []qq.Event, topicIDs []string
 		relation = "recalled"
 	case e.Outbound:
 		relation = "bot_reply"
+	case e.Kind == "poke":
+		if e.TargetUserID == e.SelfID {
+			relation = "poke_to_bot"
+		} else {
+			relation = "poke"
+		}
+	case e.Kind == "reaction" && reactionToBot(e, history):
+		relation = "reaction_to_bot"
+	case e.Kind == "reaction":
+		relation = "reaction"
 	case repliesToBot(e, history):
 		relation = "reply_to_bot"
 	case e.Directed:
@@ -138,6 +148,21 @@ func describeConversationEvent(e qq.Event, history []qq.Event, topicIDs []string
 		relation = "continuation"
 	}
 	return ConversationEvent{EventID: e.ID, MessageID: e.MessageID, UserID: e.UserID, Relation: relation, TopicIDs: append([]string(nil), topicIDs...)}
+}
+
+// reactionToBot reports whether an inbound reaction targets one of the bot's
+// archived messages. Directed is set from it during admission so a reaction
+// to the bot's message counts as being addressed.
+func reactionToBot(e qq.Event, history []qq.Event) bool {
+	if e.Kind != "reaction" || e.TargetMessageID == "" {
+		return false
+	}
+	for _, candidate := range history {
+		if candidate.Outbound && !candidate.Recalled && candidate.MessageID == e.TargetMessageID {
+			return true
+		}
+	}
+	return false
 }
 
 func repliesToBot(e qq.Event, history []qq.Event) bool {

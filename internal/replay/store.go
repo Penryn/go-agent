@@ -4,9 +4,9 @@ package replay
 import (
 	"context"
 	"errors"
-	"fmt"
 	"math"
 	"sort"
+	"strconv"
 	"sync"
 	"time"
 
@@ -616,7 +616,9 @@ func (s *Sender) Send(_ context.Context, g int64, text, quote, path string) (qq.
 		return qq.Receipt{}, s.Error
 	}
 	s.Messages = append(s.Messages, text+path)
-	return qq.Receipt{MessageID: fmt.Sprintf("simulated-%d", len(s.Messages))}, nil
+	// Receipts stay numeric so notice payloads can target archived messages
+	// through the same decimal message_id path as the real platform.
+	return qq.Receipt{MessageID: strconv.Itoa(7000000 + len(s.Messages))}, nil
 }
 
 // React and Poke are platform-only actions: replay has no local effect, so

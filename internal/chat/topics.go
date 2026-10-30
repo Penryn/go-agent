@@ -448,11 +448,25 @@ func (g *topicGraph) assign(event qq.Event) []string {
 	}
 
 	var ids []string
-	if event.Recalled {
+	switch {
+	case event.Kind == "poke":
+		// A poke has no target event: it never joins or creates a topic.
+		return nil
+	case event.Kind == "reaction":
+		// A reaction binds only to the topic of the message it reacts to and
+		// never guesses by recency or similarity.
+		if event.TargetMessageID != "" {
+			ids = append(ids, g.messageTopics[event.TargetMessageID]...)
+		}
+		ids = uniqueTopicIDs(ids)
+		if len(ids) == 0 {
+			return nil
+		}
+	case event.Recalled:
 		if event.MessageID != "" {
 			ids = append(ids, g.messageTopics[event.MessageID]...)
 		}
-	} else if event.ReplyTo != "" {
+	case event.ReplyTo != "":
 		ids = g.messageTopics[event.ReplyTo]
 	}
 	if len(ids) == 0 && event.Outbound && event.ReplyTo == "" {

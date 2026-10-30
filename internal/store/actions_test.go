@@ -355,3 +355,47 @@ func TestReconcileDeferAndFailCursor(t *testing.T) {
 		t.Fatal("receipt-less unknown surfaced", due, err)
 	}
 }
+
+func TestActionEventsArchiveWithKindAndStayOutOfLearning(t *testing.T) {
+	s := testStore(t)
+	ctx := context.Background()
+	event(t, s, "seed", 7, 10, "普通消息")
+	poke := qq.Event{ID: "poke-1", Kind: "poke", GroupID: 7, UserID: 10, TargetUserID: 12, At: time.Now()}
+	if inserted, err := s.Ingest(ctx, &poke); err != nil || !inserted {
+		t.Fatal(inserted, err)
+	}
+	reaction := qq.Event{ID: "reaction-1", Kind: "reaction", GroupID: 7, UserID: 11, TargetMessageID: "seed", EmojiID: "76", At: time.Now()}
+	if inserted, err := s.Ingest(ctx, &reaction); err != nil || !inserted {
+		t.Fatal(inserted, err)
+	}
+	var kinds []string
+	rows, err := s.DB.QueryContext(ctx, `SELECT event_kind FROM groupfriend.messages WHERE group_id=7 ORDER BY seq`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var kind string
+		if err := rows.Scan(&kind); err != nil {
+			t.Fatal(err)
+		}
+		kinds = append(kinds, kind)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+	// The untyped seed message normalizes to 'message'; notices keep their kind.
+	if len(kinds) != 3 || kinds[0] != "message" || kinds[1] != "poke" || kinds[2] != "reaction" {
+		t.Fatal("event kinds not archived", kinds)
+	}
+	// Learning batches carry messages only; action events are not evidence.
+	batch, _, err := s.LearningBatch(ctx, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range batch {
+		if e.IsAction() {
+			t.Fatal("action event entered the learning batch", e)
+		}
+	}
+}

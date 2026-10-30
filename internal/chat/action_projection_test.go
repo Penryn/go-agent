@@ -45,3 +45,31 @@ func TestMarkBotActionDrivesContinuation(t *testing.T) {
 		t.Fatal("action participation leaked into bot_message_at")
 	}
 }
+
+// TestInboundActionTopicBinding covers the inbound action topic rules: a
+// reaction binds to the topic of the message it targets and adds its author
+// as a participant; pokes and unbound reactions never join or create topics.
+func TestInboundActionTopicBinding(t *testing.T) {
+	tracker := newTopicTracker()
+	window := time.Minute
+	message := qq.Event{ID: "m1", MessageID: "70", GroupID: 1, UserID: 10, Text: "谁在打游戏", At: time.Now()}
+	obs := tracker.observe(1, nil, []qq.Event{message}, window)
+	topicID := obs.Assignments["m1"][0]
+
+	obs = tracker.observe(1, []qq.Event{message}, []qq.Event{{ID: "r1", Kind: "reaction", GroupID: 1, UserID: 11, TargetMessageID: "70", At: time.Now().Add(time.Second)}}, window)
+	if got := obs.Assignments["r1"]; len(got) != 1 || got[0] != topicID {
+		t.Fatal("reaction did not bind to the target topic", got)
+	}
+	if !tracker.topicParticipants(1, topicID)[11] {
+		t.Fatal("reactor not recorded as a topic participant")
+	}
+
+	obs = tracker.observe(1, nil, []qq.Event{{ID: "p1", Kind: "poke", GroupID: 1, UserID: 11, TargetUserID: 12, At: time.Now()}}, window)
+	if got := obs.Assignments["p1"]; len(got) != 0 {
+		t.Fatal("poke joined a topic", got)
+	}
+	obs = tracker.observe(1, nil, []qq.Event{{ID: "r2", Kind: "reaction", GroupID: 1, UserID: 11, TargetMessageID: "999", At: time.Now()}}, window)
+	if got := obs.Assignments["r2"]; len(got) != 0 {
+		t.Fatal("unbound reaction joined or created a topic", got)
+	}
+}
