@@ -1,6 +1,8 @@
-import { useEffect, useId, useState } from "react";
+import { useEffect, useState } from "react";
 import { ApiError, type AdminApi } from "../api";
-import { EmptyState, LoadingRows } from "../components/EmptyState";
+import { Button, Card, Collapse, Input, Space, Spin, Tag, Typography } from "antd";
+import { DeleteOutlined, SaveOutlined } from "@ant-design/icons";
+import { EmptyState } from "../components/EmptyState";
 import { StateBadge } from "../components/StateBadge";
 import { ViewHeader } from "../components/ViewHeader";
 import type { Note } from "../types";
@@ -16,21 +18,14 @@ interface NotesViewProps {
   onSuccess: (message: string) => void;
 }
 
-interface NoteEditorProps extends Omit<NotesViewProps, "notes" | "loading"> {
-  note: Note;
-}
-
-function NoteEditor({ api, group, note, onReload, onError, onSuccess }: NoteEditorProps) {
+function NoteEditor({ api, group, note, onReload, onError, onSuccess }: Omit<NotesViewProps, "notes" | "loading"> & { note: Note }) {
   const [text, setText] = useState(note.text);
   const [dirty, setDirty] = useState(false);
   const [saving, setSaving] = useState(false);
   const [validation, setValidation] = useState("");
-  const errorId = useId();
 
   useEffect(() => {
-    if (!dirty) {
-      setText(note.text);
-    }
+    if (!dirty) setText(note.text);
   }, [dirty, note.text]);
 
   async function save(forget: boolean) {
@@ -43,16 +38,10 @@ function NoteEditor({ api, group, note, onReload, onError, onSuccess }: NoteEdit
       setValidation("笔记内容不能超过 600 个字符。");
       return;
     }
-
     setValidation("");
     setSaving(true);
     try {
-      await api.saveNote(note.id, {
-        group,
-        version: note.version,
-        text: nextText,
-        forget,
-      });
+      await api.saveNote(note.id, { group, version: note.version, text: nextText, forget });
       setDirty(false);
       onSuccess(forget ? "笔记已遗忘。" : "笔记修改已保存。");
       await onReload();
@@ -69,87 +58,32 @@ function NoteEditor({ api, group, note, onReload, onError, onSuccess }: NoteEdit
   }
 
   return (
-    <article className="note-card">
-      <div className="item-heading">
-        <div>
-          <div className="item-kicker">
-            <StateBadge value={note.state} />
-            <span>{note.kind}</span>
-            <span>{note.subject ? `用户 ${note.subject}` : "本群"}</span>
-          </div>
-          <h3>{note.key}</h3>
-        </div>
-        <time dateTime={note.updated}>{formatDate(note.updated)}</time>
-      </div>
-
-      <label className="sr-only" htmlFor={`${errorId}-note`}>笔记内容</label>
-      <textarea
-        id={`${errorId}-note`}
-        value={text}
-        maxLength={600}
-        aria-describedby={validation ? errorId : undefined}
-        aria-invalid={validation ? true : undefined}
-        onChange={(event) => {
-          setText(event.target.value);
-          setDirty(true);
-          setValidation("");
-        }}
-        placeholder="写下需要保留的群内事实或相处偏好"
-      />
-      <div className="editor-footer">
-        <span className="field-hint">{runeLength(text)} / 600</span>
-        {validation ? <span className="field-error" id={errorId}>{validation}</span> : null}
-        <div className="button-row">
-          <button className="button button-secondary" type="button" disabled={saving || note.state === "forgotten"} onClick={() => void save(true)}>
-            遗忘
-          </button>
-          <button className="button button-primary" type="button" disabled={saving || !dirty} onClick={() => void save(false)}>
-            {saving ? "保存中…" : "保存修改"}
-          </button>
-        </div>
-      </div>
-
-      {note.evidence.length > 0 ? (
-        <details className="evidence-list">
-          <summary>查看 {note.evidence.length} 条原始依据</summary>
-          {note.evidence.map((evidence, index) => (
-            <blockquote key={`${evidence.event_id}-${index}`}>
-              <p>{evidence.quote}</p>
-              <cite>{evidence.event_id}</cite>
-            </blockquote>
-          ))}
-        </details>
-      ) : null}
-    </article>
+    <Card size="small" className="note-card">
+      <Space direction="vertical" size={12} style={{ width: "100%" }}>
+        <Space className="item-heading" align="start" style={{ width: "100%", justifyContent: "space-between" }}>
+          <div><Space wrap size={[6, 4]}><StateBadge value={note.state} /><Tag>{note.kind}</Tag><Tag>{note.subject ? `用户 ${note.subject}` : "本群"}</Tag></Space><Typography.Title level={5} className="note-title">{note.key}</Typography.Title></div>
+          <Typography.Text type="secondary">{formatDate(note.updated)}</Typography.Text>
+        </Space>
+        <Input.TextArea value={text} maxLength={600} showCount status={validation ? "error" : undefined} autoSize={{ minRows: 4, maxRows: 10 }} onChange={(event) => { setText(event.target.value); setDirty(true); setValidation(""); }} placeholder="写下需要保留的群内事实或相处偏好" />
+        <Space className="editor-footer" wrap style={{ width: "100%", justifyContent: "space-between" }}>
+          <Space direction="vertical" size={0}>{validation ? <Typography.Text type="danger">{validation}</Typography.Text> : <Typography.Text type="secondary">{runeLength(text)} / 600</Typography.Text>}</Space>
+          <Space><Button danger icon={<DeleteOutlined />} disabled={saving || note.state === "forgotten"} onClick={() => void save(true)}>遗忘</Button><Button type="primary" icon={<SaveOutlined />} loading={saving} disabled={!dirty} onClick={() => void save(false)}>保存修改</Button></Space>
+        </Space>
+        {note.evidence.length > 0 ? <Collapse ghost items={[{ key: "evidence", label: `查看 ${note.evidence.length} 条原始依据`, children: <Space direction="vertical" style={{ width: "100%" }}>{note.evidence.map((evidence, index) => <Card size="small" type="inner" key={`${evidence.event_id}-${index}`}><Typography.Paragraph>{evidence.quote}</Typography.Paragraph><Typography.Text type="secondary">{evidence.event_id}</Typography.Text></Card>)}</Space> }]} /> : null}
+      </Space>
+    </Card>
   );
 }
 
 export function NotesView({ api, group, notes, loading, onReload, onError, onSuccess }: NotesViewProps) {
   return (
     <section className="view-stack" aria-label="相处笔记">
-      <ViewHeader
-        eyebrow="长期记忆"
-        title="相处笔记"
-        description="修改后会触发重新索引；遗忘的笔记不会继续进入检索上下文。"
-        count={notes.length}
-      />
-      <div className="panel list-panel">
-        {loading && notes.length === 0 ? <LoadingRows label="正在读取群笔记" /> : null}
-        {!loading && notes.length === 0 ? (
-          <EmptyState title="还没有笔记" description="群聊中出现稳定事实或相处偏好后，笔记会显示在这里。" />
-        ) : null}
-        {notes.map((note) => (
-          <NoteEditor
-            api={api}
-            group={group}
-            note={note}
-            onReload={onReload}
-            onError={onError}
-            onSuccess={onSuccess}
-            key={`${group}:${note.id}`}
-          />
-        ))}
-      </div>
+      <ViewHeader eyebrow="长期记忆" title="相处笔记" description="修改后会触发重新索引；遗忘的笔记不会继续进入检索上下文。" count={notes.length} />
+      <Card className="list-panel" bodyStyle={{ padding: "4px 16px" }}>
+        <Spin spinning={loading} tip="正在读取群笔记">
+          {notes.length === 0 && !loading ? <EmptyState title="还没有笔记" description="群聊中出现稳定事实或相处偏好后，笔记会显示在这里。" /> : notes.map((note) => <NoteEditor key={`${group}:${note.id}`} api={api} group={group} note={note} onReload={onReload} onError={onError} onSuccess={onSuccess} />)}
+        </Spin>
+      </Card>
     </section>
   );
 }
