@@ -1,4 +1,5 @@
 import { type FormEvent, useCallback, useEffect, useRef, useState } from "react";
+import { App as AntdApp, Badge, Button, Card, ConfigProvider, Input, Layout, Menu, Select, Statistic, Typography } from "antd";
 import { AdminApi } from "./api";
 import { EmptyState, LoadingRows } from "./components/EmptyState";
 import { NoticeBanner } from "./components/NoticeBanner";
@@ -28,6 +29,19 @@ const VIEWS: ViewMeta[] = [
 ];
 
 const GROUP_VIEWS: AdminView[] = ["conversation", "notes", "attempts"];
+
+function SummaryCard({ label, value, hint, accent }: { label: string; value: string | number; hint: string; accent?: string }) {
+  return (
+    <div className="summary-card">
+      <div className={`summary-icon${accent ? ` summary-icon-${accent}` : ""}`} aria-hidden="true" />
+      <div className="summary-copy">
+        <span>{label}</span>
+        <strong>{value}</strong>
+        <small>{hint}</small>
+      </div>
+    </div>
+  );
+}
 
 function App() {
   const [token, setToken] = useState("");
@@ -446,6 +460,34 @@ function App() {
           </div>
 
           {notice ? <NoticeBanner notice={notice} onDismiss={() => setNotice(null)} /> : null}
+          {connected ? (
+            <section className="summary-grid" aria-label="当前群概览">
+              <SummaryCard
+                label="当前群"
+                value={selectedGroup === null ? "—" : selectedGroup}
+                hint={selectedGroup === null ? "暂无群记录" : "正在查看的群"}
+                accent="blue"
+              />
+              <SummaryCard
+                label="最近消息"
+                value={navCounts.conversation ?? 0}
+                hint="当前上下文窗口"
+                accent="cyan"
+              />
+              <SummaryCard
+                label="有效笔记"
+                value={navCounts.notes ?? 0}
+                hint="可继续参与召回"
+                accent="green"
+              />
+              <SummaryCard
+                label="回应记录"
+                value={navCounts.attempts ?? 0}
+                hint="模型决策与检索轨迹"
+                accent="purple"
+              />
+            </section>
+          ) : null}
           {connecting && !connected ? <LoadingRows label="正在建立后台会话" /> : null}
           {!connecting || connected ? renderCurrentView() : null}
         </main>

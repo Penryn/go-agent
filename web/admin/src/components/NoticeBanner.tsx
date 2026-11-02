@@ -1,4 +1,5 @@
 import type { AdminNotice } from "../types";
+import { Alert } from "antd";
 
 interface NoticeBannerProps {
   notice: AdminNotice;
@@ -7,16 +8,13 @@ interface NoticeBannerProps {
 
 export function NoticeBanner({ notice, onDismiss }: NoticeBannerProps) {
   return (
-    <div
+    <Alert
       className={`notice-banner notice-${notice.tone}`}
-      role={notice.tone === "error" ? "alert" : "status"}
-      aria-live="polite"
-    >
-      <span className="notice-dot" aria-hidden="true" />
-      <p>{notice.message}</p>
-      <button className="notice-close" type="button" onClick={onDismiss} aria-label="关闭提示">
-        ×
-      </button>
-    </div>
+      type={notice.tone}
+      message={notice.message}
+      showIcon
+      closable
+      onClose={onDismiss}
+    />
   );
 }

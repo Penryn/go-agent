@@ -1,4 +1,5 @@
 import type { ReactNode } from "react";
+import { Badge, Typography } from "antd";
 
 interface ViewHeaderProps {
   eyebrow: string;
@@ -12,12 +13,12 @@ export function ViewHeader({ eyebrow, title, description, count, action }: ViewH
   return (
     <header className="view-header">
       <div>
-        <p className="eyebrow">{eyebrow}</p>
+        <Typography.Text className="eyebrow">{eyebrow}</Typography.Text>
         <div className="view-title-row">
-          <h2>{title}</h2>
-          {count !== undefined ? <span className="count-pill">{count}</span> : null}
+          <Typography.Title level={2}>{title}</Typography.Title>
+          {count !== undefined ? <Badge count={count} showZero color="#1677ff" /> : null}
         </div>
-        <p className="view-description">{description}</p>
+        <Typography.Paragraph className="view-description">{description}</Typography.Paragraph>
       </div>
       {action ? <div className="view-action">{action}</div> : null}
     </header>

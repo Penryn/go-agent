@@ -1,3 +1,5 @@
+import { Tag } from "antd";
+
 interface StateBadgeProps {
   value: string;
   label?: string;
@@ -26,5 +28,7 @@ function tone(value: string): "positive" | "warning" | "danger" | "neutral" {
 }
 
 export function StateBadge({ value, label }: StateBadgeProps) {
-  return <span className={`state-badge state-${tone(value)}`}>{label ?? value}</span>;
+  const currentTone = tone(value);
+  const color = currentTone === "positive" ? "success" : currentTone === "warning" ? "warning" : currentTone === "danger" ? "error" : "default";
+  return <Tag className={`state-badge state-${currentTone}`} color={color}>{label ?? value}</Tag>;
 }
