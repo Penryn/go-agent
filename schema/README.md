@@ -11,6 +11,9 @@
 | `memory_events` | 运维事件，例如被遗忘证据拦截的重建尝试 |
 | `conversation_topics` | 每群话题状态、参与者、序号范围、版本与最后活跃时间 |
 | `conversation_topic_events` | 最近事件的话题归属窗口，用于重启恢复引用链和词面索引 |
+| `conversation_topic_actions` | 已确认的表情回应与戳一戳、目标事件和话题投影 |
+| `note_consultation` | 动作回复引用过的笔记，与文字回复的 `note_usage` 账本分开 |
+| `reply_memory_pending` | 待随平台确认提交的记忆快照，`attempt_id` 为幂等键 |
 | `topic_summaries` | 按话题版本保存的摘要、证据事件与覆盖序号 |
 | `stickers` | 全局素材、内容哈希、内部来源、缓存文件、描述、处理状态和向量投影 |
 | `group_progress` | 每群后台整理与话题摘要的独立游标、重试时间 |
@@ -42,7 +45,7 @@ dry-run 输出需要规范化的笔记和重复组，包含保留 ID、被归档
 
 笔记更新和学习游标推进在同一事务完成，修订冲突时整批回滚。话题视图、事件归属窗口与非空摘要同事务保存；后台摘要先用独立事务提交摘要和覆盖序号，再推进摘要游标，失败只延后重试，不影响聊天。遗忘、纠正和禁用使旧投影失效，乱序到达的旧索引不能覆盖新状态。
 
-成功发送、出站消息与 `note_usage` 账本在同一事务完成，账本冲突时忽略重复的 `(attempt_id, note_id)`；`notes.use_count` 和 `last_used_at` 只由实际新增的账本行推进。数据库与 OneBot 仍无法原子提交。启动发送所有权检查会将上次未完成的发送标为不确定，将未完成的规划标为放弃；不会自动补发旧聊天。
+成功发送、出站消息与 `note_usage` 账本在同一事务完成，账本冲突时忽略重复的 `(attempt_id, note_id)`；`notes.use_count` 和 `last_used_at` 只由实际新增的账本行推进。表情回应和戳一戳在另一个事务里确认动作事实、话题投影、`note_consultation` 和暂存记忆，不写出站消息。数据库与 OneBot 仍无法原子提交。启动发送所有权检查会将上次未完成的发送标为不确定，将未完成的规划标为放弃；不会自动补发旧聊天。
 
 首次启动会执行一次记忆基线迁移，并在 `settings` 写入 `memory_rework_migration`：旧版硬编码的 `confidence=1` 改为 0.7，未进入账本时代的 `use_count` 清零，`usage_version=0` 保留为历史基线标记。迁移只执行一次，不把旧次数转换为账本行；之后的 `confidence=1` 不再被该迁移改写。
 

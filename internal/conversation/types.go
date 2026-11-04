@@ -35,6 +35,21 @@ type Context struct {
 	History    []Event `json:"history"`
 }
 
+// TopicView is the persistable projection of one tracked topic.
+type TopicView struct {
+	ID, Summary       string
+	Participants      []int64
+	FirstSeq, LastSeq int64
+	Status            string
+	Revision          int64
+	SummaryRevision   int64
+	LastActiveAt      time.Time
+	// BotMessageAt and BotActionAt split bot participation by source so
+	// continuation can be closed per source without losing the action facts.
+	BotMessageAt time.Time
+	BotActionAt  time.Time
+}
+
 // TopicEventView is one persisted ownership row. TopicIDs are the candidates
 // recorded for the event; facts about the event live in the messages table.
 type TopicEventView struct {

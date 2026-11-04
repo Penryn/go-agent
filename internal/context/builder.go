@@ -2,7 +2,6 @@ package context
 
 import (
 	"context"
-	"strings"
 
 	"github.com/phlin/go-agent/internal/conversation"
 	"github.com/phlin/go-agent/internal/meme"
@@ -63,61 +62,6 @@ type Builder interface {
 	Build(context.Context, AdmissionSnapshot) (ContextSnapshot, error)
 }
 
-// SnapshotBuilder is the pure assembly implementation. Fetching recall,
-// stickers, images and the embedding is injected so the resulting snapshot is
-// detached from mutable actor and storage state.
-type SnapshotBuilder struct {
-	Notes    func(context.Context, int64, string, []float32) ([]memory.Note, error)
-	Stickers func(context.Context, int64, string, []float32) ([]meme.Asset, error)
-	Images   func(context.Context, []qq.Event) ([]string, error)
-	Embed    func(context.Context, string) ([]float32, error)
-}
-
-func (b SnapshotBuilder) Build(ctx context.Context, admission AdmissionSnapshot) (ContextSnapshot, error) {
-	var embedding []float32
-	var err error
-	if b.Embed != nil && strings.TrimSpace(admission.Query) != "" {
-		embedding, err = b.Embed(ctx, admission.Query)
-		if err != nil {
-			return ContextSnapshot{}, err
-		}
-	}
-	notes := []memory.Note{}
-	if b.Notes != nil {
-		notes, err = b.Notes(ctx, admission.GroupID, admission.Query, embedding)
-		if err != nil {
-			return ContextSnapshot{}, err
-		}
-	}
-	assets := []meme.Asset{}
-	if b.Stickers != nil {
-		assets, err = b.Stickers(ctx, admission.GroupID, admission.Query, embedding)
-		if err != nil {
-			return ContextSnapshot{}, err
-		}
-	}
-	images := []string{}
-	if b.Images != nil {
-		images, err = b.Images(ctx, admission.Batch)
-		if err != nil {
-			return ContextSnapshot{}, err
-		}
-	}
-	return ContextSnapshot{
-		GroupID:        admission.GroupID,
-		Version:        admission.ActorVersion,
-		History:        LimitEvents(admission.History, MaxHistory),
-		Batch:          LimitEvents(admission.Batch, MaxBatch),
-		Conversation:   LimitConversation(admission.Conversation, MaxTopics),
-		Topics:         cloneTopics(topicViews(admission.Conversation.Topics)),
-		Notes:          CloneNotes(notes),
-		StickerAssets:  CloneAssets(assets[:min(len(assets), MaxStickers)]),
-		Images:         append([]string(nil), images[:min(len(images), MaxImages)]...),
-		Query:          admission.Query,
-		QueryEmbedding: append([]float32(nil), embedding...),
-	}, nil
-}
-
 // LimitEvents keeps the most recent events and isolates the returned slice.
 func LimitEvents(in []qq.Event, limit int) []qq.Event {
 	if limit > 0 && len(in) > limit {
@@ -165,14 +109,6 @@ func limitEventsOf(in []conversation.Event, limit int) []conversation.Event {
 	return out
 }
 
-func cloneTopics(in []conversation.TopicView) []conversation.TopicView {
-	out := append([]conversation.TopicView(nil), in...)
-	for i := range out {
-		out[i].Participants = append([]int64(nil), out[i].Participants...)
-	}
-	return out
-}
-
 func CloneNotes(in []memory.Note) []memory.Note {
 	out := append([]memory.Note(nil), in...)
 	for i := range out {
@@ -185,14 +121,6 @@ func CloneAssets(in []meme.Asset) []meme.Asset {
 	out := append([]meme.Asset(nil), in...)
 	for i := range out {
 		out[i].Tags = append([]string(nil), out[i].Tags...)
-	}
-	return out
-}
-
-func topicViews(topics []conversation.Topic) []conversation.TopicView {
-	out := make([]conversation.TopicView, 0, len(topics))
-	for _, topic := range topics {
-		out = append(out, conversation.TopicView{ID: topic.ID, Summary: topic.Summary, Participants: append([]int64(nil), topic.Participants...), Status: topic.State})
 	}
 	return out
 }

@@ -136,7 +136,6 @@ type Runtime struct {
 	cancel         context.CancelFunc
 	mu             sync.Mutex
 	groups         map[int64]*group
-	actors         map[int64]conversation.GroupActor
 	pokes          map[int64]map[int64]time.Time
 	topics         *topicTracker
 	wg             sync.WaitGroup
@@ -167,7 +166,6 @@ func New(ctx context.Context, r *Runtime) *Runtime {
 		r.Cache = cache.NewHub(10000)
 	}
 	r.groups = map[int64]*group{}
-	r.actors = map[int64]conversation.GroupActor{}
 	r.pokes = map[int64]map[int64]time.Time{}
 	if r.Policy == nil {
 		r.Policy = policy.DeterministicPolicy{}
@@ -239,7 +237,6 @@ func (r *Runtime) ingest(ctx context.Context, payload []byte, wait bool) (Attemp
 	if g == nil {
 		g = &group{runtime: r, id: e.GroupID, wake: make(chan struct{}, 1), participants: map[int64]bool{}}
 		r.groups[e.GroupID] = g
-		r.actors[e.GroupID] = g
 		if err := r.restoreTopics(ctx, e.GroupID); err != nil {
 			slog.Warn("restore topics", "group", e.GroupID, "error", err)
 			g.degraded = append(g.degraded, "topic_restore")
@@ -342,7 +339,6 @@ func (g *group) loop() {
 				views := g.runtime.topics.Snapshot(g.id, g.runtime.Config.ActiveWindow)
 				events := g.runtime.topics.EventSnapshot(g.id, maxTopicAssignments)
 				delete(g.runtime.groups, g.id)
-				delete(g.runtime.actors, g.id)
 				g.mu.Unlock()
 				g.runtime.mu.Unlock()
 				if ts, ok := g.runtime.Store.(topicStore); ok {
@@ -385,63 +381,6 @@ func (g *group) loop() {
 			}
 		}
 	}
-}
-
-// Submit implements conversation.GroupActor for events that have already
-// crossed the ingress/archive boundary. Ingress remains responsible for
-// deduplication and persistence; the actor only serializes group state.
-func (g *group) Submit(ctx context.Context, event qq.Event) error {
-	select {
-	case <-ctx.Done():
-		return ctx.Err()
-	default:
-	}
-	g.runtime.mu.Lock()
-	if g.runtime.closed {
-		g.runtime.mu.Unlock()
-		return context.Canceled
-	}
-	g.runtime.wg.Add(1)
-	g.runtime.mu.Unlock()
-	defer g.runtime.wg.Done()
-	g.mu.Lock()
-	if len(g.pending) == 0 {
-		g.first = time.Now()
-	}
-	g.last = time.Now()
-	if event.Directed || event.Recalled {
-		g.strong++
-	}
-	g.version++
-	if event.Seq > g.lastSeq {
-		g.lastSeq = event.Seq
-	}
-	g.pending = append(g.pending, queued{event: event})
-	g.mu.Unlock()
-	select {
-	case g.wake <- struct{}{}:
-	default:
-	}
-	return nil
-}
-
-func (g *group) Snapshot(ctx context.Context) (conversation.Snapshot, error) {
-	select {
-	case <-ctx.Done():
-		return conversation.Snapshot{}, ctx.Err()
-	default:
-	}
-	g.mu.Lock()
-	defer g.mu.Unlock()
-	participants := make([]int64, 0, len(g.participants))
-	for id := range g.participants {
-		participants = append(participants, id)
-	}
-	pending := make([]conversation.PendingQuestion, 0, len(g.pending))
-	for _, q := range g.pending {
-		pending = append(pending, conversation.PendingQuestion{EventID: q.event.ID, Text: q.event.Text, At: q.event.At})
-	}
-	return conversation.Snapshot{GroupID: g.id, Version: g.version, LastBotAt: g.lastBot, Participants: participants, Pending: pending}, nil
 }
 
 func (g *group) Close() { g.failPending() }
