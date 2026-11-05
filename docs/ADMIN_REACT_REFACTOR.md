@@ -135,7 +135,7 @@ internal/app/
 1. `GET /admin` 继续重定向到 `/admin/`。
 2. `GET` 和 `HEAD /admin/` 返回构建后的 `index.html`。
 3. 只允许读取 `/admin/assets/` 下的静态文件，其他未知页面路径返回 `404`。
-4. 页面资源使用 `Content-Security-Policy` 的 `script-src 'self'` 和 `style-src 'self'`，移除当前内联脚本和内联样式对应的 `unsafe-inline`。
+4. 页面资源使用 `Content-Security-Policy` 的 `script-src 'self'` 和每次响应生成的 `style-src 'self' 'nonce-…'`；Ant Design 注入的 CSS 使用同一个 nonce，不开放 `unsafe-inline`。
 5. `index.html` 使用 `Cache-Control: no-store`，带哈希的静态资源可以使用可缓存响应；如果部署环境无法确认资源更新策略，先统一使用 `no-store`。
 6. 静态资源处理器不绕过 `/admin/api/` 的现有路由和 `authorize` 中间件。
 
@@ -250,7 +250,7 @@ React 客户端只封装现有管理 API，不在浏览器中直接访问数据�
 - 非读请求继续由服务端检查 `Origin`。
 - 图片预览继续使用服务端校验后的图片接口，前端不接收或拼接本地文件路径。
 - 用户内容继续通过 React 文本节点或受控表单渲染，不使用 `dangerouslySetInnerHTML`。
-- `index.html` 和静态脚本不使用内联脚本，CSP 可以移除 `script-src 'unsafe-inline'`。
+- `index.html` 和静态脚本不使用内联脚本；Ant Design 的运行时样式通过响应级 nonce 注入，CSP 不开放 `unsafe-inline`。
 
 ### 6.2 兼容性边界
 
@@ -310,7 +310,7 @@ rtk git diff --exit-code -- internal/app/admin-dist
 - `GET /admin/` 返回 `200`、HTML 内容和 React 根节点。
 - 从入口 HTML 提取的 JavaScript 资源路径可以通过 `/admin/assets/` 返回。
 - `/admin/unknown` 不返回目录列表。
-- 页面响应包含静态脚本对应的 CSP，不包含 `script-src 'unsafe-inline'`。
+- 页面响应包含静态脚本和运行时样式对应的 CSP，不包含 `script-src` 或 `style-src` 的 `unsafe-inline`。
 - `/admin/api/` 仍然经过原有令牌、本机地址和 `Origin` 校验。
 - `/admin` 仍然重定向到 `/admin/`。
 

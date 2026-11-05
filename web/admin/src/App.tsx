@@ -65,7 +65,7 @@ function SummaryCard({ label, value, hint, color }: { label: string; value: stri
   );
 }
 
-function App() {
+function App({ cspNonce }: { cspNonce?: string }) {
   const [token, setToken] = useState("");
   const [api, setApi] = useState(() => new AdminApi(""));
   const [connected, setConnected] = useState(false);
@@ -271,7 +271,7 @@ function App() {
   }));
 
   return (
-    <ConfigProvider theme={{ token: { colorPrimary: "#1677ff", borderRadius: 8, colorBgLayout: "#f5f7fa" } }}>
+    <ConfigProvider csp={cspNonce ? { nonce: cspNonce } : undefined} theme={{ token: { colorPrimary: "#1677ff", borderRadius: 8, colorBgLayout: "#f5f7fa" } }}>
       <AntdApp>
         <Layout className="admin-app">
           <Layout.Header className="admin-header">

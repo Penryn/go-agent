@@ -78,7 +78,7 @@ func TestAdminReactStaticRoutes(t *testing.T) {
 		t.Fatalf("cache control = %q", got)
 	}
 	csp := index.Header().Get("Content-Security-Policy")
-	if !strings.Contains(csp, "script-src 'self'") || !strings.Contains(csp, "style-src 'self'") {
+	if !strings.Contains(csp, "script-src 'self'") || !strings.Contains(csp, "style-src 'self' 'nonce-") {
 		t.Fatalf("CSP does not restrict scripts and styles to self: %q", csp)
 	}
 	if strings.Contains(csp, "unsafe-inline") {
@@ -89,6 +89,9 @@ func TestAdminReactStaticRoutes(t *testing.T) {
 	}
 	if !strings.Contains(index.Body.String(), `<div id="root"></div>`) {
 		t.Fatal("index does not contain the React root")
+	}
+	if strings.Contains(index.Body.String(), adminCSPNoncePlaceholder) {
+		t.Fatal("index still contains the CSP nonce placeholder")
 	}
 
 	head := serve(http.MethodHead, "/admin/")

@@ -128,7 +128,13 @@ select {
 
 .menu-label {
   width: 100%;
+  line-height: normal;
   justify-content: space-between;
+}
+
+.menu-label .ant-space-vertical,
+.menu-label .ant-typography {
+  line-height: 1.2;
 }
 
 .menu-description {
@@ -482,6 +488,10 @@ select {
   .note-card .item-heading {
     align-items: flex-start;
     flex-direction: column;
+  }
+
+  .menu-description {
+    display: none;
   }
 }
 
